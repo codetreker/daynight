@@ -64,6 +64,10 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("nonmember found: %v", err)
 		}
+		access, err = snapshot.ProjectDAO().ProjectAccess(ctx, admin, testutil.QueryID(999))
+		if !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) || !reflect.DeepEqual(access, model.ProjectAccess{}) {
+			t.Fatalf("absent Project access returned actor data or lost its cause: %+v %v", access, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -350,12 +354,19 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 					}
 					return err
 				})
+			case "write-access":
+				var completion Completion
+				completion, err = s.WriteProject(ctx, project.ID, func(tx ProjectWriteScope) error {
+					_, err := tx.ProjectDAO().ProjectAccess(ctx, admin)
+					return err
+				})
+				if completion.Outcome != TransactionNotCommitted {
+					t.Fatalf("failed authorization write completion: %#v %v", completion, err)
+				}
 			default:
 				err = testutil.WriteProject(ctx, s, project.ID, func(tx ProjectWriteScope) error {
 					var err error
 					switch phase {
-					case "write-access":
-						_, err = tx.ProjectDAO().ProjectAccess(ctx, admin)
 					case "target-member":
 						_, err = tx.ProjectDAO().DirectProjectMember(ctx, member.UserID)
 					case "set-role":
@@ -380,6 +391,15 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 			var queryError *pgconn.PgError
 			if !errors.As(err, &databaseError) || !errors.As(err, &queryError) || queryError.Code != "42P01" || strings.Contains(err.Error(), "SELECT") {
 				t.Fatalf("missing chain or leaked SQL: %v", err)
+			}
+			if phase == "project-access" || phase == "write-access" {
+				var owner string
+				var version int64
+				err := s.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`,
+					project.ID).Scan(&owner, &version)
+				if err != nil || owner != project.Ownership.TeamID || version != project.Ownership.Version {
+					t.Fatalf("failed authorization changed ownership: Team %s version %d, error %v", owner, version, err)
+				}
 			}
 		}) {
 			return

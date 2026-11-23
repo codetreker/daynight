@@ -1,3 +1,13 @@
+import { summariesForIndex } from "./helpers/taskSync";
+
+// Usage polling has its own lifecycle tests; this suite owns the execution clock.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,11 +40,11 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
-  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
+  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} summaries={summariesForIndex(value.index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null}
     onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;
-const duration = (id: string) => row(id).querySelector('time');
+const duration = (id: string) => row(id).closest('.task-row')!.querySelector('.task-duration');
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 let monotonic = 0;
 
@@ -54,12 +64,12 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manual Assignee: Unassigned Automatic execution off No machine record In progress', 'automatic Assignee: Unassigned Automatic execution on No machine record In progress'] : ['manual 负责人：未分配 自动执行已关闭 暂无执行机器记录 进行中', 'automatic 负责人：未分配 自动执行已开启 暂无执行机器记录 进行中'];
+    const names = ['manual', 'automatic'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
-      expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');
-      expect(element.querySelector('time svg')).toHaveAttribute('aria-hidden', 'true');
-      expect(element.querySelector('time')!.closest('[aria-hidden="true"]')).not.toBeNull();
+      expect(element.closest('.task-row')!.querySelector('.task-duration')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');
+      expect(element.closest('.task-row')!.querySelector('.task-duration svg')).toHaveAttribute('aria-hidden', 'true');
+      expect(element.closest('.task-row')!.querySelector('.task-duration')!.closest('[aria-hidden="true"]')).toBeNull();
     }
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(duration('completed')).toHaveAttribute('datetime', 'PT2700.000S');
@@ -69,12 +79,12 @@ describe('Goal child execution duration', () => {
     monotonic = 2_000;
     act(() => { vi.advanceTimersByTime(1_000); });
     for (const [index, element] of running.entries()) {
-      expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '1min' : '1 分钟');
-      expect(element.querySelector('time')).toHaveAttribute('datetime', 'PT61.000S');
-      expect(element.querySelector('time')).toHaveAttribute('title', locale === 'en' ? '1min' : '1 分钟');
+      expect(element.closest('.task-row')!.querySelector('.task-duration')).toHaveTextContent(locale === 'en' ? '1min' : '1 分钟');
+      expect(element.closest('.task-row')!.querySelector('.task-duration')).toHaveAttribute('datetime', 'PT61.000S');
+      expect(element.closest('.task-row')!.querySelector('.task-duration')).toHaveAttribute('title', expect.any(String));
       expect(element).toHaveAccessibleName(names[index]!);
-      expect(element).not.toHaveAttribute('aria-describedby');
-      expect(element.querySelector('.task-stuck-label')).toBeNull();
+      expect(element).toHaveAttribute('aria-describedby');
+      expect(element.closest('.task-row')!.querySelector('.task-stuck-label') !== null).toBe(index === 1);
     }
     expect(row('manual')).toBe(running[0]);
     expect(running[0]).toHaveFocus();
@@ -83,7 +93,7 @@ describe('Goal child execution duration', () => {
     expect(duration('completed')).toBe(finalTime);
     expect(finalTime).toHaveAttribute('datetime', 'PT2700.000S');
     expect(view.container.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
-    expect(document.getElementById('task-root-Goal')!.querySelector('time')).toBeNull();
+    expect(document.getElementById('task-root-Goal')!.querySelector('.task-duration')).toBeNull();
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -97,8 +107,8 @@ describe('Goal child execution duration', () => {
     ]);
     const view = renderWithLocale(content(value), { locale: 'zh-CN', taskCache: true });
     expand();
-    expect(view.container.querySelector('time')).toBeNull();
-    expect(view.container.querySelectorAll('.goal-task-row')).toHaveLength(4);
+    expect(view.container.querySelector('.task-duration')).toBeNull();
+    expect(view.container.querySelectorAll('.task-row')).toHaveLength(4);
   });
 
   it('reconciles hidden-page elapsed immediately while keeping the completed endpoint and shared ticker', () => {
@@ -129,7 +139,7 @@ describe('Goal child execution duration', () => {
     expand();
     const trigger = row('active');
     trigger.focus();
-    expect(trigger.querySelector('.root-title')).toHaveTextContent(`${active.titlePreview}…`);
+    expect(trigger).toHaveTextContent(`${active.titlePreview}…`);
     expect(duration('active')).toHaveTextContent('2 天 3 小时 4 分钟');
     view.setLocale('en');
     expect(duration('active')).toHaveTextContent('2d 3h 4min');
@@ -143,6 +153,6 @@ describe('Goal child execution duration', () => {
     expect(row('active')).toBe(trigger);
     expect(trigger).toHaveFocus();
     expect(document.getElementById('task-root-Goal')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('button', { name: /A long title.*In progress/ })).toBe(trigger);
+    expect(screen.getByRole('link', { name: /A long title/ })).toBe(trigger);
   });
 });

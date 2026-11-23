@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "Daynight",
+    "slug": "daynight-mobile",
+    "version": "0.0.0",
+    "platforms": ["ios", "android"],
+    "scheme": "daynight-mobile",
+    "userInterfaceStyle": "automatic",
+    "plugins": ["expo-router"],
+    "ios": {
+      "bundleIdentifier": "cc.daynight.mobile"
+    },
+    "android": {
+      "package": "cc.daynight.mobile"
+    }
+  }
+}

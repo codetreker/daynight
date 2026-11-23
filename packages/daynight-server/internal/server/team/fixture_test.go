@@ -22,10 +22,69 @@ import (
 
 type authHarness = testsupport.AuthHarness[*authhttp.Authentication]
 
-func authTestHarness(t *testing.T) *authHarness {
-	return testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
-	})
+type teamIntegrationFixture struct {
+	database *postgres.Store
+	identity *identityservice.Identity
+	origin   string
+}
+
+type teamHTTPCase struct {
+	*authHarness
+	loginSuffix string
+}
+
+func newTeamAuthentication(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
+	return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+}
+
+func newTeamIntegrationFixture(t *testing.T) teamIntegrationFixture {
+	t.Helper()
+	parent := testsupport.NewAuthHarness(t, newTeamAuthentication)
+	return teamIntegrationFixture{database: parent.Database, identity: parent.Identity, origin: parent.Origin}
+}
+
+func (f teamIntegrationFixture) forCase(t *testing.T) *teamHTTPCase {
+	t.Helper()
+	h := &authHarness{Database: f.database, Identity: f.identity, Origin: f.origin}
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	var err error
+	h.Auth, err = newTeamAuthentication(h.Identity, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Auth.RegisterRoutes(mux)
+	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
+	return &teamHTTPCase{authHarness: h, loginSuffix: "-" + strings.ReplaceAll(t.Name(), "/", "-")}
+}
+
+func (h *teamHTTPCase) Login(t *testing.T, code string) *http.Cookie {
+	t.Helper()
+	return h.authHarness.Login(t, code+h.loginSuffix)
+}
+
+func TestTeamHTTPPostgres(t *testing.T) {
+	fixture := newTeamIntegrationFixture(t)
+	for _, scenario := range []struct {
+		name string
+		run  func(*testing.T, teamIntegrationFixture)
+	}{
+		// The whole-table snapshot runs before other scenarios add Team rows.
+		{"metadata_limits", testTeamHTTPMetadataLimitsPreserveRows},
+		{"session_pat_and_identity_permissions", testTeamHTTPSessionPATAndIdentityPermissions},
+		{"strict_input_and_pagination", testTeamHTTPStrictInputAndPagination},
+		{"page_count_and_cursor", testTeamHTTPPageCountAndCursor},
+		{"members", testTeamMembersHTTP},
+		{"members_concurrent_last_admin", testTeamMembersConcurrentLastAdmin},
+		{"invitations", testTeamInvitationHTTP},
+		{"invitation_refusals_and_revoke", testTeamInvitationHTTPRefusalsAndRevoke},
+		{"committed_writes_survive_lost_http_responses", testTeamCommittedWritesSurviveLostHTTPResponses},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			scenario.run(t, fixture)
+		})
+	}
 }
 
 func jsonBody(t *testing.T, input any) string { return testsupport.JSONBody(t, input) }
@@ -58,14 +117,9 @@ type teamResourceHandler struct {
 	origin    string
 }
 
-func teamTestHandler(t *testing.T) *teamResourceHandler {
+func teamTestHandler(t *testing.T, fixture teamIntegrationFixture) *teamResourceHandler {
 	t.Helper()
-	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
+	h := fixture.forCase(t)
 	cookie := h.Login(t, "team-resource")
 	user := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{cookie}, nil, ""), 200)
 	return &teamResourceHandler{Handler: h.Handler, database: h.Database, principal: model.Principal{UserID: user.ID}, cookie: cookie, origin: h.Origin}

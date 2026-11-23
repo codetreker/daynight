@@ -1,8 +1,20 @@
+import { assertProviderNativeDispatch } from "./native-lifecycle.js";
+import { bundledImageDecoder } from "./media/image-decoder.js";
+import { controllerManagementActive, openControllerWorkerLifecycle, withinControllerManagement } from "./worker-lifecycle.js";
+import { LifecycleAdmissionError, type LifecycleResource } from "../worker/lifecycle-store.js";
+import { imageQualificationFingerprint } from "./providers/image-qualification.js";
+import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError } from "./media/capture-error.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
+import { assertNativeImageAdmission, authorizeNativeImageInput } from "./providers/image-admission.js";
+import type { ImageCapabilities } from "../../session/image-values.js";
+import { checkWorkerTask } from "./worker-task.js";
+import { controllerPayloadHash } from "./launch-ticket.js";
+import type { WorkerInputResult } from "./local-client.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -11,36 +23,129 @@ import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { createNativeCommandQueue, assertControlCommand } from "./command-controls.js";
 import { createServer, type Socket } from "node:net";
+import { once } from "node:events";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
+import { prepareControllerStorage } from "./storage-preparation.js";
 import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
-import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
-import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
+import { readLaunchToolSelection } from "./launch-tool-selection.js";
+import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { openControllerLifecycleStore, readRecoverableInitialInput, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
-import { createControllerRelay } from "./relay.js";
+import { createControllerRelay, waitForImageHistory } from "./relay.js";
+import { createUsageRuntime } from "./usage/runtime.js";
+import { loadServerConfiguration } from "../../config/server.js";
 import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
-import { NativeRpcError } from "./providers/native-rpc.js";
+import { NativeRpcError, NativeDispatchRejectedError } from "./providers/native-rpc.js";
 import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
 import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
+import { nativeInputPublicationFailure } from "./media/native-publication.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
-import { syncControllerImageHistory } from "./media/history-sync.js";
+import { assertImageHistoryAvailable, createImageHistoryRetryBudget, syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
-export const runController = async (options: { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string }): Promise<void> => {
-  const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
+type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string; storageStateDirectory?: string };
+type ControllerRuntimeScope = { signal: AbortSignal; own(close: () => void | Promise<void>): () => Promise<void> };
+
+export const runController = async (options: ControllerRuntimeOptions): Promise<void> => {
+  const releases: (() => Promise<void>)[] = [];
+  const own = (close: () => void | Promise<void>): (() => Promise<void>) => {
+    let release: Promise<void> | undefined;
+    const invoke = (): Promise<void> => release ??= Promise.resolve().then(close);
+    releases.push(invoke);
+    return invoke;
+  };
+  const bootstrap = new AbortController();
+  const abortBootstrap = (): void => { bootstrap.abort(new Error("Controller initialization was stopped.")); };
+  process.once("SIGINT", abortBootstrap); process.once("SIGTERM", abortBootstrap);
+  let failed = false, primary: unknown;
+  try {
+    await runControllerRuntime(options, { signal: bootstrap.signal, own });
+  } catch (error) { failed = true; primary = error; throw error; }
+  finally {
+    process.off("SIGINT", abortBootstrap); process.off("SIGTERM", abortBootstrap);
+    const failures: unknown[] = [];
+    for (const release of releases.reverse()) {
+      try { await release(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length > 0) {
+      if (failed) throw new AggregateError([primary, ...failures], "Controller initialization or execution and resource cleanup failed.", { cause: primary });
+      if (failures.length === 1) throw failures[0];
+      throw new AggregateError(failures, "Controller resource cleanup failed.");
+    }
+  }
+};
+
+const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal: bootstrapSignal, own }: ControllerRuntimeScope): Promise<void> => {
+  const ticket = await readLaunchTicket(options.homeDirectory, options.launchId, options.storageStateDirectory);
+  const workerLifecycle = openControllerWorkerLifecycle(options.homeDirectory, ticket, options.storageStateDirectory);
+  own(() => { workerLifecycle?.close(); });
+  const diagnostic = (value: unknown): void => {
+    try {
+      const message = formatOutboxDiagnostic(value, ticket) ?? (value instanceof Error ? value.message : String(value));
+      process.stderr.write(`${new Date().toISOString()} ${message.slice(0, 4096)}\n`);
+    } catch { /* Diagnostics cannot alter the operation outcome. */ }
+  };
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
-  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
+  if (bootstrapSignal.aborted) return;
+  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId, options.storageStateDirectory); await mkdir(directory, { recursive: true, mode: 0o700 });
+  const journalFile = path.join(directory, "journal.sqlite");
+  let storagePermit: ControllerStoragePermit | undefined;
+  let observedAt: number | undefined;
+  while (!bootstrapSignal.aborted) {
+    try { storagePermit = acquireControllerStoragePermit(journalFile); }
+    catch (error) { if (!isControllerStorageLockHeld(error)) throw error; }
+    if (storagePermit !== undefined) {
+      let prepared;
+      try { prepared = prepareControllerStorage({ journalFile, mode: "writer", ticket }, storagePermit); }
+      catch (error) {
+        diagnostic(error);
+        if (!controllerStorageConnectionIsOpen(error)) {
+          try { storagePermit.release(); } catch (release) { throw new AggregateError([error, release], "Controller storage preparation and permit release failed."); }
+        }
+        throw error;
+      }
+      if (prepared.kind === "prepared") break;
+      storagePermit.release(); storagePermit = undefined;
+    }
+    if (observedAt === undefined || Date.now() - observedAt >= 30_000) {
+      process.stderr.write("Controller storage is busy; the original launch is waiting.\n");
+      observedAt = Date.now();
+    }
+    await new Promise<void>(resolve => {
+      const finish = (): void => { clearTimeout(timer); bootstrapSignal.removeEventListener("abort", finish); resolve(); };
+      const timer = setTimeout(finish, 100);
+      bootstrapSignal.addEventListener("abort", finish, { once: true });
+      if (bootstrapSignal.aborted) finish();
+    });
+  }
+  if (storagePermit === undefined) return;
+  const acquiredPermit = storagePermit;
+  let journalClosed = true, mediaClosed = true;
+  own(() => { if (journalClosed && mediaClosed) acquiredPermit.release(); });
+  if (bootstrapSignal.aborted) return;
+  const controllerProcess = await captureControllerProcessProof(ticket.launchId);
+  if (bootstrapSignal.aborted) return;
+  let journal: ReturnType<typeof openControllerLifecycleStore>;
+  try { journal = openControllerLifecycleStore(journalFile, ticket, { ...(workerLifecycle ? { imageDecoder: bundledImageDecoder(workerLifecycle.assertAdmission) } : {}), storagePermit, controllerProcess, contentOwnedLocally: true, ...(ticket.claimId !== undefined ? { historyPolicy: "task_body" } : {}) }); }
+  catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
+  journalClosed = false; mediaClosed = false;
+  own(() => { journal.close(); journalClosed = true; });
+  const stopMedia = own(async () => { await journal.stopMedia?.(); mediaClosed = true; });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
   let nativeReadPolicy: NativeReadPolicy | null = null;
   let nativeImages: ProviderState["images"];
   let projectionFailure: string | null = null, providerFailure: string | null = null;
+  let accountingFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
-  let historyWork: Promise<void> | null = null, historyRequested = false;
+  let historyConnectionAbort = new AbortController();
+  let historyWork: Promise<void> | null = null;
+  const historyCalls = new Set<Promise<void>>();
   let historyTimer: NodeJS.Timeout | null = null;
   let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
@@ -50,7 +155,13 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const queueNative = createNativeCommandQueue();
   const sockets = new Set<Socket>(), active = new Map<string, Promise<ControllerOperation>>();
   const processCaptures: Promise<void>[] = [];
-  const diagnostic = (message: string) => { process.stderr.write(`${new Date().toISOString()} ${message.slice(0, 4096)}\n`); };
+  const closeProvider = own(async () => {
+    const failures: unknown[] = [];
+    try { await withinControllerManagement(() => provider?.close()); } catch (error) { failures.push(error); }
+    try { await Promise.all(processCaptures); } catch (error) { failures.push(error); }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Native provider shutdown and process capture failed.");
+  });
   const publishState = () => {
     const s = journal.getSnapshot();
     if (!stopping && !["failed", "paused", "stopped", "stopping"].includes(s.lifecycle)) {
@@ -67,8 +178,11 @@ export const runController = async (options: { homeDirectory: string; provider: 
     const providerImages = journal.providerImageCapabilities?.(qualified ?? { expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
     return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
+  let inputFailed = false;
   const fail = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error); diagnostic(message);
+    inputFailed = true;
+    if (isOutboxFailure(error) && accountingFailure === undefined) { stopForAccountingFailure(error); return; }
+    const message = error instanceof Error ? error.message : String(error); diagnostic(error);
     try {
       const startup = journal.getSnapshot().startup;
       // Shutdown may fail after initialization already supplied the decisive observation.
@@ -76,42 +190,122 @@ export const runController = async (options: { homeDirectory: string; provider: 
       journal.patchSnapshot({ lifecycle: "paused", error: message, ...(retain ? {} : { startup: startupFailure(error) }) });
     } catch { /* The private log retains a journal failure when disk writes fail. */ }
   };
-  const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>): Promise<ControllerOperation> => {
+  const failLifecycle = (error: unknown): void => {
+    stopping = true;
+    fail(error);
+    relay?.stop();
+    queueMicrotask(() => { void shutdown(); });
+  };
+  const settleLifecycleReceipt = (operation: ControllerOperation): void => {
+    try { workerLifecycle?.settle(operation); }
+    catch (error) { failLifecycle(error); throw error; }
+  };
+  const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>, recovered?: { resource: LifecycleResource; ticket: ControllerLaunchTicket }, retainPreparedOnAdmission = false): Promise<ControllerOperation> => {
     const running = active.get(operation.operationId); if (running) return running;
     if (operation.state !== "accepted") return Promise.resolve(operation);
     const execute = (async () => {
-      if (["initial", "send_message", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) journal.assertInputCapacity();
-      journal.markDispatching(operation.operationId); nativeEvent(publishState);
-      try { const result = await invoke(); const saved = journal.recordOperation(operation.operationId, "confirmed", result); nativeEvent(publishState); return saved; }
+      if (["initial", "send_message", "worker_input", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) accountingBoundary(() => journal.assertInputCapacity());
+      try { workerLifecycle?.reserve(operation, journal.getSnapshot().nativeSessionId, recovered); }
       catch (error) {
-        const observed = journal.getOperation(operation.operationId);
-        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) { nativeEvent(publishState); return observed; }
-        const saved = journal.recordOperation(operation.operationId, error instanceof NativeRpcError ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error)); nativeEvent(publishState); return saved;
+        if (retainPreparedOnAdmission && error instanceof LifecycleAdmissionError) return operation;
+        if (!(error instanceof LifecycleAdmissionError)) failLifecycle(error);
+        const saved = journal.recordOperation(operation.operationId, error instanceof LifecycleAdmissionError ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error));
+        if (workerLifecycle?.hasReservation(operation)) settleLifecycleReceipt(saved);
+        nativeEvent(publishState); return saved;
       }
+      try { journal.markDispatching(operation.operationId); nativeEvent(publishState); }
+      catch (error) { failLifecycle(error); throw error; }
+      if (accountingFailure !== undefined) throw accountingFailure;
+      let saved: ControllerOperation;
+      try {
+        const result = await (workerLifecycle ? workerLifecycle.invoke(operation, invoke) : invoke());
+        saved = journal.recordOperation(operation.operationId, "confirmed", result);
+      } catch (error) {
+        if (accountingFailure !== undefined) throw accountingFailure;
+        if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
+        const observed = journal.getOperation(operation.operationId);
+        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "worker_input", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) saved = observed;
+        else saved = journal.recordOperation(operation.operationId, (error instanceof NativeRpcError || error instanceof NativeDispatchRejectedError) ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error));
+      }
+      // A failed lifecycle commit leaves the original journal receipt available
+      // for reconciliation; never overwrite it by retrying a business dispatch.
+      settleLifecycleReceipt(saved);
+      nativeEvent(publishState); return saved;
     })();
-    active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(fail); return execute;
+    active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(error => { if (workerLifecycle) failLifecycle(error); else fail(error); }); return execute;
   };
-  const assertImageCommand = (command: SessionCommand): void => {
+  const assertImageCommand = (command: SessionCommand, authorization?: ImageCapabilities): void => {
     if (command.kind !== "send_message" || !command.payload.content.some(part => part.type === "image")) return;
     const images = readState().providerImages, target = command.payload.target;
-    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId || command.payload.expectedImageCapabilityRevision !== images.revision) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (authorization && (authorization.revision !== command.payload.expectedImageCapabilityRevision || authorization.providerRevision !== images.revision || authorization.expectedNativeSessionId !== images.expectedNativeSessionId || authorization.modelId !== images.modelId || authorization.controlsRevision !== images.controlsRevision)) throw new NativeRpcError(-32602, "Service image authorization no longer matches the original capability and provider qualification.");
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
-  const relay = createControllerRelay(ticket, journal, {
-    onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
-    onError: diagnostic,
+  let relay!: ReturnType<typeof createControllerRelay>;
+  // Bot and legacy Test tickets share testExecutionId. Only the standalone
+  // launcher can establish a Test's metering scope without guessing its origin.
+  const usage = ticket.testExecutionId !== undefined && ticket.usageScope !== "standalone_test" ? null : createUsageRuntime({
+    provider: ticket.provider,
+    serverOrigin: ticket.serverOrigin, store: journal.usage, generation: ticket.executionGeneration,
+    identity: { sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId },
+    connection: () => { const fence = relay?.currentFence(), nativeSessionId = journal.getSnapshot().nativeSessionId; return fence && nativeSessionId ? { connectionEpoch: fence.connectionEpoch, nativeSessionId } : null; },
+    readParentToken: async () => { const config = await loadServerConfiguration(resolveConfigurationPaths(options.homeDirectory)); if (config.serverUrl !== ticket.serverOrigin || !config.serverToken) throw new Error("Original usage parent credential is unavailable."); return config.serverToken; },
+    onDiagnostic: diagnostic,
+  });
+  own(async () => { await usage?.close(); });
+  function stopForAccountingFailure(error: unknown): void {
+    accountingFailure ??= error;
+    journal.disableOutboxWrites();
+    projectionFailure ??= error instanceof Error ? error.message : String(error);
+    stopping = true;
+    relay?.stop();
+    fail(error);
+    queueMicrotask(() => { void shutdown(); });
+  }
+  function accountingBoundary<T>(action: () => T): T {
+    try { return action(); }
+    catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); throw error; }
+  }
+  const assertNativeDispatch = (): void => {
+    if (controllerManagementActive()) return;
+    if (accountingFailure !== undefined) throw accountingFailure;
+    if (stopping) throw new NativeDispatchRejectedError("Controller stopped before native dispatch.");
+    assertProviderNativeDispatch(workerLifecycle?.assertAdmission);
+  };
+  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(), currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId, provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
+  const closeExternalImages = own(() => externalImages.close());
+  const markdownCaptures = createMarkdownCaptureCoordinator({ ...(workerLifecycle ? { beforeSpawn: workerLifecycle.assertAdmission } : {}), ticket, journal, bridge: captureBridge.providerOptions,
+    writable: () => !stopping && !cleaning && synchronized,
+    fence: () => { const fence = relay?.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
+    nativeReadPolicy: () => nativeReadPolicy,
+    acquireExternalPolicy: externalImages.acquire,
+    onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onNativeReceipt: (request, receipt) => accountingBoundary(() => journal.applyNativeImageReceipt(request, receipt)),
+    onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
+  });
+  const stopMarkdownCaptures = own(() => markdownCaptures.stop());
+  const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
+  const stopMarkdownTimeline = own(() => markdownTimeline.stop());
+  relay = createControllerRelay(ticket, journal, {
+    onConnection: connected => { synchronized = connected; if (!connected) { historyConnectionAbort.abort(new Error("Controller history connection changed.")); historyConnectionAbort = new AbortController(); markdownCaptures.invalidate(); } if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
+    onError: error => {
+      if (!isOutboxFailure(error)) { diagnostic(error); return; }
+      stopForAccountingFailure(error);
+    },
     readState,
     onAcknowledged: () => {
       provider?.acknowledgeImageOccurrences?.();
+      if (relay.currentOnlineMode() === "relay") return;
       if (historyTimer) clearTimeout(historyTimer);
-      historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(String(error))); }, 250);
+      historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(error)); }, 250);
     },
-    beforeImage: () => synchronizeImageHistory(),
+    beforeImage: () => synchronizeImageHistory(true),
     onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
     acquireCaptureReadPolicy: request => markdownCaptures.acquireReadPolicy(request),
     onCommand: async command => {
       if (command.sessionId !== ticket.sessionId || command.claimId !== ticket.claimId || command.testExecutionId !== ticket.testExecutionId || command.executionGeneration !== ticket.executionGeneration) throw new Error("Stale session command.");
-      const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
+      const operation = accountingBoundary(() => journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command }));
       if (operation.state !== "accepted") { relay.receipt(operation); return; }
       if (!provider || stopping || !synchronized) throw new Error("Native provider is not available.");
       await queueNative(command.kind, async () => {
@@ -119,7 +313,10 @@ export const runController = async (options: { homeDirectory: string; provider: 
         if (current && current.state !== "accepted") { relay.receipt(current); return; }
         if (!provider || stopping || !synchronized) throw new Error("Native provider is not available.");
         let lease: NativeInputLease | undefined;
+        let reservationConfirmed = false;
         try {
+          workerLifecycle?.reserve(operation, journal.getSnapshot().nativeSessionId);
+          reservationConfirmed = true;
           if (command.kind === "send_message" && command.payload.content.some(part => part.type === "image")) {
             // File acquisition can await I/O. It precedes the irreversible dispatch marker.
             lease = await journal.media().acquireInput(command.payload, command.operationId);
@@ -127,50 +324,104 @@ export const runController = async (options: { homeDirectory: string; provider: 
           if (!provider || stopping || !synchronized) throw new NativeRpcError(-32602, "Native provider is not available.");
           assertControlCommand(command, journal.getSnapshot());
           if (lease) assertImageCommand(command);
-          await relay.authorize(command.operationId);
+          const authorization = await relay.authorize(command.operationId);
           if (!relay.connected() || stopping) throw new Error("Relay authorization lost before native dispatch.");
           // Authorization is asynchronous too; check current turn and target again.
           assertControlCommand(command, journal.getSnapshot());
-          if (lease) assertImageCommand(command);
-          lease?.verify();
-          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, lease?.input); }); relay.receipt(result);
+          let input = lease?.input;
+          if (lease) {
+            if (!authorization || command.kind !== "send_message") throw new NativeRpcError(-32602, "The service did not authorize the complete image input.");
+            const verify = () => {
+              if (!relay.connected() || stopping || !synchronized) throw new NativeRpcError(-32602, "Image authorization connection is no longer current.");
+              assertImageCommand(command, authorization);
+              lease!.verify();
+            };
+            verify();
+            input = authorizeNativeImageInput(lease.input, authorization, verify, imageQualificationFingerprint(nativeImages));
+            assertNativeImageAdmission(input, nativeImages ?? readState().providerImages!, command.payload.expectedTurnId);
+          }
+          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, input); }); relay.receipt(result);
         } catch (error) {
-          if (journal.getOperation(command.operationId)?.state === "accepted") relay.receipt(journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized."));
-          else throw error;
+          if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
+          if (journal.getOperation(command.operationId)?.state === "accepted") {
+            const unknown = workerLifecycle !== null && !reservationConfirmed && !(error instanceof LifecycleAdmissionError);
+            if (unknown) failLifecycle(error);
+            const saved = journal.recordOperation(command.operationId, unknown ? "unknown" : "rejected", null, error instanceof NativeRpcError || error instanceof LifecycleAdmissionError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized.");
+            if (workerLifecycle?.hasReservation(operation)) settleLifecycleReceipt(saved);
+            relay.receipt(saved);
+          } else throw error;
         } finally { lease?.close(); }
       });
     },
   });
-  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
-  const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
-  const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
-    writable: () => !stopping && !cleaning && synchronized,
-    fence: () => { const fence = relay.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
-    nativeReadPolicy: () => nativeReadPolicy,
-    acquireExternalPolicy: externalImages.acquire,
-    onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
-    onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
-  });
-  const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
+  if (accountingFailure !== undefined) relay.stop();
+  const closeRelay = own(() => relay.close());
   // Source admission and AST analysis page the durable index independently;
   // native callbacks only persist text and never wait for media work.
   markdownTimer = setInterval(() => {
     void markdownTimeline.tick().catch(fail);
-    void markdownCaptures.tick().catch(fail);
+    void markdownCaptures.tick().catch(error => { if (isOutboxFailure(error)) fail(error); else diagnostic(error); });
   }, 250);
-  async function synchronizeImageHistory(): Promise<void> {
+  own(() => { if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; } });
+  own(async () => {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
-    if (stopping || !relay.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
-    historyRequested = true;
-    if (historyWork) return historyWork;
-    historyWork = (async () => {
-      while (historyRequested && !stopping) {
-        historyRequested = false;
-        const fence = relay.currentFence(); if (!fence) return;
-        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal });
+    historyAbort.abort(new Error("Controller history synchronization stopped."));
+    await Promise.allSettled([...historyCalls]);
+  });
+  function synchronizeImageHistory(forCapture = false): Promise<void> {
+    const call = runImageHistorySynchronization(forCapture);
+    historyCalls.add(call);
+    void call.finally(() => historyCalls.delete(call)).catch(() => {});
+    return call;
+  }
+  async function runImageHistorySynchronization(forCapture: boolean): Promise<void> {
+    let requiredSourceThrough: string | undefined;
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (relay?.currentOnlineMode() === "relay") return;
+    if (stopping || !relay?.connected()) {
+      if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
+      return;
+    }
+    if (!relay.imageHistorySupported?.()) {
+      if (forCapture) throw new ImageCapturePrerequisiteError({ code: "component_unsupported", message: "Complete image history synchronization is unavailable." });
+      return;
+    }
+    const fence = relay.currentFence();
+    if (!fence) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    const roundSignal = AbortSignal.any([historyAbort.signal, historyConnectionAbort.signal]);
+    const checkConnection = () => {
+      roundSignal.throwIfAborted();
+      if (stopping || !relay.connected() || JSON.stringify(relay.currentFence()) !== JSON.stringify(fence)) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    };
+    if (forCapture) {
+      try { assertImageHistoryAvailable(journal); }
+      catch (error) {
+        // The current capture must see the confirmed failure. A later
+        // checkpoint can independently establish recovery after space changes.
+        historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(cause => diagnostic(String(cause))); }, 250);
+        throw error;
+      }
+      await relay.flush();
+      checkConnection();
+      requiredSourceThrough = journal.getLastSourceSequence();
+    }
+    const previous = historyWork;
+    const retryBudget = createImageHistoryRetryBudget();
+    const work = (async () => {
+      if (previous) await previous;
+      for (;;) {
+        checkConnection();
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: roundSignal, retryBudget, onRetry: event => diagnostic(JSON.stringify({ operation: "image_history_retry", ...event })), ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        checkConnection();
+        if (!forCapture || journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())) return;
+        // Native events can advance the acknowledged source while an older
+        // frozen body uploads. Submit requires the complete current ledger.
+        await relay.flush();
+        requiredSourceThrough = journal.getLastSourceSequence();
       }
     })();
-    try { await historyWork; } finally { historyWork = null; }
+    historyWork = work;
+    try { await work; } finally { if (historyWork === work) historyWork = null; }
   }
   const executeCommand = async (command: SessionCommand, input?: NativeInput) => {
     if (!provider || stopping) throw new NativeRpcError(-32602, "Native provider is unavailable.");
@@ -202,37 +453,37 @@ export const runController = async (options: { homeDirectory: string; provider: 
     stopping = true;
     if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; }
     markdownCaptures.invalidate();
-    const externalImagesClosed = externalImages.close().catch(fail);
+    const externalImagesClosed = closeExternalImages().catch(fail);
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
       try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
-      await markdownCaptures.stop();
-      await provider?.close(); await Promise.all(processCaptures);
-      await markdownTimeline.stop();
+      await stopMarkdownCaptures();
+      await closeProvider();
+      await Promise.allSettled([...active.values()]);
+      await usage?.close();
+      await stopMarkdownTimeline();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
-      if (projectionFailure) {
+      if (projectionFailure && accountingFailure === undefined) {
         // Drain committed events before recording a visible gap. Never discard an
         // earlier outbox row to make room for a later native callback.
         await relay.flush();
         journal.drainProjectionGap();
       }
-      publishState(); await relay.flush().catch(fail);
+      if (accountingFailure === undefined) { publishState(); await relay.flush().catch(fail); }
     }
     catch (error) { fail(error); }
     finally {
       await externalImagesClosed;
-      await markdownCaptures.stop().catch(fail);
-      await markdownTimeline.stop().catch(fail);
+      await stopMarkdownCaptures().catch(fail);
+      await stopMarkdownTimeline().catch(fail);
       historyAbort.abort(new Error("Controller history synchronization stopped."));
-      await historyWork?.catch(error => diagnostic(String(error)));
-      try { await relay.close(); } catch (error) { fail(error); }
-      try { await journal.stopMedia?.(); } catch (error) { fail(error); }
+      await Promise.allSettled([...historyCalls]);
+      try { await closeRelay(); } catch (error) { fail(error); }
+      try { await stopMedia(); } catch (error) { fail(error); }
       for (const socket of sockets) socket.destroy();
-      server.close();
-      try { journal.close(); } catch (error) { fail(error); }
-      if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {});
+      try { await closeServer(); } catch (error) { fail(error); }
       complete();
     }
     })();
@@ -265,6 +516,113 @@ export const runController = async (options: { homeDirectory: string; provider: 
       if (socket.destroyed) disconnected();
     });
   };
+  const pendingWorkerInput = new Map<string, { hash: string; promise: Promise<WorkerInputResult> }>();
+  const workerReady = (deadline: number, initial: boolean): WorkerInputResult | null => {
+    if (Date.now() >= deadline) return { kind: "waiting", reason: "expired" };
+    if (stopping || cleaning) return { kind: "waiting", reason: "cleaning" };
+    const snapshot = journal.getSnapshot();
+    if (inputFailed || ["paused", "failed", "stopping", "stopped"].includes(snapshot.lifecycle)) return { kind: "waiting", reason: "unavailable" };
+    if (!provider) return { kind: "waiting", reason: "initializing" };
+    if (!synchronized) return { kind: "waiting", reason: "disconnected" };
+    if (snapshot.startup?.state !== "ready") return { kind: "waiting", reason: "initializing" };
+    if (snapshot.activity === "initializing") return { kind: "waiting", reason: "initializing" };
+    if (snapshot.activity === "waiting_input") return { kind: "waiting", reason: "waiting_input" };
+    if (snapshot.activity === "working" || snapshot.currentTurnId !== null) return { kind: "waiting", reason: "working" };
+    if (snapshot.activity !== "idle" || !snapshot.capabilities.send || (!initial && !["confirmed", "provider_accepted", "not_required"].includes(snapshot.initialInputState))) return { kind: "waiting", reason: "unavailable" };
+    if (initial && snapshot.initialInputState !== "not_submitted") return { kind: "waiting", reason: "unavailable" };
+    return null;
+  };
+  const submitWorkerInput = (operationId: string, prompt: string, deadline: number, initial: boolean): Promise<WorkerInputResult> => {
+    const kind = initial ? "initial" : "worker_input";
+    const payload = initial ? { text: prompt } : { content: [{ type: "text", text: prompt }], expectedTurnId: null, origin: "daynight" };
+    const hash = controllerPayloadHash({ kind, payload });
+    const recoveringInitial = initial && BigInt(ticket.executionGeneration) > 1n;
+    const pending = pendingWorkerInput.get(operationId);
+    if (pending) {
+      if (pending.hash !== hash) throw new Error("The operation ID has different content.");
+      return pending.promise;
+    }
+    const existing = journal.getOperation(operationId);
+    if (existing) {
+      if (existing.kind !== kind || existing.payloadHash !== hash || (!recoveringInitial && existing.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+      const running = active.get(operationId);
+      if (running) return running.then(operation => ({ kind: "operation", operation }));
+      if (!recoveringInitial || existing.state !== "accepted") return Promise.resolve({ kind: "operation", operation: existing });
+    }
+    if (pendingWorkerInput.size >= 32) throw new Error("Controller IPC action capacity is unavailable.");
+    const promise = queueNative("send_message", async (): Promise<WorkerInputResult> => {
+      const nowExisting = journal.getOperation(operationId);
+      if (nowExisting) {
+        if (nowExisting.kind !== kind || nowExisting.payloadHash !== hash || (!recoveringInitial && nowExisting.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+        if (!recoveringInitial || nowExisting.state !== "accepted") return { kind: "operation", operation: nowExisting };
+      }
+      let waiting = workerReady(deadline, initial);
+      if (waiting) return waiting;
+      let taskResult: "task_paused" | "claim_invalid" | null;
+      try { taskResult = await checkWorkerTask(ticket, options.homeDirectory, deadline); }
+      catch (error) { if (Date.now() >= deadline) return { kind: "waiting", reason: "expired" }; throw error; }
+      waiting = workerReady(deadline, initial);
+      if (waiting) return waiting;
+      if (taskResult) return { kind: "waiting", reason: taskResult };
+      let previousTicket: ControllerLaunchTicket | undefined;
+      if (recoveringInitial) {
+        const evidence = await readRecoverableInitialInput(path.join(directory, "journal.sqlite"), ticket, options.homeDirectory, deadline, options.storageStateDirectory);
+        previousTicket = evidence.previousTicket;
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        const currentTask = await checkWorkerTask(ticket, options.homeDirectory, deadline);
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        if (currentTask) return { kind: "waiting", reason: currentTask };
+      }
+      const prepared = accountingBoundary(() => recoveringInitial ? journal.prepareRecoveredInitial(previousTicket!) : journal.prepareOperation({ operationId, kind, payload }));
+      let recovered: { resource: LifecycleResource; ticket: ControllerLaunchTicket } | undefined;
+      if (recoveringInitial && workerLifecycle) {
+        const resource = workerLifecycle.inputReservation(operationId);
+        if (resource !== null) {
+          if (typeof resource.identity.launchId !== "string") throw new Error("Recovered initial reservation has no original launch ticket.");
+          const reservationTicket = await readLaunchTicket(options.homeDirectory, resource.identity.launchId, options.storageStateDirectory);
+          journal.assertRecoveredInitialReservation(previousTicket!, reservationTicket);
+          waiting = workerReady(deadline, initial);
+          if (waiting) return waiting;
+          recovered = { resource, ticket: reservationTicket };
+        }
+        const currentTask = await checkWorkerTask(ticket, options.homeDirectory, deadline);
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        if (currentTask) return { kind: "waiting", reason: currentTask };
+      }
+      return { kind: "operation", operation: await dispatch(prepared, () => provider!.send(textNativeInput(prompt), operationId, null), recovered, recoveringInitial) };
+    });
+    pendingWorkerInput.set(operationId, { hash, promise });
+    void promise.finally(() => { if (pendingWorkerInput.get(operationId)?.promise === promise) pendingWorkerInput.delete(operationId); }).catch(() => {});
+    return promise;
+  };
+  const workerWaiters = new Map<Promise<WorkerInputResult>, Set<(value: WorkerInputResult | null, error?: unknown) => void>>();
+  const waitForWorkerInput = (socket: Socket, promise: Promise<WorkerInputResult>): Promise<WorkerInputResult | null> => {
+    const existing = workerWaiters.get(promise);
+    const waiters = existing ?? new Set<(value: WorkerInputResult | null, error?: unknown) => void>();
+    if (!existing) {
+      workerWaiters.set(promise, waiters);
+      const complete = (value: WorkerInputResult | null, error?: unknown): void => {
+        workerWaiters.delete(promise);
+        for (const waiter of waiters) waiter(value, error);
+      };
+      void promise.then(result => complete(result), error => complete(null, error));
+    }
+    return new Promise((resolve, reject) => {
+      const finish = (value: WorkerInputResult | null, error?: unknown): void => {
+        if (!waiters.delete(finish)) return;
+        localWaiterCount--; clearTimeout(timer); socket.off("close", disconnected);
+        if (error !== undefined) reject(error); else resolve(value);
+      };
+      const disconnected = (): void => finish(null);
+      const timer = setTimeout(() => { socket.destroy(); disconnected(); }, 65_000);
+      waiters.add(finish); localWaiterCount++; socket.once("close", disconnected);
+      if (socket.destroyed) disconnected();
+    });
+  };
+  let ipcBound = false;
   const server = createServer(socket => {
     sockets.add(socket); socket.once("close", () => sockets.delete(socket)); socket.on("error", () => {}); socket.setTimeout(30_000, () => socket.destroy()); socket.setEncoding("utf8"); let buffer = "", handled = false;
     socket.on("data", (text: string) => {
@@ -280,37 +638,50 @@ export const runController = async (options: { homeDirectory: string; provider: 
           // acceptance that legitimately takes longer than this socket window.
           socket.setTimeout(0);
           let operation: ControllerOperation | null | undefined;
+          let inputResult: WorkerInputResult | null | undefined;
           if (request.action.kind === "stop") {
-            socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n", () => { void shutdown(); }); return;
+            socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n", () => { void shutdown(); }); return;
           }
           if (request.action.kind !== "observe") {
             const pending = active.get(request.action.operationId);
             if (localWaiterCount >= 32 || localWaiters.size >= 32 && (!pending || !localWaiters.has(pending))) throw new Error("Controller IPC action capacity is unavailable.");
-            if (!stopping && request.action.kind === "submit_initial" && (!provider || !synchronized)) {
-              // No dispatch intent exists yet. The worker may observe again
-              // after startup/reconnection without treating this as a failure.
-              journal.patchSnapshot({ lifecycle: "starting" });
-              socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n"); return;
-            }
-            if (!provider || stopping || request.action.kind === "submit_initial" && !synchronized) throw new Error("Controller is still initializing or disconnected.");
-            if (request.action.kind === "submit_initial") {
-              const prepared = journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } });
-              operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(textNativeInput(ticket.initialPrompt), ticket.initialOperationId, null)), 65_000);
-              if (operation === null) return;
+            if (request.action.kind === "submit_worker_input" || request.action.kind === "submit_initial" && ticket.claimId !== undefined) {
+              const action = request.action;
+              const initial = action.kind === "submit_initial";
+              const deadline = action.kind === "submit_initial" ? Date.now() + 30_000 : action.deadline;
+              inputResult = await waitForWorkerInput(socket, submitWorkerInput(action.operationId, action.kind === "submit_initial" ? ticket.initialPrompt : action.prompt, deadline, initial));
+              if (inputResult === null) return;
+              if (initial) { operation = inputResult.kind === "operation" ? inputResult.operation : undefined; inputResult = undefined; }
+            } else if (request.action.kind === "submit_initial") {
+              if (stopping) throw new Error("Controller is still initializing or disconnected.");
+              if (!provider || !synchronized) {
+                journal.patchSnapshot({ lifecycle: "starting" });
+              } else {
+                const prepared = accountingBoundary(() => journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }));
+                operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(textNativeInput(ticket.initialPrompt), ticket.initialOperationId, null)), 65_000);
+                if (operation === null) return;
+              }
             } else {
+              if (!provider || stopping) throw new Error("Controller is still initializing or disconnected.");
               const action = request.action;
               cleaning = true; cleanupInputStarted = false; cleanupInteractions.clear(); nativeEvent(publishState);
               if (stopping) throw new Error("Controller stopped after a durable event failure.");
               if (Date.now() >= action.deadline) throw new Error("Cleanup deadline expired.");
-              const prepared = journal.prepareOperation({ operationId: action.operationId, kind: "cleanup", payload: { text: action.prompt, deadline: action.deadline } });
+              const prepared = accountingBoundary(() => journal.prepareOperation({ operationId: action.operationId, kind: "cleanup", payload: { text: action.prompt, deadline: action.deadline } }));
               operation = await waitForOperation(socket, dispatch(prepared, async () => {
                 const turn = journal.getSnapshot().currentTurnId;
                 if (turn !== null) {
                   await provider!.cancel(turn);
-                  while (journal.getSnapshot().currentTurnId !== null && Date.now() < action.deadline) await new Promise(resolve => setTimeout(resolve, 25));
+                  assertNativeDispatch();
+                  while (journal.getSnapshot().currentTurnId !== null && Date.now() < action.deadline) {
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    assertNativeDispatch();
+                  }
                 }
+                assertNativeDispatch();
                 if (Date.now() >= action.deadline) throw new Error("Cleanup deadline expired before input submission.");
-                journal.assertInputCapacity();
+                accountingBoundary(() => journal.assertInputCapacity());
+                assertNativeDispatch();
                 cleanupInputStarted = true;
                 const receipt = await provider!.send(textNativeInput(action.prompt), action.operationId, null);
                 journal.recordOperation(action.operationId, "provider_accepted", receipt);
@@ -321,21 +692,32 @@ export const runController = async (options: { homeDirectory: string; provider: 
               if (operation === null) return;
             }
           }
-          socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}) } satisfies ControllerLocalResponse) + "\n");
-        } catch (error) { socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
+          socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const, recoveredInitialInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
+        } catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
       })().catch(fail);
     });
   });
-  const nativeEvent = (write: () => void) => {
+  const closeServer = own(async () => {
+    for (const socket of sockets) socket.destroy();
+    const closed = server.listening ? once(server, "close") : null;
+    server.close();
+    if (closed) await closed;
+    if (ipcBound && process.platform !== "win32") {
+      try { await unlink(ticket.ipcEndpoint); }
+      catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    }
+  });
+  function nativeEvent(write: () => void): void {
     if (projectionFailure) return;
     try { write(); }
     catch (error) {
-      projectionFailure = error instanceof Error ? error.message : String(error); fail(error);
+      if (isOutboxFailure(error)) stopForAccountingFailure(error);
+      else { projectionFailure = error instanceof Error ? error.message : String(error); fail(error); }
       try { journal.markProjectionGap("Native projection stopped after a durable event failure. Resume must reload native history."); } catch (failure) { fail(failure); }
       // Initialization must acquire the provider handle before it can close it.
-      if (provider) void shutdown();
+      if (provider && accountingFailure === undefined) void shutdown();
     }
-  };
+  }
   const adoptNativePublication = <T extends NativeInputPublicationResult | NativeInputPublicationQuery>(result: T): T => {
     let current = result;
     nativeEvent(() => {
@@ -358,26 +740,37 @@ export const runController = async (options: { homeDirectory: string; provider: 
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
     journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
-    journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId) });
-    await journal.reconcileNativeIndexReservation();
+    await journal.reconcileNativeIndexLease();
     if (stopping) return;
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { ipcBound = true; server.off("error", reject); resolve(); }); });
     if (process.platform !== "win32") await chmod(ticket.ipcEndpoint, 0o600);
     if (stopping) return;
     const paths = resolveConfigurationPaths(options.homeDirectory);
-    const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths), environment: process.env, stateDirectory: paths.stateDirectory });
+    const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths), environment: process.env, stateDirectory: paths.stateDirectory, ...(options.storageStateDirectory === undefined ? {} : { storageDirectory: directory }) });
     if (stopping) return;
     for (const binding of aliases.bindings) diagnostic(`Agent CLI alias ${binding.name} -> ${binding.target} (${binding.executable}).`);
     const env = { ...aliases.environment };
-    for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete env[key];
+    for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN", "DAYNIGHT_CONTROLLER_STORAGE_DIR"]) delete env[key];
     if (ticket.provider === "codex") env.CODEX_HOME = ticket.nativeHome;
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
+    const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket, options.storageStateDirectory);
+    if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(ticket.claudeBotRecovery === undefined ? {} : { claudeBotRecovery: { directory: ticket.claudeBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.claudeBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.copilotBotRecovery === undefined ? {} : { copilotBotRecovery: { directory: ticket.copilotBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.copilotBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.codexBotRecovery === undefined ? {} : { codexBotRecovery: { directory: ticket.codexBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.codexBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(usage ? { usageRuntime: usage } : {}),
+      ...(toolLaunch ? { toolLaunch, toolRuntimeRoot: path.join(paths.stateDirectory, "worker", "tool-runtimes") } : {}),
       ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
+      assertNativeDispatch,
+      ...(workerLifecycle ? { nativeLifecycleFence: workerLifecycle.nativeFence } : {}),
       ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
       onNativeReadPolicy: policy => { nativeReadPolicy = policy; if (!policy) markdownCaptures.invalidateNativeReadPolicy(); },
@@ -392,17 +785,21 @@ export const runController = async (options: { homeDirectory: string; provider: 
       onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
+      stageNativeImageCapture: (request, signal) => markdownCaptures.stageNative(request, signal),
+      recoverNativeImageCapture: request => markdownCaptures.recoverNative(request),
       imageRuntime: {
         publishNativeInputAssociation: request => {
-          const result = journal.publishNativeInputAssociation(request);
+          const result = accountingBoundary(() => journal.publishNativeInputAssociation(request));
+          const failure = nativeInputPublicationFailure(result);
+          if (failure !== undefined) stopForAccountingFailure(failure);
           return adoptNativePublication(result);
         },
         patchNativeImagePart: (occurrence, part) => {
-          const current = journal.patchNativeImagePart(occurrence, part), { entrySeq: _entrySeq, ...entry } = current;
+          const current = accountingBoundary(() => journal.patchNativeImagePart(occurrence, part)), { entrySeq: _entrySeq, ...entry } = current;
           nativeEvent(() => { markdownTimeline.adoptCommitted(entry); });
           return current;
         },
-        queryNativeInputAssociation: identity => adoptNativePublication(journal.queryNativeInputAssociation(identity)),
+        queryNativeInputAssociation: identity => adoptNativePublication(accountingBoundary(() => journal.queryNativeInputAssociation(identity))),
         getIntent: operationId => {
           const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId);
           return intent && operation ? { sha256: intent.sha256, command: restoreCanonicalInputIntent(intent, operationId), state: operation.state } : null;
@@ -411,8 +808,12 @@ export const runController = async (options: { homeDirectory: string; provider: 
         writeState: (key, value) => journal.writeNativeImageState(key, value),
         createSpool: maximum => journal.media().createSpool(maximum),
         indexDirectory: () => journal.media().nativeIndexDirectory(),
-        reserveIndex: additional => journal.media().reserveNativeIndex(additional),
-        acquireIndexReservation: (additional, owner) => journal.acquireNativeIndexReservation(additional, owner),
+        acquireIndexLease: owner => journal.acquireNativeIndexLease(owner),
+      },
+      onInputMessage: (operationId, nativeSessionId, entryId) => {
+        let originalEntryId: string | undefined;
+        nativeEvent(() => { originalEntryId = journal.associateInputMessage(operationId, nativeSessionId, entryId); });
+        return originalEntryId;
       },
       onInputObserved: observation => {
         let accepted = false;
@@ -422,7 +823,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
         accepted = true;
         publishState();
         const receipt = journal.getOperation(operationId);
-        if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); } }
+        if (receipt) settleLifecycleReceipt(receipt);
+        if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(error); } }
         });
         return accepted;
       },
@@ -430,7 +832,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
         const operation = journal.getOperation(operationId);
         if (!operation || !["update_setting", "execute_command"].includes(operation.kind) || !["dispatching", "provider_accepted", "unknown"].includes(operation.state)) return;
         const receipt = journal.recordOperation(operationId, "confirmed", { disposition: "handled" });
-        publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
+        settleLifecycleReceipt(receipt);
+        publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(error); }
       }),
       hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
       onTimeline: (entry, metadata) => nativeEvent(() => {
@@ -445,7 +848,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
         }
         if (entry.kind === "interaction" && entry.interaction.state === "resolved") {
           for (const receipt of observeNativeInteraction(journal, entry.interaction.interactionId, ticket.executionGeneration)) {
-            try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
+            settleLifecycleReceipt(receipt);
+            try { relay.receipt(receipt); } catch (error) { diagnostic(error); }
           }
         }
       }),
@@ -453,18 +857,25 @@ export const runController = async (options: { homeDirectory: string; provider: 
       onSpawn: child => { if (!child.pid) throw new Error("Native process identity is unavailable."); const capture = captureProcessProof(child.pid).then(proof => { const s = journal.getSnapshot(); journal.patchSnapshot({ nativeProcesses: [...s.nativeProcesses, proof] }); }); processCaptures.push(capture); void capture.catch(fail); },
       onNativeProcessProof: proof => { const s = journal.getSnapshot(); if (!s.nativeProcesses.some(saved => saved.pid === proof.pid && saved.startedAt === proof.startedAt && saved.commandHash === proof.commandHash)) journal.patchSnapshot({ nativeProcesses: [...s.nativeProcesses, proof] }); },
     };
+    workerLifecycle?.startProvider(controllerProcess);
     provider = await (ticket.provider === "codex" ? (await import("./providers/codex.js")).openCodexProvider(nativeOptions)
       : ticket.provider === "claude" ? (await import("./providers/claude.js")).openClaudeProvider(nativeOptions)
       : (await import("./providers/copilot.js")).openCopilotProvider(nativeOptions));
     await Promise.all(processCaptures);
+    if (accountingFailure !== undefined) throw accountingFailure;
     if (projectionFailure) throw new Error(projectionFailure);
     if (providerFailure) throw new Error(providerFailure);
     if (stopping) return;
     journal.patchSnapshot({ lifecycle: "ready", startup: { state: "ready", reasonCode: "ready" } }); publishState();
   })();
   try {
+    if (bootstrapSignal.aborted) void shutdown();
     await startup;
     await finished;
-  } catch (error) { fail(error); await shutdown(); throw error; }
+    if (accountingFailure !== undefined) throw accountingFailure;
+  } catch (error) {
+    if (isOutboxFailure(error) && accountingFailure === undefined) stopForAccountingFailure(error);
+    const failure = accountingFailure ?? error; fail(failure); await shutdown(); throw failure;
+  }
   finally { process.off("SIGINT", signal); process.off("SIGTERM", signal); }
 };

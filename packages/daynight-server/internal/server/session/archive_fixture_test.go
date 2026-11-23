@@ -13,7 +13,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
 )
@@ -63,10 +62,9 @@ type archiveUploadStub struct {
 	fixture  *archiveHTTPFixture
 	mu       sync.Mutex
 	putCalls int
-	terminal bool
 }
 
-func (op *archiveUploadStub) put(ctx context.Context, data []byte, terminal bool) (sp.ArchiveStatus, v2.Message, error) {
+func (op *archiveUploadStub) PutArchive(ctx context.Context, data []byte) (sp.ArchiveStatus, error) {
 	op.mu.Lock()
 	op.putCalls++
 	count := op.putCalls
@@ -74,65 +72,49 @@ func (op *archiveUploadStub) put(ctx context.Context, data []byte, terminal bool
 	if count != 1 {
 		op.t.Error("archive upload capability received an extra body")
 	}
-	if terminal != op.terminal {
-		op.t.Error("archive upload used the wrong protocol capability")
-	}
 	f := op.fixture
 	f.mu.Lock()
 	f.rawBodies = append(f.rawBodies, bytes.Clone(data))
 	hook := f.BeforePut
-	native, statusError, term := f.UploadResult, f.UploadError, f.TerminalUploadResult
+	native, statusError := f.UploadResult, f.UploadError
 	f.mu.Unlock()
 	if hook != nil {
 		if err := hook(ctx, data); err != nil {
-			return sp.ArchiveStatus{}, v2.Message{}, err
+			return sp.ArchiveStatus{}, err
 		}
 	}
-	if terminal {
-		return sp.ArchiveStatus{}, term, statusError
-	}
-	return native, v2.Message{}, statusError
-}
-func (op *archiveUploadStub) PutArchive(ctx context.Context, data []byte) (sp.ArchiveStatus, error) {
-	status, _, err := op.put(ctx, data, false)
-	return status, err
-}
-func (op *archiveUploadStub) PutTerminalArchive(ctx context.Context, data []byte) (v2.Message, error) {
-	_, result, err := op.put(ctx, data, true)
-	return result, err
+	return native, statusError
 }
 
 type archiveHTTPFixture struct {
-	t                    *testing.T
-	handler              *resourceTestHandler
-	backend              *routeBackend
-	auth                 *routeAuthentication
-	application          sessionApplication
-	task                 api.Task
-	base                 string
-	registration         sp.Registration
-	snapshot             sp.Snapshot
-	mu                   sync.Mutex
-	reservation          *archiveLeaseSpy
-	operation            *archiveLeaseSpy
-	reservations         []*archiveLeaseSpy
-	operations           []*archiveLeaseSpy
-	rawBodies            [][]byte
-	Status               sp.ArchiveStatus
-	StatusError          error
-	UpdateResult         sp.ArchiveStatus
-	UpdateError          error
-	UploadResult         sp.ArchiveStatus
-	TerminalUploadResult v2.Message
-	UploadError          error
-	ExpectedMode         sessioncore.ArchiveMode
-	BeginError           error
-	NativeContent        []byte
-	TerminalContent      []byte
-	ContentError         error
-	BeforePut            func(context.Context, []byte) error
-	BeforeRead           func(context.Context) error
-	Updates              []sp.ArchiveUpdate
+	t             *testing.T
+	handler       *resourceTestHandler
+	backend       *routeBackend
+	auth          *routeAuthentication
+	application   sessionApplication
+	task          api.Task
+	base          string
+	registration  sp.Registration
+	snapshot      sp.Snapshot
+	mu            sync.Mutex
+	reservation   *archiveLeaseSpy
+	operation     *archiveLeaseSpy
+	reservations  []*archiveLeaseSpy
+	operations    []*archiveLeaseSpy
+	rawBodies     [][]byte
+	Status        sp.ArchiveStatus
+	StatusError   error
+	UpdateResult  sp.ArchiveStatus
+	UpdateError   error
+	UploadResult  sp.ArchiveStatus
+	UploadError   error
+	ExpectedMode  sessioncore.ArchiveMode
+	BeginError    error
+	NativeContent []byte
+	ContentError  error
+	BeforePut     func(context.Context, []byte) error
+	BeforeRead    func(context.Context) error
+	Updates       []sp.ArchiveUpdate
 }
 
 func archiveHTTPSetup(t *testing.T) *archiveHTTPFixture {
@@ -196,9 +178,9 @@ func (f *archiveHTTPFixture) configure(principal model.Principal) {
 		lease := newArchiveLeaseSpy(f.t)
 		f.operation = lease
 		f.operations = append(f.operations, lease)
-		return &archiveUploadStub{archiveLeaseSpy: lease, fixture: f, terminal: mode == sessioncore.ArchiveV2Upload}, nil
+		return &archiveUploadStub{archiveLeaseSpy: lease, fixture: f}, nil
 	}
-	read := func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer, terminal bool) (sessionhttp.ArchiveContentForTest, error) {
+	read := func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer) (sessionhttp.ArchiveContentForTest, error) {
 		check(p, project, task, id)
 		f.mu.Lock()
 		if token != f.reservation {
@@ -207,9 +189,6 @@ func (f *archiveHTTPFixture) configure(principal model.Principal) {
 		hook := f.BeforeRead
 		givenError := f.ContentError
 		data := f.NativeContent
-		if terminal {
-			data = f.TerminalContent
-		}
 		f.mu.Unlock()
 		if hook != nil {
 			if err := hook(ctx); err != nil {
@@ -227,10 +206,7 @@ func (f *archiveHTTPFixture) configure(principal model.Principal) {
 		return sessionhttp.ArchiveContentForTest{Data: bytes.Clone(data), Closer: lease}, nil
 	}
 	f.backend.Funcs.ArchiveContentReserved = func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer) (sessionhttp.ArchiveContentForTest, error) {
-		return read(ctx, p, project, task, id, token, false)
-	}
-	f.backend.Funcs.TerminalArchiveContentReserved = func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer) (sessionhttp.ArchiveContentForTest, error) {
-		return read(ctx, p, project, task, id, token, true)
+		return read(ctx, p, project, task, id, token)
 	}
 	f.backend.Funcs.ArchiveStatus = func(ctx context.Context, p model.Principal, project, task, id string) (sp.ArchiveStatus, error) {
 		check(p, project, task, id)
@@ -249,7 +225,7 @@ func (f *archiveHTTPFixture) configure(principal model.Principal) {
 		check(p, project, task, f.snapshot.SessionID)
 		return nil, &model.Fault{Code: "not_found", Message: "Session was not found."}
 	}
-	for _, name := range []string{"TryReserveArchivePreflight", "BeginArchiveReserved", "ArchiveContentReserved", "TerminalArchiveContentReserved", "ArchiveStatus", "UpdateArchive", "Current"} {
+	for _, name := range []string{"TryReserveArchivePreflight", "BeginArchiveReserved", "ArchiveContentReserved", "ArchiveStatus", "UpdateArchive", "Current"} {
 		f.backend.ExpectCalls(name, 0)
 	}
 }
@@ -280,11 +256,6 @@ func (f *archiveHTTPFixture) SetNativeContent(data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.NativeContent = bytes.Clone(data)
-}
-func (f *archiveHTTPFixture) SetTerminalContent(data []byte) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.TerminalContent = bytes.Clone(data)
 }
 func (f *archiveHTTPFixture) AssertBody(t *testing.T, expected []byte) {
 	t.Helper()

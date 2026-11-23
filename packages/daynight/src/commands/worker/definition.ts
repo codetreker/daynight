@@ -1,16 +1,35 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
 
 const help: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
+const lifecycleWorker: CommandOption = { names: ["--worker-id"], description: "Identify the original local Worker", value: { name: "worker-id", kind: "text" }, required: true };
+const lifecycleLocal: CommandOption = { names: ["--local"], description: "Use the original private local lifecycle authority", required: true };
+const lifecycleJson: CommandOption = { names: ["--json"], description: "Print the local lifecycle result as JSON", required: true };
+const lifecycleConfirm: CommandOption = { names: ["--confirm"], description: "Apply this explicit local lifecycle request", required: true };
 const claim: CommandOption = { names: ["--claim-id"], description: "Identify the original execution claim", value: { name: "claim-id", kind: "text" }, required: true };
 const project: CommandOption = { names: ["--project"], description: "Identify the task's project explicitly", value: { name: "project-id", kind: "text" } };
 const version: CommandOption = { names: ["--if-version"], description: "Use exactly this observed task version", value: { name: "version", kind: "text" }, required: true };
 const task = [{ name: "task-id", description: "Task UUID" }];
-const controlDetails = "Stop worker run first. The command takes the same exclusive instance lock and manages one original claim synchronously. Stop its agent and close its workspace, submit the version-bound remote operation, then delete its worktree after ownership ends. Cleanup waits at most 10 minutes per attempt. An unknown remote result is read back without replaying the write; reconcile an interrupted result before restarting the runner.";
+const controlDetails = "Stop worker run first. The command takes the same exclusive instance lock and manages one original claim synchronously. Stop its agent and close its workspace, submit the version-bound remote operation, then delete its worktree after ownership ends. Cleanup waits at most 10 minutes per attempt. An unknown remote result is not replayed; reconcile an interrupted result before restarting the runner.";
 
 export const workerDefinition: CommandDefinition = {
   name: "worker",
-  description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
+  description: "Run automatically claimed tasks in dedicated worktrees",
   commands: [{
+    name: "disable",
+    description: "Persist a local Worker disable and stop its original execution owners",
+    options: [lifecycleWorker, lifecycleLocal, lifecycleConfirm, lifecycleJson, help],
+    details: "Works offline in the original DN_CONFIG_DIR. Persists local veto before requesting stop. Does not release claims or alter worktrees. Waits at most 90 seconds; exit 3 and outcome=pending require a later lifecycle show. A stopped phase requires complete stop and durable-save evidence.",
+  }, {
+    name: "resume",
+    description: "Explicitly resume the original local Worker through online activation",
+    options: [lifecycleWorker, lifecycleConfirm, lifecycleJson, help],
+    details: "Requires online authority and the original local manager or free Worker lock. Verifies retained stop evidence, current epochs and activation before reopening execution. Does not clear independent Task pauses or replay unknown input. Exit 3 preserves a pending or unknown operation for inspection.",
+  }, {
+    name: "lifecycle",
+    description: "Inspect the original private Worker lifecycle authority",
+    commands: [{ name: "show", description: "Read full local lifecycle state without networking or starting a Worker", options: [lifecycleWorker, lifecycleLocal, lifecycleJson, help] }],
+    options: [help],
+  }, {
     name: "list",
     description: "List the signed-in account's recently reported remote Workers",
     options: [{ names: ["--json"], description: "Print all Worker summaries and the service observation time as JSON" }, help],
@@ -32,11 +51,6 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
     details: "Read local identity, service settings, paths and agentControlMode from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml).\nFetch cloud configuration before scheduling. The first connection imports local runtime settings; later starts always use the cloud target.\nAn empty Project selection keeps heartbeats and configuration synchronization running.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
-    name: "attach",
-    description: "Attach an interactive terminal to an existing task runtime",
-    options: [help],
-    details: "Connect to an existing private Herdr runtime without starting a daemon. On macOS, select a task when multiple recorded runtimes exist; the original daemon identity must be verified. Paused tasks remain available for human input. Installations without a lifecycle journal use the existing shared worker session. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
-  }, {
     name: "repo",
     description: "Prepare local repository selections before cloud management",
     commands: [{
@@ -57,20 +71,32 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
   }, {
     name: "resources",
-    description: "Inspect and explicitly dispose stopped Herdr recording resources",
+    description: "Recover a completed Web execution's retained worktree",
     options: [help],
-    details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Inspection reports original Session, claim, stop evidence, worktree, source and archive disposition as JSON.",
+    details: "Stop worker run first. Recovery uses the original worker lock and never starts an Agent.",
     commands: [{
-      name: "list", description: "Inspect retained original execution resources", options: [help],
-    }, {
-      name: "retry", description: "Explicitly retry a stopped original archive after fixing its cause", arguments: task,
-      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
-      details: "Retain the original owner, source and operation. This schedules archive reconciliation only; it cannot recover an Agent or repair corrupt source.",
-    }, {
-      name: "dispose", description: "Record an explicit abandonment or delete stopped original resources", arguments: task,
-      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, { names: ["--operation-id"], description: "Stable UUID for this explicit disposal decision", value: { name: "operation-id", kind: "text" }, required: true }, { names: ["--action"], description: "abandon retains files; delete removes the selected worktree and recording source", value: { name: "action", kind: "text" }, required: true }, { names: ["--confirm"], description: "Confirm this exact disposal and its loss of local recording data", required: true }, help],
-      details: "Read resources list first. Only the matching terminal claim with confirmed original stop may be disposed. Abandon stops archive retry and keeps files. Delete removes only the original source and worktree through ownership checks. Neither action manufactures ready/unavailable or changes remote archive history. Reuse the same operation ID to reconcile an interrupted decision.",
+      name: "recover", description: "Verify or recover a completed Web execution's retained worktree", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--worktree-id"], description: "Verify this exact original worktree UUID; omission reads the original journal", value: { name: "worktree-id", kind: "text" } }, { names: ["--confirm"], description: "Remove the verified clean original worktree and retire its manifest" }, help],
+      details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git marker or done Task alone is insufficient.",
     }],
+  }, {
+    name: "migrate-bot",
+    description: "Move one stopped legacy Bot into its dedicated local storage",
+    arguments: [{ name: "bot-id", description: "Original Bot UUID" }],
+    options: [{ names: ["--confirm"], description: "Commit the verified migration of this original Bot" }, help],
+    details: "Stop the original worker run and Bot execution first. Requires --confirm and the original signed-in service, account and local Worker identity. Takes Worker, Bot and Controller storage locks; unknown process stop refuses migration. Copies consistent SQLite snapshots including committed WAL, original tickets and resources, then commits one local authority. An interrupted attempt resumes with the same Bot ID. Original source resources remain retained. Recovery identity registration and Provider verification remain pending; this command never starts or resumes an Agent.",
+  }, {
+    name: "migrated-bot-history",
+    description: "Read the latest 50 preserved entries from a migrated Bot without starting it",
+    arguments: [{ name: "bot-id", description: "Original Bot UUID" }],
+    options: [{ names: ["--json"], description: "Print preserved history as JSON (the default)" }, help],
+    details: "Uses the current service, account and original local Worker binding. Verifies the committed dedicated copy and reads its original Session history without starting a Controller or Provider. Prints Session IDs, recovery availability and timeline entries; private tickets and credentials are excluded.",
+  }, {
+    name: "repair-markdown",
+    description: "Repair failed Markdown images in one stopped original Web execution and archive it",
+    arguments: task,
+    options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
+    details: "Select the original completed claim, Session and retained worktree. The command verifies the stopped Controller and takes its storage lock; the Worker may remain running. It reanalyses saved complete Markdown inputs and authorizes local image reads only inside the original verified worktree. Missing, changed or forbidden sources retain the original failure and report the next action. It never starts an Agent, replays user input or changes Task status. Successful repair follows the existing archive protocol; the Worker owns later cleanup.",
   }, {
     name: "retry",
     description: "Attempt recovery once for an active original claim",
@@ -82,13 +108,8 @@ export const workerDefinition: CommandDefinition = {
     description: "Clean the original execution and release its claim to todo",
     arguments: task,
     options: [claim, version, project, help],
-    details: `${controlDetails}\nThe daemon skips released tasks until explicitly resumed.`,
-  }, {
-    name: "resume",
-    description: "Start a released task as a fresh execution on this worker",
-    arguments: task,
-    options: [claim, version, project, help],
-    details: "Stop worker run first. --claim-id identifies the previous released claim. The original owner or a project admin may explicitly resume a ready task, including the manual permission/platform exception. Use a fresh claim, worktree identity and native conversation with this worker's current effective configuration. The source worktree and native history are not required. The exact --if-version is never replaced; uncertain writes are reconciled without replay.",
+    details: `${controlDetails}\nReleased tasks remain eligible for ordinary automatic acquisition.`,
+
   }],
   options: [help],
   details: "Run daynight worker <command> --help for command usage.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).",

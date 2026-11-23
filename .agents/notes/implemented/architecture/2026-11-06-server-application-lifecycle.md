@@ -30,6 +30,13 @@ readiness and closure to the same backend instance. The
 keeps assembly and resource lifetime observable without substituting a separately
 constructed application or interpreting mock results as persisted state.
 
+Application errors expose whole-application Drained and Closed facts separately
+from their causes. Runtime retains recording and cleanup failures while still
+releasing dependencies once their users have actually stopped; a completed child
+error cannot imply completion of the application. The
+[credential recorder decision](2026-11-12-credential-usage-recorder.md) owns
+recorder activation, request-local fault publication and pool join ordering.
+
 ## Alternatives
 
 **Close dependencies when the HTTP grace period expires.** A cancelled handler

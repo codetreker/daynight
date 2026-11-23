@@ -11,6 +11,9 @@ import (
 // Captures may settle the image occurrences of an already complete metadata
 // checkpoint. New input requires its full sealable resource closure as well.
 func requireImageHistoryLedger(ctx context.Context, tx *operationTx, r *record, capture bool) error {
+	if r.OnlineMode == "relay" {
+		return nil
+	}
 	dao, e := archiveDAO(tx)
 	if e != nil {
 		return e
@@ -29,7 +32,7 @@ func requireImageHistoryLedger(ctx context.Context, tx *operationTx, r *record, 
 		return nil
 	}
 	var ledger archiveLedger
-	if bundle.Phase != "active" || bundle.HistoryID == "" || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch || ledger.SourceThrough != decimal(r.SourceSeq) || ledger.HistoryID != bundle.HistoryID {
+	if bundle.Phase != "active" || bundle.HistoryID == "" || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch || ledger.SourceThrough != decimal(r.SourceSeq) || ledger.HistoryID != bundle.HistoryID || ledger.TargetSourceEpoch != "" || ledger.SourceEpoch != "" && ledger.SourceEpoch != sourceEpoch(r) {
 		return fault("capability_changed", "The complete source metadata checkpoint must precede image capture.")
 	}
 	return nil

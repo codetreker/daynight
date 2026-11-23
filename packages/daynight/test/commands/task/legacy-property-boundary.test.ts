@@ -23,12 +23,12 @@ const fixture = (fetch: typeof globalThis.fetch) => {
 const json = (body: unknown) => new Response(stringifyApiJson(body), { headers: { "content-type": "application/json" } });
 
 it("keeps malformed task JSON out of stdout at the CLI boundary", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(project)).mockResolvedValueOnce(new Response("{", { headers: { "content-type": "application/json" } }));
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(new Response("{", { headers: { "content-type": "application/json" } }));
   const f = fixture(fetch);
   expect(await f.run(["show", taskId, "--json"])).toBe(1);
   expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
   expect(f.context.stderr.mock.calls.map(([text]) => text).join("")).toContain("protocol");
-  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "GET"]);
+  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET"]);
 });
 
 it("forwards multiline property input byte for byte and prints the confirmed value", async () => {
@@ -49,7 +49,7 @@ it("keeps completed claim history on a maximum-version completion no-op", async 
   const claimId = "dddddddd-4444-4444-8444-444444444444", workerId = "eeeeeeee-5555-4555-8555-555555555555";
   const maximum = 9_223_372_036_854_775_807n;
   const worker = { claimId, state: "completed", userId: projectId, workerId, machine: { id: workerId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: workerId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
-  const completed = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "Preserved", properties: { worker, pullRequests: [{ url: "opaque\0delivery", title: "Worker evidence" }] }, status: "done", allowAgents: false, assignedTo: null, requiredPlatform: null, version: maximum, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time };
+  const completed = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "Preserved", tags: [], properties: { worker, pullRequests: [{ url: "opaque\0delivery", title: "Worker evidence" }] }, status: "done", allowAgents: false, assignedTo: null, requiredPlatform: null, version: maximum, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time };
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => new URL(String(url)).pathname === `/api/v1/projects/${projectId}` ? json(project) : json(completed));
   const f = fixture(fetch);
   expect(await f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", String(maximum)])).toBe(0);

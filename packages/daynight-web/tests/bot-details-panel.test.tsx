@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BotDetailsPanel } from '../src/features/bots/BotDetailsPanel';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { botDefinition, botWorkerDefaults } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
 import { mockWideAssistantWorkspace } from './helpers/assistant-ui';
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
@@ -15,6 +16,27 @@ function Harness() {
   const opener = useRef<HTMLButtonElement>(null), [open, setOpen] = useState(false);
   return <><button ref={opener} onClick={() => setOpen(true)}>Assistant</button>{open && <BotDetailsPanel id="details" bot={botDefinition()} worker={botWorkerDefaults()} stale={false} opener={opener} onClose={() => setOpen(false)} />}</>;
 }
+
+it.each([
+  { locale: 'en' as const, notice: 'Recreate this assistant to enable assistant task collaboration.' },
+  { locale: 'zh-CN' as const, notice: '重建后可获得助手任务协作能力' },
+])('shows collaboration guidance only for frozen legacy roles in $locale', ({ locale, notice }) => {
+  const props = { id: 'details', worker: botWorkerDefaults(), stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
+  const bot = botDefinition();
+  const view = renderWithLocale(<BotDetailsPanel {...props} bot={bot} />, { locale });
+  expect(screen.queryByText(notice)).toBeNull();
+  for (const [revision, visible] of [
+    ['daynight-assistant/1', true], ['daynight-assistant/2', true],
+    ['daynight-assistant/3', false], ['daynight-assistant/4', false], ['custom-role/1', false], ['1', false],
+  ] as const) {
+    view.rerender(<BotDetailsPanel {...props} bot={{ ...bot, roleConfiguration: { instructions: 'Frozen role.', revision, digest: 'a'.repeat(64) } }} />);
+    if (visible) expect(screen.getByText(notice)).toBeVisible();
+    else expect(screen.queryByText(notice)).toBeNull();
+  }
+  view.rerender(<BotDetailsPanel {...props} bot={null} />);
+  expect(screen.queryByText(notice)).toBeNull();
+});
+
 it('keeps keyboard focus in the narrow drawer and closes only its own layer', () => {
   vi.stubGlobal('innerWidth',390);
   renderWithLocale(<Harness />,{locale:'en'});
@@ -156,20 +178,22 @@ it('retains confirmed details and focus during identity checks, then removes the
   expect(f.source.api.command).not.toHaveBeenCalled();
 });
 
-it('uses only the matching Worker observation and marks stale availability as unknown', () => {
+it('uses the matching Bot observation and retains stale machine facts without claiming live availability', () => {
   const props = { id: 'details', bot: botDefinition(), worker: botWorkerDefaults(), stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
-  const view = renderWithLocale(<BotDetailsPanel {...props} />, { locale: 'en' });
+  const observation = { value: botObservation(1, { machine: props.worker.machine, state: 'idle', reason: 'idle' }), stale: false, busy: false, error: null, refresh: vi.fn() };
+  const view = renderWithLocale(<BotDetailsPanel {...props} observation={observation} />, { locale: 'en' });
   expect(screen.getByText('Machine 20')).toBeVisible();
-  expect(screen.getByText('Worker online')).toBeVisible();
-  view.rerender(<BotDetailsPanel {...props} stale />);
-  expect(screen.queryByText('Worker online')).toBeNull();
-  expect(screen.getByText('Worker status unknown')).toBeVisible();
-  view.rerender(<BotDetailsPanel {...props} worker={botWorkerDefaults(21)} />);
+  expect(screen.getByText('Online · idle')).toBeVisible();
+  view.rerender(<BotDetailsPanel {...props} observation={{ ...observation, stale: true }} />);
+  expect(screen.getByText('Observation out of date')).toBeVisible();
+  expect(screen.getByText('Last observed status')).toBeVisible();
+  expect(screen.getByText('Machine 20')).toBeVisible();
+  view.rerender(<BotDetailsPanel {...props} worker={botWorkerDefaults(21)} observation={{ ...observation, value: botObservation(2) }} />);
   expect(screen.queryByText('Machine 20')).toBeNull();
   expect(screen.queryByText('Machine 21')).toBeNull();
-  expect(screen.getByText(props.bot.workerId)).toBeVisible();
-  expect(screen.getByText('Worker status unknown')).toBeVisible();
-  expect(screen.queryByText('Worker online')).toBeNull();
+  expect(screen.getByText('Machine unknown')).toBeVisible();
+  expect(screen.getByText('Status unknown')).toBeVisible();
+  expect(screen.queryByText('Online · idle')).toBeNull();
 });
 
 it.each([

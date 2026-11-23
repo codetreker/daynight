@@ -41,7 +41,7 @@ Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的�
 
 完整 Task、task-sync 和图各自的 projection/scanner/assembler 直接读取 assigned_to::text；字段、版本、依赖和属性属于同一既有读取快照。summary 与图携带轻量 UUID，不嵌入可变用户资料。
 
-锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
+锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；completed 记录和原 Session/archive 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
 
 ## 原生任务筛选与游标
 
@@ -61,7 +61,7 @@ store/postgres/internal/project_access.go 拥有单主体准入和批量查询�
 
 ### 完整目录
 
-从 ProjectAccessRelation 的原始 user_id 与当前项目有效可见任务的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，仅被自身或父 Goal 已删除的任务引用时不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
+从 ProjectAccessRelation 的原始 user_id 与当前项目有效可见任务的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，仅被自身或祖先已删除的任务引用时不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
 
 ### 限定解析
 
@@ -103,9 +103,9 @@ profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 
 
 可信同用户 404 先由 scope.canRevokeProject 核验捕获 ticket，再沿 scope.signal 撤权；菜单关闭或需求变化不丢失父项目失权，旧 E1 不能清新 E2。[请求复用决策](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md)保存内容版本、持久复用和元数据扫描成本的取舍。
 
-TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
+TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态，并显式选择 AssigneePicker 的标准筛选入口；该入口使用公共 SelectTrigger 的 filter/responsive-target/task 呈现，与状态及标签入口共享密度，长姓名省略且保留完整可访问名。任务行、详情和表单的人员编辑保持原呈现。公共展示、布局限制和焦点皮肤由[选择控件设计](native-select.md)拥有。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
 
-ProjectPage 在完整 index 上逐任务联合计算负责人和状态匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
+ProjectPage 的状态筛选使用紧凑复选浮层和固定顺序的状态集合，并按账号与项目保存；负责人搜索选择器仍拥有独立菜单。ProjectPage 在完整 index 上逐任务联合计算负责人、状态和标签匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。页签数字另以相同负责人 predicate 投影完整范围，不使用状态匹配或分页后的列表：独立任务逐个计入匹配的未结束成员，任务链对每个范围内成员集合检查是否存在同时匹配负责人且未结束的成员，存在则计一链；Goal 数字依据容器自身负责人和非终态状态。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 

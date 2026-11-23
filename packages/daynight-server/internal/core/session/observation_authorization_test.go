@@ -49,11 +49,11 @@ func TestTaskObservationAuthorizationRechecksRealCredentials(t *testing.T) {
 		})
 	}
 }
-func TestTaskObservationAuthorizationDoesNotBroadenSessionCredentials(t *testing.T) {
+func TestNativeCredentialHelperRequiresPurposeAwareOAuthAdmission(t *testing.T) {
 	_, p, _, _ := observationFixture(t)
 	p.Kind = model.OAuthCredential
 	if err := credential(t.Context(), nil, p, time.Now()); err == nil {
-		t.Fatal("ordinary Session admission accepted OAuth")
+		t.Fatal("native credential helper accepted OAuth without family validation")
 	}
 }
 

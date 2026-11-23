@@ -5,7 +5,7 @@ import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
 import { canonicalId, id, record, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
 import type { ExecutionPlatform, Attachment, AttachmentPage, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
-import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, type TaskSyncJsonRead } from "./project-json";
+import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, decodeTaskPageJson, type TaskSyncJsonRead } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
   controller_offline: "The agent environment is offline. Reconnect it to load history and use controls.",
@@ -24,7 +24,6 @@ export class ApiError extends Error {
   readonly code: string;
   readonly requestId: string | null;
   readonly serverMessage: string | undefined;
-  readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
   readonly writeOutcome: "not_committed" | undefined;
 
   constructor(
@@ -34,7 +33,6 @@ export class ApiError extends Error {
     requestId: string | null = null,
     cause?: unknown,
     serverMessage?: string,
-    stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
     writeOutcome?: "not_committed",
   ) {
     const message = kind === "network"
@@ -49,7 +47,6 @@ export class ApiError extends Error {
     this.code = code;
     this.requestId = requestId;
     this.serverMessage = serverMessage;
-    this.stepsLimit = stepsLimit;
     this.writeOutcome = writeOutcome;
   }
 }
@@ -59,6 +56,21 @@ export const isAbortError = (error: unknown): boolean =>
 
 let authGeneration = 0;
 let authPauseRevision = 0;
+let authNetwork = new AbortController();
+// Recent authenticated reads suppress redundant activity reports while a live
+// session is already generating normal traffic. Reset with the account scope.
+const recentAuthReads = new Map<string, number>();
+export const recentAuthenticatedRead = (userId: string): number | undefined => recentAuthReads.get(userId);
+let activeAuthReads = 0;
+export const hasActiveAuthenticatedRead = (): boolean => activeAuthReads > 0;
+const responseSignals = new WeakMap<Response, AbortSignal>();
+export const cancelAuthNetworkRequests = (): void => {
+  const previous = authNetwork;
+  authNetwork = new AbortController();
+  previous.abort();
+};
+export const responseSignal = (response: Response, fallback: AbortSignal): AbortSignal => responseSignals.get(response) ?? fallback;
+export const authRequestLifetime = (signal: AbortSignal): AbortSignal => AbortSignal.any([signal, authNetwork.signal]);
 export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
 const authPauseListeners = new Set<() => void>();
@@ -71,7 +83,7 @@ const releaseAuthRequests = (): void => {
   if (pause !== null) for (const resume of pause.waiters) resume();
 };
 
-export const invalidateAuthRequests = (): void => { authGeneration += 1; releaseAuthRequests(); };
+export const invalidateAuthRequests = (): void => { authGeneration += 1; recentAuthReads.clear(); activeAuthReads = 0; releaseAuthRequests(); };
 export const pauseAuthRequests = (): (() => void) => {
   authPauseRevision += 1;
   const owner = Symbol();
@@ -114,6 +126,7 @@ export const waitForAuthRequests = async (signal: AbortSignal): Promise<void> =>
 };
 
 export const assertResponsePrincipal = (response: Response, expectedUserId: string, onMismatch?: () => void): void => {
+  responseSignals.get(response)?.throwIfAborted();
   const expected = requestId(expectedUserId);
   // Unauthenticated responses use the existing session-expiry lifecycle.
   if (response.status === 401) return;
@@ -125,10 +138,11 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void, options: { readonly deferUnauthorized?: boolean } = {}): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
-  if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
+  const ordinary = url !== "/api/v1/me" && url !== "/api/v1/auth/logout";
+  if (ordinary) {
     while (authPause !== null) {
       await waitForIdentity(authPause, signal);
       signal.throwIfAborted();
@@ -138,42 +152,67 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   let response: Response;
   // Identity waits must not start a caller's network deadline.
   onDispatch?.();
+  const networkSignal = ordinary ? AbortSignal.any([signal, authNetwork.signal]) : signal;
+  networkSignal.throwIfAborted();
+  const normalRead = ordinary && (init.method === undefined || init.method === "GET" || init.method === "HEAD") && url.startsWith("/api/");
+  if (normalRead) activeAuthReads++;
+  let counted = normalRead;
+  const stopCounting = () => { if (counted && generation === authGeneration) activeAuthReads--; counted = false; };
+  if (normalRead) networkSignal.addEventListener("abort", stopCounting, { once: true });
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
-    const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
-    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal, credentials: "same-origin", redirect: "error" });
+    const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2", "Daynight-Task-Relations": "task-parent-v1" } : init.headers;
+    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal: networkSignal, credentials: "same-origin", redirect: "error" });
   } catch (error) {
-    signal.throwIfAborted();
+    networkSignal.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("network", null, "network", null, error);
+  } finally {
+    networkSignal.removeEventListener("abort", stopCounting);
+    stopCounting();
   }
-  signal.throwIfAborted();
-  if (response.status === 401 && generation === authGeneration) {
-    onUnauthorized?.();
+  networkSignal.throwIfAborted();
+  responseSignals.set(response, networkSignal);
+  if (generation === authGeneration && (init.method === undefined || init.method === "GET" || init.method === "HEAD") && url.startsWith("/api/") && url !== "/api/v1/me" && (response.ok || response.status === 304)) {
+    const principal = response.headers.get("Daynight-User-ID");
+    if (principal !== null && canonicalId(principal) === principal) recentAuthReads.set(principal, Date.now());
+  }
+  if (response.status === 401 && generation === authGeneration && !options.deferUnauthorized) {
     for (const listener of unauthorizedListeners) listener();
+    // A newer account marker turns this response into a retained pause; its
+    // old operation must not clear recovery state for the displayed account.
+    if (!authRequestsPaused()) onUnauthorized?.();
   }
+  networkSignal.throwIfAborted();
   return response;
 };
 
-export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false, onServerError?: (error: ApiError) => void): Promise<T> => {
+export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeServerMessage = false, onServerError?: (error: ApiError) => void): Promise<T> => {
+  const lifetime = responseSignal(response, signal);
   let body: unknown;
   try {
+    lifetime.throwIfAborted();
     const contentType = response.headers.get("Content-Type");
     if (contentType === null || !/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw new Error("Invalid media type");
     body = await decode(response);
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
   } catch (error) {
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, error);
   }
   try {
-    if (response.ok) return parse(body);
-    const serverError = parseServerError(body, includeStepsError);
-    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
+    if (response.ok) {
+      const result = parse(body);
+      lifetime.throwIfAborted();
+      return result;
+    }
+    const serverError = parseServerError(body, includeServerMessage);
+    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.writeOutcome);
     onServerError?.(error);
     throw error;
   } catch (error) {
+    lifetime.throwIfAborted();
     if (error instanceof ApiError) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, error);
   }
@@ -239,6 +278,7 @@ export type TaskResponseAdmission = {
   readonly userId: string;
   readonly onPrincipalMismatch: () => void;
   readonly onWriteConfirmed?: () => void;
+  readonly onWriteRejected?: (error: ApiError) => void;
   readonly onDispatch?: () => void;
 };
 
@@ -249,13 +289,18 @@ export type CreateTaskInput = {
   readonly description?: string;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly status?: TaskStatus;
   readonly assignedTo?: string | null;
+  readonly tagIds?: readonly string[];
 };
 
 export const createTask = async (projectId: string, input: CreateTaskInput, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
   const project = requestId(projectId);
-  const body = { ...input,
+  const tagIds = (input.tagIds ?? []).map(requestId);
+  if (new Set(tagIds).size !== tagIds.length || input.parentTaskId !== undefined && (input.parentId != null || input.type === "goal")) throw new ApiError("protocol");
+  const body = { ...input, tagIds,
+    ...(input.parentTaskId === undefined ? {} : { parentTaskId: requestId(input.parentTaskId) }),
     ...(input.parentId === undefined ? {} : { parentId: input.parentId === null ? null : requestId(input.parentId) }),
     ...(input.assignedTo === undefined ? {} : { assignedTo: input.assignedTo === null ? null : requestId(input.assignedTo) }) };
   const response = await request(`/api/v1/projects/${project}/tasks`, signal, {
@@ -265,21 +310,24 @@ export const createTask = async (projectId: string, input: CreateTaskInput, sign
   if (response.status === 201) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, id(record(data).id));
-    if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) ||
+    if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) || body.parentTaskId !== undefined && result.parentTaskId !== body.parentTaskId ||
       result.title !== body.title || result.description !== (body.description ?? "") ||
       result.status !== (body.status ?? (result.type === "goal" ? "todo" : "proposed")) ||
-      body.assignedTo !== undefined && result.assignedTo !== body.assignedTo) throw new ApiError("protocol", response.status);
+      body.assignedTo !== undefined && result.assignedTo !== body.assignedTo ||
+      result.tags.length !== tagIds.length || result.tags.some(tag => !tagIds.includes(tag.id))) throw new ApiError("protocol", response.status);
     return result;
   });
 };
 
 export const updateTaskFields = async (
-  projectId: string, taskId: string, fields: { readonly title?: string; readonly description?: string; readonly parentId?: string | null },
+  projectId: string, taskId: string, fields: { readonly title?: string; readonly description?: string; readonly parentId?: string | null; readonly tagIds?: readonly string[] },
   exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId), task = requestId(taskId);
-  if (!isTaskVersion(exactVersion) || fields.title === undefined && fields.description === undefined && fields.parentId === undefined) throw new ApiError("protocol");
-  const body = { ...fields, ...(fields.parentId === undefined ? {} : { parentId: fields.parentId === null ? null : requestId(fields.parentId) }) };
+  if (!isTaskVersion(exactVersion) || fields.title === undefined && fields.description === undefined && fields.parentId === undefined && fields.tagIds === undefined) throw new ApiError("protocol");
+  const tagIds = fields.tagIds?.map(requestId);
+  if (tagIds !== undefined && new Set(tagIds).size !== tagIds.length) throw new ApiError("protocol");
+  const body = { ...fields, ...(fields.parentId === undefined ? {} : { parentId: fields.parentId === null ? null : requestId(fields.parentId) }), ...(tagIds === undefined ? {} : { tagIds }) };
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, ...body }),
@@ -290,9 +338,10 @@ export const updateTaskFields = async (
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.version !== exactVersion && result.version !== exactVersion + 1n ||
       body.title !== undefined && result.title !== body.title || body.description !== undefined && result.description !== body.description ||
-      body.parentId !== undefined && result.parentId !== body.parentId) throw new ApiError("protocol", response.status);
+      body.parentId !== undefined && result.parentId !== body.parentId ||
+      tagIds !== undefined && (result.tags.length !== tagIds.length || result.tags.some(tag => !tagIds.includes(tag.id)))) throw new ApiError("protocol", response.status);
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 // The epoch and body are one server snapshot; neither a cached epoch nor a
@@ -307,6 +356,7 @@ export const getTaskObservation = async (projectId: string, taskId: string, sign
   const header = response.headers.get("Daynight-Task-Epoch");
   if (header === null || canonicalId(header) !== header) throw new ApiError("protocol", response.status);
   const detail = await json(response, signal, (data) => parseTaskDetail(data, project, task));
+  responseSignal(response, signal).throwIfAborted();
   return { epoch: header, detail };
 };
 
@@ -316,6 +366,27 @@ export const getTask = async (projectId: string, taskId: string, signal: AbortSi
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => parseTaskDetail(data, project, task));
+};
+
+export type TaskChildrenPage = { readonly items: readonly TaskDetail[]; readonly nextCursor: string | null };
+
+export const listTaskChildren = async (projectId: string, parentTaskId: string, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskChildrenPage> => {
+  const project = requestId(projectId), parent = requestId(parentTaskId);
+  if (cursor !== null && (cursor.trim() === "" || !cursor.isWellFormed() || cursor.includes("\0"))) throw new ApiError("protocol");
+  const params = new URLSearchParams({ parentTaskId: parent, limit: "100" });
+  if (cursor !== null) params.set("cursor", cursor);
+  const response = await request(`/api/v1/projects/${project}/tasks?${params}`, signal, { headers: { Accept: "application/json" } });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  return json(response, signal, (value) => {
+    if (response.status !== 200) throw new ApiError("protocol", response.status);
+    const data = record(value);
+    if (!Array.isArray(data.items) || data.items.length > 100) throw new ApiError("protocol", response.status);
+    const items = data.items.map(item => parseTaskDetail(item, project, id(record(item).id)));
+    if (items.some(item => item.type !== "task" || item.parentTaskId !== parent) || new Set(items.map(item => item.id)).size !== items.length) throw new ApiError("protocol", response.status);
+    const nextCursor = data.nextCursor === null ? null : typeof data.nextCursor === "string" && data.nextCursor.trim() !== "" && data.nextCursor.isWellFormed() && !data.nextCursor.includes("\0") ? data.nextCursor : (() => { throw new ApiError("protocol", response.status); })();
+    if (nextCursor !== null && items.length === 0) throw new ApiError("protocol", response.status);
+    return { items, nextCursor };
+  }, decodeTaskPageJson);
 };
 
 export const deleteTask = async (
@@ -329,9 +400,9 @@ export const deleteTask = async (
     body: stringifyApiJson({ version: exactVersion, removeDepends }),
   }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
-  if (response.status === 204) { admission.onWriteConfirmed?.(); return; }
+  if (response.status === 204) { admission.onWriteConfirmed?.(); responseSignal(response, signal).throwIfAborted(); return; }
   if (response.ok) throw new ApiError("protocol", response.status);
-  await json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  await json(response, signal, () => { throw new ApiError("protocol", response.status); }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskStatus = async (
@@ -352,7 +423,7 @@ export const setTaskStatus = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const withdrawWorkerClaim = async (
@@ -373,7 +444,7 @@ export const withdrawWorkerClaim = async (
     if (response.status !== 200 || result.version !== exactVersion + 1n || readWorkerClaim(result.properties) !== undefined ||
       result.status !== "todo" || result.allowAgents || result.startedAt !== null || result.completedAt !== null) throw new ApiError("protocol", response.status);
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskAgentPermission = async (
@@ -394,7 +465,7 @@ export const setTaskAgentPermission = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const unpauseTask = async (
@@ -405,7 +476,7 @@ export const unpauseTask = async (
   if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
+    body: stringifyApiJson({ version: exactVersion, properties: { blocked: false } }),
   }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
@@ -415,7 +486,7 @@ export const unpauseTask = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskRequiredPlatform = async (
@@ -436,7 +507,7 @@ export const setTaskRequiredPlatform = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskAssignedTo = async (
@@ -458,7 +529,7 @@ export const setTaskAssignedTo = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 const attachmentTaskUrl = (projectId: string, taskId: string): string =>
@@ -475,8 +546,28 @@ export const attachmentPageUrl = (projectId: string, taskId: string, path: strin
 export const attachmentDownloadUrl = (projectId: string, taskId: string, path: string): string =>
   `${attachmentTaskUrl(projectId, taskId)}/attachments/files/${encodedAttachmentPath(path)}`;
 
-export const attachmentPreviewRoot = (projectId: string, taskId: string): string =>
-  `${attachmentTaskUrl(projectId, taskId)}/preview/`;
+const previewOrigin = (): URL => {
+  const value = document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')?.content;
+  try {
+    if (value === undefined) throw new Error("Missing preview origin");
+    const origin = new URL(value);
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.origin !== value || origin.username !== '' || origin.password !== '') throw new Error("Invalid preview origin");
+    return origin;
+  } catch (error) {
+    throw new ApiError("protocol", undefined, "protocol", null, error);
+  }
+};
+
+export const previewLoginUrl = (): string => `${previewOrigin().origin}/auth/sso/start`;
+
+export const attachmentPreviewRoot = (projectId: string, taskId: string): string => {
+  const task = requestId(taskId);
+  const origin = previewOrigin();
+  const taskHost = `${task}.${origin.hostname}`;
+  origin.hostname = taskHost;
+  if (origin.hostname !== taskHost) throw new ApiError("protocol");
+  return `${origin.origin}${attachmentTaskUrl(projectId, task)}/preview/`;
+};
 
 export const attachmentPreviewUrl = (projectId: string, taskId: string, path: string): string =>
   `${attachmentPreviewRoot(projectId, taskId)}${encodedAttachmentPath(path)}`;
@@ -515,31 +606,24 @@ export const putAttachment = async (
 
 export const removeAttachment = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
   const response = await request(attachmentDownloadUrl(projectId, taskId, path), signal, { method: "DELETE", redirect: "error" });
+  responseSignal(response, signal).throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 204) throw new ApiError("protocol", response.status);
 };
 
 export const readAttachmentText = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<string> => {
   const response = await request(attachmentDownloadUrl(projectId, taskId, path), signal);
+  const lifetime = responseSignal(response, signal);
+  lifetime.throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 200) throw new ApiError("protocol", response.status);
   try {
     const text = await response.text();
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     return text;
   } catch (error) {
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("network", response.status, "network", null, error);
   }
-};
-
-export const checkAttachmentPreview = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
-  const response = await request(attachmentPreviewUrl(projectId, taskId, path), signal, { method: "HEAD" });
-  if (!response.ok) {
-    const header = response.headers.get("X-Request-ID");
-    const requestId = header !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(header) ? header : null;
-    throw new ApiError("server", response.status, response.status === 401 ? "unauthenticated" : "server", requestId);
-  }
-  if (response.status !== 200) throw new ApiError("protocol", response.status);
 };

@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { decodeSessionV2Message } from "../../src/session/v2/protocol.js";
 import { decodeSessionV2Archive, parseSessionV2Archive } from "../../src/session/v2/archive.js";
 import { SESSION_V2_LIMITS, canonicalSessionJson } from "../../src/session/v2/values.js";
 
@@ -49,11 +48,7 @@ it("accepts the exact 60 MiB recording budget and rejects one additional byte", 
   expect(() => parseSessionV2Archive(archive)).toThrow();
 }, 30000);
 
-it("applies the 4 MiB message and 64 MiB archive raw limits before parsing", async () => {
-  const message = JSON.stringify(fixture("valid-registration"));
-  const boundedMessage = " ".repeat(SESSION_V2_LIMITS.metadataMaxBytes - new TextEncoder().encode(message).length) + message;
-  await expect(decodeSessionV2Message(boundedMessage)).resolves.toBeDefined();
-  await expect(decodeSessionV2Message(" " + boundedMessage)).rejects.toThrow();
+it("applies the 64 MiB archive raw limit before parsing", async () => {
   const body = JSON.stringify(fixture("valid-archive"));
   const boundedArchive = " ".repeat(SESSION_V2_LIMITS.archiveMaxBytes - new TextEncoder().encode(body).length) + body;
   await expect(decodeSessionV2Archive(boundedArchive)).resolves.toBeDefined();

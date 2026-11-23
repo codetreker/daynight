@@ -10,20 +10,24 @@ order, even though changing tabs preserves sensitive operation and editor owners
 
 ## Decision
 
-The existing navigation owner records an entry identity and a lightweight,
-identity-bound page selection with the history marker. Account consumes its
-admitted selection; an active controlled entry is initialized by replacement,
-and a changed selection is pushed through the existing draft admission gate.
-Same-URL entries publish distinct snapshots. The account page retains its
-credential and prompt owners independently of the entry identity. Worker detail
-uses the same mechanism with a Worker-bound selection; its editing owners remain
+The original decision used the existing navigation owner to record an entry
+identity and a lightweight, identity-bound selection with the history marker.
+Account consumed its admitted selection, initializing an active controlled entry
+by replacement and pushing changes through the draft admission gate. This made
+same-URL entries publish distinct snapshots while retaining credential and prompt
+owners independently of the entry identity. The later [account tab URL decision](2026-11-17-account-tab-urls.md)
+replaces that account-specific selection with URL routing to support sharing and
+cold entry. Worker detail continues to use a Worker-bound history selection; its editing owners remain
 mounted after opening and cancellation restores the appropriate dirty tab only
 after the original history position is admitted. The
 [peer-tab decision](../architecture/2026-11-12-worker-detail-prompt-tab.md)
-extends that selection to the Worker prompt. Invalid recognized state is exposed
-rather than interpreted as another target. Project
-uses the same entry model for section, view, graph and nested resource selections;
-its existing preference writes occur only after user-initiated changes are admitted.
+extends that selection to the Worker prompt. The [system monitoring decision](../architecture/2026-11-18-worker-system-monitoring-tab.md)
+adds its own Worker-bound selection without changing the URL or history payload
+version. Invalid recognized state is exposed
+rather than interpreted as another target. Project originally used the same entry
+model for section, view, graph and nested resource selections. The later [project tab URL decision](2026-11-17-project-tab-urls.md)
+places the outer section in the URL while retaining the admitted nested reading
+model; preference writes occur only after user-initiated changes are admitted.
 
 The [Web design](../../../../docs/design/daynight-web.md) owns the current
 consumer and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)

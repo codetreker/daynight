@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { selectTaskList } from './helpers/projectViews';
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { fireEvent, screen, waitFor } from '@testing-library/react';
@@ -63,8 +64,8 @@ beforeEach(() => { request.mockReset(); request.mockResolvedValue(graph()); });
 describe('task chain status filtering', () => {
   it('shows all chains by default, keeps full counts and projects ordinary dependencies', async () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
-    const filter = await screen.findByRole('combobox', { name: '状态' });
-    expect(filter).toHaveValue('all');
+    const filter = await screen.findByRole('button', { name: /^状态:/ });
+    expect(filter).toHaveTextContent(statusLabel('all'));
     expect(screen.queryByRole('checkbox', { name: '显示所有' })).toBeNull();
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003']);
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
@@ -73,9 +74,9 @@ describe('task chain status filtering', () => {
     expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
     expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['00000000-0000-4000-8000-000000000001->00000000-0000-4000-8000-000000000002']);
     closeGraph();
-    fireEvent.change(filter, { target: { value: 'todo' } });
+    selectStatus('todo');
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006']);
-    fireEvent.change(filter, { target: { value: 'done' } });
+    selectStatus('done');
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003']);
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
     expect(request).toHaveBeenCalledTimes(1);
@@ -85,7 +86,7 @@ describe('task chain status filtering', () => {
     window.localStorage.setItem(`daynight:completed-chains:${projectId}`, '{');
     request.mockResolvedValueOnce(graph([seeds[2]!, seeds[3]!])).mockResolvedValue(resetSnapshot(graph([])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
-    await screen.findByRole('combobox', { name: '状态' });
+    await screen.findByRole('button', { name: /^状态:/ });
     expect(root('00000000-0000-4000-8000-000000000003')).toBeVisible();
     expect(screen.queryByText(/显示所有.*偏好/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
@@ -96,11 +97,11 @@ describe('task chain status filtering', () => {
   it('retains the selected filter and snapshot after a failed refresh', async () => {
     request.mockResolvedValueOnce(graph()).mockRejectedValueOnce(new ApiError('network'));
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
-    const filter = await screen.findByRole('combobox', { name: '状态' });
-    fireEvent.change(filter, { target: { value: 'done' } });
+    const filter = await screen.findByRole('button', { name: /^状态:/ });
+    selectStatus('done');
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await screen.findByRole('alert');
-    expect(filter).toHaveValue('done');
+    await screen.findByRole('heading', { name: '刷新失败' });
+    expect(filter).toHaveTextContent(statusLabel('done'));
     expect(roots()).toHaveLength(3);
     expect(count('任务总数')).toBe('8');
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));

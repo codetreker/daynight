@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const fixture = vi.hoisted(() => ({ execute: vi.fn(), native: vi.fn(), job: vi.fn() }));
+const fixture = vi.hoisted(() => ({ execute: vi.fn(), read: vi.fn(), native: vi.fn(), inspect: vi.fn(), job: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: fixture.execute }));
-vi.mock("../../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: fixture.native }));
-vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: fixture.job, inspectControllerJob: vi.fn() }));
+vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>(), readFile: fixture.read }));
+vi.mock("../../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: fixture.native, inspectWindowsProcessProof: fixture.inspect }));
+vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createOwnedControllerJob: fixture.job, inspectControllerJobLease: vi.fn() }));
 import { captureControllerProcessProof, captureProcessProof, inspectProcessProof } from "../../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const setPlatform = (value: string) => Object.defineProperty(process, "platform", { ...platform, value });
 const birth = "2026-11-05T00:00:00.0000000Z", command = "controlled process";
+const bootId = "876b21c9-30d7-48c0-a2ab-287291e903a7";
 const proof = (pid: number) => ({ pid, parentPid: 1, processGroupId: null, startedAt: birth, commandHash: createHash("sha256").update(command).digest("hex") });
 const delayedWindowsQuery = (durationMs: number) => {
   const failure = new Error("Controlled native observation exceeded its budget.");
@@ -22,7 +24,13 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
   fixture.job.mockResolvedValue("Local\\Daynight-controlled");
   fixture.native.mockImplementation(async pid => proof(pid));
-  fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 ${command}\n`));
+  fixture.inspect.mockReset().mockResolvedValue("running");
+  fixture.read.mockImplementation(async (file: string) => {
+    if (file === "/proc/sys/kernel/random/boot_id") return `${bootId}\n`;
+    if (file === "/proc/42/stat") return `42 (controlled process) ${["S", 1, 42, ...Array(16).fill(0), "26140755", 0, 0].join(" ")}\n`;
+    throw new Error(`Unexpected process identity read: ${file}`);
+  });
+  fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Ss Thu Nov 5 00:00:00 2026 ${command}\n`));
 });
 afterEach(() => {
   vi.restoreAllMocks(); vi.useRealTimers();
@@ -40,6 +48,10 @@ describe("process ownership capture budgets", () => {
     } else {
       expect(fixture.execute.mock.calls[0]?.[2]).toMatchObject({ timeout }); expect(fixture.native).not.toHaveBeenCalled();
     }
+    if (target === "linux") {
+      expect(captured.startedAt).toBe(`linux:v1:${bootId}:26140755`);
+      expect(fixture.read).toHaveBeenCalledTimes(4);
+    } else expect(fixture.read).not.toHaveBeenCalled();
   });
 
   it("captures Windows ownership with PowerShell/CIM unavailable", async () => {
@@ -88,19 +100,21 @@ describe("process ownership capture budgets", () => {
 });
 
 describe("ordinary process ownership inspection", () => {
-  it("retains the five-second Windows recapture bound and propagates uncertainty", async () => {
-    setPlatform("win32"); const failure = delayedWindowsQuery(6000);
+  it("retains the five-second Windows inspection bound and propagates uncertainty", async () => {
+    setPlatform("win32"); const failure = new Error("Controlled native observation exceeded its budget.");
+    fixture.inspect.mockImplementation((_proof, timeout) => new Promise((_resolve, reject) => { setTimeout(() => reject(failure), timeout); }));
     const liveness = vi.spyOn(process, "kill").mockReturnValue(true);
     const pending = inspectProcessProof(proof(42)).catch(error => error);
     await vi.advanceTimersByTimeAsync(5000);
     expect(await pending).toBe(failure);
-    expect(fixture.native).toHaveBeenCalledExactlyOnceWith(42, 5000);
-    expect(liveness).toHaveBeenCalledTimes(2); expect(fixture.job).not.toHaveBeenCalled(); expect(fixture.execute).not.toHaveBeenCalled();
+    expect(fixture.inspect).toHaveBeenCalledExactlyOnceWith(proof(42), 5000, undefined);
+    expect(fixture.native).not.toHaveBeenCalled();
+    expect(liveness).not.toHaveBeenCalled(); expect(fixture.job).not.toHaveBeenCalled(); expect(fixture.execute).not.toHaveBeenCalled();
   });
 
   it("detects a reused Windows PID with a different birth", async () => {
     setPlatform("win32"); vi.spyOn(process, "kill").mockReturnValue(true);
-    fixture.native.mockResolvedValue({ ...proof(42), startedAt: "replacement" });
+    fixture.inspect.mockResolvedValue("replaced");
     expect(await inspectProcessProof(proof(42))).toBe("replaced");
   });
 
@@ -111,14 +125,14 @@ describe("ordinary process ownership inspection", () => {
 
   it.each([{ commandHash: "different-command-evidence" }, { processGroupId: 42 }])("retains unknown Windows ownership for a live original birth with conflicting evidence %j", async mismatch => {
     setPlatform("win32"); vi.spyOn(process, "kill").mockReturnValue(true);
-    fixture.native.mockResolvedValue({ ...proof(42), ...mismatch });
+    fixture.inspect.mockRejectedValue(new Error(`The original Windows process has inconsistent ${JSON.stringify(mismatch)}; ownership remains unknown.`));
     await expect(inspectProcessProof(proof(42))).rejects.toThrow("ownership remains unknown");
   });
 
   it("retains POSIX replacement semantics for a changed command with the same birth", async () => {
     setPlatform("linux"); vi.spyOn(process, "kill").mockReturnValue(true);
     const original = await captureProcessProof(42);
-    fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 different command\n`));
+    fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Ss Thu Nov 5 00:00:00 2026 different command\n`));
     expect(await inspectProcessProof(original)).toBe("replaced");
   });
 });

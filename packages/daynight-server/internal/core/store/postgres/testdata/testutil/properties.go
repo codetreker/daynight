@@ -1,20 +1,26 @@
 package testutil
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TaskProperties(t *testing.T, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	properties, err := taskprops.WithWorker(model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
+	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}
+	if worker != nil {
+		raw, err := taskproperties.EncodeWorker(worker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		properties["worker"] = raw
+	}
+	properties, err := taskproperties.NormalizeStored(properties)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,22 +49,6 @@ func PutTaskProperty(t *testing.T, pool *pgxpool.Pool, taskID, name string, valu
 	t.Helper()
 	MustExec(t, pool, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)
  ON CONFLICT(task_id,name) DO UPDATE SET value=EXCLUDED.value`, taskID, name, string(value))
-}
-
-// Migration assertions normalize only the historical schema they own.
-func DecodeHistoricalProperties(data []byte) (model.TaskProperties, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	if bytes.Equal(bytes.TrimSpace(fields["worker"]), []byte("null")) {
-		delete(fields, "worker")
-	}
-	normalized, err := json.Marshal(fields)
-	if err != nil {
-		return nil, err
-	}
-	return taskproperties.Decode(normalized)
 }
 
 func CurrentTaskFacts(t *testing.T, pool *pgxpool.Pool) map[string]string {

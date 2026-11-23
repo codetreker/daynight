@@ -1,5 +1,6 @@
 import type { ArchiveRepairCode } from "../controller/archive-error.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
+import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 
 export type ProjectIdentity = { projectId: string };
 export type WorkerProject = ProjectIdentity & { repoUrl: string; localPath: string };
@@ -10,6 +11,7 @@ export type LocalTask = ClaimIdentity & {
   agentControlMode?: AgentControlMode;
   sessionId: string | null;
 };
+export type FrozenToolObservation = { version: string; checkedAt: string };
 export type ExecutionConfiguration = {
   agent: WorkerAgent;
   agentControlMode?: AgentControlMode;
@@ -17,6 +19,8 @@ export type ExecutionConfiguration = {
   args: readonly string[];
   recoveryLimit: number;
   validateNativeSelection?: true;
+  toolLaunch?: ResolvedToolLaunch;
+  toolObservation?: FrozenToolObservation;
 };
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type CleanupSchedule = {
@@ -29,7 +33,7 @@ export type CleanupSchedule = {
 };
 export type CleanupScheduleRecord = ResourceOwner & CleanupSchedule;
 export type ArchiveBackfillIdentity = ClaimIdentity & { serverOrigin: string; executionId: string; executionGeneration: string; launchId: string };
-export type ArchiveBackfillSchedule = { archiveRepairCode: ArchiveRepairCode; nextAttemptAt: number };
+export type ArchiveBackfillSchedule = { archiveRepairCode: ArchiveRepairCode | null; nextAttemptAt: number; legacyError?: string };
 export type ArchiveBackfillScheduleRecord = ArchiveBackfillIdentity & ArchiveBackfillSchedule;
 export type WorktreeBinding = { repositoryPath: string; commonDirectory: string; worktreePath: string; branch: string };
 

@@ -11,7 +11,13 @@ const jsonValue = (value: unknown): JsonValue => {
 
 export const parseTaskProperties = (value: unknown): TaskProperties => {
   const data = record(value);
-  return Object.fromEntries(Object.entries(data).map(([name, item]) => [name, jsonValue(item)]));
+  const hasPaused = Object.hasOwn(data, "paused");
+  const hasBlocked = Object.hasOwn(data, "blocked");
+  if (hasPaused && typeof data.paused !== "boolean" || hasBlocked && typeof data.blocked !== "boolean" ||
+      hasPaused && hasBlocked && data.paused !== data.blocked) return malformed();
+  const properties = Object.fromEntries(Object.entries(data).filter(([name]) => name !== "blocked").map(([name, item]) => [name, jsonValue(item)]));
+  if (hasBlocked && !hasPaused) properties.paused = data.blocked as boolean;
+  return properties;
 };
 
 const pullRequest = (value: unknown): PullRequestProperty => {
@@ -33,12 +39,12 @@ const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || va
 const workerClaim = (value: unknown): WorkerClaim => {
   const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
   const machine = fields(data.machine, ["id", "name"]);
-  const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
   const agentControlMode = data.agentControlMode;
   if (agentControlMode !== "herdr" && agentControlMode !== "web") return malformed();
+  const herdr = data.herdr === null || agentControlMode === "web" && data.herdr === undefined ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
   if (agentControlMode === "web" && herdr !== null) return malformed();
   return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
     agent: data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed(), agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },

@@ -1,6 +1,7 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { useId, useState, type FormEvent } from "react";
 import type { Project } from "../../api/types";
-import type { WebhookActiveEndpoint, WebhookEventType, WebhookSubscriptionInput, WebhookSubscription } from "../../api/webhooks";
+import type { WebhookActiveEndpoint, WebhookCatalog, WebhookEventType, WebhookSubscriptionInput, WebhookSubscription } from "../../api/webhooks";
 import type { WebhookIntentInput, WebhookIntentState } from "../webhook-intents/controller";
 import { WebhookDialog } from "./WebhookDialog";
 import { WebhookError } from "./WebhookError";
@@ -9,10 +10,10 @@ import { WebhookPendingNotice } from "./WebhookPendingNotice";
 import { WebhookIcon } from "./WebhookIcon";
 import { useWebhookMessages } from "./messages";
 
-const events: readonly WebhookEventType[] = ["task.status_changed", "task.created", "task.deleted", "task.step_updated", "task.thread_posted", "task.paused"];
-export const EventChecks = ({ value, onChange, canAdd = true }: { readonly value: readonly WebhookEventType[]; readonly onChange: (events: readonly WebhookEventType[]) => void; readonly canAdd?: boolean }) => {
+const eventPosition: Readonly<Record<WebhookEventType, number>> = { "task.status_changed": 0, "task.created": 1, "task.deleted": 2, "task.step_updated": 3, "task.thread_posted": 4, "task.paused": 5 };
+export const EventChecks = ({ catalog, value, onChange, canAdd = true }: { readonly catalog: WebhookCatalog; readonly value: readonly WebhookEventType[]; readonly onChange: (events: readonly WebhookEventType[]) => void; readonly canAdd?: boolean }) => {
   const m = useWebhookMessages();
-  return <fieldset className="form-field"><legend className="field-title">{m.selectEvents}</legend><div className="event-checks">{events.map(event => <label className="check-row" key={event}><input type="checkbox" checked={value.includes(event)} disabled={!canAdd && !value.includes(event)} onChange={e => onChange(e.target.checked ? [...value, event] : value.filter(old => old !== event))}/><span className="check-main"><strong>{event}</strong><small>{m.eventDescriptions[event]}</small></span></label>)}</div></fieldset>;
+  return <fieldset className="form-field"><legend className="field-title">{m.selectEvents}</legend><div className="event-checks">{catalog.items.map(item => item.key).toSorted((left, right) => eventPosition[left] - eventPosition[right]).map(event => <label className="check-row" key={event}><input type="checkbox" checked={value.includes(event)} disabled={!canAdd && !value.includes(event)} onChange={e => onChange(e.target.checked ? [...value, event] : value.filter(old => old !== event))}/><span className="check-main"><strong>{event}</strong><small>{m.eventDescriptions[event]}</small></span></label>)}</div></fieldset>;
 };
 const invalidUrl = (url: string) => { try { const value = new URL(url); return value.protocol !== "https:" || value.hostname === ""; } catch { return true; } };
 export type WebhookFormActions = {
@@ -23,6 +24,7 @@ export type WebhookFormActions = {
   readonly reconcile: () => void;
   readonly submit: (input: WebhookIntentInput) => Promise<WebhookIntentState>;
   readonly onClose: () => void;
+  readonly onDraftChange: () => void;
   readonly opener: HTMLElement | null;
 };
 const isPending = (state: WebhookIntentState) => ["preparing", "submitting", "unknown"].includes(state.phase) || state.reconciling;
@@ -47,14 +49,15 @@ const reviewConfigurationDraft = (draft: ConfigurationDraft, current: WebhookAct
   }, next);
 };
 
-export const WebhookConfigurationDialog = ({ endpoint, projects, projectLabels, actions, onReview }: {
+export const WebhookConfigurationDialog = ({ catalog, endpoint, projects, projectLabels, actions, onReview }: {
+  readonly catalog: WebhookCatalog;
   readonly endpoint: WebhookActiveEndpoint | null; readonly projects: readonly Project[] | null; readonly projectLabels: ReadonlyMap<string, string>; readonly actions: WebhookFormActions;
   readonly onReview: () => Promise<WebhookActiveEndpoint | null>;
 }) => {
   const m = useWebhookMessages(), formId = useId(), [draft, setDraft] = useState(() => initialConfigurationDraft(endpoint));
   const [selectedProjects, setSelectedProjects] = useState<readonly string[]>([]), [selectedEvents, setSelectedEvents] = useState<readonly WebhookEventType[]>([]), [validation, setValidation] = useState<string | null>(null), [reviewing, setReviewing] = useState(false), [localError, setLocalError] = useState<unknown>(null);
   const changeField = (field: ConfigurationField, value: string) => setDraft(old => ({ ...old, [field]: value, dirty: { ...old.dirty, [field]: value !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } }));
-  const resolveField = (field: ConfigurationField, keepEdit: boolean) => setDraft(old => ({ ...old, [field]: keepEdit ? old[field] : observedField(old.baseline, field), dirty: { ...old.dirty, [field]: keepEdit && old[field] !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } }));
+  const resolveField = (field: ConfigurationField, keepEdit: boolean) => { actions.onDraftChange(); setDraft(old => ({ ...old, [field]: keepEdit ? old[field] : observedField(old.baseline, field), dirty: { ...old.dirty, [field]: keepEdit && old[field] !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } })); };
   const conflicts = draft.conflicts.name || draft.conflicts.url;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!actions.canSubmit || isPending(actions.state) || conflicts || !actions.expansionAvailable && (draft.baseline === null || draft.dirty.url)) return;
@@ -83,15 +86,16 @@ export const WebhookConfigurationDialog = ({ endpoint, projects, projectLabels, 
     <form id={formId} className={draft.baseline === null ? "webhook-create-form" : undefined} onSubmit={event => { void submit(event); }}><WebhookPendingNotice state={actions.state} active={actions.canRead} onCheck={actions.reconcile}/>
       {validation !== null && <div className="inline-error" role="alert">{validation}</div>}{(localError ?? errorFor(actions.state)) !== null && <WebhookError error={localError ?? errorFor(actions.state)}/>}
       {actions.state.phase === "rejected" && draft.baseline !== null && <button className="text-button" type="button" disabled={reviewing || !actions.canSubmit} onClick={() => { void review(); }}>{m.reviewCurrent}</button>}
-      <div className="form-field"><label htmlFor="webhook-name">{m.name}</label><input id="webhook-name" className="input" name="name" value={draft.name} placeholder={m.namePlaceholder} onChange={event => changeField("name", event.target.value)} required autoComplete="off"/>{fieldConflict("name")}</div>
-      <div className="form-field"><label htmlFor="webhook-url">{m.url}</label><input id="webhook-url" className="input" name="url" type="url" value={draft.url} disabled={!actions.expansionAvailable} placeholder={m.urlPlaceholder} onChange={event => changeField("url", event.target.value)} required autoComplete="off"/>{fieldConflict("url")}{!actions.expansionAvailable && draft.dirty.url && draft.baseline !== null && <button className="text-button" type="button" onClick={() => resolveField("url", false)}>{m.useCurrent}</button>}</div>
+      <div className="form-field"><label htmlFor="webhook-name">{m.name}</label><input data-touch-text="responsive" id="webhook-name" className="input" name="name" value={draft.name} placeholder={m.namePlaceholder} onChange={event => changeField("name", event.target.value)} required autoComplete="off"/>{fieldConflict("name")}</div>
+      <div className="form-field"><label htmlFor="webhook-url">{m.url}</label><input data-touch-text="responsive" id="webhook-url" className="input" name="url" type="url" value={draft.url} disabled={!actions.expansionAvailable} placeholder={m.urlPlaceholder} onChange={event => changeField("url", event.target.value)} required autoComplete="off"/>{fieldConflict("url")}{!actions.expansionAvailable && draft.dirty.url && draft.baseline !== null && <button className="text-button" type="button" onClick={() => resolveField("url", false)}>{m.useCurrent}</button>}</div>
       <div className="form-field"><span className="field-title">{m.receiveType}</span><div className="selected-type"><WebhookIcon name="code" size={20}/><div><strong>{m.method}</strong><small>CloudEvents · Standard Webhooks</small></div></div></div>
-      {draft.baseline === null && <><div className="form-divider"/><fieldset className="form-field"><legend className="field-title">{m.selectProjects}</legend><div className="checkbox-list">{projects === null ? <span>{m.loading}</span> : projects.length === 0 && unavailableSelected.length === 0 ? <span className="hint">{m.noProjects}</span> : projects.map(project => <label className="check-row" key={project.id}><input type="checkbox" checked={selectedProjects.includes(project.id)} onChange={event => setSelectedProjects(event.target.checked ? [...selectedProjects, project.id] : selectedProjects.filter(id => id !== project.id))}/><span className="check-main"><strong>{project.name}</strong><small>{projectLabels.get(project.id)}</small></span></label>)}{unavailableSelected.map(id => <label className="check-row" key={id}><input type="checkbox" checked onChange={() => setSelectedProjects(old => old.filter(value => value !== id))}/><span className="check-main"><strong>{id}</strong></span></label>)}</div></fieldset><EventChecks value={selectedEvents} onChange={setSelectedEvents}/></>}
+      {draft.baseline === null && <><div className="form-divider"/><fieldset className="form-field"><legend className="field-title">{m.selectProjects}</legend><div className="checkbox-list">{projects === null ? <span>{m.loading}</span> : projects.length === 0 && unavailableSelected.length === 0 ? <span className="hint">{m.noProjects}</span> : projects.map(project => <label className="check-row" key={project.id}><input type="checkbox" checked={selectedProjects.includes(project.id)} onChange={event => setSelectedProjects(event.target.checked ? [...selectedProjects, project.id] : selectedProjects.filter(id => id !== project.id))}/><span className="check-main"><strong>{project.name}</strong><small>{projectLabels.get(project.id)}</small></span></label>)}{unavailableSelected.map(id => <label className="check-row" key={id}><input type="checkbox" checked onChange={() => setSelectedProjects(old => old.filter(value => value !== id))}/><span className="check-main"><strong>{id}</strong></span></label>)}</div></fieldset><EventChecks catalog={catalog} value={selectedEvents} onChange={setSelectedEvents}/></>}
     </form>
   </WebhookDialog>;
 };
 
-export const WebhookSubscriptionDialog = ({ endpoint, subscription, projects, projectLabels, actions }: {
+export const WebhookSubscriptionDialog = ({ catalog, endpoint, subscription, projects, projectLabels, actions }: {
+  readonly catalog: WebhookCatalog;
   readonly endpoint: WebhookActiveEndpoint; readonly subscription: WebhookSubscription | null; readonly projects: readonly Project[] | null; readonly projectLabels: ReadonlyMap<string, string>; readonly actions: WebhookFormActions;
 }) => {
   const m = useWebhookMessages(), formId = useId(), [projectId, setProjectId] = useState(subscription?.projectId ?? ""), [selectedEvents, setSelectedEvents] = useState<readonly WebhookEventType[]>(subscription?.eventTypes ?? []), [validation, setValidation] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
@@ -110,8 +114,8 @@ export const WebhookSubscriptionDialog = ({ endpoint, subscription, projects, pr
   const unavailableSelected = projectId !== "" && !projects?.some(project => project.id === projectId);
   return <WebhookDialog title={subscription === null ? m.addSub : m.editSub} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || expansionBlocked || projects === null && subscription === null}>{m.save}</button></>}>
     <form id={formId} onSubmit={event => { void submit(event); }}><WebhookPendingNotice state={actions.state} active={actions.canRead} onCheck={actions.reconcile}/>{validation !== null && <div className="inline-error" role="alert">{validation}</div>}{(localError ?? errorFor(actions.state)) !== null && <WebhookError error={localError ?? errorFor(actions.state)}/>}
-      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><select id="webhook-subscription-project" className="input" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!eligible || subscription === null && !actions.expansionAvailable}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id} disabled={!canExpand && project.id !== subscription?.projectId}>{project.name} · {projectLabels.get(project.id)}</option>)}</select></div>
-      <EventChecks value={selectedEvents} onChange={setSelectedEvents} canAdd={canExpand}/>
+      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><NativeSelect layout="fill" id="webhook-subscription-project" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!eligible || subscription === null && !actions.expansionAvailable}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id} disabled={!canExpand && project.id !== subscription?.projectId}>{project.name} · {projectLabels.get(project.id)}</option>)}</NativeSelect></div>
+      <EventChecks catalog={catalog} value={selectedEvents} onChange={setSelectedEvents} canAdd={canExpand}/>
     </form>
   </WebhookDialog>;
 };

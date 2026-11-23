@@ -1,0 +1,29 @@
+# Agent Note: Project PR Workspace
+
+Status: implemented
+
+## Problem
+
+Project members need to browse all retained pull requests without task graph failures blocking access or background reads moving the page they are reading. The workspace must retain navigation state without mixing Task identities, account data or unknown synchronization results.
+
+## Decision
+
+The Project has an independent, persistently mounted PR workspace with a six-item cursor list and the existing PR detail reader. Section types, preference and history decoders, responsive keyboard navigation and reading positions share the overview/tasks/prs/tags order. List and synchronization status use separate reads and errors, exact decimal revisions and request generations. The Project page shares a repository selection between PR browsing and statistics; all PR reads bind the selected repository, while source changes invalidate cursors, authors and detail without clearing unrelated filters. Hidden workspaces cancel reads while retaining authorized in-memory selections. The localized connection fact sits beside the title independently of synchronization timestamps and diagnostics; it follows the connection state even when synchronization is disabled or fails, and is shown only for the current source.
+
+Background reconciliation uses the current page and preserves server-provided navigation paths. The later [silent reconciliation decision](../feature/2026-11-19-silent-pr-list-reconciliation.md) describes how the first page admits new records. The [read design](../../../../docs/design/github-pr-reading.md) owns the protocol and lifecycle details.
+
+## Alternatives
+
+**Rebuild the workspace on every section change.** This loses filters, cursors and the detail reader's raw Markdown selection and reading position.
+
+**Reread an unbounded first page during background checks.** Newly created records move the reader's existing page and can duplicate records across traversal.
+
+**Use the Task cache for PR summaries.** TaskSync owns UUID Tasks and their dependency graph; adding PR numbers and synchronization facts would couple unrelated revisions and failure paths.
+
+**Treat connection as synchronization health.** A connected repository can have synchronization disabled or encounter errors, so combining these facts would hide the connection or imply a successful sync.
+
+## Consequences
+
+Source selection preserves historical observations and overlapping numbers without presenting another repository’s synchronization status. The complete source directory must be read before the default can be selected.
+
+PR browsing remains available independently of task graph loading and errors. The activity timer adds bounded reads only while the PR workspace is visible. Cursor pages remain observations of a changing collection, so page counts can change and a previously populated anchor can become empty. Pagination remains visible whenever either server cursor exists, preserving both previous-only and next-only escape paths independently of the displayed page number. PR state lives only for the current authenticated Project workspace, with no persistent PR cache.

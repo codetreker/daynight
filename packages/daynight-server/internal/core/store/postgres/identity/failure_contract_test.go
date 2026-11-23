@@ -9,23 +9,26 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
-	for _, operation := range []string{"create-login", "upsert-user", "insert-session", "insert-pat", "list-pat", "delete-pat", "delete-session", "consume-login", "authenticate", "user", "insert-device", "inspect-device", "decide-device", "redeem-device", "device-rate", "expiry"} {
-		t.Run(operation, func(t *testing.T) {
-			db := isolatedStore(t)
+	db := isolatedStore(t)
+	_, p, session := testutil.AuthRecords(t, db)
+	for _, operation := range []string{"create-login", "upsert-user", "ensure-user", "patch-user", "insert-session", "insert-pat", "list-pat", "delete-pat", "delete-session", "consume-login", "authenticate", "user", "insert-device", "inspect-device", "decide-device", "redeem-device", "device-rate", "expiry"} {
+		if !t.Run(operation, func(t *testing.T) {
 			ctx := t.Context()
-			_, p, session := testutil.AuthRecords(t, db)
 			now := time.Now().UTC()
 			table := "personal_access_tokens"
 			switch operation {
 			case "create-login", "consume-login":
 				table = "login_transactions"
-			case "upsert-user", "user":
+			case "upsert-user", "ensure-user", "patch-user", "user":
 				table = "users"
 			case "insert-session", "delete-session", "authenticate":
 				table = "sessions"
@@ -34,9 +37,19 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 			case "device-rate":
 				table = "device_authorization_limits"
 			}
-			if _, err := db.Pool.Exec(ctx, `ALTER TABLE `+table+` RENAME TO unavailable_`+table); err != nil {
+			var originalOID uint32
+			if err := db.Pool.QueryRow(ctx, `SELECT to_regclass($1)::oid`, table).Scan(&originalOID); err != nil {
 				t.Fatal(err)
 			}
+			relation := pgx.Identifier{table}.Sanitize()
+			unavailable := "unavailable_" + table
+			renamed := pgx.Identifier{unavailable}.Sanitize()
+			if _, err := db.Pool.Exec(ctx, `ALTER TABLE `+relation+` RENAME TO `+renamed); err != nil {
+				t.Fatal(err)
+			}
+			// A prepared statement can still reach a renamed relation. Start the
+			// fault transaction on a connection that has to resolve the SQL anew.
+			db.Pool.Reset()
 			completion, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
 				dao := sc.IdentityDAO()
 				switch operation {
@@ -48,8 +61,18 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 				case "upsert-user":
 					_, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "new"}, now)
 					return err
+				case "ensure-user":
+					_, _, err := dao.EnsureUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "new"}, now)
+					return err
+				case "patch-user":
+					_, err := dao.PatchUser(ctx, p.UserID, model.UserProfilePatch{Name: model.ProfileField{Present: true}})
+					return err
 				case "insert-session":
-					return dao.InsertSession(ctx, session)
+					fresh := session
+					fresh.ID = uuid.NewString()
+					fresh.UserID = p.UserID
+					fresh.TokenHash = testutil.DeviceHash(fresh.ID)
+					return dao.InsertSession(ctx, fresh)
 				case "insert-pat":
 					return dao.InsertPAT(ctx, testutil.DeviceCredential(now))
 				case "list-pat":
@@ -87,13 +110,49 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 			})
 			var pg *pgconn.PgError
 			var dbError *store.Error
-			if !errors.As(err, &pg) || !errors.As(err, &dbError) || strings.Contains(err.Error(), "SELECT") || completion.Outcome != store.TransactionNotCommitted {
-				t.Fatalf("relation failure=%#v %v", completion, err)
+			if !errors.As(err, &pg) || pg.Code != "42P01" || !errors.As(err, &dbError) || strings.Contains(err.Error(), "SELECT") || completion.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("relation failure=%#v %v (PostgreSQL: %v)", completion, err, pg)
 			}
-		})
+			if operation == "user" {
+				t.Run("authenticate-session", func(t *testing.T) {
+					ctx := t.Context()
+					var authenticationError *store.Error
+					var driver *pgconn.PgError
+					completion, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
+						principal, err := sc.IdentityDAO().Authenticate(ctx, model.SessionCredential, session.TokenHash, now)
+						if principal != (model.Principal{Kind: model.SessionCredential}) {
+							t.Fatalf("failed Session authentication returned actor data: %#v", principal)
+						}
+						if !errors.As(err, &authenticationError) || !authenticationError.DatabaseFailure ||
+							!errors.As(err, &driver) || driver.Code != "42P01" || errors.Is(err, model.ErrNotFound) {
+							t.Fatalf("missing users relation lost its authentication failure cause: %v", err)
+						}
+						return err
+					})
+					if completion.Outcome != store.TransactionNotCommitted || authenticationError == nil || !errors.Is(err, authenticationError) || !errors.Is(err, driver) {
+						t.Fatalf("failed Session authentication lost its rollback outcome or cause: %+v %v", completion, err)
+					}
+				})
+			}
+			if _, err := db.Pool.Exec(ctx, `ALTER TABLE `+renamed+` RENAME TO `+relation); err != nil {
+				t.Fatal(err)
+			}
+			var restored bool
+			if err := db.Pool.QueryRow(ctx, `SELECT to_regclass($1)::oid IS NOT DISTINCT FROM $2::oid AND to_regclass($3) IS NULL`,
+				table, originalOID, unavailable).Scan(&restored); err != nil || !restored {
+				t.Fatalf("restore %s as relation %d: restored=%t error=%v", table, originalOID, restored, err)
+			}
+		}) {
+			return
+		}
 	}
-	db := isolatedStore(t)
-	db.Close()
+
+	pool, err := pgxpool.NewWithConfig(t.Context(), db.Pool.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close()
+	closed := &postgres.Store{Pool: pool}
 	for _, operation := range []func(store.IdentityDAO) error{
 		func(d store.IdentityDAO) error { return d.InsertLogin(context.Background(), model.LoginTransaction{}) },
 		func(d store.IdentityDAO) error {
@@ -106,7 +165,7 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 		},
 	} {
 		called := false
-		_, err := db.WriteIdentity(t.Context(), func(sc store.IdentityScope) error { called = true; return operation(sc.IdentityDAO()) })
+		_, err := closed.WriteIdentity(t.Context(), func(sc store.IdentityScope) error { called = true; return operation(sc.IdentityDAO()) })
 		if err == nil || called {
 			t.Fatalf("closed pool ran operation: called=%t error=%v", called, err)
 		}

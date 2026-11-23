@@ -15,25 +15,33 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Store) {
+func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Store, profile string) {
 	_, owner, _ := testAuthRecords(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, now.Add(-10*time.Minute))
+	grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, profile, now.Add(-10*time.Minute))
 	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 	if err := db.Pool.QueryRow(t.Context(), `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	check := func(want bool, resource, scope string, at time.Time) {
 		t.Helper()
-		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-			err := dao.LockOAuthCredential(t.Context(), actor, resource, scope, at)
-			if want && err != nil || !want && !errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("credential admission valid=%v: %v", want, err)
-			}
-			return nil
-		})
+		for _, lock := range []bool{false, true} {
+			sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+				check := dao.ReadOAuthCredential
+				if lock {
+					check = dao.LockOAuthCredential
+				}
+				err := check(t.Context(), actor, []store.OAuthBinding{{Resource: resource, Scope: scope, ClientID: sessionOAuthBindings(grant)[0].ClientID}}, at)
+				if want && err != nil || !want && !errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("credential admission lock=%v valid=%v: %v", lock, want, err)
+				}
+				return nil
+			})
+		}
 	}
 	check(true, grant.Resource, grant.Scope, now)
 	check(false, "https://other.example/mcp", grant.Scope, now)
@@ -51,13 +59,21 @@ func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Sto
 }
 
 func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	for _, profile := range []string{"mcp", "api"} {
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t, suite, profile) }) {
+			return
+		}
+	}
+}
+
+func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, queuedRevoker := range []bool{false, true} {
-		t.Run(map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
-			grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-10*time.Minute).Truncate(time.Microsecond))
+			grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, profile, time.Now().UTC().Add(-10*time.Minute).Truncate(time.Microsecond))
 			actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 			if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 				t.Fatal(err)
@@ -72,70 +88,67 @@ func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer submit.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, submit)
 			dispatch, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer dispatch.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, dispatch)
 			revoker, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer revoker.Rollback(context.Background())
-			if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
+			defer rollbackSessionTestTransaction(t, revoker)
+			if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := pgsession.New(dispatch).LockSession(ctx, id); err != nil {
 				t.Fatal(err)
 			}
+			submitPID := submit.Conn().PgConn().PID()
 			waiting, finished := make(chan error, 1), make(chan struct{})
-			go func() { defer close(finished); _, err := pgsession.New(submit).LockSession(ctx, id); waiting <- err }()
+			var revocationFinished chan struct{}
+			go func() {
+				defer close(finished)
+				_, err := pgsession.New(submit).LockSession(ctx, id)
+				waiting <- err
+			}()
 			defer func() {
 				cancel()
-				_ = dispatch.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("submit waiter did not drain")
+				rollbackSessionTestTransaction(t, dispatch)
+				<-finished
+				rollbackSessionTestTransaction(t, submit)
+				if revocationFinished != nil {
+					<-revocationFinished
 				}
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT bot_id::text,server_instance", dispatch.Conn().PgConn().PID())
-			revoked, revocationFinished := make(chan error, 1), make(chan struct{})
+			revoked := make(chan error, 1)
 			if queuedRevoker {
+				revocationFinished = make(chan struct{})
 				go func() {
 					defer close(revocationFinished)
 					_, err := pgoauth.NewDAO(revoker).RevokeFamily(ctx, grant.ID, time.Now())
 					revoked <- err
 				}()
-				defer func() {
-					cancel()
-					_ = submit.Rollback(context.Background())
-					_ = dispatch.Rollback(context.Background())
-					select {
-					case <-revocationFinished:
-					case <-time.After(time.Second):
-						t.Error("revoker did not drain")
-					}
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
+				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submitPID)
 			}
 			readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 			defer readCancel()
-			if err := pgsession.New(dispatch).LockOAuthCredential(readCtx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
+			if err := pgsession.New(dispatch).LockOAuthCredential(readCtx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 				t.Fatalf("dispatch credential lock deadlocked with submit/revoker: %v", err)
 			}
 			if err := dispatch.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if err := <-waiting; err != nil {
+			if err := testutil.ReceiveQueryResult(t, ctx, waiting); err != nil {
 				t.Fatal(err)
 			}
 			if err := submit.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if queuedRevoker {
-				if err := <-revoked; err != nil {
+				if err := testutil.ReceiveQueryResult(t, ctx, revoked); err != nil {
 					t.Fatal(err)
 				}
 				if err := revoker.Commit(ctx); err != nil {
@@ -147,13 +160,23 @@ func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 }
 
 func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	for _, profile := range []string{"mcp", "api"} {
+		if !t.Run(profile, func(t *testing.T) {
+			testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t, suite, profile)
+		}) {
+			return
+		}
+	}
+}
+
+func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, mode := range []string{"revocation", "expiry"} {
-		t.Run(mode, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, mode, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
-			grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-10*time.Minute).Truncate(time.Microsecond))
+			grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, profile, time.Now().UTC().Add(-10*time.Minute).Truncate(time.Microsecond))
 			actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 			if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 				t.Fatal(err)
@@ -162,32 +185,47 @@ func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
-			done := make(chan error, 1)
+			defer rollbackSessionTestTransaction(t, waiter)
+			var wait func() error
+			var query string
 			if mode == "revocation" {
-				if err := pgsession.New(blocker).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
+				if err := pgsession.New(blocker).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 					t.Fatal(err)
 				}
-				go func() { _, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now()); done <- err }()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					_, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now())
+					return err
+				}
+				query = "SELECT id::text,user_id::text,client_id"
 			} else {
 				if _, err := blocker.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID); err != nil {
 					t.Fatal(err)
 				}
-				go func() {
-					done <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now())
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text FROM oauth_access_tokens", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					return pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
+				}
+				query = "SELECT id::text FROM oauth_access_tokens"
 			}
+			done, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				done <- wait()
+			}()
+			defer func() {
+				cancel()
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
+			}()
+			testutil.WaitTransferTeamLock(t, ctx, db.Pool, query, blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			result := <-done
+			result := testutil.ReceiveQueryResult(t, ctx, done)
 			if mode == "revocation" {
 				if result != nil {
 					t.Fatal(result)
@@ -199,7 +237,7 @@ func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 				t.Fatal(err)
 			}
 			sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-				if err := dao.LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now()); !errors.Is(err, model.ErrNotFound) {
+				if err := dao.LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("invalid actor re-admitted: %v", err)
 				}
 				return nil
@@ -209,11 +247,17 @@ func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 }
 
 func TestTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T) {
+	for _, profile := range []string{"mcp", "api"} {
+		t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t, profile) })
+	}
+}
+
+func testTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T, profile string) {
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	_, owner, _ := testAuthRecords(t, db)
-	grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
+	grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, profile, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
 	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 		t.Fatal(err)
@@ -233,7 +277,7 @@ func TestTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer dispatch.Rollback(context.Background())
-	if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
+	if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	revoked := make(chan error, 1)
@@ -251,19 +295,27 @@ func TestTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T) 
 	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
 	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 	defer readCancel()
-	if err := pgsession.New(dispatch).LockOAuthCredential(readCtx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
+	if err := pgsession.New(dispatch).LockOAuthCredential(readCtx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 		t.Fatalf("compatible dispatch credential read waited behind revocation: %v", err)
 	}
 }
 
 func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	for _, profile := range []string{"mcp", "api"} {
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialRechecksGrantAfterWait(t, suite, profile) }) {
+			return
+		}
+	}
+}
+
+func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, change := range []string{"scope", "expiry", "revocation"} {
-		t.Run(change, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, change, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
-			grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
+			grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, profile, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
 			actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 			if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 				t.Fatal(err)
@@ -272,12 +324,12 @@ func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, waiter)
 			switch change {
 			case "scope":
 				_, err = blocker.Exec(ctx, `UPDATE oauth_grants SET scope='changed' WHERE id=$1`, grant.ID)
@@ -292,16 +344,12 @@ func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
 			result, finished := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(finished)
-				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now())
+				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
 			}()
 			defer func() {
 				cancel()
-				_ = blocker.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("credential waiter did not drain")
-				}
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT g.id::text FROM oauth_grants", blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
@@ -314,9 +362,9 @@ func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
 	}
 }
 
-func testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T, db *postgres.Store) {
+func testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T, db *postgres.Store, profile string) {
 	_, owner, _ := testAuthRecords(t, db)
-	grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
+	grant, access, refresh := sessionOAuthFamily(t, db, owner.UserID, profile, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
 	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 	if err := db.Pool.QueryRow(t.Context(), `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
 		t.Fatal(err)
@@ -331,6 +379,36 @@ func testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T, 
 			return err
 		}
 		return dao.InsertSessionOperation(t.Context(), store.SessionOperation{SessionID: id, OperationID: operation, Seq: 1, Hash: []byte("intent"), Actor: actor, Command: sp.Command{Fence: fence, Protocol: sp.Protocol, OperationID: operation, Kind: "send_message", Payload: []byte(`{}`)}, Receipt: receipt})
+	})
+
+	newer := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID, CredentialID: uuid.NewString()}
+	rotatedAt := time.Now().UTC()
+	completion, err := db.WriteGrantLifecycle(t.Context(), func(dao store.GrantLifecycleDAO) error {
+		locked, err := dao.InspectGrant(t.Context(), grant.ID, true)
+		if err != nil {
+			return err
+		}
+		if _, err := dao.Refresh(t.Context(), secret.Hash(refresh), true); err != nil {
+			return err
+		}
+		return dao.RotateRefresh(t.Context(), store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: newer.CredentialID, CreatedAt: rotatedAt, AccessExpiresAt: rotatedAt.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt})
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("rotate saved actor family: %v %v", completion, err)
+	}
+	mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID)
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+		actual, err := dao.SessionOperation(t.Context(), id, operation)
+		if err != nil {
+			return err
+		}
+		if actual.Actor != actor {
+			t.Fatalf("rotation replaced operation actor: %#v", actual.Actor)
+		}
+		if err := dao.LockOAuthCredential(t.Context(), actual.Actor, sessionOAuthBindings(grant), time.Now()); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("expired original actor revived by rotation: %v", err)
+		}
+		return dao.LockOAuthCredential(t.Context(), newer, sessionOAuthBindings(grant), time.Now())
 	})
 	revoker, err := db.Pool.Begin(t.Context())
 	if err != nil {
@@ -356,12 +434,18 @@ func testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T, 
 }
 
 func TestTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T) {
+	for _, profile := range []string{"mcp", "api"} {
+		t.Run(profile, func(t *testing.T) { testTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t, profile) })
+	}
+}
+
+func testTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T, profile string) {
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	_, owner, _ := testAuthRecords(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	grant, access, refresh := testutil.OAuthFamily(t, db, owner.UserID, now.Add(-10*time.Minute))
+	grant, access, refresh := sessionOAuthFamily(t, db, owner.UserID, profile, now.Add(-10*time.Minute))
 	older := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
 	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&older.CredentialID); err != nil {
 		t.Fatal(err)
@@ -379,14 +463,14 @@ func TestTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T) {
 		if previous.ConsumedAt != nil {
 			return errors.New("fixture refresh already consumed")
 		}
-		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: newer.CredentialID, CreatedAt: now, AccessExpiresAt: now.Add(time.Hour)})
+		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: newer.CredentialID, CreatedAt: now, AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, actor := range []model.Principal{older, newer} {
 		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-			return dao.LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, now)
+			return dao.LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
 		})
 	}
 	project := queryProject(t, db, 1)
@@ -414,7 +498,7 @@ func TestTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T) {
 	if err := revoker.QueryRow(ctx, `SELECT pg_current_xact_id()::text`).Scan(&revokerXID); err != nil {
 		t.Fatal(err)
 	}
-	if err := pgsession.New(submit).LockOAuthCredential(ctx, newer, grant.Resource, grant.Scope, now); err != nil {
+	if err := pgsession.New(submit).LockOAuthCredential(ctx, newer, sessionOAuthBindings(grant), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pgsession.New(dispatch).LockSession(ctx, id); err != nil {
@@ -467,7 +551,7 @@ func TestTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T) {
 	if olderLocked {
 		t.Fatal("revocation deleted the older token before admission released its family")
 	}
-	if err := pgsession.New(dispatch).LockOAuthCredential(ctx, older, grant.Resource, grant.Scope, time.Now()); err != nil {
+	if err := pgsession.New(dispatch).LockOAuthCredential(ctx, older, sessionOAuthBindings(grant), time.Now()); err != nil {
 		t.Fatalf("dispatch credential lock: %v: %v", err, errors.Unwrap(err))
 	}
 	if err := dispatch.Commit(ctx); err != nil {
@@ -487,10 +571,328 @@ func TestTaskOAuthRotatedTokensDoNotDeadlockSessionDispatch(t *testing.T) {
 	}
 	for _, actor := range []model.Principal{older, newer} {
 		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-			if err := dao.LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now()); !errors.Is(err, model.ErrNotFound) {
+			if err := dao.LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("rotated family actor survived revocation: %v", err)
 			}
 			return nil
 		})
+	}
+}
+
+func sessionOAuthFamily(t *testing.T, db *postgres.Store, user, profile string, now time.Time) (store.OAuthGrant, string, string) {
+	t.Helper()
+	if profile == "mcp" {
+		return testutil.OAuthFamily(t, db, user, now)
+	}
+	access, refresh := secret.Random("dnapi_"), secret.Random("dnapr_")
+	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: user, ClientID: "societas-bot", ClientSnapshot: []byte(`{"client_id":"societas-bot","client_name":"Societas Bot"}`), Resource: "https://example.test/api/v1", Scope: "daynight:api", CreatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+	completion, err := db.WriteCredentialFamily(t.Context(), func(scope store.CredentialFamilyScope) error {
+		return scope.CredentialFamilyDAO().IssueFamily(t.Context(), store.OAuthFamilyIssue{Grant: grant, AccessID: uuid.NewString(), AccessHash: secret.Hash(access), RefreshHash: secret.Hash(refresh), AccessExpiresAt: now.Add(time.Hour)})
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("issue API family: %v %v", completion, err)
+	}
+	return grant, access, refresh
+}
+
+func sessionOAuthBindings(grant store.OAuthGrant) []store.OAuthBinding {
+	client := ""
+	if grant.Scope == "daynight:api" {
+		client = "societas-bot"
+	}
+	return []store.OAuthBinding{{Resource: grant.Resource, Scope: grant.Scope, ClientID: client}}
+}
+
+func TestSessionOAuthAPIBindingChecksActualFamilyAndUser(t *testing.T) {
+	db := isolatedStore(t)
+	_, owner, _ := testAuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", now)
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(t.Context(), `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	api := sessionOAuthBindings(grant)[0]
+	mcp := store.OAuthBinding{Resource: "https://example.test/mcp", Scope: "daynight:mcp"}
+	for _, tc := range []struct {
+		name     string
+		actor    model.Principal
+		bindings []store.OAuthBinding
+		valid    bool
+	}{
+		{"API only", actor, []store.OAuthBinding{api}, true},
+		{"Task API and MCP", actor, []store.OAuthBinding{mcp, api}, true},
+		{"MCP only", actor, []store.OAuthBinding{mcp}, false},
+		{"wrong client", actor, []store.OAuthBinding{{Resource: api.Resource, Scope: api.Scope, ClientID: "foreign-client"}}, false},
+		{"crossed resource and scope", actor, []store.OAuthBinding{{Resource: api.Resource, Scope: mcp.Scope}, {Resource: mcp.Resource, Scope: api.Scope, ClientID: api.ClientID}}, false},
+		{"foreign user", model.Principal{Kind: actor.Kind, UserID: uuid.NewString(), CredentialID: actor.CredentialID}, []store.OAuthBinding{api}, false},
+		{"missing access", model.Principal{Kind: actor.Kind, UserID: actor.UserID, CredentialID: uuid.NewString()}, []store.OAuthBinding{api}, false},
+		{"native kind", model.Principal{Kind: model.PATCredential, UserID: actor.UserID, CredentialID: actor.CredentialID}, []store.OAuthBinding{api}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, lock := range []bool{false, true} {
+				sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+					check := dao.ReadOAuthCredential
+					if lock {
+						check = dao.LockOAuthCredential
+					}
+					err := check(t.Context(), tc.actor, tc.bindings, now)
+					if tc.valid && err != nil || !tc.valid && !errors.Is(err, model.ErrNotFound) {
+						t.Fatalf("lock=%v valid=%v: %v", lock, tc.valid, err)
+					}
+					return nil
+				})
+			}
+		})
+	}
+	mustQueryExec(t, db, `UPDATE oauth_grants SET client_id='foreign-client' WHERE id=$1`, grant.ID)
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+		if err := dao.LockOAuthCredential(t.Context(), actor, []store.OAuthBinding{mcp, api}, now); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("changed actual client admitted: %v", err)
+		}
+		return nil
+	})
+	mustQueryExec(t, db, `UPDATE oauth_grants SET client_id=$2 WHERE id=$1`, grant.ID, api.ClientID)
+	mustQueryExec(t, db, `DELETE FROM users WHERE id=$1`, actor.UserID)
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+		if err := dao.ReadOAuthCredential(t.Context(), actor, []store.OAuthBinding{api}, now); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing actual user admitted: %v", err)
+		}
+		return nil
+	})
+}
+
+func TestSessionOAuthReadonlyPreflightDoesNotAcquireFamilyLocks(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, owner, _ := testAuthRecords(t, db)
+	grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", time.Now().UTC().Add(-time.Minute))
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackSessionTestTransaction(t, writer)
+	if _, err := writer.Exec(ctx, `UPDATE oauth_grants SET revoked_at=clock_timestamp() WHERE id=$1`, grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := db.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackSessionTestTransaction(t, reader)
+	readCtx, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if err := pgsession.New(reader).ReadOAuthCredential(readCtx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
+		t.Fatalf("readonly preflight waited for writer or attempted locking: %v", err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgsession.New(reader).ReadOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("readonly preflight reused stale authorization: %v", err)
+	}
+}
+
+func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original credential", true: "bound OAuth credential"}[bound], func(t *testing.T) {
+			testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t, bound)
+		})
+	}
+}
+
+func testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T, bound bool) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, owner, _ := testAuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	grant, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", now.Add(-time.Minute))
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderPID := blocker.Conn().PgConn().PID()
+	ready := make(chan uint32, 1)
+	start := make(chan struct{})
+	result, finished := make(chan error, 1), make(chan struct{})
+	commitAttempted := false
+	defer func() {
+		cancel()
+		if !commitAttempted {
+			rollbackSessionTestTransaction(t, blocker)
+		}
+		<-finished
+	}()
+	go func() {
+		defer close(finished)
+		waiter, err := db.Pool.Begin(ctx)
+		if err != nil {
+			result <- err
+			return
+		}
+		defer rollbackOAuthExpiryWaiter(t, ctx, waiter)
+		ready <- waiter.Conn().PgConn().PID()
+		select {
+		case <-start:
+			if bound {
+				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
+			} else {
+				result <- pgsession.New(waiter).LockCredential(ctx, actor, now)
+			}
+		case <-ctx.Done():
+		}
+	}()
+
+	var waiterPID uint32
+	select {
+	case waiterPID = <-ready:
+	case err := <-result:
+		t.Fatalf("OAuth expiry waiter failed to start: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	// Commit expiry before taking the token lock. The holder leaves the row unchanged.
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 1)
+	if !now.Before(expires) {
+		t.Fatalf("caller time %v must precede token expiry %v", now, expires)
+	}
+	var lockedExpiry time.Time
+	if err := blocker.QueryRow(ctx, `SELECT expires_at FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, actor.CredentialID, actor.UserID).Scan(&lockedExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if !lockedExpiry.Equal(expires) {
+		t.Fatalf("locked token expires at %v, want %v", lockedExpiry, expires)
+	}
+	close(start)
+
+	waitForOAuthExpiryTokenLock(t, ctx, db, waiterPID, holderPID, result)
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+	commitAttempted = true
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || (bound && errors.Is(err, pgx.ErrNoRows)) {
+		t.Fatalf("naturally expired access admitted using pre-wait time: %v", err)
+	}
+}
+
+func waitForOAuthExpiryTokenLock(t *testing.T, ctx context.Context, db *postgres.Store, waiterPID, holderPID uint32, result <-chan error) {
+	t.Helper()
+	const tokenLookup = "SELECT id::text FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR SHARE"
+	for {
+		select {
+		case err := <-result:
+			t.Fatalf("OAuth expiry waiter finished without observing the token lock: %v", err)
+		default:
+		}
+		var waiting bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query=$2
+				AND $3=ANY(pg_blocking_pids(pid))
+		)`, waiterPID, tokenLookup, holderPID).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		if err := testutil.WaitThreadClock(ctx); err != nil {
+			t.Fatalf("OAuth expiry waiter %d did not wait for holder %d: %v", waiterPID, holderPID, err)
+		}
+	}
+}
+
+func rollbackOAuthExpiryWaiter(t *testing.T, operationCtx context.Context, tx pgx.Tx) {
+	t.Helper()
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(operationCtx), 5*time.Second)
+	defer cancel()
+
+	// Rollback returns the connection to the pool. Retain the cleanup signal while we own it.
+	conn := tx.Conn().PgConn()
+	closedBefore, cleanupDone := conn.IsClosed(), conn.CleanupDone()
+	err := tx.Rollback(cleanup)
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) {
+		return
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) && (closedBefore || operationCtx.Err() != nil) {
+		select {
+		case <-cleanupDone:
+			return
+		case <-cleanup.Done():
+			err = errors.Join(err, cleanup.Err())
+		}
+	}
+	t.Errorf("rollback OAuth expiry waiter: %v", err)
+}
+
+// expiryClockBarrier holds the final clock check after the real credential read.
+type expiryClockBarrier struct {
+	pgx.Tx
+	calls  int
+	ready  chan struct{}
+	resume chan struct{}
+}
+
+func (tx *expiryClockBarrier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.calls++
+	if tx.calls == 4 {
+		close(tx.ready)
+		select {
+		case <-tx.resume:
+		case <-ctx.Done():
+		}
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+func TestSessionOAuthExpiryBetweenCredentialReadAndClockCheck(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, owner, _ := testAuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", now.Add(-time.Minute))
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 1)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &expiryClockBarrier{Tx: tx, ready: make(chan struct{}), resume: make(chan struct{})}
+	result := make(chan error, 1)
+	finished := make(chan struct{})
+	defer func() {
+		cancel()
+		<-finished
+		rollbackSessionTestTransaction(t, tx)
+	}()
+	go func() {
+		defer close(finished)
+		result <- pgsession.New(wrapped).LockCredential(ctx, actor, now)
+	}()
+	select {
+	case <-wrapped.ready:
+	case err := <-result:
+		t.Fatalf("credential read did not reach clock check: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+	close(wrapped.resume)
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expiry after credential read was not rejected by clock check: %v", err)
 	}
 }

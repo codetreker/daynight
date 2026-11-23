@@ -16,21 +16,30 @@ single reset strategy cannot safely replace all isolated fixtures.
 
 ## Decision
 
-Three sequential parent tests own separate real Stores for schema-stable Session,
-archive and image cases. Each selected child borrows the parent Store; a reset
+Sequential parent tests own separate real Stores for schema-stable Session,
+archive, image, and OAuth credential-lock matrices. Each selected child borrows the parent Store; a reset
 occurs only between original fixture boundaries, preserving stateful subtests and
 transaction order within a case. The parent checks connection and transaction
 quiescence and the complete preserved seed contents after every child, including
-the last. Failure stops reuse. No case enters parallel scheduling.
+the last. A failed case or OAuth profile stops reuse. OAuth lock cases cancel
+and join their waiters before releasing the transactions those waiters use.
+No case enters parallel scheduling.
 
-The reset truncates all 65 mutable tables together without cascading, including
-both sides of the nine foreign keys. It retains and compares the full migration
-ledger and four snapshot seed tables, and explicitly restores and reads back
-all four sequences, including their `is_called` state. At measurement, the ledger
-contained all 62 migrations in the then-current snapshot. Sequence changes are not
-transactional, so any reset or verification error ends the group. Child cleanup
-finishes before the parent observes resources with its still-live context.
-Rollback cleanup uses an independent deadline and reports unexpected errors.
+The [shared table reset](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/fixture_reset.go)
+probes the complete mutable table inventory for actual rows. It
+adds every table that directly or transitively references a populated table,
+including empty referencing tables that PostgreSQL requires in the same
+`TRUNCATE`. The statement explicitly lists only those mutable tables in the
+fixture schema. Both the probes and truncation address only the named relations.
+An empty set skips table truncation. Each suite retains its own transaction and
+sequence handling. Every Session reset still restores
+and reads back all captured sequence values and `is_called` flags, since a
+rolled-back write can advance a sequence without leaving rows. The migration
+ledger and four other snapshot seed tables retain exact content checks after
+each child. Sequence changes are not transactional, so any reset or verification
+error ends the group. Child cleanup finishes before the parent observes resources
+with its still-live context. Rollback cleanup uses an independent deadline and
+reports unexpected errors.
 
 Catalog mutations, complex concurrent lock and capacity cases, and the crash
 recovery process retain independent fixtures. Their real transactions, gates,
@@ -46,6 +55,11 @@ repeats the current snapshot and catalog cleanup for schema-stable cases.
 **Share only the management pool.** Measurement showed management connection,
 creation and closure totaled 1.46 seconds in the diagnostic run; this leaves
 repeated schema initialization and deletion in place.
+
+**Truncate the whole mutable inventory at each boundary.** This includes all
+foreign-key dependencies by construction, while rebuilding storage and indexes
+for many empty relations. The populated-table probes and foreign-key traversal
+preserve the reset boundary without that repeated catalog work.
 
 **Wrap each case in an outer rollback transaction.** Production operations use
 independent connections and commit. An outer transaction cannot restore their

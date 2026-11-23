@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/google/uuid"
 )
 
@@ -99,6 +100,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 		t.Fatal("todo response lost classification")
 	}
 	f.mutation(&current, nil, nil, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(current)
 	assertProjectError(t, projectRequest(f.handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
 	f.page([]model.Task{done, pending, current}, nil, nil)
 	page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), ""), http.StatusOK)
@@ -137,6 +139,27 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	target = f.status(startedRow, completedRow)
 	if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, expected) || target.StartedAt == nil || target.CompletedAt == nil {
 		t.Fatalf("HTTP execution response lost classification or timing: %#v", target)
+	}
+}
+
+func TestTaskDependencyLimitHTTPRefusals(t *testing.T) {
+	f := newExternalHTTPFixture(t)
+	dependencies := make([]string, 31)
+	for i := range dependencies {
+		dependencies[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
+	}
+	f.noStorage()
+	create := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Too many", "dependsOn": dependencies}))
+	assertProjectError(t, create, http.StatusBadRequest, "invalid_input")
+	if !strings.Contains(create.Body.String(), "31") || !strings.Contains(create.Body.String(), "30") {
+		t.Fatalf("missing count and limit: %s", create.Body.String())
+	}
+	current := externalHTTPRecord(f.project.ID, externalHTTPID('f'), "Existing")
+	f.mutation(&current, nil, nil, nil, false, store.TransactionCommitted)
+	update := projectRequest(f.handler, http.MethodPatch, taskPath(externalHTTPAPI(current)), jsonBody(t, map[string]any{"version": current.Version, "dependsOn": dependencies}))
+	assertProjectError(t, update, http.StatusBadRequest, "invalid_input")
+	if !strings.Contains(update.Body.String(), "31") || !strings.Contains(update.Body.String(), "30") {
+		t.Fatalf("missing count and limit: %s", update.Body.String())
 	}
 }
 
@@ -261,9 +284,17 @@ func externalHTTPWrite(row model.Task) store.TaskWrite {
 	row = copyTaskHTTPTask(row)
 	return store.TaskWrite{Type: row.Type, ParentID: row.ParentID, AssignedTo: row.AssignedTo, RequiredPlatform: row.RequiredPlatform, AllowAgents: row.AllowAgents, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn}
 }
+func tagHTTPReferences(tags []model.TagReference) []taskprotocol.RESTTagReference {
+	result := make([]taskprotocol.RESTTagReference, 0, len(tags))
+	for _, tag := range tags {
+		result = append(result, taskprotocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
+	}
+	return result
+}
+
 func externalHTTPAPI(row model.Task) api.Task {
 	row = copyTaskHTTPTask(row)
-	return api.Task{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
+	return api.Task{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Tags: tagHTTPReferences(row.Tags), Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
 }
 func externalHTTPCheck(t *testing.T, actual, expected any) {
 	t.Helper()
@@ -313,6 +344,9 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			want["reachable:"+id] = 1
 		}
 	}
+	if current != nil && result != nil && current.Status != result.Status && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if result != nil {
 		want["mutation"] = 1
 		if current != nil {
@@ -342,6 +376,14 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, id, current.ID)
 			return copyTaskHTTPTask(*current), nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, id, current.ID)
+			return []string{}, nil
 		}
 	}
 	if validateDependencies {
@@ -461,6 +503,7 @@ func (f *externalHTTPFixture) status(before, after model.Task) api.Task {
 		result = &after
 	}
 	f.mutation(&before, &values, result, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, externalHTTPAPI(before), string(after.Status))
 	externalHTTPCheck(f.t, got, externalHTTPAPI(after))
 	return got
@@ -634,7 +677,7 @@ func platformHTTPAPI(task model.Task) api.Task {
 		platform = &value
 	}
 	return api.Task{ID: task.ID, Type: task.Type, ParentID: task.ParentID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
-		Status: string(task.Status), Properties: api.TaskProperties(task.Properties), Version: task.Version,
+		Status: string(task.Status), Properties: api.TaskProperties(task.Properties), Tags: tagHTTPReferences(task.Tags), Version: task.Version,
 		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, StartedAt: task.StartedAt, CompletedAt: task.CompletedAt, CancelledAt: task.CancelledAt,
 		DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn, BlockedBy: task.BlockedBy,
 		RequiredPlatform: platform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents, Ready: task.Ready}
@@ -666,6 +709,9 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 	}
 	if status && before != nil && before.Status == model.TaskDone && result.Status != model.TaskDone {
 		want["dependents"] = 1
+	}
+	if status && before != nil && changed && result.Status.IsTerminal() {
+		want["children"] = 1
 	}
 	if changed {
 		want["save"] = 1
@@ -707,6 +753,14 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 		writer.ActiveDependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
 			f.require(ctx, f.project.ID)
 			plan.Called("dependents")
+			platformHTTPCheck(f.t, id, before.ID)
+			return []string{}, nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			f.require(ctx, f.project.ID)
+			plan.Called("children")
 			platformHTTPCheck(f.t, id, before.ID)
 			return []string{}, nil
 		}
@@ -827,6 +881,7 @@ func platformHTTPStatus(f *taskHTTPFixture, before model.Task, to model.TaskStat
 	values := platformHTTPValues(before)
 	values.Status = to
 	platformHTTPWrite(f, &before, values, after, true, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, platformHTTPAPI(before), string(to))
 	platformHTTPCheck(f.t, got, platformHTTPAPI(after))
 	return after

@@ -1,29 +1,25 @@
-import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
-import type { WorkerCloudReport, WorkerCloudReceipt, WorkerCloudReportReceipt, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { ApiError } from "../../api/client.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
-import type { WorkerPromptSource } from "./prompt-source.js";
+import { syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "./configuration-exchange.js";
+import type { WorkerConfigurationExchange } from "./configuration-exchange.js";
+export { syncWorkerConfigurationOnce } from "./configuration-exchange.js";
+export type { WorkerConfigurationExchange } from "./configuration-exchange.js";
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
-type FailureState = { signature: string; repetitions: number };
-
-const immutable = <T>(value: T): T => {
-  if (typeof value !== "object" || value === null) return value;
-  for (const child of Object.values(value)) immutable(child);
-  return Object.freeze(value);
-};
+type FailureState = { signature: string; repetitions: number; lastEmittedAt: number };
 
 const describeFailure = (error: unknown, seen = new Set<unknown>(), depth = 0): SafeFailure => {
   if (depth >= 6 || seen.has(error)) return { category: "truncated" };
   seen.add(error);
   const category = error instanceof AggregateError ? "aggregate"
     : error instanceof OperationError ? `operation_${error.kind}`
+    : error instanceof ApiError && error.operation === "worker.configuration.report" && error.status === 413 ? `configuration_report_capacity_413${error.outcomeUnconfirmed ? "_outcome_unconfirmed" : ""}`
     : error instanceof ApiError ? `http_${error.phase}${error.status === undefined ? "" : `_${error.status}`}`
     : error instanceof ProtocolError ? "protocol"
     : error instanceof TypeError ? "type"
@@ -51,56 +47,17 @@ const copyInventory = (inventory: WorkerTaskInventory): WorkerTaskInventory => O
   observedAt: inventory.observedAt, claims: Object.freeze(inventory.claims.map(copyReference)),
 });
 
-export type WorkerConfigurationExchange = {
-  prepare?(operation: Operation): Promise<void>;
-  capture(): WorkerCloudReport;
-  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
-  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
-  prompts?: WorkerPromptSource;
-};
-
-export const syncWorkerConfigurationOnce = async (options: {
-  configuration: WorkerConfigurationExchange; report(): WorkerReport; operation: Operation;
-}): Promise<{ more: boolean; promptError: boolean; stopCatchup: boolean }> => {
-  const { configuration, operation } = options;
-  try {
-    await configuration.prepare?.(operation);
-    operation.check();
-    const captured = configuration.capture();
-    const sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") }));
-    const source = configuration.prompts;
-    const promptCapture = source?.captureBatch() ?? null;
-    const receipt = await configuration.send(options.report(), sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);
-    await configuration.accept(captured, receipt.configuration);
-    if (source === undefined) return { more: false, promptError: false, stopCatchup: false };
-    if (receipt.prompts === undefined || !receipt.prompts.ok) {
-      source.failCycle();
-      return { more: false, promptError: true, stopCatchup: true };
-    }
-    if (promptCapture === null) return { more: false, promptError: false, stopCatchup: false };
-    try {
-      const results = receipt.prompts.results;
-      const more = source.accept(promptCapture, results);
-      if (results.length > 0 && results.every(result => result.status === "error")) { source.failCycle(); return { more: false, promptError: false, stopCatchup: true }; }
-      return { more, promptError: false, stopCatchup: false };
-    } catch {
-      source.failCycle();
-      return { more: false, promptError: true, stopCatchup: true };
-    }
-  } catch (error) {
-    configuration.prompts?.failCycle();
-    throw error;
-  }
-};
-
 export const createWorkerReporter = (options: {
   signal: AbortSignal;
   collect: (operation: Operation) => Promise<WorkerTelemetrySample>;
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
   configuration?: WorkerConfigurationExchange;
+  executionActive?: () => boolean;
+  now?: () => number;
 }): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
+  const now = options.now ?? Date.now;
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
   let inventory: WorkerTaskInventory | null = null;
@@ -122,9 +79,13 @@ export const createWorkerReporter = (options: {
     const requestId = error instanceof ApiError && error.requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(error.requestId) ? error.requestId : undefined;
     const signature = JSON.stringify({ phase, code, errorCode, failure });
     const previous = failures.get(subsystem);
-    if (previous?.signature === signature) { previous.repetitions++; return; }
-    failures.set(subsystem, { signature, repetitions: 1 });
-    emit({ kind: "worker_report_failed", message: JSON.stringify({ component: "worker_report", phase, subsystem, ...(code === undefined ? {} : { code }), ...(errorCode === undefined ? {} : { error_code: errorCode }), ...(requestId === undefined ? {} : { request_id: requestId }), category: failure.category }), error: safeError(failure) });
+    const repeated = previous?.signature === signature;
+    const state = repeated ? previous : { signature, repetitions: 0, lastEmittedAt: now() };
+    state.repetitions++;
+    failures.set(subsystem, state);
+    if (repeated && now() - state.lastEmittedAt < 300_000) return;
+    state.lastEmittedAt = now();
+    emit({ kind: repeated ? "worker_report_failure_summary" : "worker_report_failed", message: JSON.stringify({ component: "worker_report", phase, subsystem, ...(code === undefined ? {} : { code }), ...(errorCode === undefined ? {} : { error_code: errorCode }), ...(requestId === undefined ? {} : { request_id: requestId }), category: failure.category, occurrences: state.repetitions }), error: safeError(failure) });
   };
   const recover = (subsystem: string, phase: string): void => {
     const failure = failures.get(subsystem);
@@ -147,7 +108,7 @@ export const createWorkerReporter = (options: {
     (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
   const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
     if (seen.has(error)) return true;
-    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (error instanceof OwnedCommandCleanupError) return hasUnconfirmedOwnedCommandCleanup(error);
     if (isCancellation(error)) return false;
     // Keep mixed aggregates intact when any independent failure remains. A cause
     // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
@@ -161,28 +122,32 @@ export const createWorkerReporter = (options: {
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
     let phase = "collect";
     try {
-      const sample = await options.collect(operation);
-      for (const issue of sample.issues) {
-        if (hasHerdrCommandCleanupFailure(issue.error)) {
-          retainCleanupFailure(issue.error);
-          if (stopped) fail(issue.component, "collect", issue.error, issue.code);
+      const collect = async (): Promise<WorkerReport> => {
+        phase = "collect";
+        const sample = await options.collect(operation);
+        for (const issue of sample.issues) {
+          if (hasOwnedCommandCleanupFailure(issue.error)) {
+            retainCleanupFailure(issue.error);
+            if (stopped) fail(issue.component, "collect", issue.error, issue.code);
+          }
         }
-      }
-      operation.check();
-      const unavailable = new Set(sample.issues.map(issue => issue.component));
-      for (const component of ["os", "cpu", "memory", "disk", "herdr", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
-        if (!unavailable.has(component)) recover(component, "collect");
-      }
-      for (const issue of sample.issues) {
-        fail(issue.component, "collect", issue.error, issue.code);
-      }
-      operation.check();
-      phase = "send";
-      if (options.configuration === undefined) await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
-      else {
+        operation.check();
+        const unavailable = new Set(sample.issues.map(issue => issue.component));
+        for (const component of ["os", "cpu", "memory", "disk", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
+          if (!unavailable.has(component)) recover(component, "collect");
+        }
+        for (const issue of sample.issues) fail(issue.component, "collect", issue.error, issue.code);
+        operation.check();
+        phase = options.configuration === undefined ? "send" : "configuration";
+        return Object.freeze({ ...sample.telemetry, taskInventory: inventory });
+      };
+      if (options.configuration === undefined || options.executionActive?.() === false) {
+        const report = await collect();
+        phase = "send";
+        await options.send(report, operation);
+      } else {
         phase = "configuration-read";
-        const result = await syncWorkerConfigurationOnce({ configuration: options.configuration, operation,
-          report: () => Object.freeze({ ...sample.telemetry, taskInventory: inventory }) });
+        const result = await syncWorkerConfigurationOnce({ configuration: options.configuration, operation, report: collect });
         phase = "configuration";
         if (result.promptError) fail("prompts", phase, new ProtocolError("Invalid prompt results."));
         else recover("prompts", phase);
@@ -195,7 +160,7 @@ export const createWorkerReporter = (options: {
       options.configuration?.prompts?.failCycle();
       pendingPrompt = false;
       if (options.configuration?.prompts !== undefined) deferPromptCycle = true;
-      if (hasHerdrCommandCleanupFailure(error)) {
+      if (hasOwnedCommandCleanupFailure(error)) {
         fail("report", phase, error);
         retainCleanupFailure(error);
       } else if (!stopped) fail("report", phase, error);
@@ -246,7 +211,7 @@ export const createWorkerReporter = (options: {
     stop: async () => {
       halt();
       await running;
-      const errors = [...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), diagnosticFailure].filter(error => error !== undefined);
+      const errors = [...new Set([...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), ...(options.configuration === undefined ? [] : workerConfigurationDiagnosticFailures(options.configuration)), diagnosticFailure].filter(error => error !== undefined))];
       if (errors.length === 1) throw errors[0];
       if (errors.length !== 0) throw new AggregateError(errors, "Worker reporter could not finish safely.");
     },

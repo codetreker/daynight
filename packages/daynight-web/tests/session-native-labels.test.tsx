@@ -34,6 +34,19 @@ it.each(activities)('keeps header and visible footer %s labels English through l
   }
 });
 it.each([
+  ['working', true, 'connected', true, 'working'],
+  ['waiting_input', true, 'connected', true, 'waiting_input'],
+  ['working', false, 'connected', true, null],
+  ['waiting_input', true, 'disconnected', true, null],
+  ['working', true, 'synchronizing', true, null],
+  ['working', true, 'connected', false, null],
+] as const)('presents only synchronized connected activity (%s, %s, %s, %s)', (activity, connected, connectionState, synchronized, expected) => {
+  const s = snapshot({ activity, connectionState, synchronized, currentTurnId: 'native-turn', turnStartedAt: '2026-11-13T04:30:00Z' });
+  const view = render(<SessionActivity snapshot={s} connected={connected} active commandPending={false} interruptRequested={false} interruptPending={false} interruptAllowed onInterrupt={vi.fn()} />);
+  expect(view.container.querySelector('.session-activity-dot')!.getAttribute('data-activity')).toBe(expected);
+  expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+});
+it.each([
   [{ connectionState: 'disconnected' }, true, '执行环境连接中断', 'Execution environment disconnected'],
   [{ connectionState: 'synchronizing' }, true, '正在同步会话', 'Synchronizing session'],
   [{ synchronized: false }, true, '正在同步会话', 'Synchronizing session'],
@@ -59,10 +72,10 @@ it('keeps unknown operation receipts localized independently of the activity lab
   const s = snapshot({ activity: 'unknown' }), op = operation(s);
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Outcome unknown');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('无法确认此操作是否完成，请核对原操作。')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('投递结果未知。请核对此操作，不要重复发送。')).toBeVisible();
   expect(screen.getByRole('button', { name: '核对原操作' })).toBeVisible();
   view.setLocale('en');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Unable to confirm whether this operation completed. Check the original operation.')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toBeVisible();
 });
 it('keeps Permissions trigger English while the panel, errors, and draft remain localized', async () => {
   const props = composer(); props.onUpdateSetting.mockRejectedValue(null);

@@ -235,3 +235,64 @@ it('publishes the confirmed link but defers invitation metadata until fresh admi
   await waitFor(() => expect(screen.getByText(next.id)).toBeInTheDocument());
   expect(createTeamInvitation).toHaveBeenCalledOnce();
 });
+
+it('retains the invitation list when an older permission read fails after a newer confirmation', async () => {
+  const stale = Promise.withResolvers<readonly TeamInvitation[]>();
+  const replacement = Promise.withResolvers<readonly TeamInvitation[]>();
+  vi.mocked(listTeamInvitations).mockResolvedValueOnce([invitation]).mockReturnValueOnce(stale.promise).mockReturnValueOnce(replacement.promise);
+  let revision = 1;
+  const permissionRevision = () => revision;
+  const view = render(<TeamInvitations teamId={teamId} teamName="Alpha" active onRoute editable actorRole="admin" unavailable={false} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} permissionRevision={revision} getPermissionRevision={permissionRevision} />);
+  await screen.findByText(id);
+  revision = 2;
+  view.rerender(<TeamInvitations teamId={teamId} teamName="Alpha" active onRoute editable actorRole="admin" unavailable={false} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} permissionRevision={revision} getPermissionRevision={permissionRevision} />);
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(2));
+  // The next permission confirmation can precede its React render.
+  revision = 3;
+  await act(async () => stale.reject(new ApiError('server', 404, 'not_found')));
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(3));
+  expect(screen.getByText(id)).toBeInTheDocument(); expect(permission).not.toHaveBeenCalled();
+  await act(async () => replacement.resolve([invitation]));
+  expect(screen.getByText(id)).toBeInTheDocument();
+});
+
+it('starts only one invitation recovery read when admission and permission resume together', async () => {
+  const recovery = Promise.withResolvers<readonly TeamInvitation[]>();
+  vi.mocked(listTeamInvitations).mockResolvedValueOnce([invitation]).mockReturnValueOnce(recovery.promise);
+  let revision = 1;
+  const currentPermission = () => revision;
+  const node = (blocked: boolean) => <TeamInvitations teamId={teamId} teamName="Alpha" active onRoute editable actorRole="admin" unavailable={false} admissionBlocked={blocked} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} permissionRevision={revision} getPermissionRevision={currentPermission} />;
+  const view = render(node(false)); await screen.findByText(id);
+  view.rerender(node(true)); revision = 2; view.rerender(node(false));
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(2));
+  await act(async () => {}); expect(listTeamInvitations).toHaveBeenCalledTimes(2);
+  expect(screen.getByText(id)).toBeInTheDocument();
+  await act(async () => recovery.resolve([invitation]));
+});
+
+it('rereads after a confirmed creation even when an older invitation read is in flight', async () => {
+  const older = Promise.withResolvers<readonly TeamInvitation[]>(), newer = Promise.withResolvers<readonly TeamInvitation[]>();
+  const write = Promise.withResolvers<TeamInvitation & { link: string }>();
+  const staleItem = { ...invitation, id: '00000000-0000-4000-8000-000000000004' };
+  const created = { ...invitation, id: '00000000-0000-4000-8000-000000000005' };
+  vi.mocked(listTeamInvitations).mockResolvedValueOnce([invitation]).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return write.promise; });
+  let revision = 1;
+  const currentPermission = () => revision;
+  const node = () => <TeamInvitations teamId={teamId} teamName="Alpha" active onRoute editable actorRole="admin" unavailable={false} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} permissionRevision={revision} getPermissionRevision={currentPermission} />;
+  const view = render(node()); await openInvite();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
+  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
+  revision = 2; view.rerender(node());
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(2));
+  const oldSignal = vi.mocked(listTeamInvitations).mock.calls[1]![1];
+  await act(async () => write.resolve({ ...created, link }));
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(3));
+  expect(oldSignal.aborted).toBe(true);
+  await act(async () => older.resolve([staleItem]));
+  expect(screen.queryByText(staleItem.id)).toBeNull();
+  await act(async () => newer.resolve([invitation, created]));
+  expect(await screen.findByText(created.id)).toBeInTheDocument();
+  expect(screen.getByDisplayValue(link)).toBeVisible();
+  expect(createTeamInvitation).toHaveBeenCalledOnce();
+});

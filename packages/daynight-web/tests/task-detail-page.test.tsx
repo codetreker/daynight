@@ -1,4 +1,11 @@
+// Detail sequence fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
 import * as client from '../src/api/client';
+import { useResourceHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { saveDetail } from '../src/features/task-detail/detail-cache';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
@@ -66,6 +73,36 @@ const moveHistory = async (direction: 'back' | 'forward') => {
 };
 
 describe('standalone full task details', () => {
+  it('retains the focused attachment draft when the first graph sample arrives', async () => {
+    const fixture = installed();
+    const pending = Promise.withResolvers<void>();
+    const read = vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => {
+      await pending.promise;
+      return taskSyncReadFixture(taskSyncFromGraph(graphFixture([...fixture.tasks.values()]), {
+        query, versionForTask: (task) => fixture.tasks.get(task.id)!.version,
+        propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties,
+      }));
+    });
+    window.history.replaceState(null, '', address('attachments', 'docs/guide.md'));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'attachments', path: 'docs/guide.md' }} />, { taskCache: { scope } });
+    try {
+      await screen.findByText('方案正文');
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+      const draft = screen.getByLabelText('目标相对路径');
+      fireEvent.change(draft, { target: { value: 'retained/first-sample.txt' } });
+      draft.focus();
+      const main = screen.getByRole('main');
+      await act(async () => { pending.resolve(); await pending.promise; });
+      await waitFor(() => expect(scope.getAuthorizedProject(projectId)).not.toBeNull());
+      expect(screen.getByRole('main')).toBe(main);
+      expect(screen.getByLabelText('目标相对路径')).toBe(draft);
+      expect(draft).toHaveValue('retained/first-sample.txt');
+      expect(draft).toHaveFocus();
+    } finally { pending.resolve(); view.unmount(); scope.dispose(); }
+  });
+
   it('keeps a cold cached private body unavailable when a trusted access denial precedes an older delta', async () => {
     const detail = detailFixture(projectId, taskId, { title: 'Cached private task', description: 'COLD_PRIVATE_DESCRIPTION_MARKER', version: 5n });
     const graph = graphFixture([detail]);
@@ -78,11 +115,14 @@ describe('standalone full task details', () => {
     const cold = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const oldDelta = Promise.withResolvers<TaskSync>();
     const freshDetail = Promise.withResolvers<TaskDetail>();
-    const applied = Promise.withResolvers<void>();
-    const readSync = vi.spyOn(client, 'getTaskSync').mockImplementation(async () => taskSyncReadFixture(await oldDelta.promise));
+    const delivered = Promise.withResolvers<void>();
+    const readSync = vi.spyOn(client, 'getTaskSync').mockImplementation(async () => {
+      const response = await oldDelta.promise;
+      delivered.resolve();
+      return taskSyncReadFixture(response);
+    });
     const readDetail = vi.spyOn(client, 'getTask').mockReturnValue(freshDetail.promise);
-    const apply = cold.applySync.bind(cold);
-    vi.spyOn(cold, 'applySync').mockImplementation(async (...args) => { try { return await apply(...args); } finally { applied.resolve(); } });
+    const apply = vi.spyOn(cold, 'applySync');
     const fetcher = vi.fn(async (url: string) => {
       if (url === `${root}/access`) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'Denied', requestId: 'trusted-cold-denial' } }), {
         status: 404, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
@@ -104,7 +144,7 @@ describe('standalone full task details', () => {
       expect(query.epoch).toBeDefined();
       await act(async () => {
         oldDelta.resolve(taskSyncFromGraph(graph, { query, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
-        await applied.promise;
+        await delivered.promise;
       });
       await waitFor(() => {
         expect(screen.queryByText(detail.description)).toBeNull();
@@ -113,6 +153,7 @@ describe('standalone full task details', () => {
       });
       expect(screen.queryByText(detail.description)).toBeNull();
       expect(cold.getAuthorizedProject(projectId)).toBeNull();
+      expect(apply).not.toHaveBeenCalled();
       expect(readDetail).not.toHaveBeenCalled();
     } finally { view.unmount(); cold.dispose(); freshDetail.resolve(detail); }
   });
@@ -294,6 +335,26 @@ describe('standalone full task details', () => {
     await screen.findByRole('button', { name: '后续任务，普通依赖' });
   });
 
+  it('refreshes colors from direct detail reads even when task synchronization fails', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const tagId = '00000000-0000-4000-8000-000000000091';
+    const fixture = installed(detailFixture(projectId, taskId, { title: '独立任务', tags: [{ id: tagId, name: '颜色标签' }] }));
+    let color = '#D85656';
+    fixture.fetcher.mockImplementation(async (url, options) => {
+      const path = new URL(url, location.origin).pathname;
+      if (path === `${root}/task-sync`) return new Response(JSON.stringify({ error: { code: 'internal_error', message: 'failed' } }), { status: 503, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      if (path === `${root}/tags/colors/resolve`) return resourceResponse({ catalogEpoch: fixtureTaskEpoch(projectId), items: [{ id: tagId, state: 'found', version: 1n, color }] }, TEST_VIEWER_ID);
+      return fixture.handler(url, options);
+    });
+    window.history.replaceState(null, '', address());
+    render(<App />);
+    const chip = await screen.findByText('颜色标签');
+    await waitFor(() => expect(chip.parentElement?.querySelector('.task-tag-dot')).toHaveStyle({ backgroundColor: '#D85656' }));
+    color = '#2454D8';
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await waitFor(() => expect(chip.parentElement?.querySelector('.task-tag-dot')).toHaveStyle({ backgroundColor: '#2454D8' }));
+  });
+
   it('refreshes direct details every fifteen seconds while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();
@@ -464,7 +525,7 @@ describe('standalone full task details', () => {
     expect(fetcher).not.toHaveBeenCalled();
     view.unmount();
     replaceRoute(address('overview', 'docs/guide.md') + '&authError=login_failed');
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response(JSON.stringify({ error: { code: 'unauthenticated', message: 'Sign in', requestId: 'login' } }), { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
     const login = vi.fn();
     localeRender(<AuthenticatedApp navigateToLogin={login} />);
     fireEvent.click(await screen.findByRole('button', { name: '使用 GitHub 登录' }));
@@ -484,10 +545,17 @@ describe('typed Goal routes', () => {
     const { [taskId]: _goalState, ...dependencyStates } = sync.dependencyStates;
     vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...sync, mode: query.epoch === sync.epoch ? 'delta' : 'snapshot', dependencyStates }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
-    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    let selectChild!: () => void;
+    const Workspace = () => {
+      const history = useResourceHistory(TEST_VIEWER_ID, projectId, taskId, true, scope);
+      selectChild = () => history.select({ goalChildren: { graphRootId: null, task: { id: otherId, navigation: { tab: 'overview', path: null } } }, externalGoal: null });
+      return <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />;
+    };
+    const view = render(<Workspace />, { taskCache: { scope } });
     try {
-      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
-      fireEvent.click(opener);
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const dialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
       fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
       const moved = { ...child, parentId: null, version: 2n, updatedAt: '2026-10-23T10:00:00Z' };
@@ -496,7 +564,7 @@ describe('typed Goal routes', () => {
       const { [taskId]: _goalUpdate, ...updatedStates } = update.dependencyStates;
       const ticket = await scope.beginSync(projectId, scope.signal);
       await act(async () => { await scope.applySync(ticket, { ...update, dependencyStates: updatedStates }, scope.signal); });
-      await waitFor(() => expect(opener.isConnected).toBe(false), { timeout: 10000 });
+      expect(document.querySelector('[data-goal-task-id]')).toBeNull();
       fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
       await waitFor(() => expect(screen.getByRole('heading', { name: goal.title })).toHaveFocus(), { timeout: 10000 });
       await moveHistory('back');
@@ -611,8 +679,8 @@ describe('typed Goal routes', () => {
     const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
     const fixture = installed(goal);
     fixture.tasks.set(otherId, child);
-    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.includes('/steps')
-      ? resourceResponse({ projectId, taskId: otherId, version: 1n, steps: [] }, TEST_VIEWER_ID) : fixture.handler(url, options)));
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.includes('/thread/messages?')
+      ? resourceResponse({ items: [], hasMoreBefore: false, hasMoreAfter: false }, TEST_VIEWER_ID) : fixture.handler(url, options)));
     const graph = graphFixture([goal, child]);
     const original = taskSyncFromGraph(graph, { versionForTask: () => 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
     const { [taskId]: _goalState, ...dependencyStates } = original.dependencyStates;
@@ -621,10 +689,17 @@ describe('typed Goal routes', () => {
     vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...original, epoch,
       mode: query.epoch === epoch ? 'delta' : 'snapshot', dependencyStates }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
-    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    let selectChild!: () => void;
+    const Workspace = () => {
+      const history = useResourceHistory(TEST_VIEWER_ID, projectId, taskId, true, scope);
+      selectChild = () => history.select({ goalChildren: { graphRootId: null, task: { id: otherId, navigation: { tab: 'overview', path: null } } }, externalGoal: null });
+      return <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />;
+    };
+    const view = render(<Workspace />, { taskCache: { scope } });
     try {
-      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
-      fireEvent.click(opener);
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const childDialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
       fireEvent.click(within(childDialog).getByRole('tab', { name: '附件' }));
       const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
@@ -632,29 +707,18 @@ describe('typed Goal routes', () => {
       rememberTaskEpoch(projectId, replacement);
       await act(async () => { expect(await scope.observeHistory(fence, replacement, scope.signal)).toBe('retired'); });
       await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
-      const reopened = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
       expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
-      fireEvent.click(reopened);
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const current = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
-      fireEvent.click(within(current).getByRole('tab', { name: '步骤' }));
-      const addStep = await within(current).findByRole('button', { name: '添加步骤' }, { timeout: 10000 });
-      await waitFor(() => expect(addStep).toBeEnabled(), { timeout: 10000 });
-      fireEvent.click(addStep);
-      const draft = within(current).getByRole('textbox', { name: '标题' });
+      fireEvent.click(within(current).getByRole('tab', { name: '讨论' }));
+      const draft = await within(current).findByRole('textbox', { name: '讨论消息' });
+      await waitFor(() => expect(draft).toBeEnabled());
       fireEvent.change(draft, { target: { value: 'new draft after recovery' } });
-      fireEvent.click(within(current).getByRole('tab', { name: '附件' }));
+      fireEvent.click(within(current).getByRole('tab', { name: '概览' }));
       await moveHistory('back');
       expect(draft).toHaveValue('new draft after recovery');
-      const currentEntry = window.history.state.__daynightNavigation.entryId;
-      const jumpToOld = () => act(async () => { await new Promise<void>((resolve) => { window.addEventListener('popstate', () => resolve(), { once: true }); window.history.go(-3); }); });
-      await jumpToOld();
-      let confirmation = await screen.findByRole('alertdialog', { name: '放弃未保存的修改？' });
-      fireEvent.click(within(confirmation).getByRole('button', { name: '继续编辑' }));
-      await waitFor(() => expect(window.history.state.__daynightNavigation.entryId).toBe(currentEntry));
-      expect(draft).toHaveValue('new draft after recovery');
-      await jumpToOld();
-      confirmation = await screen.findByRole('alertdialog', { name: '放弃未保存的修改？' });
-      fireEvent.click(within(confirmation).getByRole('button', { name: '放弃并离开' }));
+      await act(async () => { await new Promise<void>((resolve) => { window.addEventListener('popstate', () => resolve(), { once: true }); window.history.go(-3); }); });
       await waitFor(() => expect(screen.queryByRole('dialog', { name: child.title })).toBeNull());
     } finally { view.unmount(); scope.dispose(); }
   }, 20000);
@@ -716,7 +780,8 @@ describe('typed Goal routes', () => {
     const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />);
     try {
       await screen.findByRole('heading', { name: goal.title });
-      expect(screen.getByRole('tab', { name: 'Task' })).toBeVisible();
+      expect(screen.getByRole('tab', { name: '描述' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.queryByRole('tab', { name: 'Task' })).toBeNull();
       expect(fixture.fetcher.mock.calls.some(([url]) => /\/(sessions|steps)(?:\?|$)/.test(url))).toBe(false);
     } finally { view.unmount(); }
   });

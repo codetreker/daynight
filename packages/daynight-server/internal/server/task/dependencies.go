@@ -14,6 +14,7 @@ import (
 type TaskService interface {
 	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	Update(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error)
+	ReplaceTags(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	Get(context.Context, model.Principal, string, string) (model.Task, error)
@@ -27,17 +28,6 @@ type TaskService interface {
 	UpdateWorker(context.Context, model.Principal, string, string, taskcore.UpdateWorker) (model.Task, error)
 	ReleaseWorker(context.Context, model.Principal, string, string, taskcore.ReleaseWorker) (model.Task, error)
 	WithdrawWorker(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error)
-	ResumeWorker(context.Context, model.Principal, string, string, taskcore.ResumeWorker) (model.Task, error)
-}
-
-type StepService interface {
-	Get(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
-	List(context.Context, model.Principal, string, string) (taskservice.StepsDocument, error)
-	Add(context.Context, model.Principal, string, string, taskservice.AddTaskStep) (taskservice.StepsWriteResult, error)
-	Update(context.Context, model.Principal, string, string, string, taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error)
-	SetStatus(context.Context, model.Principal, string, string, string, taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error)
-	Delete(context.Context, model.Principal, string, string, string, taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error)
-	Move(context.Context, model.Principal, string, string, string, taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error)
 }
 
 type ThreadService interface {

@@ -44,12 +44,11 @@ type SessionCaptureState struct {
 	Validated *sp.ValidatedImage
 }
 type SessionResourceUsage struct {
-	Frozen                                         bool
-	GlobalReservedBytes                            int64
-	Bytes, ReservedBytes                           int64
-	Resources, ReservedResources, UploadIdentities int
-	DeleteEpoch                                    int64
-	Deleting                                       bool
+	Frozen      bool
+	Bytes       int64
+	Resources   int
+	DeleteEpoch int64
+	Deleting    bool
 }
 
 // SessionResourceLeaseAdmission contains caller-decided occupancy upper bounds.
@@ -122,6 +121,21 @@ type SessionMediaState struct {
 
 type SessionUploadMediaDAO interface {
 	SessionUploadMediaRequests(context.Context, string, string, string) ([]SessionMediaRequest, error)
+}
+
+// SessionResourceUploadDAO resolves the original upload owner independently of
+// later captures that reuse its resource. The caller holds the Session lock.
+type SessionResourceUploadDAO interface {
+	SessionUploadByResource(context.Context, string, string) (SessionUploadRecord, error)
+}
+
+// SessionCaptureInventoryDAO reads the complete capture inventory under the
+// caller's Session lock. Pages are ordered by capture ID and start strictly
+// after the supplied ID; an empty ID starts at the beginning. A short page
+// ends the inventory. Limits must be between 1 and 1000, inclusive. An error
+// returns no partial page.
+type SessionCaptureInventoryDAO interface {
+	SessionCaptures(context.Context, string, string, int) ([]SessionCaptureRecord, error)
 }
 type SessionMediaDAO interface {
 	SessionMediaRequest(context.Context, string, string) (SessionMediaRequest, error)

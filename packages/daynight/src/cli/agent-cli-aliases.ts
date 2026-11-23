@@ -27,12 +27,16 @@ export const prepareAgentCliAliases = async (options: {
   aliases: AgentCliAliases;
   environment: NodeJS.ProcessEnv;
   stateDirectory: string;
+  /** Private shim storage may differ from the normal CLI authentication root. */
+  storageDirectory?: string;
 }): Promise<PreparedAgentCliAliases> => {
   const entries = Object.entries(options.aliases) as [AgentCliAliasName, string][];
   if (entries.length === 0) return { environment: options.environment, bindings: [], directory: null };
   if (process.platform === "win32") throw new Error("agentCliAliases is supported only on macOS and Linux; remove the setting to use the unchanged Agent environment on Windows.");
   if (!path.isAbsolute(options.stateDirectory)) throw new TypeError("Agent CLI alias state directory must be absolute.");
   if (options.stateDirectory.includes(path.delimiter)) throw new TypeError("agentCliAliases requires DN_CONFIG_DIR without the PATH delimiter; choose a state directory without colons.");
+  const storageDirectory = options.storageDirectory ?? options.stateDirectory;
+  if (!path.isAbsolute(storageDirectory) || storageDirectory.includes(path.delimiter)) throw new TypeError("Agent CLI alias storage must be absolute and contain no PATH delimiter.");
   const bindings: AgentCliAliasBinding[] = [];
   // Resolve every target against the original PATH before creating any alias.
   // realpath pins a development entry's symlink to its immutable build snapshot.
@@ -48,7 +52,7 @@ export const prepareAgentCliAliases = async (options: {
     }
     bindings.push({ name, target, executable });
   }
-  const parent = path.join(options.stateDirectory, "agent-cli-aliases");
+  const parent = path.join(storageDirectory, "agent-cli-aliases");
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(path.join(parent, "execution-"));
   try {

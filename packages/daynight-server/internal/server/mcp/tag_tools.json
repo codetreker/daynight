@@ -1,0 +1,222 @@
+[
+  {
+    "name": "tag_list",
+    "description": "List a project’s tags and visible usage counts; the cursor binds query, limit and catalog epoch.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tag_show",
+    "description": "Read a project tag and its visible usage counts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tag_create",
+    "description": "Create a project tag. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "color": {
+          "type": "string",
+          "description": "RGB color in #RRGGBB format; hexadecimal digits are case-insensitive. Defaults to #9AA3B2 when omitted."
+        }
+      },
+      "required": [
+        "projectId",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tag_rename",
+    "description": "Rename a project tag using its exact version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "name",
+        "ifVersion"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tag_update",
+    "description": "Update a project tag name and/or color using its exact version. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        },
+        "color": {
+          "type": "string",
+          "description": "RGB color in #RRGGBB format; hexadecimal digits are case-insensitive."
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "ifVersion"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "color"
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tag_delete",
+    "description": "Delete a project tag and all its associations using its exact version and explicit confirmation. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        },
+        "confirm": {
+          "const": true
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "ifVersion",
+        "confirm"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  }
+]

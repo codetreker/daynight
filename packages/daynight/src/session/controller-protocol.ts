@@ -1,5 +1,5 @@
-import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
-import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage } from "./image-values.js";
+import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, parseImageCapabilities, type ImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
+import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, parseDirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage, type DirectCaptureSubmission } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
 import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, historyCursorText, parseInspectionPage, parseEntryChunk, type InspectionPage, type EntryChunk } from "./history.js";
@@ -51,6 +51,7 @@ export type ImageAction = keyof ImageActionBody;
 export type ImageRequest = { [K in ImageAction]: Wire & ControllerFence & {readonly type:"image_request";readonly requestId:string;readonly action:K;readonly body:ImageActionBody[K]} }[ImageAction];
 export type ImageResponse = Wire & ControllerFence & {readonly type:"image_response";readonly requestId:string;readonly action:ImageAction;readonly result:LocalImagePreparation|PreparedImageChunk|ImageReadChunk|ValidatedImage|null;readonly error:ImageError|null};
 export type ImageCaptureBody = {
+  submit: DirectCaptureSubmission & ({ readonly sourceEpoch: string; readonly sourceSeq: string } | { readonly sourceEpoch?: never; readonly sourceSeq?: never });
   register: ImageCaptureRequest;
   query: { readonly captureId: string };
   commit: { readonly captureId: string; readonly attemptId: string; readonly validated: ValidatedImage };
@@ -68,11 +69,11 @@ export type ControllerMessage = ControllerHello | ImageResponse | ImageCaptureMe
   | { readonly type: "sync_state"; readonly state: ControllerState; readonly pendingInteractions: readonly TimelineEntry[] }
   | ({ readonly type: "content_response" } & ContentResponse)
   | { readonly type: "heartbeat" }));
-export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true }) | (Wire & ControllerFence & (
+export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true; readonly onlineMode?: "legacy" | "relay"; readonly historyContentPolicy?: "legacy" | "task_body" | null }) | (Wire & ControllerFence & (
   | { readonly type: "events_ack"; readonly batchId: string; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "source_reset_ack"; readonly sourceEpoch: string; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "operation_offer"; readonly operationSeq: DecimalSequence; readonly command: SessionCommand }
-  | { readonly type: "operation_authorized"; readonly operationId: string }
+  | { readonly type: "operation_authorized"; readonly operationId: string; readonly imageAuthorization?: ImageCapabilities }
   | { readonly type: "receipt_ack"; readonly operation: SessionOperation }
   | { readonly type: "reconcile_result"; readonly operations: readonly SessionOperation[] }
   | { readonly type: "sync_ack" }
@@ -212,21 +213,23 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
   if (x.type === "image_request") return parseImageRequest(x);
   if (x.type === "image_capture_result") return parseImageCaptureResult(x);
   if (x.type === "welcome") {
-    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("requiresLiveSync" in x ? ["requiresLiveSync"] : [])]);
+    if (("onlineMode" in x) !== ("historyContentPolicy" in x)) return fail();
+    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("requiresLiveSync" in x ? ["requiresLiveSync"] : []), ...("onlineMode" in x ? ["onlineMode", "historyContentPolicy"] : [])]);
     if ("requiresLiveSync" in o && o.requiresLiveSync !== true) return fail();
     const limits = obj(o.limits, Object.keys(RELAY_LIMITS));
     for (const [k, v] of Object.entries(RELAY_LIMITS)) if (limits[k] !== v) return fail();
-    return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}) };
+    const online = "onlineMode" in o ? { onlineMode: choice(o.onlineMode, ["legacy", "relay"] as const), historyContentPolicy: nullable(o.historyContentPolicy, value => choice(value, ["legacy", "task_body"] as const)) } : {};
+    return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}), ...online };
   }
   const contentFields: Record<string, readonly string[]> = { timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
-  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
+  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId", ...("imageAuthorization" in x ? ["imageAuthorization"] : [])], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
     case "events_ack": return { ...base, type: "events_ack", batchId: id(o.batchId), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), lastEventSeq: seq(o.lastEventSeq, true) };
     case "source_reset_ack": return { ...base, type: "source_reset_ack", sourceEpoch: id(o.sourceEpoch), lastEventSeq: seq(o.lastEventSeq, true) };
     case "operation_offer": { const command = parseSessionCommand(o.command); assertSessionFence(command, sessionFence(base)); return { ...base, type: "operation_offer", operationSeq: seq(o.operationSeq), command }; }
-    case "operation_authorized": return { ...base, type: "operation_authorized", operationId: id(o.operationId) };
+    case "operation_authorized": return { ...base, type: "operation_authorized", operationId: id(o.operationId), ...("imageAuthorization" in o ? { imageAuthorization: parseImageCapabilities(o.imageAuthorization) } : {}) };
     case "receipt_ack": { const operation = parseSessionOperation(o.operation); assertSessionFence(operation, sessionFence(base)); return { ...base, type: "receipt_ack", operation }; }
     case "reconcile_result": {
       const operations = list(o.operations, parseSessionOperation, 200);
@@ -293,13 +296,21 @@ export const parseImageResponse = (v:unknown):ImageResponse => {
   return {type:"image_response",protocol:protocol(o.protocol),...fence(o),requestId:id(o.requestId),action,result,error:nullable(o.error,parseImageError)};
 };
 
-const captureActions: readonly ImageCaptureAction[] = ["register", "query", "commit", "failed"];
+const captureActions: readonly ImageCaptureAction[] = ["register", "query", "commit", "failed", "submit"];
 export const parseImageCaptureMessage = (v: unknown): ImageCaptureMessage => {
   const o = obj(v, ["type", "protocol", ...fenceKeys(v), "requestId", "action", "body"]);
   if (o.type !== "image_capture") return fail();
   const action = choice(o.action, captureActions);
   let body: ImageCaptureBody[ImageCaptureAction];
-  if (action === "register") body = parseImageCaptureRequest(o.body);
+  if (action === "submit") {
+    if (!o.body || typeof o.body !== "object" || Array.isArray(o.body)) return fail();
+    const input = o.body as Record<string, unknown>, hasEpoch = Object.hasOwn(input, "sourceEpoch"), hasSeq = Object.hasOwn(input, "sourceSeq");
+    if (hasEpoch !== hasSeq) return fail();
+    const value = imageObject(input, ["request", "attemptId", "outcome", ...(hasEpoch ? ["sourceEpoch", "sourceSeq"] : [])]);
+    const base = parseDirectCaptureSubmission({ request: value.request, attemptId: value.attemptId, outcome: value.outcome });
+    body = hasEpoch ? { ...base, sourceEpoch: id(value.sourceEpoch), sourceSeq: seq(value.sourceSeq) } : base;
+  }
+  else if (action === "register") body = parseImageCaptureRequest(o.body);
   else if (action === "query") { const b = imageObject(o.body, ["captureId"]); body = { captureId: imageId(b.captureId) }; }
   else if (action === "commit") { const b = imageObject(o.body, ["captureId", "attemptId", "validated"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), validated: parseValidatedImage(b.validated) }; }
   else { const b = imageObject(o.body, ["captureId", "attemptId", "error"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), error: parseImageError(b.error) }; }

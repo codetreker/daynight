@@ -1,3 +1,9 @@
+// Detail sequence fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
 import { summariesForGraph } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -13,6 +19,7 @@ import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/ta
 import { ProjectDraftHost } from '../src/features/task-detail/TaskDraftNavigation';
 import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { browserNavigation } from '../src/app/navigation';
+import { taskDetailUrl } from '../src/app/router';
 import { useBrowserLocation } from '../src/app/browser-location';
 import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
 import { dialogFocusables } from '../src/features/task-detail/focus';
@@ -42,11 +49,11 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const projectId = id(100);
 const timestamp = '2026-10-20T09:00:00.123456789Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
-const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
-const node = (task: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
+const node = (task: TaskDetail): GraphTask => ({ type: task.type, parentId: task.parentId, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
   status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
 });
@@ -105,6 +112,53 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('shows the actual parent as a read-only overview link and updates its summary', async () => {
+    const child = detail(1, { parentId: id(2) });
+    const goal = detail(2, { type: 'goal', title: 'A'.repeat(161), ready: true });
+    const current = snapshot([child, goal]);
+    const fetcher = vi.fn().mockResolvedValue(response(child));
+    vi.stubGlobal('fetch', fetcher);
+    const options = props({ snapshot: current });
+    const view = await open(options, 'en');
+    const aside = await screen.findByRole('complementary', { name: 'Task relationships and metadata' });
+    const section = within(aside).getByRole('region', { name: 'Current Goal' });
+    expect(aside.firstElementChild).toBe(section);
+    const link = within(section).getByRole('link', { name: `${'A'.repeat(160)}…` });
+    expect(link).toHaveAttribute('href', taskDetailUrl(projectId, goal.id, { tab: 'overview', path: null }));
+    expect(screen.queryByRole('combobox', { name: 'Current Goal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save Goal membership' })).toBeNull();
+    const renamed = snapshot([child, { ...goal, title: 'Renamed Goal', version: 2n, updatedAt: '2026-10-20T09:00:01Z' }], 2);
+    await view.rerender(<TaskDetailDialog {...options} snapshot={renamed} />);
+    expect(within(section).getByRole('link', { name: 'Renamed Goal' })).toHaveAttribute('href', link.getAttribute('href'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));
+    expect(screen.queryByRole('region', { name: 'Current Goal' })).toBeNull();
+    expect(fetcher.mock.calls.every(([, options]) => options?.method === undefined || options.method === 'GET')).toBe(true);
+  });
+
+  it('uses the parent ID when a Goal summary is absent or not a Goal, and shows a plain empty state', async () => {
+    const child = detail(1, { parentId: id(2) });
+    const other = detail(2, { title: 'Not a Goal' });
+    const current = snapshot([child, other]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(child)));
+    const options = props({ snapshot: current, observation: { kind: 'direct' } });
+    await world.sync([child, other]);
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    const section = await screen.findByRole('region', { name: 'Current Goal' });
+    expect(within(section).getByRole('link', { name: other.id })).toHaveAttribute('href', taskDetailUrl(projectId, other.id, { tab: 'overview', path: null }));
+    view.rerender(<TaskDetailDialog {...options} snapshot={null} graphError={new Error('graph unavailable')} />);
+    expect(within(section).getByRole('link', { name: other.id })).toBeVisible();
+  });
+
+  it('renders an unassigned Task without a Goal link or editing control', async () => {
+    const child = detail();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(child)));
+    await open(props({ snapshot: snapshot([child]) }), 'en');
+    const section = await screen.findByRole('region', { name: 'Current Goal' });
+    expect(within(section).getByText('No Goal')).toBeVisible();
+    expect(within(section).queryByRole('link')).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Current Goal' })).toBeNull();
+  });
+
   it('waits for a summary receipt when restoring a Task before the graph and keeps its reader through a missing snapshot', async () => {
     const reviewed = detail();
     await world.sync([reviewed]);
@@ -252,38 +306,60 @@ describe('task detail dialog', () => {
     expect(direct).not.toHaveBeenCalled();
   });
 
-  it.each(['direct', 'project-summary'] as const)('loads actual Steps across %s and the other Task observation source', async initialSource => {
+  it.each(['direct', 'project-summary'] as const)('opens Task detail without Steps requests across %s and the other observation source', async initialSource => {
     const reviewed = detail();
     await world.sync([reviewed]);
-    let stepsReads = 0;
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).endsWith('/steps')) {
-        stepsReads++;
-        return new Response(stringifyApiJson({ projectId, taskId: reviewed.id, version: reviewed.version,
-          steps: [{ id: '00000001', title: 'Actual step', description: '', status: 'todo', createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' }] }),
-          { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
-      }
-      return response(reviewed);
-    });
+    const fetcher = vi.fn(async (_url: RequestInfo | URL) => response(reviewed));
     vi.stubGlobal('fetch', fetcher);
     const current = snapshot([reviewed], 1);
-    const options = props({ snapshot: current, navigation: { tab: 'steps', path: null }, onNavigate: vi.fn() });
+    const options = props({ snapshot: current, navigation: { tab: 'overview', path: null }, onNavigate: vi.fn() });
     const observation = (kind: 'direct' | 'project-summary') => kind === 'direct' ? { kind: 'direct' as const }
       : { kind: 'project-summary' as const, revision: current.revision, task: current.index.nodes.get(reviewed.id) };
     const view = renderWithLocale(<TaskDetailDialog {...options} observation={observation(initialSource)} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    const firstReads = stepsReads;
-    const otherSource = initialSource === 'direct' ? 'project-summary' : 'direct';
-    view.rerender(<TaskDetailDialog {...options} observation={observation(otherSource)} />);
-    await waitFor(() => expect(stepsReads).toBeGreaterThan(firstReads));
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    const secondReads = stepsReads;
-    view.rerender(<TaskDetailDialog {...options} observation={observation(initialSource)} />);
-    await waitFor(() => expect(stepsReads).toBeGreaterThan(secondReads));
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    await screen.findByRole('heading', { name: reviewed.title });
+    view.rerender(<TaskDetailDialog {...options} observation={observation(initialSource === 'direct' ? 'project-summary' : 'direct')} />);
+    await screen.findByRole('heading', { name: reviewed.title });
+    expect(screen.queryByRole('tab', { name: 'Steps' })).toBeNull();
+    expect(fetcher.mock.calls.every(([url]) => !String(url).includes('/steps'))).toBe(true);
+  });
+
+  it.each(['resource', 'access'] as const)('retains a direct member draft across history revalidation and clears it on %s loss', async loss => {
+    const anchor = detail(2), member = detail(1);
+    await world.sync([anchor]);
+    const pending = deferred<Response>();
+    let mode: 'ready' | 'pending' | 'missing' = 'ready';
+    let detailReads = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/thread/messages')) return new Response(JSON.stringify({ items: [], hasMoreBefore: false, hasMoreAfter: false }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      detailReads++;
+      return mode === 'pending' ? pending.promise : mode === 'missing' ? failure('not_found') : response(member);
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const options = props({ snapshot: snapshot([anchor]), observation: { kind: 'direct' }, retainHistoryDraft: true, navigation: { tab: 'discussion', path: null }, onNavigate: vi.fn() });
+    const view = renderWithLocale(<ProjectDraftHost projectId={projectId} taskId={member.id} source="direct" summaryType={null} insideProjectGraph={false} graphWitness={null}><TaskDetailDialog {...options} /></ProjectDraftHost>, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByText('No discussion yet');
+    const draft = screen.getByRole('textbox', { name: 'Discussion message' });
+    fireEvent.change(draft, { target: { value: 'Member draft' } });
+    const previousReads = detailReads; mode = 'pending';
+    act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+    await waitFor(() => expect(detailReads).toBeGreaterThan(previousReads));
+    expect(document.querySelector('[aria-label="Discussion message"]')).toBe(draft);
+    expect(draft).toHaveValue('Member draft');
+    expect(screen.queryByText(member.description)).toBeNull();
+    await act(async () => pending.resolve(failure()));
+    expect(await screen.findByText('Unable to read task details. Please try again.')).toBeVisible();
+    expect(document.querySelector('[aria-label="Discussion message"]')).toBe(draft);
+    mode = 'ready'; fireEvent.click(screen.getByRole('button', { name: 'Retry details' }));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Discussion message' })).toBe(draft));
+    expect(draft).toHaveValue('Member draft');
+    if (loss === 'access') act(() => world.scope.suspendProject(projectId));
+    else {
+      mode = 'missing';
+      act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+      await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());
+    }
+    await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());
+    view.unmount();
   });
 
   it('waits for the live summary receipt and ignores a late direct response after changing source', async () => {
@@ -431,25 +507,24 @@ describe('task detail dialog', () => {
     expect(document.body.style.overflow).toBe('scroll');
   });
   it('keeps discard confirmation above the modal detail focus owner', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
-      ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/thread/messages')
+      ? new Response(JSON.stringify({ items: [], hasMoreBefore: false, hasMoreAfter: false }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
       : response(detail())));
-    await open(props(), 'en');
+    await open(props({ retainHistoryDraft: true }), 'en');
     await screen.findByRole('heading', { name: '任务 1' });
-    fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Discussion' }));
+    const draft = await screen.findByRole('textbox', { name: 'Discussion message' });
+    fireEvent.change(draft, { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close task details' }));
     const confirmation = screen.getByRole('alertdialog');
     const keep = within(confirmation).getByRole('button', { name: 'Keep editing' });
-    const discard = within(confirmation).getByRole('button', { name: 'Discard' });
+    const discard = within(confirmation).getByRole('button', { name: 'Discard and leave' });
     expect(keep).toHaveFocus();
     expect(document.querySelector('.task-detail-dialog')).toHaveAttribute('inert');
     await userEvent.tab(); expect(discard).toHaveFocus();
     await userEvent.tab({ shift: true }); expect(keep).toHaveFocus();
     fireEvent.click(keep);
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+    expect(draft).toHaveValue('Draft');
     expect(document.querySelector('.task-detail-dialog')).not.toHaveAttribute('inert');
   });
   it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {
@@ -655,6 +730,19 @@ describe('task detail dialog', () => {
     expect(within(predecessors).getByRole('button', { name: /任务 2.*外部依赖/ })).toBeVisible();
   });
 
+  it('keeps unsupported usage inside its tab and out of the dialog header', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
+    await open();
+    const title = await screen.findByRole('heading', { name: '任务 1' });
+    const header = title.closest('.task-detail-dialog')!.querySelector<HTMLElement>('.task-detail-heading')!;
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
+    expect(within(header).queryByText('此服务不支持用量查询')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '用量' }));
+    const usage = screen.getByRole('tabpanel', { name: '用量' });
+    expect(await within(usage).findByText('此服务不支持用量查询')).toBeVisible();
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
+  });
+
   it('opens on overview and keeps task-scoped attachments in their own mounted panel', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
     await open();
@@ -766,9 +854,9 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
     await user.tab();
-    expect(screen.getByRole('combobox', { name: '所属 Goal' })).toHaveFocus();
-    await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: '编辑标签' })).toHaveFocus();
     await user.tab();
     expect(links[0]).toHaveFocus();
     await user.tab();
@@ -835,7 +923,7 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('region', { name: '描述' }).querySelector('.task-description')?.textContent).toBe(description);
     expect(document.querySelector('img')).toBeNull();
     expect(document.querySelector('script')).toBeNull();
-    expect(screen.getByText('被阻塞')).toBeVisible();
+    expect(screen.getByText('未就绪')).toBeVisible();
     expect(within(screen.getByRole('region', { name: '前置依赖' })).getByRole('button', { name: /^前置任务，普通依赖$/ })).toBeVisible();
     expect(within(screen.getByRole('region', { name: '当前未完成的前置' })).getByRole('button', { name: /^前置任务，普通依赖$/ })).toBeVisible();
     const next = within(screen.getByRole('region', { name: '任务图快照中的直接后续' })).getByRole('button', { name: /^后续任务，普通依赖$/ });
@@ -870,7 +958,7 @@ describe('task detail dialog', () => {
     const first = props({ taskId: old.id, snapshot: snapshot([detail(), old]) });
     const view = await open(first);
     await screen.findByRole('button', { name: '刷新任务图' });
-    expect(screen.getByText('被阻塞')).toBeVisible();
+    expect(screen.getByText('未就绪')).toBeVisible();
     expect(screen.getByRole('button', { name: '待处理' })).toBeDisabled();
     const refreshed = snapshot([detail(1, { status: 'done', ready: false, version: 2n }), fresh], 2);
     await view.rerender(<TaskDetailDialog {...first} snapshot={refreshed} />);

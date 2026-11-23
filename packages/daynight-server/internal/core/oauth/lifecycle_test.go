@@ -387,6 +387,7 @@ type lifecyclePlan struct {
 	refresh      store.OAuthRefresh
 	token        string
 	now          time.Time
+	rotationTime time.Time
 	rotation     *store.OAuthRotation
 	revocations  int
 }
@@ -449,7 +450,7 @@ func (d *lifecyclePlanDAO) FreshTime(ctx context.Context, caller time.Time) (tim
 
 func (d *lifecyclePlanDAO) RotateRefresh(ctx context.Context, value store.OAuthRotation) error {
 	d.next(ctx, "rotate")
-	if value.Grant.ID != d.plan.grant.ID || !bytes.Equal(value.OldHash, secret.Hash(d.plan.token)) || value.AccessID == "" || value.AccessID == value.Grant.ID || !value.CreatedAt.Equal(d.plan.now) || !value.AccessExpiresAt.Equal(d.plan.now.Add(AccessLifetime)) {
+	if value.Grant.ID != d.plan.grant.ID || !bytes.Equal(value.OldHash, secret.Hash(d.plan.token)) || value.AccessID == "" || value.AccessID == value.Grant.ID || !value.CreatedAt.Equal(d.plan.rotationTime) || !value.AccessExpiresAt.Equal(d.plan.rotationTime.Add(AccessLifetime)) {
 		d.plan.t.Fatalf("rotation input: %+v", value)
 	}
 	d.plan.rotation = &value
@@ -503,7 +504,7 @@ func lifecycleFixture(t *testing.T) (*lifecyclePlan, *GrantLifecycle) {
 	now := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: uuid.NewString(), ClientID: "client", Resource: "https://example.test/mcp", Scope: Scope, ExpiresAt: now.Add(GrantLifetime)}
 	refresh := store.OAuthRefresh{GrantID: grant.ID, ClientID: "client", ExpiresAt: grant.ExpiresAt}
-	p := &lifecyclePlan{t: t, ctx: t.Context(), token: secret.Random(RefreshPrefix), grant: grant, refresh: refresh, now: now}
+	p := &lifecyclePlan{t: t, ctx: t.Context(), token: secret.Random(RefreshPrefix), grant: grant, refresh: refresh, now: now, rotationTime: now}
 	t.Cleanup(func() {
 		if len(p.writes) != 0 {
 			t.Errorf("lifecycle omitted %d planned transactions", len(p.writes))
@@ -606,6 +607,74 @@ func TestGrantLifecycleUnknownDoesNotReturnSecrets(t *testing.T) {
 	result, err := s.Rotate(p.ctx, p.token, "client", p.grant.Resource, p.admit)
 	if !errors.Is(err, ErrAuthorizationUnknown) || result != (RotatedTokens{}) || p.rotation == nil || p.transactions != 2 {
 		t.Fatalf("unknown rotation exposed tokens: result=%+v err=%v transactions=%d", result, err, p.transactions)
+	}
+}
+
+func TestRotationObservesCandidateAfterWriterCompletion(t *testing.T) {
+	cleanup := errors.New("cleanup failure")
+	rollback := errors.New("rollback failure")
+	unknown := errors.New("commit response lost")
+	for _, tc := range []struct {
+		name    string
+		outcome store.TransactionOutcome
+		cause   error
+		want    error
+	}{
+		{"committed", store.TransactionCommitted, nil, nil},
+		{"committed with cleanup error", store.TransactionCommitted, cleanup, cleanup},
+		{"not committed", store.TransactionNotCommitted, rollback, rollback},
+		{"unknown", store.TransactionUnknown, unknown, ErrAuthorizationUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, s := rotationFixture(t)
+			p.writes[1].outcome, p.writes[1].writeErr = tc.outcome, tc.cause
+			p.rotationTime = p.now.Add(time.Second + 123456789*time.Nanosecond).In(time.FixedZone("database", 3600))
+			p.writes[1].steps[3].now = p.rotationTime
+			var observations []RotationObservation
+			s.SetRotationObserver(func(ctx context.Context, observation RotationObservation) {
+				if ctx != p.ctx || p.active || p.transactions != 2 {
+					t.Fatalf("observation before writer completion: active=%v transactions=%d", p.active, p.transactions)
+				}
+				observations = append(observations, observation)
+			})
+			result, err := s.Rotate(p.ctx, p.token, p.grant.ClientID, p.grant.Resource, p.admit)
+			if !errors.Is(err, tc.want) || (tc.want != nil && result != (RotatedTokens{})) || (tc.want == nil && result.AccessToken == "") {
+				t.Fatalf("rotation result=%+v err=%v want=%v", result, err, tc.want)
+			}
+			wantEvent := model.CredentialUsageEvent{Kind: model.UsageSubjectOAuthGrant, UserID: p.grant.UserID, SubjectID: p.grant.ID, At: p.rotationTime.UTC().Truncate(time.Microsecond)}
+			if len(observations) != 1 || observations[0].Event != wantEvent || observations[0].Outcome != tc.outcome || !errors.Is(observations[0].Cause, tc.cause) {
+				t.Fatalf("observations=%+v want event=%+v outcome=%s cause=%v", observations, wantEvent, tc.outcome, tc.cause)
+			}
+		})
+	}
+}
+
+func TestRotationDoesNotObserveWithoutRealRotation(t *testing.T) {
+	for _, scenario := range []string{"replay", "expired", "admission", "rotate failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newLifecycleFake()
+			failure := errors.New("injected failure")
+			switch scenario {
+			case "replay":
+				f.refresh.ConsumedAt = &f.now
+			case "expired":
+				f.grant.ExpiresAt = f.now
+			case "rotate failure":
+				f.failures["rotate:1"] = failure
+			}
+			s := NewGrantLifecycle(f)
+			s.SetRotationObserver(func(context.Context, RotationObservation) { t.Error("observed without a successful RotateRefresh") })
+			admit := func(context.Context, string) error {
+				if scenario == "admission" {
+					return failure
+				}
+				return nil
+			}
+			result, err := s.Rotate(t.Context(), secret.Random(RefreshPrefix), "client", f.grant.Resource, admit)
+			if err == nil || result != (RotatedTokens{}) {
+				t.Fatalf("unexpected result=%+v err=%v", result, err)
+			}
+		})
 	}
 }
 

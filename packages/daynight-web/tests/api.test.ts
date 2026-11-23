@@ -14,7 +14,7 @@ const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
-const task = { type: "task" as const, parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
+const task = { type: "task" as const, parentId: null, assignedTo: null, tags: [], requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -329,15 +329,20 @@ describe("API requests", () => {
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).sync.project.settings.version).toBe(version);
   });
-  it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
+  it("uses relative URLs, a cancellable signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
-    const abortSignal = signal();
-    await expect(listProjects({ limit: 50, cursor: "opaque+/= &?" }, abortSignal)).resolves.toEqual({ items: [project], nextCursor: "next" });
+    const controller = new AbortController();
+    await expect(listProjects({ limit: 50, cursor: "opaque+/= &?" }, controller.signal)).resolves.toEqual({ items: [project], nextCursor: "next" });
+    const networkSignal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal;
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/v1/projects?limit=50&cursor=opaque%2B%2F%3D+%26%3F", {
-      signal: abortSignal, headers: { Accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error",
+      signal: networkSignal, headers: { Accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error",
     });
-    await listProjects({}, abortSignal);
+    expect(networkSignal.aborted).toBe(false);
+    await listProjects({}, controller.signal);
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/projects");
+    const reason = new Error("cancel");
+    controller.abort(reason);
+    expect(networkSignal.reason).toBe(reason);
   });
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {

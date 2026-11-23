@@ -1,0 +1,71 @@
+CREATE TABLE project_github (
+    project_id uuid PRIMARY KEY,
+    version bigint NOT NULL DEFAULT 1,
+    generation bigint NOT NULL DEFAULT 0,
+    revision bigint NOT NULL DEFAULT 0,
+    enabled boolean NOT NULL DEFAULT false,
+    app_id bigint,
+    installation_id bigint,
+    repository_id bigint,
+    installation_account_login text,
+    repository_full_name text,
+    repository_private boolean,
+    poll_interval_minutes integer NOT NULL DEFAULT 5,
+    access_state text NOT NULL DEFAULT 'unknown',
+    access_reason text,
+    access_checked_at timestamptz,
+    next_access_check_at timestamptz,
+    access_hint_id uuid,
+    access_delivery_id text,
+    next_poll_at timestamptz,
+    not_before timestamptz,
+    last_poll_attempt_at timestamptz,
+    last_full_success_at timestamptz,
+    last_full_generation bigint,
+    poll_error_code text,
+    poll_error_message text,
+    poll_error_at timestamptz,
+    last_webhook_received_at timestamptz,
+    last_webhook_attempt_at timestamptz,
+    last_webhook_success_at timestamptz,
+    webhook_error_code text,
+    webhook_error_message text,
+    webhook_error_at timestamptz,
+    claim_token uuid,
+    claim_until timestamptz,
+    claim_kind text,
+    created_at timestamptz NOT NULL DEFAULT statement_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT statement_timestamp()
+);
+
+CREATE INDEX project_github_binding ON project_github (app_id, installation_id, repository_id);
+CREATE INDEX project_github_poll_due ON project_github (next_poll_at, project_id) WHERE enabled;
+CREATE INDEX project_github_access_due ON project_github (next_access_check_at, project_id) WHERE enabled;
+
+CREATE TABLE project_pull_requests (
+    project_id uuid NOT NULL,
+    number bigint NOT NULL,
+    github_id bigint NOT NULL,
+    url text NOT NULL,
+    title text NOT NULL,
+    author_id bigint,
+    author_login text,
+    state text NOT NULL,
+    draft boolean NOT NULL,
+    base_ref text NOT NULL,
+    head_repository_id bigint,
+    head_repository_full_name text,
+    head_ref text,
+    head_sha text NOT NULL,
+    github_created_at timestamptz NOT NULL,
+    github_updated_at timestamptz NOT NULL,
+    github_closed_at timestamptz,
+    github_merged_at timestamptz,
+    description text,
+    observed_at timestamptz NOT NULL,
+    revision bigint NOT NULL,
+    seen_poll_id uuid,
+    PRIMARY KEY (project_id, number)
+);
+
+CREATE INDEX project_pull_requests_state_number ON project_pull_requests (project_id, state, number DESC);

@@ -268,6 +268,8 @@ func (r *Runtime) waitAppDrain(ctx context.Context) error {
 		r.appDrain = nil
 		if err == nil {
 			r.appDrained = true
+		} else if completed, ok := err.(interface{ Drained() bool }); ok && completed.Drained() {
+			r.appDrained = true
 		}
 		return err
 	case <-ctx.Done():
@@ -372,7 +374,7 @@ func (r *Runtime) grace() error {
 	// Resource release belongs to the same budget as transport and application
 	// draining. A timed-out process must not close dependencies still in use.
 	var closeErr error
-	if httpErr == nil && metricsErr == nil && drainErr == nil && metricsDrainErr == nil && r.relayDone && appErr == nil && r.appDrained && ctx.Err() == nil {
+	if httpErr == nil && metricsErr == nil && drainErr == nil && metricsDrainErr == nil && r.relayDone && r.appDrained && ctx.Err() == nil {
 		closeErr = r.finish(ctx)
 	}
 	r.graceErr = errors.Join(httpErr, metricsErr, earlyCloseErr, earlyMetricsCloseErr, drainErr, metricsDrainErr, relayErr, appErr, closeErr)
@@ -408,10 +410,10 @@ func (r *Runtime) grace() error {
 	if relayErr != nil && !r.relayDone && !onlyContextError(relayErr) {
 		return relayErr
 	}
-	if appErr != nil && !onlyContextError(appErr) {
+	if appErr != nil && !r.appDrained && !onlyContextError(appErr) {
 		return appErr
 	}
-	if closeErr != nil && !onlyContextError(closeErr) {
+	if closeErr != nil && !r.appClosed && !onlyContextError(closeErr) {
 		return closeErr
 	}
 	return nil
@@ -452,15 +454,17 @@ func (r *Runtime) finish(ctx context.Context) error {
 	if !r.appDrained {
 		r.startAppDrain(ctx)
 		err := r.waitAppDrain(ctx)
-		if err != nil && ctx.Err() == nil && onlyContextError(err) {
+		if err != nil && !r.appDrained && ctx.Err() == nil && onlyContextError(err) {
 			r.startAppDrain(ctx)
 			err = r.waitAppDrain(ctx)
 		}
 		if err != nil {
-			if !onlyContextError(err) {
+			if r.appDrained || !onlyContextError(err) {
 				r.graceErr = errors.Join(r.graceErr, err)
 			}
-			return err
+			if !r.appDrained {
+				return err
+			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -469,6 +473,12 @@ func (r *Runtime) finish(ctx context.Context) error {
 	r.transportDrained = true
 	if !r.appClosed && r.closeApp != nil {
 		if err := r.closeApp(ctx); err != nil {
+			if completed, ok := err.(interface{ Closed() bool }); ok && completed.Closed() {
+				r.appClosed = true
+			}
+			if r.appClosed || !onlyContextError(err) {
+				r.graceErr = errors.Join(r.graceErr, err)
+			}
 			return err
 		}
 	}

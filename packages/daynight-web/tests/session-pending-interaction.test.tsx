@@ -31,6 +31,7 @@ function setup(entries = [approval('1')], onRespond = vi.fn(async () => {})) {
     const geometry = { top: 0, height: 100, node }; cards.set(article.dataset.entryKey!, geometry);
     vi.spyOn(article, 'getBoundingClientRect').mockImplementation(() => rect(geometry.top - box.scrollTop, geometry.height));
     vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => rect(geometry.top - box.scrollTop, geometry.height));
+    vi.spyOn(node.querySelector('h4')!, 'getBoundingClientRect').mockImplementation(() => rect(geometry.top + 16 - box.scrollTop, 20));
   }
   const resize = () => act(() => { window.dispatchEvent(new Event('resize')); });
   resize();
@@ -55,16 +56,26 @@ it('only offers a localized locator for an offscreen answerable request, without
   view.update({ height: 1200 });
   expect(view.box.scrollTop).toBe(0);
 });
-it('tracks user scrolling in both directions and keeps a partially visible tall card quiet', () => {
+it('tracks short cards and reveals a tall card when its heading is clipped', () => {
   const view = setup(); view.cards.get('1')!.top = 400;
   view.read(0);
   expect(screen.getByRole('button', { name: /Pending request/ })).toHaveTextContent('↓');
   view.read(350);
   expect(screen.queryByRole('button', { name: /Pending request/ })).toBeNull();
   view.cards.get('1')!.height = 800; view.read(600);
-  expect(screen.queryByRole('button', { name: /Pending request/ })).toBeNull();
+  expect(screen.getByRole('button', { name: /Pending request/ })).toHaveTextContent('↑');
   view.cards.get('1')!.height = 100; view.read(800);
   expect(screen.getByRole('button', { name: /Pending request/ })).toHaveTextContent('↑');
+});
+it('uses the container height and full heading boundaries for tall cards', () => {
+  const view = setup(); const card = view.cards.get('1')!;
+  card.top = 400; card.height = 176; view.read(417);
+  expect(screen.queryByRole('button', { name: /Pending request/ })).toBeNull();
+  card.height = 177; view.resize();
+  expect(screen.getByRole('button', { name: /Pending request/ })).toHaveTextContent('↑');
+  view.read(416); expect(screen.queryByRole('button', { name: /Pending request/ })).toBeNull();
+  view.read(235); expect(screen.getByRole('button', { name: /Pending request/ })).toHaveTextContent('↓');
+  view.read(236); expect(screen.queryByRole('button', { name: /Pending request/ })).toBeNull();
 });
 it('supports keyboard activation and focuses the card without activating approval', async () => {
   const view = setup(), user = userEvent.setup();

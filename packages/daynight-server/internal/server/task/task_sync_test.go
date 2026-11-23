@@ -39,8 +39,8 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	result := syncModel()
 	result.Tasks = []model.TaskViewRecord{
-		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
-		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
+		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, Title: "private-root-title", TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&标签"}}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, Title: strings.Repeat("😀", 160) + "<&尾", TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
 	result.DependencyStates = map[string]model.TaskDependencyState{
 		testTaskID:         {TaskVersion: 3, BlockedBy: nil, Ready: false},
@@ -63,7 +63,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	}
 	for i, value := range result.Tasks {
 		item := got.Tasks[i]
-		if item.ID != value.ID || item.Type != value.Type || !reflect.DeepEqual(item.ParentID, value.ParentID) || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
+		if item.ID != value.ID || item.Type != value.Type || !reflect.DeepEqual(item.ParentID, value.ParentID) || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.Title != value.Title || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
 			t.Fatalf("intrinsic projection %d=%+v want=%+v", i, item, value)
 		}
 	}
@@ -89,7 +89,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		}
 	}
 	for _, item := range raw.Tasks {
-		if len(item) != 18 {
+		if len(item) != 20 || item["title"] == nil {
 			t.Fatalf("unexpected summary fields: %+v", item)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {
@@ -97,6 +97,9 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 				t.Fatalf("summary exposes %s", field)
 			}
 		}
+	}
+	if string(raw.Tasks[0]["tags"]) != `[{"id":"tag-id","name":"\u003c\u0026标签"}]` || string(raw.Tasks[1]["tags"]) != `[]` {
+		t.Fatalf("sync tags: %s %s", raw.Tasks[0]["tags"], raw.Tasks[1]["tags"])
 	}
 	if string(raw.Tasks[0]["type"]) != `"task"` || string(raw.Tasks[0]["parentId"]) != `"`+parent+`"` || string(raw.Tasks[1]["parentId"]) != "null" {
 		t.Fatalf("typed sync fields: %+v %+v", raw.Tasks[0], raw.Tasks[1])
@@ -310,7 +313,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	assertProjectError(t, projectRequest(outsideHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "sessions": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 2, "active": 1, "credential": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -359,14 +362,21 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 		requireProject(id)
 		return []model.TaskAssigneeFact{}, nil
 	}
-	sessions := &taskHTTPSessionReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync sessions")}
-	sessions.CurrentTaskSessionSourcesFn = func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-		plan.Called("sessions")
+	tasks.TaskSyncActiveTasksFn = func(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+		plan.Called("active")
 		requireProject(id)
-		return []store.TaskSessionSource{}, nil
+		return []store.TaskSyncTaskIdentity{}, nil
+	}
+	credential := &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync credential")}
+	credential.CredentialFn = func(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
+		plan.Called("credential")
+		if principal != admin {
+			t.Fatalf("credential principal: %#v", principal)
+		}
+		return store.ThreadCredential{}, nil
 	}
 	snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync snapshot"),
-		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, SessionDAOFn: func() store.SessionReader { return sessions },
+		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, CredentialDAOFn: func() store.CredentialReader { return credential },
 		ObservedAtFn: func(context.Context) (time.Time, error) { plan.Called("observed"); return project.UpdatedAt, nil },
 	}
 	database.ReadSnapshotCall = func(ctx context.Context, read func(store.SnapshotScope) error) error {
@@ -377,6 +387,61 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	result := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 	if result.Project.ID != project.ID || result.Tasks == nil {
 		t.Fatalf("authorized project snapshot: %#v", result)
+	}
+}
+
+func TestTaskSyncHTTPRevokedCredentialDuringRecheck(t *testing.T) {
+	project, _, principal := taskHTTPMockModels()
+	database := newHTTPTestStore(t)
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "active": 1, "credential": 1})
+	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
+	projects.ProjectAccessFn = func(_ context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		plan.Called("access")
+		if actor != principal || id != project.ID {
+			t.Fatalf("access principal or project mismatch")
+		}
+		return taskHTTPMockAccess(project, principal), nil
+	}
+	projects.ProjectFn = func(context.Context, string) (model.Project, error) { plan.Called("project"); return project, nil }
+	tasks := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync task")}
+	tasks.TaskCacheEpochFn = func(context.Context, string) (string, error) { plan.Called("epoch"); return testEpoch, nil }
+	tasks.TaskSyncTasksFn = func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
+		plan.Called("tasks")
+		return []model.TaskViewRecord{}, nil
+	}
+	tasks.TaskSyncDependencyStatesFn = func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
+		plan.Called("dependencies")
+		return map[string]model.TaskDependencyState{}, nil
+	}
+	tasks.TaskAssigneesFn = func(context.Context, string) ([]model.TaskAssigneeFact, error) {
+		plan.Called("assignees")
+		return []model.TaskAssigneeFact{}, nil
+	}
+	tasks.TaskSyncActiveTasksFn = func(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+		plan.Called("active")
+		return []store.TaskSyncTaskIdentity{}, nil
+	}
+	credential := &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "revoked credential")}
+	credential.CredentialFn = func(_ context.Context, actor model.Principal) (store.ThreadCredential, error) {
+		plan.Called("credential")
+		if actor != principal {
+			t.Fatalf("credential principal: %#v", actor)
+		}
+		return store.ThreadCredential{}, model.ErrNotFound
+	}
+	snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync snapshot"),
+		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, CredentialDAOFn: func() store.CredentialReader { return credential },
+		ObservedAtFn: func(context.Context) (time.Time, error) { plan.Called("observed"); return project.UpdatedAt, nil },
+	}
+	database.ReadSnapshotCall = func(ctx context.Context, read func(store.SnapshotScope) error) error {
+		plan.Called("snapshot")
+		return read(snapshot)
+	}
+	handler := taskComponentHandler(t, database, io.Discard, principal)
+	response := projectRequest(handler, http.MethodGet, syncPath(project.ID), "")
+	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	if strings.Contains(response.Body.String(), `"taskObservations"`) {
+		t.Fatalf("revoked response exposed observations: %s", response.Body)
 	}
 }
 
@@ -440,6 +505,7 @@ func workerHTTPSummary(task model.Task) model.TaskViewRecord {
 
 func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	current := componentWorkerHTTPTask(t)
 	path := taskCollection(current.ProjectID) + "/" + current.ID
 	f.expectSync([]model.TaskViewRecord{workerHTTPSummary(current)}, map[string]model.TaskDependencyState{}, []model.TaskAssigneeFact{}, nil)
@@ -493,7 +559,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	claimedAt := current.UpdatedAt.Add(time.Second)
 	worker := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
 		Machine:  model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"},
-		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr,
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb,
 		WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 	claimed := current
 	claimed.Status, claimed.Version, claimed.Ready = model.TaskInProgress, current.Version+1, false
@@ -506,11 +572,11 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	assertSummary(full, claimed)
 	current = claimed
 	native := "private-native-session"
-	worker.Phase, worker.Herdr, worker.NativeSessionID = model.WorkerExecuting, &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "private-pane"}, &native
+	worker.Phase, worker.NativeSessionID = model.WorkerExecuting, &native
 	executing := current
 	executing.Version, executing.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	executing.Properties = workerHTTPProperties(t, current.Properties, &worker)
-	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": native}
+	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": native}
 	values = workerHTTPWriteValues(executing)
 	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, executing, nil, store.TransactionCommitted)
 	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPatch, path+"/worker-claim", jsonBody(t, update)), http.StatusOK)
@@ -525,11 +591,10 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		t.Fatal("same-value Worker update changed version, timing or summary fields")
 	}
 	assertSummary(noop, current)
-	worker.State = model.WorkerReleased
 	released := current
 	released.Status, released.Version, released.Ready = model.TaskTodo, current.Version+1, true
 	released.StartedAt, released.CompletedAt, released.UpdatedAt = nil, nil, current.UpdatedAt.Add(time.Second)
-	released.Properties = workerHTTPProperties(t, current.Properties, &worker)
+	released.Properties = workerHTTPProperties(t, current.Properties, nil)
 	values = workerHTTPWriteValues(released)
 	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, released, nil, store.TransactionCommitted)
 	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/release", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
@@ -539,20 +604,8 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		t.Fatal("release lost status timing contract")
 	}
 	f.expectRead(released)
-	if read := readHTTPTask(t, f.handler, full); !reflect.DeepEqual(read, full) || apiWorker(t, read.Properties).NativeSessionID == nil || *apiWorker(t, read.Properties).NativeSessionID != native {
-		t.Fatal("summary projection changed full execution resource")
-	}
-	current = released
-	withdrawn := current
-	withdrawn.AllowAgents, withdrawn.Version, withdrawn.UpdatedAt = false, current.Version+1, current.UpdatedAt.Add(time.Second)
-	withdrawn.Properties = workerHTTPProperties(t, current.Properties, nil)
-	values = workerHTTPWriteValues(withdrawn)
-	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, withdrawn, nil, store.TransactionCommitted)
-	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID})), http.StatusOK)
-	plan.check()
-	assertSummary(full, withdrawn)
-	if apiWorker(t, full.Properties) != nil || full.AllowAgents || full.Status != "todo" || full.StartedAt != nil || full.CompletedAt != nil {
-		t.Fatal("withdrawal retained released record or automatic permission")
+	if read := readHTTPTask(t, f.handler, full); !reflect.DeepEqual(read, full) || apiWorker(t, read.Properties) != nil {
+		t.Fatal("released Task projection retained execution")
 	}
 }
 

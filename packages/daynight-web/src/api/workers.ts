@@ -2,6 +2,7 @@ import { parseToolPathTelemetry, type ToolPathTelemetry } from "./worker-tool-pa
 import { parseWorkerRuntimeConfiguration, type WorkerRuntimeConfiguration } from './worker-runtime-configuration';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { array, executionPlatform, id, malformed, record, string, timestamp } from './parse';
+import { parseWorkerAlias, WORKER_ALIAS_HEADER, type WorkerAlias } from './worker-alias';
 import type { ExecutionPlatform, TaskStatus, WorkerAgent, WorkerPhase } from './types';
 
 export type WorkerProbeCode = 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_sample' | 'out_of_range' | 'io_error' | 'unavailable';
@@ -9,7 +10,6 @@ export type WorkerProbe<T> =
   | { readonly state: 'ok'; readonly checkedAt: string; readonly value: T }
   | { readonly state: 'error'; readonly checkedAt: string; readonly code: WorkerProbeCode };
 export type WorkerExecutableProbe = WorkerProbe<string> | { readonly state: 'not_installed'; readonly checkedAt: string };
-export type WorkerHerdrProbe = WorkerProbe<string> | { readonly state: 'not_running'; readonly checkedAt: string };
 export type WorkerMachine = { readonly id: string; readonly name: string };
 export type WorkerAssistantHostReason = 'unsupported_arguments' | 'invalid_cwd' | 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'unavailable';
 export type WorkerAssistantHost = {
@@ -37,7 +37,6 @@ export type WorkerTelemetry = {
   readonly disk: WorkerProbe<{ readonly availableBytes: number; readonly totalBytes: number }>;
   readonly versions: {
     readonly daynight: string;
-    readonly herdr: WorkerHerdrProbe;
     readonly codex: WorkerExecutableProbe;
     readonly copilot: WorkerExecutableProbe;
   };
@@ -53,6 +52,7 @@ export type WorkerTaskSnapshot = {
   readonly agent: WorkerAgent;
 };
 type WorkerIdentity = {
+  readonly alias?: WorkerAlias;
   readonly workerId: string;
   readonly machine: WorkerMachine;
   readonly platform: ExecutionPlatform;
@@ -136,7 +136,7 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
 };
 const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry => {
   const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration', ...(toolPathsSupported ? ['toolPaths'] : [])].filter(key => Object.hasOwn(record(value), key))]);
-  const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
+  const versions = fields(data.versions, ['daynight', 'codex', 'copilot']);
   return {
     ...(Object.hasOwn(data, 'toolPaths') ? { toolPaths: parseToolPathTelemetry(data.toolPaths, executionPlatform(data.platform)) } : {}),
     ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
@@ -164,12 +164,13 @@ const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry
       if (availableBytes > totalBytes) return malformed();
       return { availableBytes, totalBytes };
     }),
-    versions: { daynight: text(versions.daynight), herdr: software(versions.herdr, 'not_running'), codex: software(versions.codex, 'not_installed'), copilot: software(versions.copilot, 'not_installed') },
+    versions: { daynight: text(versions.daynight), codex: software(versions.codex, 'not_installed'), copilot: software(versions.copilot, 'not_installed') },
   };
 };
 const summaryFields = ['workerId', 'machine', 'platform', 'lastReportedAt', 'taskObservationState', 'taskObservedAt', 'activeTaskCount'] as const;
 const summary = (data: Record<string, unknown>): WorkerSummary => {
-  const identity = { workerId: id(data.workerId), machine: machine(data.machine), platform: executionPlatform(data.platform), lastReportedAt: timestamp(data.lastReportedAt) };
+  const identity = { workerId: id(data.workerId), machine: machine(data.machine), platform: executionPlatform(data.platform), lastReportedAt: timestamp(data.lastReportedAt),
+    ...(Object.hasOwn(data, 'alias') ? { alias: parseWorkerAlias(data.alias) } : {}) };
   if (data.taskObservationState === 'unavailable') {
     if (data.taskObservedAt !== null || data.activeTaskCount !== null) return malformed();
     return { ...identity, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null };
@@ -182,9 +183,9 @@ const cursor = (value: unknown): string | null => {
   if (parsed.length === 0 || parsed.length > 4096 || /[\u0000-\u001f\u007f]/u.test(parsed)) return malformed();
   return parsed;
 };
-export const parseWorkerPage = (value: unknown): WorkerPage => {
+export const parseWorkerPage = (value: unknown, aliasSupported = false): WorkerPage => {
   const data = fields(value, ['observedAt', 'items', 'nextCursor']);
-  const items = array(data.items, value => summary(fields(value, summaryFields)));
+  const items = array(data.items, value => summary(fields(value, [...summaryFields, ...(aliasSupported ? ['alias'] : [])])));
   if (items.length > 100 || new Set(items.map(item => item.workerId)).size !== items.length) return malformed();
   return { observedAt: timestamp(data.observedAt), items, nextCursor: cursor(data.nextCursor) };
 };
@@ -193,9 +194,9 @@ const task = (value: unknown): WorkerTaskSnapshot => {
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
     status: choice<TaskStatus>(data.status, ['proposed', 'todo', 'in_progress', 'done', 'cancelled']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
 };
-export const parseWorkerDetail = (value: unknown, workerId: string, toolPathsSupported = false): WorkerDetailResponse => {
+export const parseWorkerDetail = (value: unknown, workerId: string, toolPathsSupported = false, aliasSupported = false): WorkerDetailResponse => {
   const data = fields(value, ['observedAt', 'worker']);
-  const worker = fields(data.worker, [...summaryFields, 'telemetry', 'inventoryObservedAt', 'tasks']);
+  const worker = fields(data.worker, [...summaryFields, 'telemetry', 'inventoryObservedAt', 'tasks', ...(aliasSupported ? ['alias'] : [])]);
   const observed = summary(worker), sampled = telemetry(worker.telemetry, toolPathsSupported), tasks = array(worker.tasks, task);
   const inventoryObservedAt = worker.inventoryObservedAt === null ? null : timestamp(worker.inventoryObservedAt);
   if (observed.workerId !== requestId(workerId) || sampled.machine.id !== observed.machine.id || sampled.machine.name !== observed.machine.name || sampled.platform !== observed.platform || new Set(tasks.map(task => task.taskId)).size !== tasks.length) return malformed();
@@ -213,23 +214,25 @@ export const listWorkers = async (query: { readonly limit?: number; readonly cur
     cursor(query.cursor);
     parameters.set('cursor', query.cursor);
   }
-  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
+  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json', [WORKER_ALIAS_HEADER]: '1' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
-    const tools = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
-    return parseWorkerPage(value);
+    const alias = response.headers.get(WORKER_ALIAS_HEADER);
+    if (alias !== null && alias !== '1') return malformed();
+    return parseWorkerPage(value, alias === '1');
   });
 };
 export const getWorker = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission): Promise<WorkerDetailResponse> => {
   const userId = requestId(admission.userId), canonicalWorkerId = requestId(workerId);
-  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
+  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '2', [WORKER_ALIAS_HEADER]: '1' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
     const tools = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
-    return parseWorkerDetail(value, canonicalWorkerId, tools === '1');
+    if (tools !== '2') throw new ApiError('protocol', response.status, 'worker_tool_paths_upgrade');
+    const alias = response.headers.get(WORKER_ALIAS_HEADER);
+    if (alias !== null && alias !== '1') return malformed();
+    return parseWorkerDetail(value, canonicalWorkerId, true, alias === '1');
   });
 };

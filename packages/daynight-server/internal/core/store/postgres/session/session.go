@@ -9,7 +9,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pginternal "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
@@ -40,6 +39,20 @@ func (tx *DAO) credential(ctx context.Context, principal model.Principal, now ti
 		var valid bool
 		if err := tx.tx.QueryRow(ctx, `SELECT $1::timestamptz > clock_timestamp()`, credential.ExpiresAt).Scan(&valid); err != nil {
 			return pginternal.QueryError("recheck session credential expiry", err)
+		}
+		if !valid {
+			return model.ErrNotFound
+		}
+		return nil
+	}
+	if principal.Kind == model.SessionCredential {
+		credential, err := pginternal.ThreadCredential(ctx, tx.tx, principal, lock)
+		if err != nil {
+			return err
+		}
+		var valid bool
+		if err := tx.tx.QueryRow(ctx, `SELECT $1::timestamptz>clock_timestamp()`, credential.ExpiresAt).Scan(&valid); err != nil {
+			return pginternal.QueryError("recheck browser session credential expiry", err)
 		}
 		if !valid {
 			return model.ErrNotFound
@@ -156,10 +169,16 @@ func (tx *DAO) SessionBotID(ctx context.Context, id string) (*string, error) {
 func (tx *DAO) LockSession(ctx context.Context, id string) (store.SessionRecord, error) {
 	var r store.SessionRecord
 	var raw []byte
-	var parent, kind, connectionParent *string
-	err := tx.tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
+	var parent, kind, connectionParent, onlineMode *string
+	err := tx.tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,history_content_policy,online_mode,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.HistoryContentPolicy, &onlineMode, &r.FirstInputBlocked)
 	if err != nil {
 		return store.SessionRecord{}, pginternal.QueryError("lock session", err)
+	}
+	if onlineMode != nil {
+		if *onlineMode == "" {
+			return store.SessionRecord{}, errors.New("invalid empty Session online mode")
+		}
+		r.OnlineMode = *onlineMode
 	}
 	if parent != nil {
 		r.Parent = *parent
@@ -181,7 +200,7 @@ func (tx *DAO) SaveSession(ctx context.Context, r store.SessionRecord) error {
 	if err != nil {
 		return pginternal.QueryError("encode session", err)
 	}
-	_, err = tx.tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, raw, r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
+	_, err = tx.tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6,online_mode=COALESCE(online_mode,NULLIF($7,'')),history_content_policy=CASE WHEN online_mode IS NULL AND NULLIF($7,'') IS NOT NULL THEN $8 ELSE history_content_policy END WHERE id=$1`, r.Snapshot.SessionID, raw, r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq, r.OnlineMode, r.HistoryContentPolicy)
 	if err != nil {
 		return pginternal.QueryError("save session", err)
 	}
@@ -402,11 +421,20 @@ func (tx *DAO) RedactDeletedBot(ctx context.Context, botID string) error {
 	return nil
 }
 
+func (tx *DAO) SessionOperationExists(ctx context.Context, session, id string) (bool, error) {
+	var exists bool
+	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND operation_id=$2)`, session, id).Scan(&exists)
+	if err != nil {
+		return false, pginternal.QueryError("check session operation existence", err)
+	}
+	return exists, nil
+}
+
 func (tx *DAO) SessionOperation(ctx context.Context, session, id string) (store.SessionOperation, error) {
 	o := store.SessionOperation{SessionID: session, OperationID: id}
 	var command, receipt []byte
 	var kind string
-	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,operation_seq,deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, session, id).Scan(&command, &receipt, &o.Actor.UserID, &o.Actor.CredentialID, &kind, &o.Hash, &o.Epoch, &o.Seq, &o.Deadline)
+	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,operation_seq,deadline,worker_intent_version,worker_id::text FROM session_operations WHERE session_id=$1 AND operation_id=$2`, session, id).Scan(&command, &receipt, &o.Actor.UserID, &o.Actor.CredentialID, &kind, &o.Hash, &o.Epoch, &o.Seq, &o.Deadline, &o.WorkerIntentVersion, &o.WorkerID)
 	if err != nil {
 		return store.SessionOperation{}, pginternal.QueryError("read session operation", err)
 	}
@@ -429,7 +457,7 @@ func (tx *DAO) InsertSessionOperation(ctx context.Context, o store.SessionOperat
 	if err != nil {
 		return pginternal.QueryError("encode session receipt", err)
 	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, o.SessionID, o.OperationID, o.Seq, o.Hash, command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), receipt)
+	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,worker_intent_version,worker_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, o.SessionID, o.OperationID, o.Seq, o.Hash, command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), receipt, o.WorkerIntentVersion, o.WorkerID)
 	if err != nil {
 		return pginternal.QueryError("insert session operation", err)
 	}
@@ -572,7 +600,7 @@ func (tx *DAO) SetSessionArchiveReady(ctx context.Context, id, digest string, si
 }
 
 func (tx *DAO) ListTestSessions(ctx context.Context, owner string, now time.Time, limit int, online bool, heartbeatFloor time.Time, after *time.Time, afterID string) ([]store.TestSessionListItem, error) {
-	query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until
+	query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until,ts.connection_expires_at
  FROM task_sessions ts
  CROSS JOIN LATERAL (SELECT GREATEST(ts.created_at,COALESCE(ts.last_seen,ts.created_at)) AS updated_at) recent
  WHERE ts.scope='test' AND ts.bot_id IS NULL AND ts.owner_user_id=$1
@@ -596,7 +624,7 @@ func (tx *DAO) ListTestSessions(ctx context.Context, owner string, now time.Time
 	for rows.Next() {
 		var item store.TestSessionListItem
 		var raw []byte
-		if err := rows.Scan(&raw, &item.CreatedAt, &item.UpdatedAt, &item.LastSeen, &item.DrainUntil); err != nil {
+		if err := rows.Scan(&raw, &item.CreatedAt, &item.UpdatedAt, &item.LastSeen, &item.DrainUntil, &item.ConnectionExpiry); err != nil {
 			return nil, pginternal.QueryError("read test sessions", err)
 		}
 		if err := json.Unmarshal(raw, &item.Snapshot); err != nil {
@@ -616,115 +644,6 @@ func (tx *DAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
 		return nil, pginternal.QueryError("lock terminal", err)
 	}
 	return raw, nil
-}
-
-func (tx *DAO) SaveTerminal(ctx context.Context, id string, raw []byte, seen *time.Time, instance string) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE task_sessions SET terminal_state=$2,last_seen=$3,server_instance=$4 WHERE id=$1 AND backend='herdr'`, id, raw, seen, instance)
-	if err != nil {
-		return pginternal.QueryError("save terminal", err)
-	}
-	return nil
-}
-
-func (tx *DAO) FindTerminalRegistration(ctx context.Context, id, project, registration, taskID, claim string) (string, error) {
-	var found string
-	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM task_sessions WHERE id=$1 OR (project_id=$2 AND (registration_id=$3 OR (task_id=$4 AND claim_id=$5)))`, id, project, registration, taskID, claim).Scan(&found)
-	if err != nil {
-		return "", pginternal.QueryError("find terminal registration", err)
-	}
-	return found, nil
-}
-
-func (tx *DAO) InsertTerminal(ctx context.Context, r store.TerminalRegistration) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,backend,terminal_state,last_seen,server_instance) VALUES($1,$2,$3,$4,$5,$6,$7,NULL,'herdr',$8,$9,$10)`, r.SessionID, r.ProjectID, r.TaskID, r.ClaimID, r.OwnerID, r.RegistrationID, r.Registration, r.State, r.LastSeen, r.ServerInstance)
-	if err != nil {
-		return pginternal.QueryError("insert terminal", err)
-	}
-	return nil
-}
-
-func (tx *DAO) InsertRecordingEvidence(ctx context.Context, id string, generation int64, evidenceID string, revision int64, hash string) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,$2,$3,$4,$5)`, id, generation, evidenceID, revision, hash)
-	if err != nil {
-		return pginternal.QueryError("insert recording evidence", err)
-	}
-	return nil
-}
-
-func (tx *DAO) TerminalOperation(ctx context.Context, id, operationID string) (store.TerminalOperation, error) {
-	out := store.TerminalOperation{SessionID: id, OperationID: operationID}
-	var result []byte
-	var kind string
-	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, id, operationID).Scan(&out.Command, &result, &out.Actor.UserID, &out.Actor.CredentialID, &kind, &out.Hash, &out.Epoch, &out.Deadline)
-	if err != nil {
-		return store.TerminalOperation{}, pginternal.QueryError("read terminal operation", err)
-	}
-	out.Actor.Kind = model.CredentialKind(kind)
-	if err := json.Unmarshal(result, &out.Result); err != nil {
-		return store.TerminalOperation{}, pginternal.QueryError("decode terminal result", err)
-	}
-	return out, nil
-}
-
-func (tx *DAO) InsertTerminalOperation(ctx context.Context, o store.TerminalOperation) error {
-	raw, err := json.Marshal(o.Result)
-	if err != nil {
-		return pginternal.QueryError("encode terminal result", err)
-	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, o.SessionID, o.OperationID, o.Seq, o.Hash, o.Command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), raw, o.Deadline)
-	if err != nil {
-		return pginternal.QueryError("insert terminal operation", err)
-	}
-	return nil
-}
-
-func (tx *DAO) SetTerminalOperationResult(ctx context.Context, id string, result v2.OperationResult) error {
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return pginternal.QueryError("encode terminal result", err)
-	}
-	_, err = tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=$3 WHERE session_id=$1 AND operation_id=$2`, id, result.OperationID, raw)
-	if err != nil {
-		return pginternal.QueryError("set terminal result", err)
-	}
-	return nil
-}
-
-func (tx *DAO) InvalidateTerminalOperations(ctx context.Context, id string) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'stale_fence' ELSE 'input_unknown' END) WHERE session_id=$1 AND receipt->>'state' IN ('queued','dispatching')`, id)
-	if err != nil {
-		return pginternal.QueryError("invalidate terminal operations", err)
-	}
-	return nil
-}
-
-func (tx *DAO) ExpireTerminalOperations(ctx context.Context, id string, now time.Time) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'input_busy' ELSE 'input_unknown' END) WHERE session_id=$1 AND deadline<=$2 AND receipt->>'state' IN ('queued','dispatching')`, id, now)
-	if err != nil {
-		return pginternal.QueryError("expire terminal operations", err)
-	}
-	return nil
-}
-
-func (tx *DAO) QueuedTerminalOperation(ctx context.Context, id string) ([]string, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT operation_id::text FROM session_operations WHERE session_id=$1 AND receipt->>'state'='queued' ORDER BY operation_seq LIMIT 1`, id)
-	if err != nil {
-		return nil, pginternal.QueryError("read queued terminal operation", err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, pginternal.QueryError("read queued terminal operation", err)
-	}
-	return ids, nil
-}
-
-func (tx *DAO) TerminalViewerOperationPending(ctx context.Context, id, user, client string) (bool, error) {
-	var pending bool
-	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND actor_user_id=$2 AND command->'request'->>'browserClientId'=$3 AND receipt->>'state' IN ('queued','dispatching'))`, id, user, client).Scan(&pending)
-	if err != nil {
-		return false, pginternal.QueryError("read terminal viewer operation", err)
-	}
-	return pending, nil
 }
 
 func (tx *DAO) InsertBotSession(ctx context.Context, r store.SessionRegistration) (bool, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/archiveconfig"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
 	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
 	redisconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis/config"
@@ -31,6 +32,7 @@ type mcpPatch struct {
 	Transfer transferconfig.Patch `yaml:",inline"`
 }
 type patch struct {
+	S2S          s2sPatch                        `yaml:"s2s"`
 	Server       serverconfig.Patch              `yaml:"server"`
 	Database     databaseconfig.Patch            `yaml:"database"`
 	Storage      storageconfig.Patch             `yaml:"storage"`
@@ -40,6 +42,7 @@ type patch struct {
 	OAuth        oauthconfig.Patch               `yaml:"oauth"`
 	Webhook      webhookconfig.Patch             `yaml:"webhook"`
 	TaskSync     applicationconfig.TaskSyncPatch `yaml:"task_sync"`
+	Session      archiveconfig.Patch             `yaml:"session"`
 	ImageDecoder imageconfig.Patch               `yaml:"image_decoder"`
 }
 type StorageVerificationConfig struct {
@@ -153,10 +156,10 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 			group string
 			apply func() error
 		}{
-			{"server", func() error { return p.Server.ApplyTo(&c.Server) }}, {"database", func() error { return p.Database.ApplyTo(&c.Database) }}, {"storage", func() error { return p.Storage.ApplyTo(&c.Storage) }},
+			{"s2s", func() error { return p.S2S.ApplyTo(&c.S2S) }}, {"server", func() error { return p.Server.ApplyTo(&c.Server) }}, {"database", func() error { return p.Database.ApplyTo(&c.Database) }}, {"storage", func() error { return p.Storage.ApplyTo(&c.Storage) }},
 			{"monitoring", func() error { return p.Monitoring.Redis.ApplyTo(&c.Monitoring.Redis) }}, {"monitoring", func() error { return p.Monitoring.Metrics.ApplyTo(&c.Monitoring.Metrics) }},
 			{"uniauth", func() error { return p.UniAuth.ApplyTo(&c.UniAuth) }}, {"mcp", func() error { return p.MCP.Origins.ApplyTo(&c.MCP.Origins) }}, {"mcp", func() error { return p.MCP.Transfer.ApplyTo(&c.MCP.Transfer) }},
-			{"oauth", func() error { return p.OAuth.ApplyTo(&c.OAuth) }}, {"webhook", func() error { return p.Webhook.ApplyTo(&c.Webhook) }}, {"task_sync", func() error { return p.TaskSync.ApplyTo(&c.TaskSync) }}, {"image_decoder", func() error { return p.ImageDecoder.ApplyTo(&c.ImageDecoder) }},
+			{"oauth", func() error { return p.OAuth.ApplyTo(&c.OAuth) }}, {"webhook", func() error { return p.Webhook.ApplyTo(&c.Webhook) }}, {"task_sync", func() error { return p.TaskSync.ApplyTo(&c.TaskSync) }}, {"image_decoder", func() error { return p.ImageDecoder.ApplyTo(&c.ImageDecoder) }}, {"session", func() error { return p.Session.ApplyTo(&c.Session) }},
 		} {
 			if err = item.apply(); err != nil {
 				return Config{}, decorate(err, item.group, "decode", origins, configvalue.Origin{})
@@ -168,7 +171,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group string
 		apply func(func(string) (string, bool), func(string, string)) error
 	}{
-		{"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment},
+		{"s2s", c.S2S.ApplyEnvironment}, {"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment}, {"session", c.Session.ApplyEnvironment},
 	} {
 		mark := func(field, variable string) {
 			origins[item.group+"."+field] = configvalue.Origin{Source: "environment", EnvName: variable}
@@ -189,7 +192,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group    string
 		validate func() error
 	}{
-		{"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
+		{"s2s", func() error { return c.S2S.Validate(c.Server.AllowHTTPTestOrigin) }}, {"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
 	} {
 		if err = item.validate(); err != nil {
 			return Config{}, decorate(err, item.group, "validate", origins, configvalue.Origin{})
@@ -209,6 +212,9 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 			err = &fcopy
 		}
 		return Config{}, decorate(err, group, "validate", origins, configvalue.Origin{})
+	}
+	if err = c.Server.ValidatePreviewOrigin(); err != nil {
+		return Config{}, decorate(err, "server", "validate", origins, configvalue.Origin{})
 	}
 	for _, item := range []struct {
 		group    string
@@ -232,7 +238,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group    string
 		validate func() error
 	}{
-		{"server", c.Server.ValidateTimeouts}, {"task_sync", c.TaskSync.Validate}, {"image_decoder", c.ImageDecoder.Validate},
+		{"server", c.Server.ValidateTimeouts}, {"task_sync", c.TaskSync.Validate}, {"image_decoder", c.ImageDecoder.Validate}, {"session", c.Session.Validate},
 	} {
 		if err = item.validate(); err != nil {
 			return Config{}, decorate(err, item.group, "validate", origins, configvalue.Origin{})

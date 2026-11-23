@@ -77,5 +77,23 @@ it("renders ID-only and mixed evidence, keeping JSON projection and server order
   expect(await f.run(["id:05d609a8", "--json"])).toBe(0);
   const output = f.context.stdout.mock.calls[0]![0];
   expect(output.endsWith("\n")).toBe(true);
-  expect(JSON.parse(output)).toEqual([idOnly, mixed].map(({ id, type, parentId, projectId, title, status, cancelledAt, context, match }) => ({ id, type, parentId, projectId, title, status, cancelledAt, context, match })));
+  expect(JSON.parse(output)).toEqual([idOnly, mixed].map(({ id, type, parentId, projectId, title, status, cancelledAt, tags, context, match }) => ({ id, type, parentId, projectId, title, status, cancelledAt, tags, context, match })));
+});
+
+
+it("sends and displays the ordinary parent search relation", async () => {
+  const parentTaskId = "99999999-9999-4999-8999-999999999999";
+  const item = { ...first.items[0], parentId: null, parentTaskId, parentTaskContext: { taskId: parentTaskId, title: "Parent", privateField: "secret" }, context: null };
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+    expect(new Headers(init!.headers).get("Daynight-Task-Relations")).toBe("task-parent-v1");
+    return response({ ...first, total: 1, items: [item], nextCursor: null });
+  });
+  const f = fixture(fetch);
+  expect(await f.run(["x", "--parent-task", parentTaskId, "--json"])).toBe(0);
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ query: "x", parentTaskId, limit: 100 });
+  expect(JSON.parse(f.context.stdout.mock.calls[0]![0])[0]).toMatchObject({ parentTaskId, parentTaskContext: { taskId: parentTaskId, title: "Parent" } });
+  expect(f.context.stdout.mock.calls[0]![0]).not.toContain("secret");
+  f.context.stdout.mockClear();
+  expect(await f.run(["x", "--parent-task", parentTaskId])).toBe(0);
+  expect(f.context.stdout.mock.calls[0]![0]).toContain(`Parent: Task ${parentTaskId}`);
 });

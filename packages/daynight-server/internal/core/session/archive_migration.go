@@ -304,6 +304,9 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 		if e = dao.SetUnifiedSessionArchiveReady(ctx, op.id, manifestHash, len(plan.ManifestBytes), manifestPath, plan.Manifest.Completeness); e != nil {
 			return e
 		}
+		if e = s.recordArchiveSuccess(ctx, tx, op.id); e != nil {
+			return e
+		}
 		migration.Phase = "committed"
 		return dao.SaveSessionArchiveMigration(ctx, migration)
 	})

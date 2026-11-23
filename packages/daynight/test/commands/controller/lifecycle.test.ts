@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 const roots: string[] = [];
 const databases: Database.Database[] = [];
 afterEach(async () => { for (const database of databases.splice(0)) if (database.open) database.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -33,9 +34,98 @@ it("rejects new native input at outbox capacity without consuming a sequence or 
   store.appendEvent({ text: "a".repeat(400) });
   expect(() => store.appendEvent({ text: "b".repeat(400) })).toThrow(/capacity/);
   expect(() => store.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload: { text: "test" } })).toThrow(/capacity/);
+  expect(() => store.prepareOperation({ operationId: randomUUID(), kind: "worker_input", payload: { text: "test" } })).toThrow(/capacity/);
   expect(store.pendingEvents()).toHaveLength(1);
   store.acknowledgeEvents("1");
   expect(store.appendEvent({ text: "next" }).sequence).toBe("2"); store.close();
+});
+it("keeps Unicode outbox bytes and event watermarks atomic through append and ACK failures", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database });
+  const account = () => {
+    const values = database.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[];
+    const total = database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number };
+    expect(total.byte_length).toBe(values.reduce((sum, row) => sum + Buffer.byteLength(row.value, "utf8"), 0));
+    return total.byte_length;
+  };
+  try {
+    store.appendEvent({ text: "中文 🐈\n\\\"" });
+    const before = account();
+    database.exec("CREATE TEMP TRIGGER fail_outbox_total BEFORE UPDATE ON outbox_totals BEGIN SELECT RAISE(ABORT, 'injected accounting failure'); END");
+    expect(() => store.appendEvent({ text: "failure" })).toThrow("injected accounting failure");
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(account()).toBe(before);
+    expect(() => store.acknowledgeEvents("1")).toThrow("injected accounting failure");
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(store.getLastAcknowledgedSequence()).toBe("0");
+    expect(account()).toBe(before);
+    database.exec("DROP TRIGGER fail_outbox_total");
+    expect(store.appendEvent({ text: "二" }).sequence).toBe("2");
+    store.acknowledgeEvents("1");
+    const remaining = account();
+    expect(remaining).toBeGreaterThan(0);
+    store.acknowledgeEvents("1");
+    expect(account()).toBe(remaining);
+    store.acknowledgeEvents("2");
+    expect(account()).toBe(0);
+  } finally { store.close(); }
+});
+it("reports rollback when a nested outbox capacity read fails inside the original write transaction", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database });
+  try {
+    store.appendEvent({ text: "original" });
+    const total = (database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number }).byte_length;
+    database.exec("DELETE FROM outbox_totals");
+    let failure: unknown;
+    try { store.appendEvent({ text: "not admitted" }); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+    database.prepare("INSERT INTO outbox_totals VALUES(1,?)").run(total);
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(store.appendEvent({ text: "next" }).sequence).toBe("2");
+  } finally { store.close(); }
+});
+it("fences later outbox writes and watermarks while keeping reads and shutdown available", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database, contentOwnedLocally: true, maxOutboxBytes: 512 });
+  const entryId = randomUUID();
+  try {
+    store.appendEvent({ text: "original" });
+    store.markProjectionGap("retained");
+    const before = store.pendingEvents(), source = store.getHistorySource(), floor = store.getSourceFloor();
+    const total = database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get();
+    let resume!: () => void;
+    const callback = (async () => {
+      await new Promise<void>(resolve => { resume = resolve; });
+      return store.projectTimeline({ entryId, revision: "1", kind: "reasoning", text: "later" });
+    })();
+    store.disableOutboxWrites();
+    store.disableOutboxWrites();
+    resume();
+    await expect(callback).rejects.toThrow("outbox writes are disabled");
+    expect(() => store.appendEvent({ text: "later" })).toThrow("outbox writes are disabled");
+    expect(() => store.appendEvent({ text: "x".repeat(600) })).toThrow("outbox writes are disabled");
+    expect(() => store.acknowledgeEvents("1")).toThrow("outbox writes are disabled");
+    expect(() => store.drainProjectionGap()).toThrow("outbox writes are disabled");
+    expect(store.hasTimelineEntry(entryId)).toBe(false);
+    expect(store.pendingEvents()).toEqual(before);
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.getSourceFloor()).toBe(floor);
+    expect(database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual(total);
+  } finally { store.close(); }
+});
+
+it("fences a write disabled while serializing an oversized event", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database, contentOwnedLocally: true, maxOutboxBytes: 512 });
+  try {
+    store.appendEvent({ text: "original" });
+    const before = store.pendingEvents(), source = store.getHistorySource(), floor = store.getSourceFloor();
+    expect(() => store.appendEvent({ toJSON: () => { store.disableOutboxWrites(); return { text: "x".repeat(600) }; } })).toThrow("outbox writes are disabled");
+    expect(store.pendingEvents()).toEqual(before);
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.getSourceFloor()).toBe(floor);
+  } finally { store.close(); }
 });
 it("replays numeric event order across decimal digit boundaries", async () => {
   const { home, ticket, database } = await fixture(); const store = openControllerLifecycleStore(path.join(home,"state.sqlite"),ticket,{database});
@@ -54,7 +144,9 @@ it("deduplicates equivalent operation JSON regardless of object key insertion or
 it("test tickets and journals omit task identity and preserve no-input initialization", async () => {
   const { home, ticket: task, database } = await fixture();
   const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
-  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
+  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", usageScope: "standalone_test" };
+  for (const usageScope of [null, "bot", undefined]) expect(() => parseLaunchTicket({ ...ticket, usageScope })).toThrow(/usage scope/);
+  expect(() => parseLaunchTicket({ ...task, usageScope: "standalone_test" })).toThrow(/usage scope/);
   await writeLaunchTicket(home, ticket);
   expect(await readLaunchTicket(home, ticket.launchId)).toEqual(ticket);
   const store = openControllerLifecycleStore(path.join(home, "test.sqlite"), ticket, { database });
@@ -68,6 +160,24 @@ it("test tickets and journals omit task identity and preserve no-input initializ
   expect(await readLaunchTicket(home, resumed.launchId)).toEqual(resumed);
   await expect(writeLaunchTicket(home, { ...resumed, launchId: randomUUID(), initialInput: "prompt", initialPrompt: "replay" })).rejects.toThrow("resume binding");
   await expect(writeLaunchTicket(home, { ...ticket, claimId: randomUUID() } as never)).rejects.toThrow();
+});
+
+it.each(["codex", "claude", "copilot"] as const)("%s Bot recovery bindings are preserved only on matching independent tickets", async provider => {
+  const { home, ticket: task } = await fixture();
+  const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
+  const binding = { botId: randomUUID(), directory: path.join(home, "bot-recovery") };
+  const field = `${provider}BotRecovery`;
+  const ticket = { ...common, provider, configuration: { ...common.configuration, agent: provider }, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", [field]: binding };
+  expect(parseLaunchTicket(ticket)).toEqual(ticket);
+  expect(() => parseLaunchTicket({ ...ticket, usageScope: "standalone_test" })).toThrow(/usage scope/);
+  expect(() => parseLaunchTicket({ ...task, [field]: binding })).toThrow(/recovery binding/);
+  for (const other of ["codex", "claude", "copilot"].filter(value => value !== provider)) {
+    expect(() => parseLaunchTicket({ ...ticket, provider: other, configuration: { ...ticket.configuration, agent: other } })).toThrow(/recovery binding/);
+  }
+  for (const recovery of [null, { ...binding, directory: "relative/recovery" }, { ...binding, directory: `${home}${path.sep}..${path.sep}recovery` },
+    { ...binding, directory: `${home}\nother` }, { ...binding, extra: true }, { directory: binding.directory }, { ...binding, botId: "not-a-uuid" }]) {
+    expect(() => parseLaunchTicket({ ...ticket, [field]: recovery })).toThrow();
+  }
 });
 
 it("compacts offline transport without losing local history or blocking native input", async () => {
@@ -114,8 +224,9 @@ it.each(["<", "\u2028", "x"])("keeps %s tool content local and uses identical bo
     store.acknowledgeEvents(emitted.sequence);
     expect(store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "following event" })).toMatchObject({ sequence: "2" });
     expect(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
-    const { openPendingContent } = await import("../../../src/commands/controller/pending-content.js");
-    expect(openPendingContent(filename, ticket.sessionId, database).entries.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
+    const { openTimelineStore } = await import("../../../src/commands/controller/content/timeline-store.js");
+    const timeline = openTimelineStore(database, { assertWrite: () => { throw new Error("Read-only assertion cannot publish history."); } });
+    expect(timeline.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
   } finally { store.close(); }
 });
 
@@ -174,4 +285,53 @@ it("uses the same serialized byte boundary for ticket writes and reads", async (
   expect(await readLaunchTicket(home, exact.launchId)).toEqual(exact);
   await writeFile(file, JSON.stringify({ ...tooLarge, launchId: exact.launchId }) + "\n");
   await expect(readLaunchTicket(home, exact.launchId)).rejects.toThrow(/private regular file/);
+});
+
+
+it("binds provenance to dispatched operations without converting unknown delivery into success", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "origins.sqlite"), ticket, { database, contentOwnedLocally: true });
+  const operationId = randomUUID(), entryId = randomUUID(), nativeSessionId = "native-source";
+  const payload = { content: [{ type: "text", text: "same input" }], expectedTurnId: null };
+  try {
+    store.patchSnapshot({ nativeSessionId });
+    const user = store.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload });
+    expect(store.prepareOperation({ operationId: user.operationId, kind: "send_message", payload: { ...payload, origin: "user" } })).toEqual(user);
+    expect(() => store.prepareOperation({ operationId: user.operationId, kind: "send_message", payload: { ...payload, origin: "daynight" } })).toThrow(/different content/);
+    store.prepareOperation({ operationId, kind: "send_message", payload: { ...payload, origin: "daynight" } });
+    expect(() => store.associateInputMessage(operationId, nativeSessionId, entryId)).toThrow(/dispatched/);
+    store.markDispatching(operationId); store.recordOperation(operationId, "unknown");
+    store.associateInputMessage(operationId, nativeSessionId, entryId);
+    store.projectTimeline({ entryId, kind: "user_message", revision: "1", content: [{ type: "text", text: "retained input" }] });
+    expect(store.getTimelineEntry(entryId)).toMatchObject({ origin: "daynight" });
+    expect(store.getOperation(operationId)?.state).toBe("unknown");
+    expect(() => store.projectTimeline({ entryId, kind: "user_message", origin: "user", revision: "1", content: [] })).toThrow(/origin/);
+    const conflictingOperation = randomUUID();
+    store.prepareOperation({ operationId: conflictingOperation, kind: "send_message", payload: { ...payload, origin: "daynight" } });
+    store.markDispatching(conflictingOperation);
+    expect(() => store.associateInputMessage(conflictingOperation, nativeSessionId, entryId)).toThrow(/conflicts/);
+  } finally { store.close(); }
+});
+
+it("persists Worker input provenance and settles a late native receipt", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "worker-origin.sqlite"), ticket, { database, contentOwnedLocally: true });
+  const operationId = randomUUID(), entryId = randomUUID(), nativeSessionId = "native-source";
+  const payload = { content: [{ type: "text" as const, text: "continue" }], expectedTurnId: null, origin: "daynight" };
+  try {
+    store.patchSnapshot({ nativeSessionId });
+    const operation = store.prepareOperation({ operationId, kind: "worker_input", payload });
+    expect(store.prepareOperation({ operationId, kind: "worker_input", payload })).toEqual(operation);
+    expect(() => store.prepareOperation({ operationId, kind: "worker_input", payload: { ...payload, content: [{ type: "text", text: "different" }] } })).toThrow(/different content/);
+    expect(() => store.prepareOperation({ operationId, kind: "send_message", payload })).toThrow(/different content/);
+    expect(() => store.associateInputMessage(operationId, nativeSessionId, entryId)).toThrow(/dispatched/);
+    store.markDispatching(operationId);
+    store.recordOperation(operationId, "unknown");
+    expect(store.associateInputMessage(operationId, nativeSessionId, entryId)).toBe(entryId);
+    store.projectTimeline({ entryId, kind: "user_message", revision: "1", content: payload.content });
+    expect(store.getTimelineEntry(entryId)).toMatchObject({ origin: "daynight" });
+    expect(observeNativeInput(store, operationId)).toBe(true);
+    expect(store.getOperation(operationId)?.state).toBe("provider_accepted");
+    expect(store.associateInputMessage(operationId, nativeSessionId, randomUUID())).toBe(entryId);
+  } finally { store.close(); }
 });

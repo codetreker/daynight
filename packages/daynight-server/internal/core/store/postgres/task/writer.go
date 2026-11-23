@@ -55,7 +55,7 @@ func (tx *Writer) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, e
 }
 
 func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT `+pg.TaskProjection+` FROM tasks t
+	rows, err := tx.tx.Query(ctx, `SELECT `+pg.PhysicalTaskProjection()+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, pg.QueryError(phase, err)
@@ -67,13 +67,16 @@ func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase 
 	if err := pg.AttachTaskProperties(ctx, tx.tx, tasks); err != nil {
 		return nil, err
 	}
+	if err := pg.AttachTaskTags(ctx, tx.tx, tx.projectID, tasks); err != nil {
+		return nil, err
+	}
 	return tasks, nil
 }
 
 func (tx *Writer) ActiveDependentIDs(ctx context.Context, id string) ([]string, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
-		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
+		WHERE d.project_id = $1 AND d.depends_on_task_id = $2 AND d.dependency_type = 'task'
 		AND t.deleted_at IS NULL AND t.type = 'task' AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
 	if err != nil {
 		return nil, pg.QueryError("read active dependents", err)
@@ -91,7 +94,7 @@ func (tx *Writer) Reachable(ctx context.Context, from, to string, replacement De
 	err := tx.tx.QueryRow(ctx, `WITH RECURSIVE edges(task_id, depends_on_task_id) AS (
 		SELECT d.task_id, d.depends_on_task_id FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
-		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND d.task_id <> $4::uuid
+		WHERE d.project_id = $1 AND d.dependency_type = 'task' AND t.deleted_at IS NULL AND t.type = 'task' AND d.task_id <> $4::uuid
 		UNION SELECT $4::uuid, unnest($5::uuid[])
 	), visited(id) AS (
 		SELECT $2::uuid
@@ -133,7 +136,7 @@ func (tx *Writer) CreateTask(ctx context.Context, id string, values TaskWrite) (
 }
 
 func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties)
+	properties, err := taskproperties.NormalizeStored(values.Properties)
 	if err != nil {
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}
@@ -169,7 +172,7 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 	if err := pg.WriteTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
 		return model.Task{}, err
 	}
-	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2`, tx.projectID, id); err != nil {
+	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2 AND dependency_type = 'task'`, tx.projectID, id); err != nil {
 		return model.Task{}, pg.QueryError("replace dependencies", err)
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
@@ -180,8 +183,8 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 
 func (tx *Writer) insertDependencies(ctx context.Context, id string, dependencies, externalDependencies []string) error {
 	for _, dependency := range dependencies {
-		if _, err := tx.tx.Exec(ctx, `INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, external)
-			VALUES ($1, $2, $3, $4)`, tx.projectID, id, dependency, slices.Contains(externalDependencies, dependency)); err != nil {
+		if _, err := tx.tx.Exec(ctx, `INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, external, dependency_type)
+			VALUES ($1, $2, $3, $4, 'task')`, tx.projectID, id, dependency, slices.Contains(externalDependencies, dependency)); err != nil {
 			return pg.QueryError("insert dependency", err)
 		}
 	}
@@ -199,7 +202,7 @@ func (tx *Writer) ObservedAt(ctx context.Context) (time.Time, error) {
 func (tx *Writer) DependentIDs(ctx context.Context, id string) ([]string, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
-		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
+		WHERE d.project_id = $1 AND d.depends_on_task_id = $2 AND d.dependency_type = 'task'
 		AND t.deleted_at IS NULL ORDER BY t.id`, tx.projectID, id)
 	if err != nil {
 		return nil, pg.QueryError("read dependents", err)
@@ -210,26 +213,4 @@ func (tx *Writer) DependentIDs(ctx context.Context, id string) ([]string, error)
 		return nil, pg.QueryError("read dependents", err)
 	}
 	return ids, nil
-}
-
-func (tx *Writer) DeleteTask(ctx context.Context, id string, removeDepends bool) (model.TaskTombstone, error) {
-	var tombstone model.TaskTombstone
-	if removeDepends {
-		if _, err := tx.tx.Exec(ctx, `WITH removed AS (
-			DELETE FROM task_dependencies WHERE project_id = $1 AND depends_on_task_id = $2
-			RETURNING task_id
-		) UPDATE tasks SET version = version + 1, updated_at = statement_timestamp()
-		WHERE project_id = $1 AND id IN (SELECT task_id FROM removed)`, tx.projectID, id); err != nil {
-			return tombstone, pg.QueryError("remove dependent relationships", err)
-		}
-	}
-	err := tx.tx.QueryRow(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
-		updated_at = statement_timestamp(), version = version + 1
-		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL
-		RETURNING project_id::text, id::text, version, deleted_at`, tx.projectID, id).
-		Scan(&tombstone.ProjectID, &tombstone.ID, &tombstone.Version, &tombstone.DeletedAt)
-	if err != nil {
-		return tombstone, pg.QueryError("delete task", err)
-	}
-	return tombstone, nil
 }

@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from 'react';
 import { acquireBodyScrollLock } from '../../../app/useBodyScrollLock';
 import { dialogFocusables } from '../../task-detail/focus';
@@ -167,7 +168,7 @@ export function ImagePreviewHost({ controller, rootRef, active, suspended, readA
   };
   return <dialog ref={dialog} className="session-image-preview" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKeyDown} onCancel={event => { event.preventDefault(); event.stopPropagation(); controller.close('user'); }}>
     {request ? <>
-    <header className="session-image-preview-heading"><h2 id={titleId} title={request?.label}>{request?.label || m.stage}</h2><button className="button" type="button" ref={closeButton} aria-label={m.close} onClick={() => controller.close('user')}>×</button></header>
+    <header className="session-image-preview-heading"><h2 id={titleId} title={request?.label}>{request?.label || m.stage}</h2><AccountRefreshNotice /><button className="button" type="button" ref={closeButton} aria-label={m.close} onClick={() => controller.close('user')}>×</button></header>
     <div className="session-image-preview-controls"><button className="button" type="button" aria-pressed={mode === 'fit'} onClick={() => setMode('fit')}>{m.fit}</button><button className="button" type="button" aria-pressed={mode === 'original'} onClick={() => setMode('original')}>{m.original}</button><button className="button" type="button" aria-label={`${m.downloadImage}: ${request?.label || m.stage}`} disabled={!visible || !readAdmitted || !request?.asset.canDownload() || downloading} onClick={download}>{downloading ? m.downloading : m.download}</button></div>
     <div ref={stage} className={`session-image-preview-stage ${mode}`} tabIndex={0} role="region" aria-label={m.stage}>
       {visible && decoded ? <img src={decoded.url} alt={request.label} width={decoded.width} height={decoded.height} draggable={false} /> : null}

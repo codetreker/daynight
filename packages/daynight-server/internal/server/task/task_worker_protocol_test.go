@@ -70,19 +70,11 @@ func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 	}
 	t.Run("legacy claim", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
-		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			assertWorkerProtocolContext(t, ctx, false)
-			if input.AgentControlMode != model.AgentControlModeHerdr {
-				t.Fatal("legacy claim lost default mode")
-			}
-			return returned, nil
-		}
-		response := protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, workerClaimBody(returned.Version-1)), "")
-		decodeResponse[api.Task](t, response, http.StatusOK)
-		if strings.Contains(response.Body.String(), "agentControlMode") {
-			t.Fatal("legacy claim received extended schema")
+		body := workerClaimBody(1)
+		delete(body, "agentControlMode")
+		assertProjectError(t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), ""), http.StatusBadRequest, "invalid_input")
+		if h.Tasks.TotalCalls() != 0 {
+			t.Fatal("legacy claim reached service")
 		}
 	})
 }
@@ -130,12 +122,19 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 				}
 				assertProjectError(t, protocolRequest(h, http.MethodGet, taskCollection(testProjectID)+"?workerId="+worker.WorkerID, "", ""), http.StatusConflict, "invalid_transition")
 			})
-			for _, operation := range []string{"claim", "update", "release", "withdraw", "resume", "complete", "metadata", "delete"} {
+			for _, operation := range []string{"claim", "update", "release", "withdraw", "complete", "metadata", "delete"} {
 				for _, protocol := range []string{"", "2"} {
 					t.Run(operation+"/"+protocol, func(t *testing.T) {
 						h := newHTTPFixture(t, io.Discard)
 						path, method, body := workerHTTPPath(), http.MethodPost, workerClaimBody(returned.Version)
 						body["agent"], body["agentControlMode"] = string(configuration.provider), string(configuration.mode)
+						if operation == "claim" && configuration.mode == model.AgentControlModeHerdr {
+							assertProjectError(t, protocolRequest(h, method, path, jsonBody(t, body), protocol), http.StatusBadRequest, "invalid_input")
+							if h.Tasks.TotalCalls() != 0 {
+								t.Fatal("Herdr claim reached service")
+							}
+							return
+						}
 						check := func(ctx context.Context, p model.Principal, projectID, taskID string) error {
 							assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 							assertWorkerProtocolContext(t, ctx, protocol == "2")
@@ -176,15 +175,6 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 							h.Tasks.WithdrawWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.WithdrawWorker) (model.Task, error) {
 								if input.Version != returned.Version || input.ClaimID != worker.ClaimID {
 									t.Fatalf("withdraw input: %+v", input)
-								}
-								return returned, check(ctx, p, projectID, taskID)
-							}
-						case "resume":
-							path += "/resume"
-							body["previousClaimId"] = worker.ClaimID
-							h.Tasks.ResumeWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ResumeWorker) (model.Task, error) {
-								if input.Version != returned.Version || input.PreviousClaimID != worker.ClaimID || !reflect.DeepEqual(input.WorkerDescriptor, workerHTTPDescriptor(body)) {
-									t.Fatalf("resume input: %+v", input)
 								}
 								return returned, check(ctx, p, projectID, taskID)
 							}
@@ -241,7 +231,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 
 func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.T) {
 	unsupported := func(t *testing.T, index int) model.Task {
-		task, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerReleased)
+		task, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		task.ID = fmt.Sprintf("b2222222-b222-4222-8222-b2222222222%d", index)
 		return task
 	}

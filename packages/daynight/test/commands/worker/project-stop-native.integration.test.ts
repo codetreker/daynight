@@ -4,10 +4,8 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
-import { createWorkerHerdr } from "../../../src/commands/worker/herdr.js";
-import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
@@ -16,7 +14,6 @@ import { openControllerLifecycleStore, readControllerSnapshot } from "../../../s
 import { captureProcessProof, confirmControllerProcessesStopped } from "../../../src/commands/controller/process-proof.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 
 // This opt-in test runs real local daemons and process groups in an isolated worker home.
 const enabled = process.platform === "linux" && process.env.DAYNIGHT_TEST_PROJECT_STOP_NATIVE === "1";
@@ -43,8 +40,8 @@ const fixture = async () => {
   const store = openWorkerStore(path.join(alias, "worker.sqlite")); store.registerProject(project);
   const git = { removeWorktree: vi.fn(), scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const workerId = randomUUID();
-  const common = { store, git, remote: {} as WorkerRemote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: randomUUID(), name: "test" }, repositories: [{ project, configuration: config }], targetProjectIds: [owner.projectId], readyProjectIds: [owner.projectId], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false, buildPrompt: () => "test", emit: () => {} };
-  const exclude = { repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false };
+  const common = { store, git, remote: {} as WorkerRemote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: randomUUID(), name: "test" }, repositories: [{ project, configuration: config }], targetProjectIds: [owner.projectId], readyProjectIds: [owner.projectId], globalConfiguration: config, maxConcurrent: 2, platformTaskMode: "all" as const, emit: () => {} };
+  const exclude = { repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: config, maxConcurrent: 2, platformTaskMode: "all" as const };
   const verify = async () => {
     expect(await readFile(sentinel, "utf8")).toBe("retained\n");
     expect(gitCommand(repository, "worktree", "list", "--porcelain")).toContain(owner.taskId);
@@ -53,31 +50,6 @@ const fixture = async () => {
   };
   return { root, descriptor, alias, home, repository, owner, project, worktreePath, store, git, workerId, common, exclude, verify };
 };
-
-it.skipIf(!enabled)("stops a real isolated Herdr workspace through project removal and retains the original worktree", async () => {
-  const f = await fixture();
-  const paths = resolveWorkerPaths(f.home);
-  const environment = { ...process.env, HOME: f.home, USERPROFILE: f.home, XDG_CONFIG_HOME: path.join(f.home, "config"), XDG_STATE_HOME: path.join(f.home, "state") };
-  const herdr = createWorkerHerdr({ paths, homeDirectory: f.home, environment, isolatedRun: true });
-  const operation = createOperation({ limits: { totalMs: 30_000 } });
-  try {
-    f.store.activateTask(f.store.registerPending({ ...f.owner, agent: "codex" }));
-    await herdr.ensureInstance(operation);
-    const context = { ...f.owner, cwd: f.worktreePath, agent: "codex" as const };
-    const binding = await herdr.tasks.prepareWorkspace(context, "Project stop test", operation);
-    const before = await herdr.tasks.processInfo(context, binding, operation);
-    expect(before.shellPid).toBeGreaterThan(1);
-    expect((await herdr.tasks.listResources(operation)).some(resource => resource.owner.claimId === f.owner.claimId)).toBe(true);
-    const coordinator = createWorkerCoordinator({ ...f.common, herdr });
-    coordinator.updateConfiguration(f.exclude);
-    await coordinator.stopProject(f.owner.projectId);
-    expect((await herdr.tasks.listResources(operation)).some(resource => resource.owner.claimId === f.owner.claimId)).toBe(false);
-    expect(() => process.kill(before.shellPid, 0)).toThrow();
-    await f.verify();
-  } finally {
-    try { await herdr.stopInstance(operation); } finally { operation.dispose(); f.store.close(); await f.descriptor.close(); await rm(f.root, { recursive: true, force: true }); }
-  }
-}, 90_000);
 
 it.skipIf(!enabled)("stops a real Web process group through project removal and retains the original worktree and journal", async () => {
   const f = await fixture();
@@ -102,9 +74,8 @@ it.skipIf(!enabled)("stops a real Web process group through project removal and 
     await mkdir(path.dirname(journalPath), { recursive: true });
     const journal = openControllerLifecycleStore(journalPath, ticket);
     journal.patchSnapshot({ controllerProcess: proof, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
-    const webBackend = createWebExecutionBackend({ homeDirectory: f.home, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "test", emit: () => {}, now: () => 20, request: vi.fn().mockRejectedValue(new Error("Original IPC endpoint is unavailable.")) });
-    const herdr = { ensureInstance: async () => {}, tasks: { listResources: async () => [], pendingStops: () => [] } } as unknown as WorkerHerdrAdapter;
-    const coordinator = createWorkerCoordinator({ ...f.common, herdr, webStore, webBackend, now: () => 20 });
+    const webBackend = createWebExecutionBackend({ homeDirectory: f.home, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "test", emit: () => {}, now: () => 20, request: vi.fn().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original IPC endpoint is unavailable.")) });
+    const coordinator = createWorkerCoordinator({ ...f.common, userId: task.userId!, webStore, webBackend, now: () => 20 });
     expect(await confirmControllerProcessesStopped(proof, [])).toBe(false);
     coordinator.updateConfiguration(f.exclude);
     await coordinator.stopProject(f.owner.projectId);

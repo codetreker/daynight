@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -35,11 +37,13 @@ func historyLimit(raw string) (int, error) {
 // RegisterHistoryRoutes exposes bounded original-content reads independently
 // of the browser timeline projection. A retained archive stays owned until the
 // response has finished writing, including cancellation and short writes.
-func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspectionAuthentication, logger *slog.Logger) {
+func RegisterHistoryRoutes(mux httpx.RouteRegistrar, reader HistoryReader, auth inspectionAuthentication, logger *slog.Logger) {
 	for _, operation := range []string{"messages", "message-content"} {
 		path := sessionBase + "/{sessionId}/" + operation
 		mux.HandleFunc("GET "+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Daynight-Task-Body-History-Version", "1")
+			policy := ""
 			fail := func(err error) { httpx.WriteError(w, r, logger, "session", operation, err) }
 			for _, key := range []string{"projectId", "taskId", "sessionId"} {
 				id, err := model.CanonicalID(r.PathValue(key))
@@ -71,6 +75,7 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 				err = e
 				if result != nil {
 					value, retained = result.Data, result
+					policy = result.Data.ContentPolicy
 				}
 			} else {
 				q, e := httpx.QueryValues(r, "cursor")
@@ -86,10 +91,14 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 				err = e
 				if result != nil {
 					value, retained = result.Data, result
+					policy = result.Data.ContentPolicy
 				}
 			}
 			if retained != nil {
 				defer func() {
+					if retained == nil {
+						return
+					}
 					if e := retained.Close(); e != nil {
 						httpx.LogFailure(logger, r.Context(), "session", "history release", e)
 					}
@@ -103,7 +112,20 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 				fail(errors.New("history read returned no result"))
 				return
 			}
-			httpx.WriteJSON(w, r, logger, http.StatusOK, value)
+			if values := r.Header.Values("Daynight-Task-Body-History-Version"); len(values) == 1 && values[0] == "1" && policy == "task_body" {
+				w.Header().Set("Daynight-Session-Content-Policy", policy)
+			}
+			if r.Context().Err() != nil {
+				return
+			}
+			var body bytes.Buffer
+			if err := json.NewEncoder(&body).Encode(value); err != nil {
+				fail(err)
+				return
+			}
+			lease := retained
+			retained = nil
+			sendRetainedJSON(w, r, body.Bytes(), 0, lease, logger, "history release", fail)
 		}))
 		mux.HandleFunc(path, auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			w.Header().Set("Cache-Control", "no-store")

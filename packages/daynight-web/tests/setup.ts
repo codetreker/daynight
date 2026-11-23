@@ -49,10 +49,22 @@ const trackStorageOperation = (target: EventTarget, events: readonly string[]) =
 };
 
 beforeEach(() => {
+  document.head.querySelector('meta[name="daynight-preview-origin"]')?.remove();
+  const preview = document.createElement('meta');
+  preview.name = 'daynight-preview-origin';
+  preview.content = 'https://preview.daynight.test';
+  document.head.append(preview);
   window.history.replaceState(null, "", "/projects");
   cleaningStorage = false;
   mockSidebarMediaQuery();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  // JSDOM has no scrolling geometry; browser suites verify actual reveal behavior.
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: vi.fn() });
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   if (globalThis.structuredClone === undefined) vi.stubGlobal("structuredClone", runInThisContext("structuredClone"));
   const indexedDB = new IDBFactory();
   for (const [name, value] of Object.entries({ indexedDB, IDBFactory, IDBDatabase, IDBRequest, IDBOpenDBRequest, IDBTransaction, IDBObjectStore, IDBCursor, IDBCursorWithValue, IDBIndex, IDBKeyRange, IDBVersionChangeEvent })) vi.stubGlobal(name, value);
@@ -82,12 +94,17 @@ beforeEach(() => {
 
 afterEach(async () => {
   cleanup();
-  cleaningStorage = true;
-  for (const database of databaseHandles) database.close();
+  // Unmount starts account/session cleanup transactions. Drain them before
+  // closing their connections or replacing the next test's database factory.
   do {
-    await Promise.all([...pendingStorage]);
+    // fake-indexeddb schedules transactions with setImmediate, which some
+    // component clocks also replace. Let those tasks settle after unmount.
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    else await Promise.all([...pendingStorage]);
     await setImmediate();
   } while (pendingStorage.size !== 0);
+  cleaningStorage = true;
+  for (const database of databaseHandles) database.close();
   databaseHandles.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

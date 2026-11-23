@@ -21,11 +21,12 @@ contracts use one resource model and one archive representation.
 The repository publishes the adopted
 [image archive design](../../../../docs/design/session-image-archives.md).
 This implemented note originally recorded publication of the design. Its dual
-representation is superseded; native consumer acceptance remains separate. Immutable Session-owned originals are
-retained by explicit references. A schema3 manifest points to a sealed timeline,
-verified original resources and a deterministic legacy representation. New
-history and the complete legacy envelope each receive exact capacity accounting
-before image admission.
+representation is superseded; native consumer acceptance remains separate.
+Immutable Session-owned originals are retained by explicit references. The
+original design paired a schema3 manifest and sealed timeline with verified
+resources and a deterministic legacy representation, and accounted for both
+complete histories before image admission. The [actual content capacity decision](2026-11-13-session-actual-content-capacity.md)
+replaces that future reservation.
 
 The shared codec owns representation, traversal and encoded-size rules. The
 archive consumer synchronizes complete history into bounded temporary files and
@@ -33,7 +34,7 @@ retains only identifiers, hashes, lengths, counts, references and source cutoffs
 in the service database. Stop, capture settlement, sealing and ready publication
 are distinct facts. Unknown commits and missing known originals cannot become
 partial success. Explicit Test resume imports only a verified same-owner source
-relation, reserves the complete target budget and creates independent target
+relation, checks target capacity and creates independent target
 originals without sending native input.
 
 The existing [file archive decision](../../archived/architecture/2026-10-30-session-file-archives.md)
@@ -62,6 +63,16 @@ representations have different hashes; a successful migration cannot be checked
 by comparing their hashes for equality. The source relation travels with ready
 schema3 status and lets a stopped uploader replace its confirmed local receipt
 without reopening native execution.
+
+A stopped execution with a bound content policy can prepare an archive without an
+active history bundle. The Session stores the optional policy separately from the
+public snapshot; no production negotiation writes it yet. Preparation fixes its
+observed value, and final history checks the capture inventory and the retained
+image occurrences before releasing online-only message references. Unbound older
+executions retain their established behavior. Pending capture receipts remain
+unchanged and block publication; they are not evidence of a failed collection.
+The [archive design](../../../../docs/design/session-image-archives.md) owns the
+policy, reference and retry contracts.
 
 ## Alternatives
 
@@ -98,7 +109,19 @@ requires the original active connection. Keeping that round receiving after the
 writer stops blocks every final sync. Explicit retirement preserves its evidence
 and leaves the complete ledger and references intact until final synchronization.
 
+**Settle every in-flight capture during stopped preparation.** This would let
+more stopped Sessions finish, but the current stopped uploader cannot provide or
+reconcile the original validated bytes and outcome. Preparation instead preserves
+the original attempt and refuses sealing. A later stopped reconciliation must use
+the same identity and proof and synchronize the resulting body; it must not require
+restarting the source. This preserves a path to add the missing coordination.
+
 ## Consequences
+
+A capture still reserved or copying can leave an archive incomplete after stop.
+Its original state and references remain available for later reconciliation; a
+known committed body image cannot be omitted or downgraded to partial. No new
+source IO is started to make an archive pass.
 
 An unresolved Markdown image projection error leaves the occurrence set unknown,
 even when the full text and source sequence are present. It blocks archive
@@ -115,8 +138,8 @@ local error could leave the service permanently unable to seal the archive.
 The design requires reference and intent ledgers, exact dual representation
 accounting, staged file transfer and recovery across file/database boundaries.
 In return, valid accepted originals remain readable after Controller and source
-shutdown without invoking native execution or source IO. The 64 MiB metadata
-limits, 1 GiB/1000-resource budget and reserved physical space remain explicit.
+shutdown without invoking native execution or source IO. The later actual
+content capacity decision replaces the earlier reservation and capacity values.
 
 Ready publication requires a verified closure and durable manifest, timeline,
 legacy file and originals. Later corruption does not rewrite the immutable

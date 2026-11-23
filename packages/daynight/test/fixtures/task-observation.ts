@@ -9,7 +9,7 @@ export const actorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const time = "2026-11-10T01:02:03.123456789Z";
 export const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 export const task: Task = { type: "task", parentId: null,
-  id: taskId, projectId, assignedTo: actorId, title: "Task", description: "Body", properties: {}, status: "in_progress", allowAgents: true, requiredPlatform: null,
+  id: taskId, projectId, assignedTo: actorId, title: "Task", description: "Body", tags: [], properties: {}, status: "in_progress", allowAgents: true, requiredPlatform: null,
   version: 9_007_199_254_740_993n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 export const observation = {
@@ -40,7 +40,7 @@ export const workGroup = {
 } as const;
 export const workPage = { groups: [workGroup], nextCursor: null, observedAt: time, partial: false } as const;
 export const observedGraph = (() => {
-  const { projectId: _project, title, description: _description, version: _version, properties: _properties, ...node } = task;
+  const { projectId: _project, title, description: _description, tags: _tags, version: _version, properties: _properties, ...node } = task;
   return { project, observedAt: time, summary: { total: 1, proposed: 0, todo: 0, inProgress: 1, done: 0, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false, session: observation, relation: "member" }], sessionSummary: aggregation, partial: false } as const;
 })();
 

@@ -12,8 +12,8 @@ would leave direct core calls and internal reads outside the limit.
 ## Decision
 
 Archive operations acquire nonblocking per-instance and per-original-owner
-capacity before consuming large bodies or objects. Owner slots use the exact-key
-residency gate shared by instances using the same storage root. A short access
+capacity before consuming large bodies or objects. The [owner permit decision](2026-11-21-session-archive-owner-permits.md)
+defines the shared owner and Session coordination. A short access
 scope obtains trusted ownership before acquiring capacity, with a separate
 nonblocking preflight slot preventing unbounded database waiters; the business operation
 retains its own authorization, fence and lock ordering. Nested readback shares
@@ -37,8 +37,9 @@ nonblocking attempt avoid both effects.
 
 ## Consequences
 
-The budget bounds simultaneous archive operations, not total stored data. Stable
-lock files remain in the shared storage root to prevent inode splitting across
-instances. Slow peers are interrupted by operation-specific deadlines without
+The budget bounds simultaneous archive operations. The original implementation
+kept stable lock files in the storage root to prevent inode splitting across
+instances. [Redis storage gates](2026-11-19-redis-storage-gates.md) now own
+lease lifetime and expiry. Slow peers are interrupted by operation-specific deadlines without
 imposing a global write timeout on long-lived connections. Original ownership,
 finalization and immutable archive byte semantics remain in force.

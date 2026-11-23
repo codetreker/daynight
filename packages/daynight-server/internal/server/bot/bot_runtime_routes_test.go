@@ -217,7 +217,7 @@ func (f *botExpiryFixture) unexpected(method string) error {
 func (f *botExpiryFixture) sameContext(ctx context.Context) bool {
 	actualDeadline, actualHasDeadline := ctx.Deadline()
 	wantDeadline, wantHasDeadline := f.sourceContext.Deadline()
-	return ctx == f.requestContext && ctx.Done() == f.sourceContext.Done() && actualHasDeadline == wantHasDeadline && actualDeadline.Equal(wantDeadline) && ctx.Value(botExpiryContextKey{}) == "request" && ctx.Err() == nil
+	return ctx.Done() == f.requestContext.Done() && ctx.Done() == f.sourceContext.Done() && actualHasDeadline == wantHasDeadline && actualDeadline.Equal(wantDeadline) && ctx.Value(botExpiryContextKey{}) == "request" && ctx.Err() == nil
 }
 
 func (f *botExpiryFixture) invoke(ctx context.Context, p model.Principal, method, worker, bot string, input any) (any, error) {
@@ -264,8 +264,12 @@ func (f *botExpiryFixture) DeleteBot(ctx context.Context, p model.Principal, bot
 func (f *botExpiryFixture) GrantBot(context.Context, model.Principal, string, string, sessioncore.BotGrant) (sessioncore.GrantResult, error) {
 	return sessioncore.GrantResult{}, f.unexpected("GrantBot")
 }
-func (f *botExpiryFixture) CompleteBotDeletion(context.Context, model.Principal, string, string, botservice.BotDeletionReceipt) (model.Bot, error) {
-	return model.Bot{}, f.unexpected("CompleteBotDeletion")
+func (f *botExpiryFixture) CompleteBotDeletion(ctx context.Context, p model.Principal, worker, bot string, input botservice.BotDeletionReceipt) (model.Bot, error) {
+	v, err := f.invoke(ctx, p, "CompleteBotDeletion", worker, bot, input)
+	if err != nil {
+		return model.Bot{}, err
+	}
+	return v.(model.Bot), nil
 }
 func (f *botExpiryFixture) CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error) {
 	return model.Bot{}, f.unexpected("CreateResolved")
@@ -285,11 +289,6 @@ func (f *botExpiryFixture) Get(context.Context, model.Principal, string) (model.
 
 func (f *botExpiryFixture) dispatch(ctx context.Context, method, path, body string, c *botExpiryCall) *httptest.ResponseRecorder {
 	f.t.Helper()
-	if f.call != nil {
-		f.t.Fatal("Bot operation already configured")
-	}
-	f.call, f.authCalls, f.sourceContext = c, 0, ctx
-	defer func() { f.call = nil }()
 	r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
 	contentType := c.contentType
 	if contentType == "" {
@@ -305,12 +304,45 @@ func (f *botExpiryFixture) dispatch(ctx context.Context, method, path, body stri
 	} else {
 		r.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(f.principal.Kind)})
 	}
+	return f.serve(r, 1, c)
+}
+
+func (f *botExpiryFixture) runtimeRequest(method, path, body, contentType string, authenticated bool, c *botExpiryCall) *httptest.ResponseRecorder {
+	f.t.Helper()
+	ctx := context.WithValue(f.t.Context(), botExpiryContextKey{}, "request")
+	r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+	r.Header.Set("X-Request-ID", "project-test")
+	if contentType != "" {
+		r.Header.Set("Content-Type", contentType)
+	}
+	wantAuthCalls := 0
+	if authenticated {
+		r.Header.Set("Authorization", "Bearer "+httpTestToken(model.PATCredential))
+		wantAuthCalls = 1
+	}
+	return f.serve(r, wantAuthCalls, c)
+}
+
+func (f *botExpiryFixture) serve(r *http.Request, wantAuthCalls int, c *botExpiryCall) *httptest.ResponseRecorder {
+	f.t.Helper()
+	if f.call != nil {
+		f.t.Fatal("Bot operation already configured")
+	}
+	f.call, f.authCalls, f.sourceContext = c, 0, r.Context()
+	defer func() { f.call = nil }()
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, r)
-	if c.calls != 1 || f.authCalls != 1 {
-		f.t.Errorf("%s calls=%d, authentication calls=%d; want one each", c.method, c.calls, f.authCalls)
+	if c != nil && c.calls != 1 {
+		f.t.Errorf("%s calls=%d; want one", c.method, c.calls)
 	}
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != f.principal.UserID {
+	if f.authCalls != wantAuthCalls {
+		f.t.Errorf("Bot authentication calls=%d; want %d", f.authCalls, wantAuthCalls)
+	}
+	var userID string
+	if wantAuthCalls == 1 {
+		userID = f.principal.UserID
+	}
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != userID {
 		f.t.Errorf("Bot private headers: %v", response.Header())
 	}
 	return response

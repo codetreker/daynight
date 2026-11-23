@@ -17,12 +17,17 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	if _, err = sp.DecodeArchiveSourceTail(encode(in)); err != nil {
 		return out, fault("invalid_input", "Invalid archive source tail.")
 	}
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
 		if r.Owner != op.owner {
 			return conflict()
+		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
 		}
 		if e := archiveWriter(op.principal, r, in.Fence, in.ControllerID, in.ControllerInstanceID); e != nil {
 			return e

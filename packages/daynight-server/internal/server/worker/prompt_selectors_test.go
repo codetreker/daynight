@@ -105,6 +105,22 @@ func TestInvalidPromptHeadersRejectBeforeReport(t *testing.T) {
 	}
 }
 
+func TestInvalidConfigurationProtocolRejectsBeforeReport(t *testing.T) {
+	for _, versions := range [][]string{{"3"}, {"1", "1"}, {"1, 2"}, {""}} {
+		t.Run(strings.Join(versions, "/"), func(t *testing.T) {
+			f := newCapacityReportOperationFixture(t, "11111111-1111-4111-8111-111111111111")
+			body := workerSnapshotReportBody()
+			if versions[0] != "" {
+				body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
+			}
+			response := controlModeRequest(t, f, http.MethodPost, "/report", jsonBody(t, body), http.Header{workerConfigurationHeader: versions})
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Unsupported Worker configuration protocol") {
+				t.Fatalf("protocol %q: status=%d body=%s", versions, response.Code, response.Body)
+			}
+		})
+	}
+}
+
 func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	const user = "22222222-2222-4222-8222-222222222222"
 	const workerID = "11111111-1111-4111-8111-111111111111"
@@ -117,13 +133,13 @@ func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	}}
 	h := &workersHandler{workers: mock, logger: slog.Default()}
 	body := workerSnapshotReportBody()
-	body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
+	body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil, "toolPathsBootstrap": nil}
 	encoded := jsonBody(t, body)
-	encoded += strings.Repeat(" ", (1<<20)-len(encoded))
 	r := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded))
 	r.SetPathValue("workerId", strings.ToUpper(workerID))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set(workerConfigurationHeader, "2")
+	r.Header.Set(workerToolPathsHeader, "2")
 	r.Header.Set(workerPromptsHeader, `[{"key":{"scope":"user"},"knownRevision":null}]`)
 	w := httptest.NewRecorder()
 	h.report(w, r, principal)
@@ -135,42 +151,22 @@ func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	if mock.calls != 1 || mock.principal != principal || mock.workerID != workerID || mock.input.Configuration == nil || mock.input.TaskInventory == nil || len(mock.selectors) != 1 || mock.selectors[0].Key.Scope != model.PromptScopeUser || mock.selectors[0].KnownRevision != nil {
 		t.Fatalf("report arguments: %+v", mock)
 	}
-
-	r = httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded+" "))
-	r.SetPathValue("workerId", workerID)
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set(workerConfigurationHeader, "2")
-	r.Header.Set(workerPromptsHeader, `[]`)
-	w = httptest.NewRecorder()
-	h.report(w, r, principal)
-	if w.Code != http.StatusRequestEntityTooLarge || mock.calls != 1 {
-		t.Fatalf("oversize: status=%d calls=%d", w.Code, mock.calls)
-	}
 }
 
-func TestPromptReportControlModeCapabilityKeepsProtocol2(t *testing.T) {
-	for _, aware := range []bool{false, true} {
-		web := model.AgentControlModeWeb
-		mock := &promptReportMock{result: service.ConfigurationSyncResult{Native: service.WorkerReportResult{Configuration: &model.WorkerConfigurationReceipt{Desired: &model.WorkerDesiredConfiguration{Revision: "2", Value: model.WorkerConfiguration{AgentControlMode: &web}}, ObservationRevision: "0"}}, Prompts: []model.PromptResult{{Key: model.PromptKey{Scope: model.PromptScopeUser}, Status: "unchanged"}}}}
-		h := &workersHandler{workers: mock, logger: slog.Default()}
-		body := workerSnapshotReportBody()
-		exchange := map[string]any{"bootstrap": nil, "observation": nil}
-		if aware {
-			exchange["controlModeBootstrap"] = "web"
-		}
-		body["configuration"] = exchange
-		request := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(jsonBody(t, body)))
-		request.SetPathValue("workerId", "11111111-1111-4111-8111-111111111111")
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set(workerConfigurationHeader, "2")
-		request.Header.Set(workerPromptsHeader, `[{"key":{"scope":"user"},"knownRevision":"0"}]`)
-		if aware {
-			request.Header.Set(workerControlModeHeader, "1")
-		}
-		response := httptest.NewRecorder()
-		h.report(response, request, model.Principal{Kind: model.PATCredential, UserID: "22222222-2222-4222-8222-222222222222"})
-		if response.Code != 200 || response.Header().Get(workerConfigurationHeader) != "2" || (response.Header().Get(workerControlModeHeader) == "1") != aware || strings.Contains(response.Body.String(), `"agentControlMode"`) != aware || !strings.Contains(response.Body.String(), `"prompts":[`) || mock.calls != 1 || len(mock.selectors) != 1 {
-			t.Fatalf("protocol 2 mode=%v: %d %v %s", aware, response.Code, response.Header(), response.Body)
-		}
+func TestPromptReportRejectsControlModeCapability(t *testing.T) {
+	mock := &promptReportMock{}
+	h := &workersHandler{workers: mock, logger: slog.Default()}
+	body := configurationHTTPReportBody(nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(jsonBody(t, body)))
+	request.SetPathValue("workerId", "11111111-1111-4111-8111-111111111111")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(workerConfigurationHeader, "2")
+	request.Header.Set(workerToolPathsHeader, "2")
+	request.Header.Set(workerControlModeHeader, "1")
+	request.Header.Set(workerPromptsHeader, `[{"key":{"scope":"user"},"knownRevision":"0"}]`)
+	response := httptest.NewRecorder()
+	h.report(response, request, model.Principal{Kind: model.PATCredential, UserID: "22222222-2222-4222-8222-222222222222"})
+	if response.Code != 400 || mock.calls != 0 {
+		t.Fatalf("mode accepted: %d %s", response.Code, response.Body)
 	}
 }

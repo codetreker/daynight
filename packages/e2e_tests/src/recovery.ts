@@ -1,12 +1,15 @@
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { CommandFailure, startCommand, type CommandResult } from './command.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { assertCommandQuiescence, CommandFailure, markCommandOutcomeUnconfirmed, startCommand, type CommandResult } from './command.ts';
 import { runCleanupSteps } from './lifecycle.ts';
+import { recoverRunOwnership } from './fixture-owner.ts';
 
 export type ResourceIdentity = {
   network: string;
   ingressNetwork: string;
   postgresContainer: string;
+  redisContainer: string;
   applicationContainer: string;
   ownershipContainer: string;
   postgresVolume: string;
@@ -30,12 +33,52 @@ type ResourceKind = 'container' | 'network' | 'volume' | 'image';
 type DockerObject = { Config?: { Labels?: Record<string, string> }; Labels?: Record<string, string>; State?: { Running: boolean; ExitCode: number } };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+const markStageComplete = async (runDirectory: string, stage: 'build' | 'environment'): Promise<void> => {
+  const file = path.join(runDirectory, 'results', `${stage}-complete.json`);
+  const temporary = `${file}.${process.pid}.tmp`;
+  const handle = await open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(`${JSON.stringify({ schemaVersion: 1, directoryId: path.basename(runDirectory), complete: true })}\n`); await handle.sync(); }
+  finally { await handle.close(); }
+  try { await rename(temporary, file); } finally { await rm(temporary, { force: true }); }
+  const parent = await open(path.dirname(file), 'r');
+  try { await parent.sync(); } finally { await parent.close(); }
+};
+export const markBuildComplete = (runDirectory: string): Promise<void> => markStageComplete(runDirectory, 'build');
+export const markEnvironmentComplete = (runDirectory: string): Promise<void> => markStageComplete(runDirectory, 'environment');
+export const completeFailedBuild = async (runDirectory: string, cancelled: boolean): Promise<boolean> => {
+  if (cancelled) return false;
+  try { assertCommandQuiescence(); } catch { return false; }
+  await markBuildComplete(runDirectory);
+  return true;
+};
+export const completeFailedEnvironmentSetup = async (runDirectory: string, browserStopped: boolean, cancelled: boolean): Promise<boolean> => {
+  if (!browserStopped || cancelled) return false;
+  try { assertCommandQuiescence(); } catch { return false; }
+  await markEnvironmentComplete(runDirectory);
+  return true;
+};
+
+const requireStageComplete = async (runDirectory: string, directoryId: string, stage: 'build' | 'environment'): Promise<void> => {
+  let value: unknown;
+  const label = stage === 'build' ? 'Build' : 'Environment setup';
+  try { value = JSON.parse(await readFile(path.join(runDirectory, 'results', `${stage}-complete.json`), 'utf8')); }
+  catch (cause) { throw new Error(`${label} process stop is unverified; original resources and evidence are retained.`, { cause }); }
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.keys(value).sort().join() !== 'complete,directoryId,schemaVersion'
+    || !('schemaVersion' in value) || value.schemaVersion !== 1 || !('directoryId' in value) || value.directoryId !== directoryId
+    || !('complete' in value) || value.complete !== true) throw new Error(`${label} completion evidence conflicts with its original run.`);
+};
+const requireNoPendingDockerCleanup = async (runDirectory: string): Promise<void> => {
+  try { await lstat(path.join(runDirectory, 'results', 'docker-cleanup-intent.json')); }
+  catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return; throw error; }
+  throw new Error('A prior Docker cleanup mutation has an unknown outcome; original resources and evidence are retained.');
+};
+
 export const resourceIdentity = (runId: string): ResourceIdentity => {
   if (!uuid.test(runId)) throw new Error('The E2E resource UUID is invalid.');
   const name = `daynight-e2e-${runId}`;
   return {
     network: `${name}-network`, ingressNetwork: `${name}-ingress`,
-    postgresContainer: `${name}-postgres`, applicationContainer: `${name}-application`,
+    postgresContainer: `${name}-postgres`, redisContainer: `${name}-redis`, applicationContainer: `${name}-application`,
     ownershipContainer: `${name}-ownership`, postgresVolume: `${name}-postgres-data`,
     runtimeImage: `daynight-e2e-runtime:${runId}`,
   };
@@ -66,7 +109,7 @@ export const writeCleanupReceipt = async (runDirectory: string, receipt: Cleanup
   await rename(`${filename}.tmp`, filename);
 };
 
-export const createDockerAccess = (repository: string, runId: string, options: { execute?: DockerCommand; deadline?: number } = {}) => {
+export const createDockerAccess = (repository: string, runId: string, options: { execute?: DockerCommand; deadline?: number; runDirectory?: string } = {}) => {
   if (!uuid.test(runId)) throw new Error('The E2E resource UUID is invalid.');
   const execute: DockerCommand = options.execute === undefined
     ? async (args, timeoutMs) => startCommand('docker', args, { cwd: repository, env: process.env, timeoutMs, onOutput: () => {} }).finished
@@ -77,9 +120,23 @@ export const createDockerAccess = (repository: string, runId: string, options: {
     return execute(args, Math.min(requestedTimeoutMs, remaining));
   };
   const run = async (args: readonly string[], timeoutMs = 30_000): Promise<CommandResult> => {
-    const output = await result(args, timeoutMs);
-    if (output.exitCode !== 0) throw new CommandFailure('docker', output);
-    return output;
+    const mutation = options.runDirectory !== undefined && (['stop', 'create', 'start'].includes(args[0] ?? '') || args[1] === 'rm');
+    const intent = mutation ? path.join(options.runDirectory!, 'results', 'docker-cleanup-intent.json') : undefined;
+    try {
+      if (intent !== undefined) {
+        const handle = await open(intent, 'wx', 0o600);
+        try { await handle.writeFile(`${JSON.stringify({ schemaVersion: 1, runId, kind: 'docker_cleanup_mutation' })}\n`); await handle.sync(); }
+        finally { await handle.close(); }
+        const parent = await open(path.dirname(intent), 'r'); try { await parent.sync(); } finally { await parent.close(); }
+      }
+      const output = await result(args, timeoutMs);
+      if (output.exitCode !== 0) throw new CommandFailure('docker', output);
+      if (intent !== undefined) {
+        await unlink(intent);
+        const parent = await open(path.dirname(intent), 'r'); try { await parent.sync(); } finally { await parent.close(); }
+      }
+      return output;
+    } catch (error) { if (intent !== undefined) markCommandOutcomeUnconfirmed(); throw error; }
   };
   const inspect = async (kind: ResourceKind, resource: string): Promise<DockerObject | undefined> => {
     const output = await result([kind, 'inspect', resource]);
@@ -118,12 +175,14 @@ export const cleanupOwnedResources = async (options: {
   metadata: RecoveryMetadata;
   mode: 'normal' | 'recovery';
   applicationStarted: boolean;
+  redisStarted?: boolean;
   execute?: DockerCommand;
   deadline?: number;
 }): Promise<CleanupVerification & { failures: unknown[] }> => {
   validateIdentity(options.resources, options.metadata.runId);
+  await requireNoPendingDockerCleanup(options.runDirectory);
   const resources = options.resources;
-  const docker = createDockerAccess(options.repository, options.metadata.runId, { execute: options.execute, deadline: options.deadline });
+  const docker = createDockerAccess(options.repository, options.metadata.runId, { execute: options.execute, deadline: options.deadline, runDirectory: options.runDirectory });
   const failures: unknown[] = [];
   const attempt = async (operation: () => Promise<void>): Promise<void> => {
     try { await operation(); } catch (error) { failures.push(error); }
@@ -176,15 +235,22 @@ export const cleanupOwnedResources = async (options: {
     },
     async () => docker.remove('container', resources.ownershipContainer),
   ]));
+  await attempt(async () => {
+    if (options.mode !== 'normal' || !options.redisStarted) return;
+    const object = await docker.inspect('container', resources.redisContainer);
+    if (object === undefined) throw new Error('Redis disappeared before requested shutdown.');
+    const state = docker.state(object);
+    if (!state.running) throw new Error(`Redis exited before requested shutdown (exit=${state.exitCode}).`);
+  });
   for (const [kind, resource] of [
-    ['container', resources.postgresContainer], ['volume', resources.postgresVolume],
+    ['container', resources.redisContainer], ['container', resources.postgresContainer], ['volume', resources.postgresVolume],
     ['network', resources.ingressNetwork], ['network', resources.network], ['image', resources.runtimeImage],
   ] as const) await attempt(async () => docker.remove(kind, resource));
   const cleanupErrors = failures.map((error) => error instanceof Error ? error.message : String(error));
   const verificationErrors: string[] = [];
   const remaining: string[] = [];
   for (const [kind, resource] of [
-    ['container', resources.applicationContainer], ['container', resources.ownershipContainer], ['container', resources.postgresContainer],
+    ['container', resources.applicationContainer], ['container', resources.ownershipContainer], ['container', resources.postgresContainer], ['container', resources.redisContainer],
     ['volume', resources.postgresVolume], ['network', resources.network], ['network', resources.ingressNetwork], ['image', resources.runtimeImage],
   ] as const) {
     try { if (await docker.inspect(kind, resource) !== undefined) remaining.push(resource); }
@@ -205,9 +271,20 @@ const validateRunDirectory = async (repository: string, runDirectory: string): P
   return { directoryId, ownerUid: owner.uid, ownerGid: owner.gid };
 };
 
-export const recoverEnvironment = async (options: { repository: string; runDirectory: string; phase?: 'build' | 'environment' }): Promise<void> => {
+export const recoverEnvironment = async (options: { repository: string; runDirectory: string; phase?: 'build' | 'environment'; execute?: DockerCommand; afterRecovery?: () => Promise<void> }): Promise<void> => {
   const directory = await validateRunDirectory(options.repository, options.runDirectory);
   const filename = path.join(options.runDirectory, 'results', 'environment-cleanup.json');
+  await requireStageComplete(options.runDirectory, directory.directoryId, 'build');
+  if (options.phase !== 'build') await requireStageComplete(options.runDirectory, directory.directoryId, 'environment');
+  await requireNoPendingDockerCleanup(options.runDirectory);
+  try { await recoverRunOwnership({ repository: options.repository, runDirectory: options.runDirectory, mode: 'independent' }); }
+  catch (cause) {
+    throw new Error('Fixture ownership or process stop remains unverified; original resources and evidence are retained.', { cause });
+  }
+  const lock = new DatabaseSync(path.join(options.runDirectory, 'results', 'environment-recovery-lock.sqlite'));
+  try {
+    lock.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS recovery_lock (id INTEGER PRIMARY KEY); BEGIN IMMEDIATE');
+    await requireNoPendingDockerCleanup(options.runDirectory);
   let receipt: CleanupReceipt | undefined;
   try { receipt = JSON.parse(await readFile(filename, 'utf8')) as CleanupReceipt; }
   catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
@@ -228,9 +305,11 @@ export const recoverEnvironment = async (options: { repository: string; runDirec
     failures.push(...cleaned.failures);
     verification = { verified: cleaned.verified, resourcesAbsent: cleaned.resourcesAbsent, remaining: cleaned.remaining, verificationErrors: cleaned.verificationErrors, cleanupErrors: cleaned.cleanupErrors };
   }
-  for (const name of ['private', 'artifacts']) {
-    try { await rm(path.join(options.runDirectory, name), { recursive: true, force: true }); }
-    catch (error) { failures.push(error); verification.cleanupErrors.push(error instanceof Error ? error.message : String(error)); verification.verified = false; }
+  if (failures.length === 0 && verification.verified) {
+    for (const name of ['private', 'artifacts']) {
+      try { await rm(path.join(options.runDirectory, name), { recursive: true, force: true }); }
+      catch (error) { failures.push(error); verification.cleanupErrors.push(error instanceof Error ? error.message : String(error)); verification.verified = false; }
+    }
   }
   const recovery = { ...verification, completed: failures.length === 0 && verification.verified, finishedAt: new Date().toISOString() };
   if (receipt !== undefined) await writeCleanupReceipt(options.runDirectory, { ...receipt, recovery });
@@ -240,4 +319,7 @@ export const recoverEnvironment = async (options: { repository: string; runDirec
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, 'Independent E2E recovery failed.', { cause: failures[0] });
+    await options.afterRecovery?.();
+    lock.exec('COMMIT');
+  } finally { lock.close(); }
 };

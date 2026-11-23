@@ -12,7 +12,7 @@ const delay = (milliseconds: number) => new Promise<void>((done) => setTimeout(d
 export type ProcessIdentity = { pid: number; startTicks: string; executable: string };
 type CIContext = { runId?: string; job?: string; attempt?: string };
 type Ownership = {
-  version: 1;
+  version: 2;
   id: string;
   moduleRoot: string;
   root: string;
@@ -22,9 +22,11 @@ type Ownership = {
   cleanupPhase: "resources" | "directory";
   localPostgres: boolean;
   postgresPlanned: boolean;
+  redisPlanned: boolean;
   cleanupBinarySha256?: string;
   authBinary?: string;
   postgres?: { id: string; name: string; label: string };
+  redis?: { id: string; name: string; label: string };
 };
 type Resources = {
   databaseUrl: string;
@@ -124,7 +126,7 @@ export const initializeRun = async (ownerModule: string, root: string, ownerPid:
   const owner = await readProcessIdentity(ownerPid);
   if (owner === null) throw new Error("Integration runner process is absent");
   const ownership: Ownership = {
-    version: 1, id: basename(root), moduleRoot: resolve(ownerModule), root, owner, phase: "preparation", cleanupPhase: "resources", localPostgres: !environment.DAYNIGHT_TEST_DATABASE_URL, postgresPlanned: false,
+    version: 2, id: basename(root), moduleRoot: resolve(ownerModule), root, owner, phase: "preparation", cleanupPhase: "resources", localPostgres: !environment.DAYNIGHT_TEST_DATABASE_URL, postgresPlanned: false, redisPlanned: false,
     context: { runId: environment.GITHUB_RUN_ID, job: environment.GITHUB_JOB, attempt: environment.GITHUB_RUN_ATTEMPT },
   };
   await writeOwnership(ownership);
@@ -135,9 +137,18 @@ export const initializeRun = async (ownerModule: string, root: string, ownerPid:
 const readOwnership = async (ownerModule: string, root: string): Promise<Ownership> => {
   root = validateRoot(ownerModule, root);
   const ownership = JSON.parse(await readFile(ownerPath(ownerModule, root), "utf8")) as Ownership;
-  if (ownership.version !== 1 || ownership.root !== root || ownership.moduleRoot !== resolve(ownerModule) || ownership.id !== basename(root) || !["resources", "directory"].includes(ownership.cleanupPhase)) {
+  if (ownership.version !== 2 || ownership.root !== root || ownership.moduleRoot !== resolve(ownerModule) || ownership.id !== basename(root) || !["resources", "directory"].includes(ownership.cleanupPhase) || typeof ownership.localPostgres !== "boolean" || typeof ownership.postgresPlanned !== "boolean" || typeof ownership.redisPlanned !== "boolean" || (ownership.postgres !== undefined && !ownership.postgresPlanned) || (ownership.redis !== undefined && !ownership.redisPlanned)) {
     throw new Error("Invalid integration run ownership receipt");
   }
+  for (const [role, receipt, planned, name] of [
+    ["PostgreSQL", ownership.postgres, ownership.postgresPlanned, "daynight-api-" + ownership.id],
+    ["Redis", ownership.redis, ownership.redisPlanned, "daynight-api-redis-" + ownership.id],
+  ] as const) {
+    if (receipt !== undefined && (!planned || typeof receipt.id !== "string" || !/^[a-f0-9]{64}$/.test(receipt.id) || receipt.name !== name || receipt.label !== ownership.id)) {
+      throw new Error(`Invalid integration ${role} ownership receipt`);
+    }
+  }
+  if (ownership.postgresPlanned && !ownership.localPostgres) throw new Error("Invalid integration PostgreSQL ownership plan");
   return ownership;
 };
 
@@ -149,8 +160,9 @@ export const setPhase = async (ownerModule: string, root: string, phase: string)
 };
 
 export const recordPostgres = async (ownerModule: string, root: string, id: string, name: string) => {
-  if (!/^[a-f0-9]{12,64}$/.test(id)) throw new Error("Invalid integration PostgreSQL identity");
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid integration PostgreSQL identity");
   const ownership = await readOwnership(ownerModule, root);
+  if (!ownership.postgresPlanned || ownership.postgres !== undefined) throw new Error("Integration PostgreSQL was not planned or already recorded");
   if (name !== "daynight-api-" + ownership.id) throw new Error("Invalid integration PostgreSQL name");
   ownership.postgres = { id, name, label: ownership.id };
   await writeOwnership(ownership);
@@ -158,8 +170,24 @@ export const recordPostgres = async (ownerModule: string, root: string, id: stri
 
 export const planPostgres = async (ownerModule: string, root: string) => {
   const ownership = await readOwnership(ownerModule, root);
-  if (!ownership.localPostgres) throw new Error("Integration run uses an externally owned PostgreSQL environment");
+  if (!ownership.localPostgres || ownership.postgresPlanned) throw new Error("Integration PostgreSQL cannot be planned");
   ownership.postgresPlanned = true;
+  await writeOwnership(ownership);
+};
+
+export const planRedis = async (ownerModule: string, root: string) => {
+  const ownership = await readOwnership(ownerModule, root);
+  if (ownership.redisPlanned) throw new Error("Integration Redis was already planned");
+  ownership.redisPlanned = true;
+  await writeOwnership(ownership);
+};
+
+export const recordRedis = async (ownerModule: string, root: string, id: string, name: string) => {
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid integration Redis identity");
+  const ownership = await readOwnership(ownerModule, root);
+  if (!ownership.redisPlanned || ownership.redis !== undefined) throw new Error("Integration Redis was not planned or already recorded");
+  if (name !== "daynight-api-redis-" + ownership.id) throw new Error("Invalid integration Redis name");
+  ownership.redis = { id, name, label: ownership.id };
   await writeOwnership(ownership);
 };
 
@@ -245,25 +273,54 @@ const reconcileGateway = async (ownership: Ownership, resources: Resources) => {
   }
 };
 
-const removePostgres = async (ownership: Ownership) => {
-  if (!ownership.postgresPlanned) return;
-  const output = await exec("docker", ["ps", "-a", "--filter", `label=daynight.api-integration=${ownership.id}`, "--format", "{{.ID}}"], { timeout: 15_000 });
-  const ids = output.stdout.trim() === "" ? [] : output.stdout.trim().split("\n");
-  if (ownership.postgres !== undefined && !ids.some((id) => ownership.postgres!.id.startsWith(id))) {
-    const current = await exec("docker", ["ps", "-a", "--format", "{{.ID}}"], { timeout: 15_000 });
-    if (current.stdout.split("\n").some((id) => id !== "" && ownership.postgres!.id.startsWith(id))) throw new Error("Integration PostgreSQL lost its ownership label");
+const removeContainers = async (ownership: Ownership) => {
+  if (!ownership.postgresPlanned && !ownership.redisPlanned) return;
+  const list = async (filters: string[]) => {
+    const result = await exec("docker", ["ps", "-a", "--no-trunc", ...filters.flatMap((filter) => ["--filter", filter]), "--format", "{{.ID}}"], { timeout: 15_000 });
+    const ids = result.stdout.trim() === "" ? [] : result.stdout.trim().split("\n");
+    if (ids.some((id) => !/^[a-f0-9]{64}$/.test(id))) throw new Error("Invalid integration container discovery result");
+    return ids;
+  };
+  const all = await list([]);
+  const candidates = new Set(await list([`label=daynight.api-integration=${ownership.id}`]));
+  const roles = [
+    { role: "postgres", planned: ownership.postgresPlanned, receipt: ownership.postgres, name: "daynight-api-" + ownership.id },
+    { role: "redis", planned: ownership.redisPlanned, receipt: ownership.redis, name: "daynight-api-redis-" + ownership.id },
+  ];
+  for (const role of roles) {
+    for (const id of await list([`name=^/${role.name}$`])) candidates.add(id);
+    if (role.receipt !== undefined && all.includes(role.receipt.id)) candidates.add(role.receipt.id);
   }
-  for (const id of ids) {
-    if (!/^[a-f0-9]{12,64}$/.test(id)) throw new Error("Invalid integration PostgreSQL discovery result");
-    const result = await exec("docker", ["inspect", "--format", "{{.Name}}", id], { timeout: 15_000 });
-    if (result.stdout.trim() !== "/daynight-api-" + ownership.id) throw new Error("Integration PostgreSQL name differs from its owner");
-    await exec("docker", ["rm", "--force", "--volumes", id], { timeout: 15_000 });
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  for (const id of candidates) {
+    const result = await exec("docker", ["inspect", id], { timeout: 15_000 });
+    const inspection = JSON.parse(result.stdout);
+    if (!Array.isArray(inspection) || inspection.length !== 1) throw new Error("Invalid integration container inspection");
+    const container = inspection[0];
+    const role = roles.find((item) => item.role === container.Config?.Labels?.["daynight.api-integration-role"]);
+    if (container.Id !== id || container.Config?.Labels?.["daynight.api-integration"] !== ownership.id || role === undefined || !role.planned || container.Name !== "/" + role.name || seen.has(role.role)) {
+      throw new Error("Integration container identity, role or ownership label differs from its owner");
+    }
+    if (role.receipt !== undefined && (role.receipt.id !== id || role.receipt.name !== role.name || role.receipt.label !== ownership.id)) {
+      throw new Error("Integration container differs from its ownership receipt");
+    }
+    seen.add(role.role);
+    selected.push(id);
   }
-  const remaining = await exec("docker", ["ps", "-a", "--filter", `label=daynight.api-integration=${ownership.id}`, "--format", "{{.ID}}"], { timeout: 15_000 });
-  if (remaining.stdout.trim() !== "") throw new Error("Integration PostgreSQL remains after cleanup");
+  for (const id of selected) await exec("docker", ["rm", "--force", "--volumes", id], { timeout: 15_000 });
+  const remaining = await list([`label=daynight.api-integration=${ownership.id}`]);
+  if (remaining.length !== 0) throw new Error("Integration containers remain after cleanup");
+  const finalIds = await list([]);
+  if (selected.some((id) => finalIds.includes(id))) throw new Error("Integration container absence is unconfirmed");
+  for (const role of roles) {
+    if ((await list([`name=^/${role.name}$`])).length !== 0 || (role.receipt !== undefined && finalIds.includes(role.receipt.id))) {
+      throw new Error("Integration container absence is unconfirmed");
+    }
+  }
 };
 
-const terminateRunChildren = async (ownership: Ownership) => {
+const terminateMarkedChildren = async (ownership: Ownership, markerName: string, markerValue: string) => {
   const ancestors = new Set<number>();
   let pid = process.pid;
   while (pid > 0 && !ancestors.has(pid)) {
@@ -278,8 +335,8 @@ const terminateRunChildren = async (ownership: Ownership) => {
       if (!/^[0-9]+$/.test(name) || ancestors.has(Number(name)) || !await currentUserProcess(name)) continue;
       const data = await discoveryEnvironment(name);
       if (data === null) continue;
-      const marker = data.split("\0").find((entry) => entry.startsWith("DAYNIGHT_INTEGRATION_RUN_ROOT="));
-      if (marker !== "DAYNIGHT_INTEGRATION_RUN_ROOT=" + ownership.root) continue;
+      const marker = data.split("\0").find((entry) => entry.startsWith(markerName + "="));
+      if (marker !== markerName + "=" + markerValue) continue;
       const identity = await readProcessIdentity(Number(name));
       if (identity === null) continue;
       if (basename(identity.executable) === "tee") {
@@ -296,6 +353,15 @@ const terminateRunChildren = async (ownership: Ownership) => {
     for (const identity of children) await terminateOwnedProcess(identity);
   }
   throw new Error("Integration child-process drain did not converge");
+};
+
+const terminateRunChildren = async (ownership: Ownership) => terminateMarkedChildren(ownership, "DAYNIGHT_INTEGRATION_RUN_ROOT", ownership.root);
+
+// The reviewer fixture can stop detached Controller and native processes while
+// the Server and test runner remain alive. Its marker is inherited at spawn.
+export const terminateReviewerChildren = async (ownerModule: string, root: string) => {
+  const ownership = await readOwnership(ownerModule, root);
+  await terminateMarkedChildren(ownership, "DAYNIGHT_INTEGRATION_REVIEWER_ROOT", join(root, "reviewer-worker"));
 };
 
 export const cleanupRun = async (ownerModule: string, root: string) => {
@@ -318,7 +384,7 @@ export const cleanupRun = async (ownerModule: string, root: string) => {
     if (resolve(resources.storageRoot) !== join(root, "storage")) throw new Error("Integration storage root differs from its owner");
     await rm(resources.storageRoot, { recursive: true, force: true });
   }
-  await removePostgres(ownership);
+  await removeContainers(ownership);
 };
 
 export const finalizeRun = async (ownerModule: string, root: string, commandExitCode: number | null, prior?: Result): Promise<Result> => {
@@ -363,6 +429,16 @@ export const cleanupAll = async (ownerModule: string, environment: NodeJS.Proces
   for (const entry of entries) {
     if (!entry.isFile() || !/^integration\.[A-Za-z0-9]{8}\.json$/.test(entry.name)) continue;
     const root = join(ownerModule, ".tmp", entry.name.slice(0, -5));
+    const receipt = JSON.parse(await readFile(ownerPath(ownerModule, root), "utf8"));
+    if (receipt.version === 1) {
+      if (environment.GITHUB_RUN_ID !== undefined && (receipt.context?.runId !== environment.GITHUB_RUN_ID || receipt.context?.job !== environment.GITHUB_JOB || receipt.context?.attempt !== environment.GITHUB_RUN_ATTEMPT)) continue;
+      results.push({
+        runId: basename(root), phase: "unknown", commandExitCode: null, testExitCode: null, exitCode: 1,
+        cleanupPhase: "resources", cleanup: "failed", status: "failed",
+        error: "Legacy integration ownership receipt requires cleanup by its original owner",
+      });
+      continue;
+    }
     const ownership = await readOwnership(ownerModule, root);
     if (environment.GITHUB_RUN_ID !== undefined) {
       if (ownership.context.runId !== environment.GITHUB_RUN_ID || ownership.context.job !== environment.GITHUB_JOB || ownership.context.attempt !== environment.GITHUB_RUN_ATTEMPT) continue;
@@ -385,8 +461,11 @@ const cli = async (arguments_: string[]) => {
     case "phase": await setPhase(moduleRoot, root, values[0]); return;
     case "postgres": await recordPostgres(moduleRoot, root, values[0], values[1]); return;
     case "postgres-planned": await planPostgres(moduleRoot, root); return;
+    case "redis": await recordRedis(moduleRoot, root, values[0], values[1]); return;
+    case "redis-planned": await planRedis(moduleRoot, root); return;
     case "auth": await recordAuth(moduleRoot, root, values[0]); return;
     case "cleanup-binary": await recordCleanupBinary(moduleRoot, root); return;
+    case "reviewer-cleanup": await terminateReviewerChildren(moduleRoot, root); return;
     case "receipt": {
       if (!["true", "false"].includes(values[2])) throw new Error("Invalid integration race receipt");
       await writeBuildReceipt(moduleRoot, root, values[0], values[1], values[2] === "true"); return;

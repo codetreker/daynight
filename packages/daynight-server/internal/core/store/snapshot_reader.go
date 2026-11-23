@@ -12,13 +12,17 @@ type SnapshotReader interface {
 }
 
 type SnapshotScope interface {
+	GoalRelationDAO() GoalRelationReader
 	CredentialDAO() CredentialReader
+	UserCandidateDAO() UserCandidateReader
 	TeamDAO() TeamReader
 	ProjectDAO() ProjectReader
+	TagDAO() TagReader
 	TaskDAO() TaskReader
 	WorkerDAO() WorkerReader
 	SessionDAO() SessionReader
 	BotDAO() BotReader
 	AttachmentDAO() AttachmentReader
+	GitHubDAO() GitHubReadDAO
 	ObservedAt(context.Context) (time.Time, error)
 }

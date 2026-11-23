@@ -64,6 +64,10 @@ type httpAuthenticationScope struct {
 }
 
 func (s httpAuthenticationScope) IdentityDAO() store.IdentityDAO { return s.dao }
+func (s httpAuthenticationScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	panic("unreachable")
+}
 func (s httpAuthenticationScope) PersonalTeamDAO() store.PersonalTeamDAO {
 	unexpectedHTTPCall(s.t, "PersonalTeamDAO")
 	return nil
@@ -123,6 +127,18 @@ func (d httpRejectedIdentityDAO) ConsumeLogin(context.Context, []byte, []byte, t
 }
 func (d httpRejectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.UpsertUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
 	panic("unreachable")
 }
 func (d httpRejectedIdentityDAO) InsertSession(context.Context, model.Session) error {
@@ -412,12 +428,15 @@ func (d *oauthHTTPFamilyDAO) RevokeFamily(_ context.Context, id string, now time
 	}
 	return d.revoke(id, now)
 }
-func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, id, resource string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	d.plan.Called("authenticate")
 	if d.authenticate == nil {
 		unexpectedHTTPCall(d.t, "Family.Authenticate")
 	}
-	return d.authenticate(hash, id, resource, now)
+	if len(bindings) != 1 || bindings[0].ClientID != "" {
+		d.t.Fatalf("unexpected OAuth bindings: %+v", bindings)
+	}
+	return d.authenticate(hash, bindings[0].Resource, bindings[0].Scope, now)
 }
 
 type oauthHTTPAuthorizationScope struct {
@@ -539,7 +558,7 @@ func oauthHTTPExpectAccess(t *testing.T, f *oauthHTTPFixture, token, resource st
 		if !bytes.Equal(hash, secret.Hash(token)) || actualResource != resource || scope != core.Scope || now.IsZero() {
 			unexpectedHTTPCall(t, "OAuth access arguments")
 		}
-		return store.OAuthAccessIdentity{Principal: p, GrantID: grant}, err
+		return store.OAuthAccessIdentity{Principal: p, GrantID: grant, ExpiresAt: now.Add(time.Hour)}, err
 	}}
 	f.Store.WriteCredentialFamilyCall = func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
 		plan.Called("transaction")

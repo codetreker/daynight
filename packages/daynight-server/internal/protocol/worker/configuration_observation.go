@@ -12,41 +12,47 @@ import (
 
 type storedConfigurationObservation struct {
 	model.WorkerConfigurationReportedObservationWire
-	ControlModeObservation *storedControlModeObservation `json:"controlModeObservation,omitempty"`
+	ArchiveSessionsObservation *storedConfigurationItemSlot `json:"archiveSessionsObservation,omitempty"`
 }
 
-type storedControlModeObservation struct {
+type storedConfigurationItemSlot struct {
 	Index int                           `json:"index"`
 	Item  model.WorkerConfigurationItem `json:"item"`
 }
 
 // EncodeObservation measures and writes the actual stored shape, including the
-// private mode slot. Legacy servers ignore that slot without exposing a new item
+// private extension slots. Legacy servers ignore unknown slots without exposing a new item
 // kind to strict clients. Public responses still use the inline model encoding.
 func EncodeObservation(w io.Writer, value model.WorkerConfigurationReportedObservation, max int64) (int64, error) {
 	stored := storedConfigurationObservation{WorkerConfigurationReportedObservationWire: model.WorkerConfigurationReportedObservationWire(value)}
+	stored.Items = make([]model.WorkerConfigurationItem, 0, len(value.Items))
 	for index, item := range value.Items {
-		if item.Key.Kind != "agentControlMode" {
-			continue
+		switch item.Key.Kind {
+		case "agentControlMode":
+			return 0, fmt.Errorf("worker control mode observations are no longer supported")
+		case "archiveSessions":
+			if stored.ArchiveSessionsObservation != nil {
+				return 0, fmt.Errorf("duplicate stored worker archive sessions observation")
+			}
+			stored.ArchiveSessionsObservation = &storedConfigurationItemSlot{Index: index, Item: item}
+		default:
+			stored.Items = append(stored.Items, item)
 		}
-		if stored.ControlModeObservation != nil {
-			return 0, fmt.Errorf("duplicate stored worker control mode observation")
-		}
-		stored.ControlModeObservation = &storedControlModeObservation{Index: index, Item: item}
-		stored.Items = make([]model.WorkerConfigurationItem, 0, len(value.Items)-1)
-		stored.Items = append(stored.Items, value.Items[:index]...)
-		stored.Items = append(stored.Items, value.Items[index+1:]...)
+	}
+	if value.Items == nil {
+		stored.Items = nil
 	}
 	return measure.JSON(w, "worker.configuration.observation", max, stored, false)
 }
 
 // DecodeStoredObservation accepts historical inline rows and reconstructs the
-// current model from the private slot. A legacy replacement drops the slot, so a
-// subsequent read cannot revive stale mode evidence.
+// current model from private slots. A legacy replacement drops unknown slots, so a
+// subsequent read cannot revive stale evidence.
 func DecodeStoredObservation(encoded []byte) (*model.WorkerConfigurationReportedObservation, error) {
 	var stored *struct {
 		model.WorkerConfigurationReportedObservationWire
-		ControlModeObservation json.RawMessage `json:"controlModeObservation"`
+		ControlModeObservation     json.RawMessage `json:"controlModeObservation"`
+		ArchiveSessionsObservation json.RawMessage `json:"archiveSessionsObservation"`
 	}
 	if err := json.Unmarshal(encoded, &stored); err != nil {
 		return nil, err
@@ -55,24 +61,35 @@ func DecodeStoredObservation(encoded []byte) (*model.WorkerConfigurationReported
 		return nil, nil
 	}
 	value := model.WorkerConfigurationReportedObservation(stored.WorkerConfigurationReportedObservationWire)
-	if len(stored.ControlModeObservation) == 0 {
-		return &value, nil
-	}
-	var mode struct {
-		Index *int                           `json:"index"`
-		Item  *model.WorkerConfigurationItem `json:"item"`
-	}
-	if err := json.Unmarshal(stored.ControlModeObservation, &mode); err != nil {
-		return nil, fmt.Errorf("decode stored worker control mode observation: %w", err)
-	}
-	if mode.Index == nil || mode.Item == nil || mode.Item.Key.Kind != "agentControlMode" || mode.Item.Key.ProjectID != "" || value.Items == nil || *mode.Index < 0 || *mode.Index > len(value.Items) {
-		return nil, fmt.Errorf("invalid stored worker control mode observation")
-	}
-	for _, item := range value.Items {
-		if item.Key.Kind == "agentControlMode" {
-			return nil, fmt.Errorf("duplicate stored worker control mode observation")
+	insertSlot := func(raw json.RawMessage, kind string) error {
+		if len(raw) == 0 {
+			return nil
 		}
+		var slot struct {
+			Index *int                           `json:"index"`
+			Item  *model.WorkerConfigurationItem `json:"item"`
+		}
+		if err := json.Unmarshal(raw, &slot); err != nil {
+			return fmt.Errorf("decode stored worker %s observation: %w", kind, err)
+		}
+		if slot.Index == nil || slot.Item == nil || slot.Item.Key.Kind != kind || slot.Item.Key.ProjectID != "" || value.Items == nil || *slot.Index < 0 || *slot.Index > len(value.Items) {
+			return fmt.Errorf("invalid stored worker %s observation", kind)
+		}
+		for _, item := range value.Items {
+			if item.Key.Kind == kind {
+				return fmt.Errorf("duplicate stored worker %s observation", kind)
+			}
+		}
+		value.Items = slices.Insert(value.Items, *slot.Index, *slot.Item)
+		return nil
 	}
-	value.Items = slices.Insert(value.Items, *mode.Index, *mode.Item)
+	// Historical mode indices exclude the archive slot; restore mode first so
+	// that the archive index still addresses the original observation.
+	if err := insertSlot(stored.ControlModeObservation, "agentControlMode"); err != nil {
+		return nil, err
+	}
+	if err := insertSlot(stored.ArchiveSessionsObservation, "archiveSessions"); err != nil {
+		return nil, err
+	}
 	return &value, nil
 }

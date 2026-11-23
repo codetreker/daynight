@@ -10,8 +10,9 @@ const taskIdentity = (task: Task): readonly string[] => [
   `ID: ${terminalText(task.id)}`,
   `Project: ${terminalText(task.projectId)}`,
   `Type: ${task.type}`,
-  `Parent: ${task.parentId === null ? "none" : terminalText(task.parentId)}`,
+  `Parent: ${task.parentTaskId != null ? `Task ${terminalText(task.parentTaskId)}` : task.parentId === null ? "none" : terminalText(task.parentId)}`,
   `Title: ${terminalText(task.title)}`,
+  ...(task.tags.length === 0 ? ["Tags: none"] : ["Tags:", ...task.tags.map(({ name }) => `  ${terminalText(name)}`)]),
 ];
 
 const taskProperties = (task: Task): readonly string[] => [
@@ -63,7 +64,7 @@ export const renderTaskSummaryList = (tasks: readonly (Task | ObservedTask)[]): 
 const renderGraphTask = (task: GraphTask | ObservedGraphTask, projectId: string): string => [
   `ID: ${terminalText(task.id)}`,
   `Type: ${task.type}`,
-  `Parent: ${task.parentId === null ? "none" : terminalText(task.parentId)}`,
+  `Parent: ${task.parentTaskId != null ? `Task ${terminalText(task.parentTaskId)}` : task.parentId === null ? "none" : terminalText(task.parentId)}`,
   `Title preview: ${terminalText(task.titlePreview)}`,
   `Title truncated: ${task.titleTruncated}`,
   `Status: ${terminalText(task.status)}`,
@@ -80,10 +81,12 @@ const renderGraphTask = (task: GraphTask | ObservedGraphTask, projectId: string)
 
 export const renderTaskGraph = (graph: TaskGraph | ObservedTaskGraph): string => [
   `Project: ${terminalText(graph.project.id)}`,
-  `Name: ${terminalText(graph.project.name)}`,
-  `Repository: ${terminalText(graph.project.repoUrl)}`,
-  `Created: ${terminalText(graph.project.createdAt)}`,
-  `Updated: ${terminalText(graph.project.updatedAt)}`,
+  ...("name" in graph.project ? [
+    `Name: ${terminalText(graph.project.name)}`,
+    `Repository: ${terminalText(graph.project.repoUrl)}`,
+    `Created: ${terminalText(graph.project.createdAt)}`,
+    `Updated: ${terminalText(graph.project.updatedAt)}`,
+  ] : []),
   "",
   "Summary:",
   `Total: ${graph.summary.total}`,

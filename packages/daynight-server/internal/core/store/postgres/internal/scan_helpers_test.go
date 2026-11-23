@@ -87,7 +87,7 @@ func taskProjection(at time.Time, status model.TaskStatus) projectionRow {
 		value := at.Add(time.Minute)
 		cancelled = &value
 	}
-	return projectionRow{values: []any{"task", "project", model.TaskTypeTask, (*string)(nil), "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
+	return projectionRow{values: []any{"task", "project", model.TaskTypeTask, (*string)(nil), model.TaskType(""), "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
 		[]string{"dependency"}, []string{"external"}, []string{"blocked"}, true}}
 }
 
@@ -173,19 +173,6 @@ func TestPageValuesAndUTCTimePreserveAbsence(t *testing.T) {
 	}
 	if utc := UTCTime(&at); !utc.Equal(at) || utc.Location() != time.UTC || at.Location() == time.UTC {
 		t.Fatalf("UTC time = %v; original = %v", utc, at)
-	}
-}
-
-func TestScanTaskStepMapsEveryField(t *testing.T) {
-	at := projectionTime()
-	step, err := ScanTaskStep(projectionRow{values: []any{"step", int64(4), "title", "description", model.TaskStepSkipped, at, at}})
-	want := model.TaskStep{ID: "step", Position: 4, Title: "title", Description: "description", Status: model.TaskStepSkipped, CreatedAt: at.UTC(), UpdatedAt: at.UTC()}
-	if err != nil || !reflect.DeepEqual(step, want) {
-		t.Fatalf("step = %#v, %v; want %#v", step, err, want)
-	}
-	cause := errors.New("step scan failed")
-	if _, err := ScanTaskStep(projectionRow{err: cause}); !errors.Is(err, cause) {
-		t.Fatalf("scan error = %v", err)
 	}
 }
 

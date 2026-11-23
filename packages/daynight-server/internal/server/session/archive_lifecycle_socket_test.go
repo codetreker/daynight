@@ -236,7 +236,7 @@ func TestArchivePreflightRejectsBeforeAuthenticationWhileBodyIsUnread(t *testing
 	authCalls := f.auth.Count()
 	for _, tc := range []struct{ method, path, protocol string }{
 		{http.MethodPut, base, ""}, {http.MethodGet, base + "/content", ""},
-		{http.MethodPut, base, v2.Protocol}, {http.MethodGet, base + "/content", v2.Protocol},
+		{http.MethodGet, base + "/content", v2.Protocol},
 		{http.MethodPut, "/api/v1/test-sessions/" + f.snapshot.SessionID + "/archive", ""},
 		{http.MethodGet, "/api/v1/test-sessions/" + f.snapshot.SessionID + "/archive/content", ""},
 	} {

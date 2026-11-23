@@ -69,7 +69,7 @@ func RuntimeBotState(t *testing.T, pool *pgxpool.Pool, id string) string {
 func RuntimeBotPAT(t *testing.T, database store.IdentityWriter, candidate model.Bot) model.Principal {
 	t.Helper()
 	digest := sha256.Sum256([]byte(uuid.NewString()))
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: candidate.OwnerUserID, TokenHash: digest[:], Name: "Runtime boundary", CreatedAt: time.Now().UTC()}
+	pat := model.PersonalAccessToken{ScopePolicy: PATPolicy(), ID: uuid.NewString(), UserID: candidate.OwnerUserID, TokenHash: digest[:], Name: "Runtime boundary", CreatedAt: time.Now().UTC()}
 	completion, err := database.WriteIdentity(context.Background(), func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(t.Context(), pat) })
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("identity transaction: %#v %v", completion, err)
@@ -120,9 +120,14 @@ func CommitPreferenceBot(t *testing.T, database store.BotWriter, botID string) {
 	}
 }
 
+type RuntimeBotCredential struct {
+	Check         func(context.Context, store.BotWriteDAO, pgx.Tx, model.Principal, time.Time) error
+	DatabaseClock bool
+}
+
 func RuntimeBotWriteAfterLock(t *testing.T, pool *pgxpool.Pool, candidate model.Bot, principal model.Principal,
 	write func(context.Context, func(store.BotWriteDAO, pgx.Tx) error) error,
-	credential func(context.Context, store.BotWriteDAO, pgx.Tx, model.Principal) error,
+	credential RuntimeBotCredential,
 	expired bool, operation func(context.Context, store.BotWriteDAO, pgx.Tx) error,
 ) error {
 	t.Helper()
@@ -134,11 +139,16 @@ func RuntimeBotWriteAfterLock(t *testing.T, pool *pgxpool.Pool, candidate model.
 	}
 	var expiry time.Time
 	duration := "1 day"
-	if expired {
+	if expired && credential.DatabaseClock {
 		duration = "1 second"
 	}
 	if err := pool.QueryRow(ctx, `UPDATE `+table+` SET expires_at=clock_timestamp()+$2::interval WHERE id=$1 RETURNING expires_at`, principal.CredentialID, duration).Scan(&expiry); err != nil {
 		t.Fatal(err)
+	}
+	firstCheckAt := expiry.Add(-time.Second)
+	recheckAt := firstCheckAt
+	if expired && !credential.DatabaseClock {
+		recheckAt = expiry.Add(time.Second)
 	}
 	holder, err := pool.Begin(ctx)
 	if err != nil {
@@ -153,7 +163,7 @@ func RuntimeBotWriteAfterLock(t *testing.T, pool *pgxpool.Pool, candidate model.
 	go func() {
 		defer close(finished)
 		done <- write(ctx, func(dao store.BotWriteDAO, raw pgx.Tx) error {
-			if err := credential(ctx, dao, raw, principal); err != nil {
+			if err := credential.Check(ctx, dao, raw, principal, firstCheckAt); err != nil {
 				return err
 			}
 			if _, err := dao.Bot(ctx, candidate.ID); err != nil {
@@ -162,7 +172,7 @@ func RuntimeBotWriteAfterLock(t *testing.T, pool *pgxpool.Pool, candidate model.
 			if err := operation(ctx, dao, raw); err != nil {
 				return err
 			}
-			return credential(ctx, dao, raw, principal)
+			return credential.Check(ctx, dao, raw, principal, recheckAt)
 		})
 	}()
 	defer func() {
@@ -175,7 +185,7 @@ func RuntimeBotWriteAfterLock(t *testing.T, pool *pgxpool.Pool, candidate model.
 		}
 	}()
 	WaitTransferTeamLock(t, ctx, pool, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
-	if expired {
+	if expired && credential.DatabaseClock {
 		for {
 			var reached bool
 			if err := pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&reached); err != nil {

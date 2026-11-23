@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
 import { ApiError, setTaskStatus, getTask, getTaskSync } from "../src/api/client";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
+import { ProjectAccessBoundary, useProjectAccessSession } from "../src/features/projects/ProjectAccess";
 import { pollingIntervalsKey } from "../src/app/polling";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { TaskDetailSessionBoundary } from "../src/features/task-detail/TaskDetailSession";
@@ -39,7 +40,7 @@ const taskId = "20000000-0000-0000-0000-000000000001";
 const otherTask = "20000000-0000-0000-0000-000000000002";
 const time = "2026-10-20T12:00:00.123456Z";
 const node: GraphTask = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
   tasks: [node], summary: { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
@@ -198,28 +199,79 @@ describe("task graph snapshots", () => {
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
   });
 
-  it("pauses hidden-page polling, refreshes on return, and removes timers and listeners on unmount", async () => {
+  it("restarts the interval at each visibility transition and removes it on unmount", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     graphRequest.mockImplementation(async () => graph());
     const { result, unmount } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     visibility.mockReturnValue("hidden");
     act(() => document.dispatchEvent(new Event("visibilitychange")));
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(299_999); });
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(2));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(3));
     visibility.mockReturnValue("visible");
     await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(result.current.snapshot!.revision).toBe(2));
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(4));
+    await act(async () => { await vi.advanceTimersByTimeAsync(14_999); });
+    expect(graphRequest).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(5));
     unmount();
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(300_000);
     });
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(5));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("starts hidden, skips overlapping background ticks, and lets manual refresh replace the active cycle", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const slow = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(slow.promise).mockResolvedValue(graph());
+    const { result } = renderHook(() => useTaskGraph(projectId));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    const signal = graphRequest.mock.calls[1]![1];
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
+    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(signal.aborted).toBe(false);
+    act(() => result.current.refresh());
+    expect(signal.aborted).toBe(true);
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(3));
+    const fresh = result.current.snapshot;
+    await act(async () => { slow.resolve(graph()); });
+    expect(result.current.snapshot).toBe(fresh);
+  });
+
+  it("keeps one interval through rapid transitions and project replacement", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    graphRequest.mockImplementation(async (id) => graph(id));
+    const { result, rerender, unmount } = renderHook(({ project }) => useTaskGraph(project), { initialProps: { project: projectId } });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    for (const value of ["hidden", "visible", "hidden"] as const) {
+      visibility.mockReturnValue(value);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    await waitFor(() => expect(result.current.snapshot!.revision).toBe(2));
+    expect(vi.getTimerCount()).toBe(1);
+    rerender({ project: otherProject });
+    await waitFor(() => expect(result.current.snapshot?.graph.project.id).toBe(otherProject));
+    expect(vi.getTimerCount()).toBe(1);
+    const calls = graphRequest.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(calls + 1));
+    expect(graphRequest.mock.lastCall?.[0]).toBe(otherProject);
+    unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -324,6 +376,99 @@ describe("task graph snapshots", () => {
     expect(result.current.snapshot?.index.nodes.size).toBe(0);
     expect(result.current.snapshot?.revision).toBeGreaterThan(first!.revision);
     await waitFor(() => expect(result.current.error).toBeNull());
+  });
+
+  it("supersedes an old sync silently and retains its display through history replacement and retry", async () => {
+    const old = deferred<TaskGraph>();
+    const full = deferred<TaskGraph>();
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(replacement).mockReturnValueOnce(full.promise).mockResolvedValue(replacement);
+    const { result } = renderHook(() => useTaskGraph(projectId));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const original = result.current.displaySnapshot;
+    act(() => result.current.refresh());
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    const oldSignal = graphRequest.mock.calls[1]![1];
+    act(() => result.current.reconcile());
+    expect(oldSignal.aborted).toBe(true);
+    expect(result.current).toMatchObject({ displaySnapshot: original, refreshing: false });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(4));
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    await act(async () => { old.resolve(graph()); });
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    const failure = new Error("offline during replacement");
+    await act(async () => { full.reject(failure); });
+    await waitFor(() => expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", error: failure }));
+    act(() => result.current.refresh());
+    expect(result.current.refreshing).toBe(true);
+    await waitFor(() => expect(result.current.displaySnapshot?.graph.tasks).toEqual([]));
+    expect(result.current.snapshot).toBe(result.current.displaySnapshot);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("retains a sync error through a history fence until a fresh sync succeeds", async () => {
+    detailWorld = createTaskSessionWorld();
+    const failure = new Error("offline");
+    const recovery = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockRejectedValueOnce(failure).mockReturnValueOnce(recovery.promise);
+    const { result, unmount } = renderHook(() => useTaskGraph(projectId));
+    try {
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const display = result.current.displaySnapshot;
+      act(() => result.current.reconcile());
+      await waitFor(() => expect(result.current.error).toBe(failure));
+      act(() => detailWorld!.scope.fenceGoalHistory(projectId, "00000000-0000-4000-8000-000000000900"));
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: display, status: "ready", refreshing: false, error: failure });
+      await act(async () => { recovery.resolve(graph()); });
+      await waitFor(() => expect(result.current.error).toBeNull());
+      expect(result.current.snapshot).not.toBeNull();
+    } finally { unmount(); detailWorld.dispose(); detailWorld = null; }
+  });
+
+  it("forces mutation reconciliation while a Project access read is in flight", async () => {
+    graphRequest.mockResolvedValue(graph());
+    const { result } = renderHookWithoutSession(() => ({ graph: useTaskGraph(projectId), access: useProjectAccessSession(projectId)! }), {
+      wrapper: ({ children }) => <TestTaskCacheBoundary><ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></ProjectAccessBoundary></TestTaskCacheBoundary>,
+    });
+    await waitFor(() => expect(result.current.graph.status).toBe("ready"));
+    const access = result.current.access;
+    access.requireProjectReadRecheck();
+    const historyTicket = access.scope.getObservedHistoryTicket(projectId);
+    expect(historyTicket).not.toBeNull();
+    const accessTicket = access.beginObservation();
+    const token = access.beginProjectRead();
+    const readRevision = access.scope.getProjectReadRevision(projectId);
+    expect(access.projectReadInFlight()).toBe(true);
+    act(() => result.current.graph.reconcile());
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.graph.snapshot!.revision).toBeGreaterThan(1));
+    expect(result.current.graph.refreshing).toBe(false);
+    expect(access.scope.getProjectReadRevision(projectId)).toBe(readRevision);
+    act(() => expect(access.withdrawProjectRead(accessTicket, historyTicket, new ApiError("server", 404, "not_found"))).toBe(true));
+    expect(result.current.graph.displaySnapshot).toBeNull();
+    access.endProjectRead(token);
+  });
+
+  it("clears the retained display on access withdrawal while a history rebuild is pending", async () => {
+    detailWorld = createTaskSessionWorld();
+    const full = deferred<TaskGraph>();
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(replacement).mockReturnValueOnce(full.promise);
+    const { result, unmount } = renderHook(() => useTaskGraph(projectId));
+    try {
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      act(() => result.current.reconcile());
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+      expect(result.current.displaySnapshot).not.toBeNull();
+      act(() => detailWorld!.scope.suspendProject(projectId));
+      expect(result.current.displaySnapshot).toBeNull();
+      await act(async () => { full.resolve(replacement); });
+      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null });
+    } finally { unmount(); detailWorld.dispose(); detailWorld = null; }
   });
 
   it("discards the entire retained graph after an authoritative not-found response", async () => {
@@ -728,8 +873,8 @@ describe("detail freshness", () => {
     expect(taskReviewKey(classified)).toBe(taskReviewKey({ ...classified, externalDependsOn: [otherTask, taskId] }));
     expect(taskReviewKey(classified)).not.toBe(taskReviewKey({ ...classified, externalDependsOn: [otherTask] }));
     expect(taskReviewKey(classified)).not.toBe(taskReviewKey({ ...classified, allowAgents: true }));
-    expect(isTaskStale({ ...node, allowAgents: true }, detail)).toBe(true);
-    expect(isTaskStale({ ...node, requiredPlatform: 'linux' }, detail)).toBe(true);
+    expect(isTaskStale({ ...node, allowAgents: true }, detail, { title: detail.title })).toBe(true);
+    expect(isTaskStale({ ...node, requiredPlatform: 'linux' }, detail, { title: detail.title })).toBe(true);
     expect(taskDescriptor({ ...node, requiredPlatform: 'linux' })).not.toBe(taskDescriptor(node));
     expect(taskReviewKey({ ...detail, requiredPlatform: 'linux' })).not.toBe(taskReviewKey(detail));
     expect(taskDescriptor({ ...node, allowAgents: true })).not.toBe(taskDescriptor(node));
@@ -739,19 +884,19 @@ describe("detail freshness", () => {
     const dependencies = { dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask], ready: false };
     const classified = { ...node, ...dependencies, externalDependsOn: [taskId, otherTask] };
     const reordered = { ...detail, ...dependencies, externalDependsOn: [otherTask, taskId] };
-    expect(isTaskStale(classified, reordered)).toBe(false);
+    expect(isTaskStale(classified, reordered, { title: reordered.title })).toBe(false);
     expect(taskDescriptor(classified)).toBe(taskDescriptor({ ...classified, externalDependsOn: [otherTask, taskId] }));
-    expect(isTaskStale({ ...classified, externalDependsOn: [otherTask] }, reordered)).toBe(true);
+    expect(isTaskStale({ ...classified, externalDependsOn: [otherTask] }, reordered, { title: reordered.title })).toBe(true);
     expect(taskDescriptor(classified)).not.toBe(taskDescriptor({ ...classified, externalDependsOn: [otherTask] }));
     expect(classified.updatedAt).toBe(reordered.updatedAt);
   });
 
   it("accepts the same fields and order-independent dependency sets", () => {
-    expect(isTaskStale(node, detail)).toBe(false);
+    expect(isTaskStale(node, detail, { title: detail.title })).toBe(false);
     expect(taskDescriptor({ ...node, dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask] })).toBe(
       taskDescriptor({ ...node, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] }));
     expect(isTaskStale({ ...node, dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask] },
-      { ...detail, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] })).toBe(false);
+      { ...detail, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] }, { title: detail.title })).toBe(false);
   });
 
   it.each([
@@ -760,24 +905,30 @@ describe("detail freshness", () => {
     { ...node, ready: false }, { ...node, dependsOn: [otherTask] }, { ...node, blockedBy: [otherTask] },
     { ...node, titlePreview: "另一个标题" }, { ...node, titleTruncated: true },
   ])("detects changed snapshot-derived fields %#", (changed) => {
-    expect(isTaskStale(changed, detail)).toBe(true);
+    expect(isTaskStale(changed, detail, { title: detail.title })).toBe(true);
   });
 
   it("detects a dependency completion changing readiness with no task updatedAt change", () => {
     const blocked = { ...node, dependsOn: [otherTask], blockedBy: [otherTask], ready: false };
     const newlyReady = { ...detail, dependsOn: [otherTask], blockedBy: [], ready: true };
     expect(blocked.updatedAt).toBe(newlyReady.updatedAt);
-    expect(isTaskStale(blocked, newlyReady)).toBe(true);
+    expect(isTaskStale(blocked, newlyReady, { title: newlyReady.title })).toBe(true);
+  });
+
+  it("treats different titles with the same preview as stale", () => {
+    const prefix = "😀".repeat(160);
+    const samePreview = { ...node, titlePreview: prefix, titleTruncated: true };
+    expect(isTaskStale(samePreview, { ...detail, title: prefix + "new" }, { title: prefix + "old" })).toBe(true);
   });
 
   it("compares Unicode code point previews without truncating a surrogate pair", () => {
     const title = "😀".repeat(161);
-    expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title })).toBe(false);
+    expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title }, { title })).toBe(false);
   });
 });
 
 it('publishes the matching claim through sync, removes it on later updates, and fences old project responses', async () => {
-  const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  const claim = (name: string, state: 'active' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
   let properties: TaskDetail['properties'] = {};
   const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
   vi.mocked(getTaskSync).mockImplementation(async (id, query) => taskSyncReadFixture(fixture.toSync(graph(id), query)));

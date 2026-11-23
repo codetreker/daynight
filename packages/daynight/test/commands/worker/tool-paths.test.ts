@@ -7,26 +7,26 @@ import { parseWorkerCloudBootstrap, parseWorkerLocalConfiguration } from "../../
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const paths = resolveWorkerPaths("/home/worker", path.posix);
-const automatic = { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+const automatic = { codex: { kind: "auto" }, copilot: { kind: "auto" } };
 
 describe.each([
   ["runtime", (source: string) => parseWorkerConfiguration(source, paths, path.posix)],
   ["local source", (source: string) => parseWorkerLocalConfiguration(source, paths, path.posix)],
 ] as const)("%s tool path configuration", (_name, parse) => {
-  it.each([undefined, {}, { codex: null, copilot: null, herdr: null }])("fills all omitted or null choices with auto: %j", toolPaths => {
+  it.each([undefined, {}, { codex: null, copilot: null }])("fills all omitted or null choices with auto: %j", toolPaths => {
     expect(parse(stringify({ worker: { toolPaths } })).toolPaths).toEqual(automatic);
     expect(parse("{}").toolPaths).toEqual(automatic);
   });
 
   it("preserves every path byte without trimming, splitting, expansion or filesystem lookup", () => {
     const codex = "/missing tools/工具 $(printf x) '$HOME'/codex ";
-    const herdr = "/missing/../$HOME/~herdr";
-    expect(parse(stringify({ worker: { toolPaths: { codex, copilot: null, herdr } } })).toolPaths).toEqual({
-      codex: { kind: "path", path: codex }, copilot: { kind: "auto" }, herdr: { kind: "path", path: herdr },
+    const copilot = "/missing/../$HOME/~copilot";
+    expect(parse(stringify({ worker: { toolPaths: { codex, copilot } } })).toolPaths).toEqual({
+      codex: { kind: "path", path: codex }, copilot: { kind: "path", path: copilot },
     });
   });
 
-  it.each([null, [], "codex", 7, false, { claude: null }, { Codex: null }, { codex: { kind: "auto" } }, { herdr: false }].map(value => [value]))(
+  it.each([null, [], "codex", 7, false, { claude: null }, { Codex: null }, { codex: { kind: "auto" } }, { herdr: null }, { herdr: false }].map(value => [value]))(
     "rejects malformed mappings and unsupported tool keys: %j", toolPaths => {
       expect(() => parse(stringify({ worker: { toolPaths } }))).toThrow("worker.toolPaths");
     },
@@ -53,7 +53,7 @@ describe.each([
   ["local source", parseWorkerLocalConfiguration],
 ] as const)("%s Windows tool path syntax", (_name, parse) => {
   const windows = resolveWorkerPaths("C:\\Users\\worker", path.win32);
-  it.each(["C:\\Program Files\\工具\\codex.cmd", "D:/工具/copilot.ps1", "\\\\server\\share\\Herdr tools\\herdr.exe", "\\\\?\\C:\\tools\\codex.exe"])("keeps fully qualified path %s", codex => {
+  it.each(["C:\\Program Files\\工具\\codex.cmd", "D:/工具/copilot.ps1", "\\\\server\\share\\native tools\\copilot.exe", "\\\\?\\C:\\tools\\codex.exe"])("keeps fully qualified path %s", codex => {
     expect(parse(stringify({ worker: { toolPaths: { codex } } }), windows, path.win32).toolPaths.codex).toEqual({ kind: "path", path: codex });
   });
   it.each(["C:codex.cmd", "\\tools\\codex.exe", "/tools/codex.exe", "codex.cmd", "~/codex.cmd", "\\\\server"])("rejects paths requiring a current drive or directory: %s", codex => {
@@ -61,16 +61,15 @@ describe.each([
   });
 });
 
-it("imports local choices while preserving the legacy cloud report projection", async () => {
+it("imports local choices into the two-tool cloud report", async () => {
   const codex = path.resolve("/tools/codex");
   const source = stringify({ worker: { toolPaths: { codex } } });
   const bootstrap = await parseWorkerCloudBootstrap(source, paths, async () => { throw new Error("No Projects configured."); }, new AbortController().signal);
-  const legacy = {
-    agentControlMode: "herdr", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
-    preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
-  };
-  expect(bootstrap).toEqual({ ...legacy, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
-  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false })).toEqual({
-    bootstrap: legacy, observation: null, controlModeBootstrap: null,
-  });
+  expect(parseWorkerLocalConfiguration(source, paths).toolPaths.codex).toEqual({ kind: "path", path: codex });
+  expect(bootstrap).toEqual({ maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
+    preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [], archiveSessions: true,
+    toolPaths: { codex: { kind: "path", path: codex }, copilot: { kind: "auto" } } });
+  const report = projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: false, toolPaths: true, archiveSessions: true });
+  expect(report).toEqual({ bootstrap, observation: null, toolPathsBootstrap: null });
+  expect(report).not.toHaveProperty("controlModeBootstrap");
 });

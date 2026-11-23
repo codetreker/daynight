@@ -30,15 +30,17 @@ func transferTestFault(t *testing.T, err error, code string) {
 
 type transferTestDAO struct {
 	store.ProjectWriteDAO
-	calls          []string
-	ownership      model.ProjectOwnership
-	source, target store.TransferTeam
-	access         model.ProjectAccess
-	project        model.Project
-	fail           string
-	cause          error
-	accessCount    int
-	afterAccess    error
+	calls           []string
+	ownership       model.ProjectOwnership
+	source, target  store.TransferTeam
+	access          model.ProjectAccess
+	project         model.Project
+	fail            string
+	cause           error
+	accessCount     int
+	afterAccess     error
+	identityMissing bool
+	occupied        bool
 }
 
 func (d *transferTestDAO) call(name string) error {
@@ -148,7 +150,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	if err != nil || !receipt.Changed || receipt.ActorAccess != nil || receipt.Ownership.TeamID != transferTestTarget || receipt.Ownership.Version != 6 {
 		t.Fatalf("receipt %#v, %v", receipt, err)
 	}
-	if want := []string{"ownership", "teams", "access", "move", "access"}; !reflect.DeepEqual(d.calls, want) {
+	if want := []string{"ownership", "teams", "access", "identity", "occupancy", "move", "access"}; !reflect.DeepEqual(d.calls, want) {
 		t.Fatalf("order %v, want %v", d.calls, want)
 	}
 	tests := []struct {
@@ -158,6 +160,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	}{
 		{"not owner administrator", func(d *transferTestDAO, _ *TransferInput) { d.access.TeamRole = nil }, "forbidden"},
 		{"stale ownership", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version-- }, "version_conflict"},
+		{"higher ownership version", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version++ }, "version_conflict"},
 		{"missing target", func(d *transferTestDAO, _ *TransferInput) { d.target.Ref.ID = "" }, "not_found"},
 		{"stale team", func(_ *transferTestDAO, i *TransferInput) { i.TargetTeam.Version-- }, "version_conflict"},
 		{"exhausted ownership", func(d *transferTestDAO, i *TransferInput) {
@@ -170,8 +173,11 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 			d := newTransferTestDAO()
 			i := transferTestInput()
 			tc.modify(d, &i)
-			_, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, i)
+			receipt, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, i)
 			transferTestFault(t, err, tc.code)
+			if receipt != (TransferReceipt{}) {
+				t.Fatalf("refused transfer returned receipt %#v", receipt)
+			}
 			for _, call := range d.calls {
 				if call == "move" {
 					t.Fatal("refused transfer moved ownership")
@@ -308,4 +314,15 @@ func TestTransferPreviewAuthorizationAndErrors(t *testing.T) {
 			t.Fatalf("%s lost cause %v", stage, err)
 		}
 	}
+}
+
+func (d *transferTestDAO) RepositoryIdentity(ctx context.Context) (*string, error) {
+	if d.identityMissing {
+		return nil, d.call("identity")
+	}
+	identity := "scp://host:repo"
+	return &identity, d.call("identity")
+}
+func (d *transferTestDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	return d.occupied, d.call("occupancy")
 }

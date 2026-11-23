@@ -14,7 +14,7 @@ const otherTask = '20000000-0000-4000-8000-000000000002';
 const dependency = '20000000-0000-4000-8000-000000000003';
 const version = 9007199254740993n;
 const stamp = '2026-10-22T00:00:00Z'; const nextStamp = '2026-10-22T00:01:00Z';
-const initial: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, cancelledAt: null, id: task, projectId: project, version,
+const initial: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, cancelledAt: null, id: task, projectId: project, version,
   title: 'Reviewed task', description: 'Complete original description', properties: { pullRequests: [{ title: 'Original PR', url: 'https://example.com/pr/1' }] },
   status: 'todo', dependsOn: [dependency], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp };
 const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : stamp, completedAt: status === 'done' ? stamp : null, cancelledAt: status === 'cancelled' ? stamp : null });
@@ -229,16 +229,10 @@ describe('irreversible cancellation through the shared status session', () => {
 });
 
 
-it.each(['active', 'released'] as const)('requires release before cancelling an %s Worker history', async (state) => {
-  const claim: WorkerClaim = { claimId: otherTask, state, userId: TEST_VIEWER_ID, workerId: otherProject, machine: { id: otherProject, name: 'History machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: task, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: stamp };
-  const previous = { ...source(state === 'active' ? 'in_progress' : 'todo'), properties: { ...initial.properties, worker: claim } };
+it('requires release before cancelling an active Worker', async () => {
+  const claim: WorkerClaim = { claimId: otherTask, state: 'active', userId: TEST_VIEWER_ID, workerId: otherProject, machine: { id: otherProject, name: 'History machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: task, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: stamp };
+  const previous = { ...source('in_progress'), properties: { ...initial.properties, worker: claim } };
   const saved = result(previous, 'cancelled'); reads.mockResolvedValueOnce(previous).mockResolvedValue(saved); writes.mockResolvedValueOnce(saved);
   const sessions = createSessions(); await open(sessions, previous); submit(sessions, 'cancelled');
-  if (state === 'active') {
-    expect(writes).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).detail).toEqual(previous);
-  } else {
-    await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved);
-    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
-    expect(sessions.snapshot(project, task).detail?.properties.worker).toEqual(claim);
-  }
+  expect(writes).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).detail).toEqual(previous);
 });

@@ -12,6 +12,16 @@ import { commandBytes, terminateGroup, type CommandOptions } from './validation/
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
+test('ordinary Web tests and CI harness execute both source ownership policies', async () => {
+  const { scripts } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(scripts.test, /\bpnpm test:harness\b/);
+  assert.match(scripts['test:harness'], /\bnode --test\b.*\bscripts\/native-select-policy\.test\.mts\b/);
+  assert.match(scripts['test:harness'], /\bnode --test\b.*\bscripts\/typography-policy\.test\.mts\b/);
+  assert.ok(scripts['test:harness'].endsWith(`&& ${scripts['test:select-policy']} && ${scripts['test:typography-policy']}`));
+  assert.equal(scripts['test:select-policy'], 'node scripts/native-select-policy.mts');
+  assert.equal(scripts['test:typography-policy'], 'node scripts/typography-policy.mts');
+});
+
 const operations = () => {
   const calls: { file: string; args: readonly string[]; options: CommandOptions }[] = [];
   return { calls, command: async (file: string, args: readonly string[], options: CommandOptions) => {
@@ -26,7 +36,7 @@ test('quality mode checks workspace types and the production Docker context befo
   assert.deepEqual(observed.calls.map(({ file, args }) => [file, args]), [
     ['pnpm', ['web:typecheck']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'test:harness']],
-    ['docker', ['build', '--progress=plain', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.']],
+    ['docker', ['build', '--progress=plain', '--output=type=cacheonly', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts']],
   ]);

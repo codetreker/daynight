@@ -18,6 +18,13 @@ execution, lose responsibility or authorize removal of a replacement file.
 
 ## Decision
 
+The [storage contract decision](2026-11-18-session-storage-contracts.md) defines
+Bot-owned persistence and independent takeover requirements for a new recovery
+capability. [Bot-owned storage](2026-11-19-bot-owned-storage.md) replaces the
+shared database and Controller locations for new Bots. The Worker formats below
+continue to own unmigrated records; neither storage isolation nor the new
+specification establishes native recovery acceptance.
+
 Bot launch uses the existing independent Session and Controller contracts with
 no initial user input. Frozen registration and role intent retain their
 existing inventory ownership; the
@@ -36,6 +43,14 @@ serialization, grant-maintenance and shutdown-error aggregation mechanisms. Task
 remain in its backend. Bot readiness requires the matching local initialization
 and remote synchronized Session, including its native identity.
 
+New initialization consumes a separate dynamic admission callback. The
+configuration/capability sample retains its observation responsibility. Awaited preparation and the first intent,
+registration and launch submission recheck it; initial frozen-but-unsubmitted
+work still waits. Submitted or unknown original execution and frozen native
+recovery/control retain their identity and permissions. The
+[storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
+records this boundary and the Worker persistence readiness that supplies it.
+
 Discovery and credential maintenance run independently. Per-Bot jobs do not hold
 the discovery loop while starting a native provider or removing private sources.
 The runtime requires a deletion manager and dispatches authoritative deletion
@@ -51,13 +66,16 @@ same native Session, role, configuration and operation journal; an unreachable
 Controller alone never authorizes replacement.
 
 Windows Job termination is asynchronous, so an empty member list does not prove
-that every retained original process has exited. The stop helper repeatedly
-checks the complete Controller/native identities and Job boundary. The original
-deadline limits starting another complete confirmation round and is never reset;
-an already started system probe retains its existing per-call timeout. This is
-not a strict total wall-clock bound. Exhausting the polling budget without full
-proof, an unknown query or a permission error retains failure and execution
-evidence.
+that every retained original process has exited. The stop helper pins known
+original Controller/native process handles before terminating the retained Job,
+then requires those birth-verified handles to signal and the same Job inventory
+to be empty. ESRCH and changed exit codes do not establish completed exit. The
+[exit completion decision](../bug-fix/2026-11-13-windows-controller-exit-completion.md) owns
+this distinction and the wait-only handling of an already-terminating original.
+All observations and waits use the original absolute deadline without resetting
+it. Started native calls finish before handle release, so the deadline cannot
+preempt kernel work. Timeout, unknown status, identity, unconfirmed permission,
+wait and release failures retain errors and execution evidence.
 
 Deletion runs under the same per-Bot serializer as launch and grant renewal.
 The persistent deletion observation blocks new execution actions, while process
@@ -65,7 +83,7 @@ birth and current-generation observations from an already submitted child remain
 recordable. Otherwise a deletion arriving between spawn and its acknowledgement
 could hide the evidence needed to stop that child.
 
-After exact process-tree stop, Worker SQLite retains the stop receipt and the
+After exact process-tree stop, the Bot's owning SQLite retains the stop receipt and the
 restricted private-resource plan outside the sources being removed. Each
 completed target is recorded so a retry does not revisit a path that may now
 belong to another instance. Local cleanup removes the Bot's execution sources,
@@ -104,7 +122,7 @@ allowing unrelated Bots to progress.
 
 **Keep the only deletion receipt in the execution journal.** Removing private
 conversation sources would also remove the proof needed to retry after a lost
-response. Worker SQLite retains the minimal responsibility and the original
+response. The owning SQLite retains the minimal responsibility and the original
 completion identity independently of the files it authorizes removing.
 
 **Add optional cleanup JSON without a format admission change.** Older inventory

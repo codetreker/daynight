@@ -56,7 +56,7 @@ func queryFailureFacts(err error) (bool, string) {
 		return false, ""
 	}
 	switch err.(type) {
-	case *model.Fault, *taskproperties.ValidationError, *store.Error:
+	case *model.Fault, *model.UsageFault, *taskproperties.ValidationError, *store.Error:
 		return false, ""
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -113,33 +113,33 @@ func ScanProject(row pgx.Row) (model.Project, error) {
 	return project, err
 }
 
-const TaskProjection = `t.id::text, t.project_id::text, t.type, t.parent_id::text, t.title, t.description,
+const TaskProjection = `t.id::text, t.project_id::text, t.type, t.parent_id::text, COALESCE(t.parent_type,''), t.title, t.description,
 	t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, ` + TaskDependsOn + `, ` + TaskExternalDependsOn + `, ` + TaskBlockedBy + `, ` + TaskReady
 
 const TaskDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
-		WHERE d.project_id = t.project_id AND d.task_id = t.id ORDER BY d.depends_on_task_id)`
+		WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.dependency_type = 'task' ORDER BY d.depends_on_task_id)`
 
 const TaskExternalDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
-		WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.external ORDER BY d.depends_on_task_id)`
+		WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.dependency_type = 'task' AND d.external ORDER BY d.depends_on_task_id)`
 
 const TaskDependencyUnsatisfied = `NOT EXISTS (SELECT 1 FROM tasks p
     WHERE p.project_id = d.project_id AND p.id = d.depends_on_task_id
     AND p.status IN ('done', 'cancelled'))`
 
 const TaskBlockedBy = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
-    WHERE d.project_id = t.project_id AND d.task_id = t.id
+    WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.dependency_type = 'task'
     AND ` + TaskDependencyUnsatisfied + ` ORDER BY d.depends_on_task_id)`
 
 const TaskBlockedCount = `(SELECT count(*) FROM task_dependencies d
-    WHERE d.project_id = t.project_id AND d.task_id = t.id AND ` + TaskDependencyUnsatisfied + `)`
+    WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.dependency_type = 'task' AND ` + TaskDependencyUnsatisfied + `)`
 
 const TaskReady = `(t.type = 'task' AND t.status = 'todo' AND NOT EXISTS (
-    SELECT 1 FROM task_dependencies d WHERE d.project_id = t.project_id AND d.task_id = t.id
+    SELECT 1 FROM task_dependencies d WHERE d.project_id = t.project_id AND d.task_id = t.id AND d.dependency_type = 'task'
     AND ` + TaskDependencyUnsatisfied + `))`
 
 func ScanTask(row pgx.Row, trailing ...any) (model.Task, error) {
 	var task model.Task
-	destinations := []any{&task.ID, &task.ProjectID, &task.Type, &task.ParentID, &task.Title, &task.Description, &task.Status,
+	destinations := []any{&task.ID, &task.ProjectID, &task.Type, &task.ParentID, &task.ParentType, &task.Title, &task.Description, &task.Status,
 		&task.Version, &task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready}
 	err := row.Scan(append(destinations, trailing...)...)
 	if err != nil {

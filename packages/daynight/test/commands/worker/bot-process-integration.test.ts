@@ -1,32 +1,44 @@
+import { createOperation } from "../../../src/api/operation.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import Database from "better-sqlite3";
 import { createServer } from "node:http";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldEventLoop, setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
+import { recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
+import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
+import { createBotReconciliation } from "../../../src/commands/worker/bots/reconciliation.js";
+import { createBotRecoveryApi } from "../../../src/commands/worker/bots/recovery-api.js";
+import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
+import type { BotRecoveryGrant, BotRecoveryRegistration, BotRecoveryResult } from "../../../src/commands/worker/bots/recovery-protocol.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import { controllerExecutionDirectory, controllerTicketPath } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
-import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
-import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
+import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
@@ -39,14 +51,57 @@ const failureDiagnostics: (() => Promise<void>)[] = [];
 // Job Object query. Proof acquisition, cooperative stop, joined observation,
 // escalation and failure diagnostics fit within this hook's separate budget.
 const cleanupHookTimeout = 180_000;
-const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await confirmControllerProcessesStopped(controller, native)) return;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("Original fixture processes did not stop within the observation window.");
-    await delay(Math.min(100, remaining));
+class FixtureStopTimeoutError extends Error {
+  constructor(conflict?: ControllerProcessIdentityConflictError) {
+    super("Original fixture processes did not stop within the observation window.", { cause: conflict });
   }
+}
+const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number, lease?: ControllerJobLease,
+  clock = { now: Date.now, wait: (ms: number) => delay(ms) }): Promise<void> => {
+  const deadline = clock.now() + timeoutMs;
+  let conflict: ControllerProcessIdentityConflictError | undefined;
+  const diagnosed = new Set<number>();
+  for (;;) {
+    // The polling window must not shorten a confirmation already in progress.
+    try { if (await confirmControllerProcessesStopped(controller, native, undefined, lease)) return; }
+    catch (error) {
+      if (!(error instanceof ControllerProcessIdentityConflictError)) {
+        if (conflict !== undefined) throw new AggregateError([conflict, error], "Fixture identity and stop observation failed.", { cause: error });
+        throw error;
+      }
+      if (!diagnosed.has(error.pid) && diagnosed.size < 8) {
+        diagnosed.add(error.pid);
+        const { status, sameBirth, sameParent, sameGroup, sameCommand } = error.evidence;
+        console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-identity-conflict", pid: error.pid,
+          status: status?.slice(0, 32) ?? null, sameBirth, sameParent, sameGroup, sameCommand }));
+      }
+      conflict ??= error;
+    }
+    const remaining = deadline - clock.now();
+    if (remaining <= 0) throw new FixtureStopTimeoutError(conflict);
+    await clock.wait(Math.min(100, remaining));
+    if (clock.now() >= deadline) throw new FixtureStopTimeoutError(conflict);
+  }
+};
+const cleanupFixtureProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease,
+  operations = { wait: waitForProcessesStopped, stop: stopControllerProcesses, confirm: confirmControllerProcessesStopped }): Promise<void> => {
+  let observationFailure: unknown;
+  try { await operations.wait(controller, native, 5000, lease); }
+  catch (error) {
+    if (!(error instanceof FixtureStopTimeoutError && error.cause === undefined)) observationFailure = error;
+    try { await operations.stop(controller, native, Date.now() + 10_000, lease); }
+    catch (stopError) {
+      if (observationFailure !== undefined) throw new AggregateError([observationFailure, stopError], "Fixture stop observation and escalation failed.", { cause: observationFailure });
+      throw stopError;
+    }
+  }
+  try {
+    if (!await operations.confirm(controller, native, undefined, lease)) throw new Error("Fixture process tree did not stop.");
+  } catch (confirmationError) {
+    if (observationFailure !== undefined) throw new AggregateError([observationFailure, confirmationError], "Fixture stop observation and confirmation failed.", { cause: observationFailure });
+    throw confirmationError;
+  }
+  if (observationFailure !== undefined) throw observationFailure;
 };
 const readEvidence = async (file: string) => {
   if (!existsSync(file)) return { file, exists: false };
@@ -89,57 +144,157 @@ try {
 // teardown crosses the hook's captured fallback deadline; the next case
 // must retain both its environment and mock until its own teardown starts.
 describe("fixture teardown isolation", { concurrent: false, shuffle: false }, () => {
-  let teardownCompleted = false;
+  const teardownCompleted = Promise.withResolvers<void>();
   const subject = { read: () => "original" };
   const home = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-teardown-isolation");
   test("joins cleanup beyond the default hook deadline", () => {
     vi.stubEnv("DN_CONFIG_DIR", path.join(home, "first-state"));
     vi.spyOn(subject, "read").mockReturnValue("first");
-    cleanups.push(async () => { await delay(300); teardownCompleted = true; });
+    cleanups.push(async () => { await delay(teardownIsolationDefaultTimeout + 25); teardownCompleted.resolve(); });
   });
   test("keeps the next parent's ticket path aligned with its prepared child", async () => {
     const state = path.join(home, "second-state"), launchId = randomUUID();
     vi.stubEnv("DN_CONFIG_DIR", state);
     vi.spyOn(subject, "read").mockReturnValue("second");
     const preparedEnvironment = { ...process.env, DN_CONFIG_DIR: state };
-    await delay(350);
+    await teardownCompleted.promise;
+    await yieldEventLoop();
     const childTicket = path.join(resolveConfigurationPaths(home, path, preparedEnvironment).stateDirectory, "controller", "launches", `${launchId}.json`);
     expect(controllerTicketPath(home, launchId)).toBe(childTicket);
     expect(subject.read()).toBe("second");
-    expect(teardownCompleted).toBe(true);
   });
 });
 
-test("joins the final process observation before rejecting its expired window", async () => {
-  let active = 0;
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async () => {
+test.each([true, false])("joins a process observation across the soft window (stopped: %s)", async stopped => {
+  let now = 0, active = 0, finished = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (_controller, _native, deadline) => {
     active++;
-    try { await delay(50); return false; } finally { active--; }
+    try {
+      await gate;
+      if (deadline !== undefined && now >= deadline) throw new Error("Process observation was cut short by the polling deadline.");
+      return stopped;
+    } finally { active--; }
   });
   const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
-  await expect(waitForProcessesStopped(proof, [], 1)).rejects.toThrow("Original fixture processes did not stop within the observation window.");
+  const lease = {} as ControllerJobLease;
+  const result = waitForProcessesStopped(proof, [], 1, lease, { now: () => now, wait: async ms => { now += ms; } })
+    .then(() => { finished = true; return undefined; }, error => { finished = true; return error; });
+  expect(active).toBe(1);
+  now = 2;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(finished).toBe(false);
+  release();
+  const error = await result;
+  if (stopped) expect(error).toBeUndefined();
+  else { expect(error).toBeInstanceOf(FixtureStopTimeoutError); expect(error.cause).toBeUndefined(); }
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(confirm).toHaveBeenCalledWith(proof, [], undefined, lease);
   expect(active).toBe(0);
 });
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean } = {}) => {
+test("waits for complete stop after a transient process identity conflict", async () => {
+  let now = 0;
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValueOnce(conflict).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await expect(waitForProcessesStopped(proof, [], 1000, undefined, { now: () => now, wait: async ms => { now += ms; } })).resolves.toBeUndefined();
+  expect(confirm).toHaveBeenCalledTimes(3);
+});
+
+test("retains a persistent identity conflict at the observation deadline", async () => {
+  let now = 0;
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValue(conflict);
+  const error = await waitForProcessesStopped(proof, [], 200, undefined, { now: () => now, wait: async ms => { now += ms; } }).catch(error => error);
+  expect(error.cause).toBe(conflict);
+});
+
+test("propagates unrelated stop observation errors", async () => {
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const failure = new Error("Process observation failed");
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValue(failure);
+  await expect(waitForProcessesStopped(proof, [], 1000)).rejects.toBe(failure);
+});
+
+test("preserves cleanup observation failures through escalation and confirmation", async () => {
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  const failure = new FixtureStopTimeoutError(conflict), escalation = new Error("escalation failed");
+  const wait = vi.fn().mockRejectedValue(failure), stop = vi.fn().mockResolvedValue(undefined), confirm = vi.fn().mockResolvedValue(true);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).rejects.toBe(failure);
+  expect(stop).toHaveBeenCalledOnce(); expect(confirm).toHaveBeenCalledOnce();
+  stop.mockRejectedValueOnce(escalation);
+  const combined = await cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm }).catch(error => error);
+  expect(combined).toBeInstanceOf(AggregateError); expect(combined.errors).toEqual([failure, escalation]);
+  const ordinary = new FixtureStopTimeoutError();
+  wait.mockRejectedValueOnce(ordinary); stop.mockResolvedValueOnce(undefined);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).resolves.toBeUndefined();
+  const probeFailure = new Error("process observation failed");
+  wait.mockRejectedValueOnce(probeFailure); stop.mockResolvedValueOnce(undefined);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).rejects.toBe(probeFailure);
+});
+
+test.skipIf(process.platform !== "darwin")("waits through a real same-birth command conflict before confirming the process group stopped", async () => {
+  const child = spawn(process.execPath, ["-e", `
+    process.on('message', message => {
+      if (message === 'change') { process.title = 'daynight-conflicting-title'; process.send('changed'); }
+      if (message === 'exit') { process.disconnect(); process.exit(0); }
+    });
+    process.send('ready');
+  `], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(15_000) });
+  void exited.catch(() => {});
+  cleanups.push(async () => {
+    if (child.exitCode === null && child.signalCode === null && !child.kill("SIGKILL")) throw new Error("Fixture process could not be killed.");
+    await exited;
+  });
+  expect((await once(child, "message", { signal: AbortSignal.timeout(5000) }))[0]).toBe("ready");
+  const proof = await processProof.captureProcessProof(child.pid!);
+  expect(proof.processGroupId).toBe(child.pid);
+  const changed = once(child, "message", { signal: AbortSignal.timeout(5000) });
+  child.send("change"); expect((await changed)[0]).toBe("changed");
+  const conflict = await confirmControllerProcessesStopped(proof, [], Date.now() + 5000).catch(error => error);
+  expect(conflict).toBeInstanceOf(ControllerProcessIdentityConflictError);
+  expect(conflict.evidence).toMatchObject({ sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  let releaseWait!: () => void, enteredWait!: () => void;
+  const gate = new Promise<void>(resolve => { releaseWait = resolve; });
+  const entered = new Promise<void>(resolve => { enteredWait = resolve; });
+  const waiting = waitForProcessesStopped(proof, [], 10_000, undefined, { now: Date.now, wait: async () => { enteredWait(); await gate; } });
+  void waiting.catch(() => {});
+  try {
+    await Promise.race([entered, waiting.then(() => { throw new Error("Fixture stop was confirmed before the child exited."); })]);
+    expect(child.exitCode).toBeNull();
+    child.send("exit");
+    expect(await exited).toEqual([0, null]);
+  } finally { releaseWait(); }
+  await waiting;
+}, 20_000);
+
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; localRecovery?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
-  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
+  const botId = randomUUID(), storageStateDirectory = options.dedicatedStorage ? path.join(state, "bots", botId) : undefined;
+  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture", process.platform, storageStateDirectory));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
   // The copied fixture runs outside this package's dependency tree.
-  const nativeSource = (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8"))
+  const nativeSource = (await readFile(path.resolve(import.meta.dirname, options.dedicatedStorage ? "../controller/fixtures/codex-bot-native.mjs" : "../controller/fixtures/codex-native.mjs"), "utf8"))
     .replace("from 'better-sqlite3'", `from ${JSON.stringify(import.meta.resolve("better-sqlite3"))}`)
-    .replaceAll("native-thread", nativeId);
+    .replaceAll("native-thread", nativeId)
+    .replaceAll("c7975cdc-936b-411e-9f63-cd0a37ad7cbf", nativeId)
+    .replaceAll("CODEX_BOT_REQUEST_LOG", "CODEX_TEST_REQUEST_LOG");
   await writeFile(nativeFixture, nativeSource);
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;
   const wrapper = path.join(packageDirectory, "provider.mjs"), wrapperURL = pathToFileURL(wrapper).href;
-  await writeFile(wrapper, `import { openCodexProvider as open } from ${JSON.stringify(providerURL)};\nexport const openCodexProvider = options => open({ ...options, executable: ${JSON.stringify(nativeFixture)} });\n`);
+  await writeFile(wrapper, `import { openCodexProvider as open } from ${JSON.stringify(providerURL)};\nexport const openCodexProvider = options => open({ ...options, ...(options.toolLaunch ? {} : { executable: ${JSON.stringify(nativeFixture)} }) });\n`);
   await writeFile(path.join(packageDirectory, "package.json"), JSON.stringify({ type: "module" }));
   await writeFile(path.join(packageDirectory, "dist/main.js"), `
 import { registerHooks } from 'node:module';
@@ -151,7 +306,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, argv: process.argv.slice(2) }) + '\\n');
 const { runController } = await import(${JSON.stringify(runtimeURL)});
-await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] });
+await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5], storageStateDirectory: process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR });
 `);
   const http = options.hosted ? createServer() : null;
   const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
@@ -159,9 +314,14 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
   const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
-  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  let bot: BotDefinition = { id: randomUUID(), ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
+  const workerPaths = resolveWorkerPaths(home), databaseFile = options.localRecovery ? workerPaths.databaseFile : path.join(home, "worker.sqlite");
+  if (options.localRecovery) {
+    await mkdir(workerPaths.workerDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(workerPaths.configFile, `workerId: ${owner.workerId}\n`, { mode: 0o600 });
+  }
+  const store = openBotStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const executions = openBotExecutionStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  let bot: BotDefinition = { id: botId, ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
     resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: options.args ?? [] }, roleConfiguration: null, sessionId: null, testExecutionId: null,
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.observe(owner, bot, Date.now());
@@ -189,9 +349,9 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     const retained = aliasDirectory;
     return { environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory, bindings: [], release: async () => { if (retained !== null) await rm(retained, { recursive: true, force: true }); } };
   };
-  const stopProcesses: typeof stopControllerProcesses = async (controller, native, deadline) => {
+  const stopProcesses: typeof stopControllerProcesses = async (controller, native, deadline, lease) => {
     const started = Date.now();
-    try { await stopControllerProcesses(controller, native, deadline); }
+    try { await stopControllerProcesses(controller, native, deadline, lease); }
     catch (error) {
       diagnostic("stop-original-processes", Date.now() - started, error);
       // Only inspect identities created by this fixture; retain the original
@@ -202,13 +362,62 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       throw error;
     }
   };
-  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, stopProcesses } });
+  const toolReceipts = path.join(home, "tool-processes.jsonl"), toolEntries = { A: nativeFixture, B: path.join(home, "codex-B.mjs") };
+  type ToolReceipt = { tool: "A" | "B"; pid: number; execPath: string; argv: string[]; cwd: string };
+  const receipts = async (): Promise<ToolReceipt[]> => existsSync(toolReceipts) ? (await readFile(toolReceipts, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as ToolReceipt) : [];
+  const probeEnvironment = { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "probe-native"), CODEX_TEST_REQUEST_LOG: requestLog };
+  let tools: ReturnType<typeof import("../../../src/commands/worker/tool-selection-runtime.js").createWorkerToolSelectionRuntime> | undefined;
+  if (options.managedTools) {
+    for (const [tool, entry] of Object.entries(toolEntries)) {
+      const version = tool === "A" ? "1.10.1" : "1.20.2", model = `model-${tool}`;
+      const header = `#!/usr/bin/env node
+import { appendFileSync as recordTool } from 'node:fs';
+recordTool(${JSON.stringify(toolReceipts)}, JSON.stringify({tool:${JSON.stringify(tool)},pid:process.pid,execPath:process.execPath,argv:process.argv,cwd:process.cwd()})+'\\n');
+if (process.argv.includes('--version')) { console.log(${JSON.stringify(`codex-cli ${version}`)}); process.exit(0); }
+if (process.argv.includes('--help')) { console.log('app-server --stdio'); process.exit(0); }
+process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displayName: `Model ${tool}`, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }], defaultReasoningEffort: "low" }]))};
+`;
+      await writeFile(entry, header + nativeSource.replace("JSON.stringify(m)+'\\n'", `JSON.stringify({...m,fixtureTool:${JSON.stringify(tool)}})+'\\n'`));
+      await chmod(entry, 0o755);
+      const bin = path.join(home, `path-${tool}`); await mkdir(bin);
+      if (process.platform === "win32") await writeFile(path.join(bin, "codex.cmd"), `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`);
+      else await symlink(entry, path.join(bin, "codex"));
+    }
+    // Load compiled production modules so owned model probes execute their actual sibling entry points.
+    const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
+    tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd, environment: probeEnvironment,
+      localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } }, readActiveSelections: () => [] });
+  }
+  const selectToolLaunch = vi.fn(async (_agent: "codex" | "copilot", signal: AbortSignal) => {
+    if (tools !== undefined) return tools.selectToolLaunch("codex", signal);
+    const operation = createOperation({ limits: { totalMs: 20_000 } });
+    try { return await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: nativeFixture }, environment: process.env, cwd }, operation); }
+    finally { operation.dispose(); }
+  });
+  const observerJobs = new Map<string, ControllerJobLease>();
+  const managers: ReturnType<typeof createControllerJobLeases>[] = [];
+  const observerFor = (proof: ProcessProof): ControllerJobLease | undefined => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
+  const create = (sessionApi: Parameters<typeof createBotProcess>[0]["sessionApi"] = api) => {
+    const owned = createControllerJobLeases(); managers.push(owned);
+    const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
+      const lease = await owned.retain(launchId, proof, deadline);
+      if (process.platform === "win32") {
+        const name = `Local\\Daynight-${launchId}`;
+        if (!observerJobs.has(name)) observerJobs.set(name, await acquireControllerJobLease(launchId, proof, deadline));
+      }
+      return lease;
+    } };
+    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
+      ...(tools === undefined ? {} : { toolObservationFor: tools.toolObservationFor }), dependencies: { prepareEnvironment, stopProcesses } });
+  };
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
   let browserConnections = 0, deleted = false;
+  const controllers = new Set<WebSocket>();
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
-    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-relay-grant") { socket.close(1008); return; }
+    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== `Bearer ${options.relayToken?.() ?? "controlled-relay-grant"}`) { socket.close(1008); return; }
+    controllers.add(socket); socket.once("close", () => controllers.delete(socket));
     socket.on("message", raw => {
       if (deleted) { socket.close(1008); return; }
       try {
@@ -218,16 +427,18 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         else if (message.type === "reconcile") socket.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
         else if (message.type === "events") socket.send(JSON.stringify({ ...fence, type: "events_ack", sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events.at(-1)!.sourceSeq, lastEventSeq: message.events.at(-1)!.sourceSeq }));
         else if (message.type === "sync_state") socket.send(JSON.stringify({ ...fence, type: "sync_ack" }));
+        else if (message.type === "operation_begin") socket.send(JSON.stringify({ ...fence, type: "operation_authorized", operationId: message.operationId }));
+        else if (message.type === "operation_receipt") socket.send(JSON.stringify({ ...fence, type: "receipt_ack", operation: message.operation }));
       } catch (error) { relayErrors.push(error); socket.close(1008); }
     });
   });
-  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
+  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(intent.journalPath); };
   const collectEvidence = async () => {
     const record = current(), intent = record.intent;
     const saved = journal();
-    const childState = resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
+    const childState = storageStateDirectory ?? resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
     const expectedTicket = intent === null ? null : path.join(childState, "controller", "launches", `${intent.launchId}.json`);
-    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId);
+    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId, storageStateDirectory);
     const directory = intent === null ? null : path.join(childState, "controller", "executions", intent.executionId);
     const expectedJournal = directory === null ? null : readControllerSnapshot(path.join(directory, "journal.sqlite"));
     const summarize = (snapshot: typeof saved) => snapshot === null ? null : { lifecycle: snapshot.lifecycle, startup: snapshot.startup,
@@ -241,7 +452,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   };
   failureDiagnostics.push(collectEvidence);
   cleanups.push(async () => {
-    let stopped = true;
+    let stopped = true, cleanupFailure: unknown;
     try {
       const record = current(), execution = record.intent === null ? null : executions.get(record);
       if (execution !== null && execution.launchSubmission !== "not-submitted") {
@@ -258,7 +469,14 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
           }, { timeout: 30_000, interval: 100 });
         } catch (error) { diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error); }
         const proof = saved?.controllerProcess ?? execution.controllerProcess;
-        try { const ticket = await botProcess.readTicket(record); await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
+        const ticket = await botProcess.readTicket(record);
+        let lease = proof === null ? undefined : observerFor(proof);
+        let alreadyProven = false;
+        if (process.platform === "win32" && lease === undefined && proof !== null) {
+          if (saved?.windowsJobStopProof !== undefined) { readProvenWindowsStoppedControllerGeneration(record.intent!.journalPath, ticket); alreadyProven = true; }
+          else { lease = await acquireControllerJobLease(ticket.launchId, execution.controllerProcess ?? proof, Date.now() + 10_000); observerJobs.set(`Local\\Daynight-${ticket.launchId}`, lease); }
+        }
+        if (!alreadyProven) try { await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
         // Shutdown joins startup, which can publish native proofs after the
         // first snapshot. Preserve both observations before checking cleanup.
         const native = [...new Map([...(saved?.nativeProcesses ?? []), ...(journal()?.nativeProcesses ?? [])]
@@ -266,36 +484,49 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         if (proof !== null) {
           // A cooperative stop can finish between process/group probes. Observe
           // that completion before escalating the exact retained process group.
-          try { await waitForProcessesStopped(proof, native, 5000); }
-          catch { await stopControllerProcesses(proof, native, Date.now() + 10_000); }
-          stopped = await confirmControllerProcessesStopped(proof, native);
+          if (process.platform === "win32" && lease === undefined) stopped = readProvenWindowsStoppedControllerGeneration(record.intent!.journalPath, ticket).nativeStopped;
+          else {
+            await cleanupFixtureProcesses(proof, native, lease);
+            stopped = true;
+          }
           expect(stopped).toBe(true);
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
-      const recordNow = current();
-      if (recordNow.intent !== null && process.platform !== "win32") {
-        const ticket = await botProcess.readTicket(recordNow).catch(() => null);
-        if (ticket !== null) await rm(path.dirname(ticket.ipcEndpoint), { recursive: true, force: true });
-      }
     } catch (error) {
-      stopped = false;
+      stopped = false; cleanupFailure = error;
       try { await collectEvidence(); } catch (diagnosticError) { diagnostic("read-original-startup-evidence", 0, diagnosticError); }
       throw error;
     }
     finally {
+      const failures: unknown[] = [];
+      for (const manager of managers) try { await manager.close(); } catch (error) { failures.push(error); }
+      for (const lease of observerJobs.values()) try { releaseControllerJobLease(lease); } catch (error) { failures.push(error); }
+      observerJobs.clear();
       for (const socket of relay.clients) socket.terminate();
-      await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
-      if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
-      executions.close(); store.close();
-      if (stopped) {
+      try { await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve())); } catch (error) { failures.push(error); }
+      try { if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); }); } catch (error) { failures.push(error); }
+      try { await tools?.close(); } catch (error) { failures.push(error); }
+      try { executions.close(); } catch (error) { failures.push(error); }
+      try { store.close(); } catch (error) { failures.push(error); }
+      if (stopped && failures.length === 0) {
         if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });
       }
+      if (failures.length) throw new AggregateError(cleanupFailure === undefined ? failures : [cleanupFailure, ...failures], "Bot integration cleanup and handle release failed.", { cause: cleanupFailure });
     }
   });
-  const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
+  const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown>; fixtureTool?: "A" | "B" });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  const send = async (text: string): Promise<string> => {
+    const intent = current().intent!, operationId = randomUUID();
+    await vi.waitFor(() => expect(frames.some(frame => frame.type === "sync_state" && frame.executionGeneration === intent.executionGeneration && frame.testExecutionId === intent.executionId)).toBe(true), { timeout: 10_000 });
+    const fence = { protocol: SESSION_PROTOCOL, sessionId: intent.sessionId!, testExecutionId: intent.executionId, executionGeneration: intent.executionGeneration };
+    for (const socket of controllers) socket.send(JSON.stringify({ ...fence, connectionEpoch: "1", type: "operation_offer", operationSeq: "1", command: { ...fence,
+      requestId: randomUUID(), operationId, kind: "send_message", payload: { content: [{ type: "text", text }], expectedTurnId: null } } }));
+    await vi.waitFor(() => expect(readControllerOperation(intent.journalPath, operationId)?.state).toBe("confirmed"), { timeout: 10_000 });
+    return operationId;
+  };
+  return { home, cwd, packageDirectory, prepareEnvironment, selectToolLaunch, tools, toolEntries, receipts, probeEnvironment, send, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, observerFor, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -307,20 +538,114 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
     diagnostic("launch-observation-unknown", Date.now() - started, error);
   }
   const originalTicket = await f.process.readTicket(f.current());
-  // An interrupted parent can return before the child acquires its own proof,
-  // creates the Windows Job and captures native ownership. Reconciliation waits
-  // for that sequence through the original authenticated ticket.
+  // An interrupted parent can return after releasing the durable birth gate
+  // but before the child initializes its journal and native provider. Observe
+  // that same Controller through its original authenticated ticket.
   await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
 
+test("keeps A/B version, host, models and native Bot launches on their selected recipes across restart and removal", async () => {
+  const f = await fixture({ managedTools: true }), signal = AbortSignal.timeout(150_000), runtime = f.tools!;
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.toolEntries.A }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
+  const dist = path.resolve(import.meta.dirname, "../../../dist");
+  const hostModule = await import(pathToFileURL(path.join(dist, "commands/worker/bots/host-capabilities.js")).href) as typeof import("../../../src/commands/worker/bots/host-capabilities.js");
+  const modelModule = await import(pathToFileURL(path.join(dist, "commands/worker/read-only/models.js")).href) as typeof import("../../../src/commands/worker/read-only/models.js");
+  const host = hostModule.createAssistantHostCollector({ workingDirectory: f.cwd, environment: f.probeEnvironment,
+    configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 },
+    resolveExecutable: () => path.join(f.home, "missing-unrelated-provider"),
+    selectToolLaunch: async provider => provider === "codex" ? runtime.manager.currentSelection("codex", "web") : undefined,
+    toolInspector: runtime.hostInspector, toolRuntimeRoot: runtime.toolRuntimeRoot });
+  const models = modelModule.createWorkerModelDiscovery({ defaultCwd: f.cwd, environment: f.probeEnvironment,
+    prepare: async (provider, operation) => { expect(provider).toBe("codex"); await runtime.manager.prepare("codex", "web", operation); },
+    configuration: () => ({ native: { agent: "codex", model: null, args: [] }, report: { agent: "codex", model: { value: null, source: "native" }, reasoningEffort: { value: null, source: "native" } },
+      toolSelections: [runtime.manager.currentSelection("codex", "web")?.selectionKey] }),
+    verifier: { discover: async (input, operation) => {
+      const toolLaunch = await runtime.manager.selectForNewExecution("codex", "web", operation);
+      return runtime.inspector.discover({ ...input, toolLaunch, toolRuntimeRoot: runtime.toolRuntimeRoot }, operation);
+    } } });
+  cleanups.push(async () => { models.close(); await host.close(); });
+  const inspect = async (tool: "A" | "B", version: string) => {
+    const operation = createOperation({ signal, limits: { totalMs: 30_000 } });
+    try {
+      await runtime.manager.prepare("codex", "web", operation);
+      const launch = runtime.manager.currentSelection("codex", "web")!;
+      expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "codex" && entry.context === "web"))
+        .toMatchObject({ state: "applied", actual: { selectionKey: launch.selectionKey, entryPath: f.toolEntries[tool], version } });
+      const beforeHost = await f.receipts();
+      expect((await host.collect(operation)).assistantHost.providers.find(entry => entry.provider === "codex")).toMatchObject({ available: true, reason: null });
+      expect(await f.receipts()).toEqual(beforeHost);
+      expect(await models.discover({ provider: "codex" }, signal)).toMatchObject({ models: [{ id: `model-${tool}` }], defaults: { model: { value: `model-${tool}`, source: "native" } }, selectionError: null });
+      return launch;
+    } finally { operation.dispose(); }
+  };
+  const a = await inspect("A", "1.10.1");
+  expect((await f.requests()).some(request => request.method === "thread/start" || request.method === "thread/resume" || request.method === "turn/start")).toBe(false);
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!, originalDefinition = f.getBot();
+  expect(original).toMatchObject({ toolLaunch: a, toolObservation: { version: "1.10.1" } });
+  expect((await f.process.readTicket(f.current())).configuration).toMatchObject({ toolLaunch: a, toolObservation: original.toolObservation });
+  const operationId = await f.send("first user input");
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toMatchObject([{ fixtureTool: "A", params: { input: [{ type: "text", text: "first user input" }] } }]);
+  await f.create().shutdown(f.current(), signal);
+
+  vi.stubEnv("PATH", path.join(f.home, "path-B") + path.delimiter + (process.env.PATH ?? ""));
+  runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
+  const b = await inspect("B", "1.20.2");
+  expect(b.selectionKey).not.toBe(a.selectionKey);
+  const nextDefinition: BotDefinition = { ...originalDefinition, id: randomUUID(), version: "1", creationOrder: "2", sessionId: null, testExecutionId: null, roleConfiguration: null, startupResult: { state: "pending", code: null } };
+  f.setBot(nextDefinition); f.store.observe(f.owner, nextDefinition, Date.now());
+  await launchAndObserveReady(f, signal);
+  expect(f.current().intent).toMatchObject({ toolLaunch: b, toolObservation: { version: "1.20.2" } });
+  expect((await f.process.readTicket(f.current())).configuration.toolLaunch).toEqual(b);
+  expect(f.current().intent!.sessionId).not.toBe(original.sessionId);
+  expect((await f.requests()).filter(request => request.method === "thread/start").map(request => request.fixtureTool)).toEqual(["A", "B"]);
+  await f.create().shutdown(f.current(), signal);
+
+  f.setBot(originalDefinition);
+  await f.create().advance(f.current(), signal);
+  await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId }), { timeout: 20_000, interval: 100 });
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, toolLaunch: a, toolObservation: original.toolObservation });
+  expect((await f.process.readTicket(f.current())).configuration.toolLaunch).toEqual(a);
+  expect((await f.requests()).filter(request => request.method === "thread/resume")).toMatchObject([{ fixtureTool: "A", params: { threadId: f.nativeId } }]);
+  expect(readControllerOperation(original.journalPath, operationId)).toMatchObject({ state: "confirmed" });
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toHaveLength(1);
+  await f.create().shutdown(f.current(), signal);
+
+  const beforeRemoval = await f.receipts();
+  await rm(f.toolEntries.A);
+  await f.create().advance(f.current(), signal).catch(() => {});
+  await vi.waitFor(() => expect(f.journal()).toMatchObject({ error: expect.stringMatching(/tool_identity_changed|not_found/), nativeProcesses: [] }), { timeout: 20_000, interval: 100 });
+  const refused = f.journal()!;
+  await waitForProcessesStopped(refused.controllerProcess!, refused.nativeProcesses, 10_000, f.observerFor(refused.controllerProcess!));
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, toolLaunch: a });
+  expect(await f.receipts()).toEqual(beforeRemoval);
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toHaveLength(1);
+  expect(f.register).toHaveBeenCalledTimes(2);
+  expect(f.selectToolLaunch).toHaveBeenCalledTimes(2);
+  const node = await realpath(process.execPath);
+  for (const receipt of beforeRemoval) {
+    expect(await realpath(receipt.execPath)).toBe(node);
+    expect(receipt.argv.slice(0, 2)).toEqual([receipt.execPath, f.toolEntries[receipt.tool]]);
+    expect(receipt.argv.slice(2)).toEqual(expect.arrayContaining(receipt.argv.includes("--version") ? ["--version"] : receipt.argv.includes("--help") ? ["--help"] : ["app-server", "--stdio"]));
+  }
+  for (const tool of ["A", "B"] as const) {
+    expect(beforeRemoval.some(receipt => receipt.tool === tool && receipt.argv.includes("--version"))).toBe(true);
+    expect(beforeRemoval.some(receipt => receipt.tool === tool && receipt.argv.includes("--help"))).toBe(true);
+    expect((await f.requests()).some(request => request.fixtureTool === tool && request.method === "model/list")).toBe(true);
+  }
+  expect(f.relayErrors).toEqual([]);
+}, 180_000);
+
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
-  const f = await fixture(), signal = AbortSignal.timeout(60_000);
-  if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  const f = await fixture({ dedicatedStorage: true }), signal = AbortSignal.timeout(60_000);
+  if (interruptedObservation) vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
   expect(ticket).not.toHaveProperty("claimId"); expect(existsSync(path.join(f.cwd, ".git"))).toBe(false);
+  expect(f.current().intent!.journalPath.startsWith(path.join(f.home, "state", "bots", f.current().botId) + path.sep)).toBe(true);
+  expect(existsSync(path.join(f.home, "state", "controller"))).toBe(false);
   expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
   expect((await f.requests()).find(request => request.method === "thread/start")?.params).toMatchObject({ developerInstructions: ticket.instructions });
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
@@ -329,6 +654,13 @@ test.each([false, true])("launches one real Controller with no user turn after u
   const browser = new WebSocket(f.owner.serverOrigin.replace(/^http/, "ws") + "/browser-fixture"); await once(browser, "open");
   const closed = once(browser, "close"); browser.close(); await closed;
   expect(f.browserConnections()).toBe(1);
+  if (interruptedObservation) {
+    expect((await f.create().advance(f.current(), signal)).controllerProcess).toEqual(first.controllerProcess);
+    await f.create().shutdown(f.current(), signal);
+    expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+    expect(await f.launches()).toHaveLength(1);
+    return;
+  }
   const observed = await f.create().advance(f.current(), signal);
   expect(observed.controllerProcess).toEqual(first.controllerProcess);
   expect(observed.nativeProcesses).toEqual(first.nativeProcesses);
@@ -358,11 +690,11 @@ test("rejects unsupported Provider arguments before registration or native proce
 
 test("recovers cleanup evidence from the original journal when the parent process observation fails first", async () => {
   const f = await fixture();
-  vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await expect(f.process.advance(f.current(), AbortSignal.timeout(30_000))).rejects.toThrow("Fixture parent observation interrupted");
-  expect(f.executions.get(f.current())!.controllerProcess).toBeNull();
-  // afterEach must wait for the child's durable evidence instead of retaining
-  // the empty snapshot taken before its process ownership was captured.
+  expect(f.executions.get(f.current())!.controllerProcess).not.toBeNull();
+  // Birth identity commits before dispatch. Cleanup also joins the child's
+  // journal so descendants published after the failed observation remain owned.
 }, 60_000);
 
 
@@ -397,6 +729,97 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
 
+
+test("registers an unregistered stopped Bot at its retained service generation before granting the prepared successor", async () => {
+  let relayToken = "controlled-relay-grant";
+  const f = await fixture({ hosted: true, dedicatedStorage: true, relayToken: () => relayToken });
+  const signal = AbortSignal.timeout(90_000), parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
+  const errors: string[] = [], calls: string[] = [], receipts: BotRecoveryResult[] = [];
+  let registered = false, serverGeneration = "1", serverInstance: string | null = null, stoppedAt: string | null = null;
+  f.http!.on("request", (request, response) => {
+    void (async () => {
+      response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+      const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+      const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (pathname === "/api/usage/v1/capabilities") {
+        response.statusCode = 503;
+        return send({ error: { code: "capability_error", message: "Usage is outside this fixture", requestId: randomUUID() } });
+      }
+      calls.push(`${request.method} ${pathname}`);
+      expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
+      const record = f.current(), intent = record.intent!, bot = f.getBot();
+      if (request.method === "GET" && pathname === `/api/v1/me/bots/${bot.id}/observation`) {
+        const observedAt = new Date().toISOString();
+        return send({ schemaVersion: 1, botId: bot.id, botVersion: bot.version, workerId: f.owner.workerId,
+          machine: { id: f.owner.workerId, name: "fixture-machine" }, provider: "codex", sessionId: bot.sessionId, testExecutionId: bot.testExecutionId,
+          nativeSessionId: f.nativeId, hostingGeneration: registered ? "1" : null, executionGeneration: serverGeneration, connectionEpoch: "1",
+          state: "offline", reason: "controller_stopped", observedAt, workerLastSeenAt: observedAt, sessionLastSeenAt: observedAt, freshUntil: null, currentTurnId: null });
+      }
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as BotRecoveryRegistration | BotRecoveryGrant;
+      expect(request.method).toBe("POST");
+      expect(body.sessionId).toBe(bot.sessionId); expect(body.testExecutionId).toBe(bot.testExecutionId); expect(body.nativeSessionId).toBe(f.nativeId);
+      // The real process manager has already persisted beginRecovery locally.
+      expect(intent.executionGeneration).toBe("2");
+      const kind = pathname.endsWith("/register") ? "register" : "grant";
+      expect(pathname).toBe(`/api/v1/me/workers/${f.owner.workerId}/bots/${bot.id}/recovery/v1/${kind}`);
+      if (kind === "register") {
+        expect(registered).toBe(false); expect(serverGeneration).toBe("1");
+        expect(body).not.toHaveProperty("grant");
+        expect((body as BotRecoveryRegistration).botVersion).toBe(bot.version);
+        registered = true; f.setBot({ ...bot, version: String(BigInt(bot.version) + 1n) });
+      } else {
+        const grant = (body as BotRecoveryGrant).grant;
+        expect(registered).toBe(true); expect(grant.previousGeneration).toBe("1"); expect(grant.executionGeneration).toBe("2");
+        expect(grant.stopProof).toEqual({ previousControllerInstanceId: serverInstance, recordId: intent.launchId, stoppedAt });
+        expect(grant.controllerInstanceId).not.toBe(serverInstance);
+        serverGeneration = grant.executionGeneration; serverInstance = grant.controllerInstanceId;
+        relayToken = (body as BotRecoveryGrant).controllerToken;
+      }
+      const result: BotRecoveryResult = { current: true, receipt: {
+        botRecoveryVersion: 1, operationId: body.operationId, kind, workerId: f.owner.workerId, hostingGeneration: "1", botVersion: f.getBot().version,
+        sessionId: bot.sessionId!, testExecutionId: bot.testExecutionId!, nativeSessionId: f.nativeId, executionGeneration: serverGeneration,
+        controllerId: intent.registration.controllerId, controllerInstanceId: serverInstance!,
+        grantExpiresAt: kind === "register" ? null : new Date(Date.now() + 900_000).toISOString(),
+        controllerTokenHash: kind === "register" ? null : createHash("sha256").update(relayToken).digest("hex"),
+      } };
+      receipts.push(result); return send(result);
+    })().catch(error => { errors.push(String(error)); response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Controlled recovery HTTP failed", requestId: randomUUID() } })); });
+  });
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!;
+  serverInstance = original.controllerInstanceId;
+  await f.process.shutdown(f.current(), signal);
+  expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true, nativeSessionId: f.nativeId });
+  stoppedAt = f.journal()!.stoppedAt;
+  const stateDirectory = resolveConfigurationPaths(f.home).stateDirectory, paths = resolveBotPaths(stateDirectory, f.getBot().id);
+  await chmod(paths.directory, 0o700);
+  const lock = acquireInstanceLockSync(paths.lockFile, paths.ownershipGateFile);
+  const store = openBotRecoveryStore({ stateDirectory, owner: f.owner, assertLocked: () => {
+    if (JSON.parse(readFileSync(paths.lockFile, "utf8")).owner !== lock.owner) throw new Error("Fixture lost its original Bot lock");
+  } });
+  expect(store.read(f.current())).toBeNull();
+  const recovery = createBotReconciliation({ owner: f.owner, store, api: createBotRecoveryApi({ owner: f.owner, serverToken: parentToken }), canSubmit: () => true });
+  const sessionApi = createBotSessionApi({ owner: f.owner, serverToken: parentToken, recovery, stateDirectory });
+  const restored = f.create(sessionApi);
+  cleanups.push(async () => { try { await restored.shutdown(f.current(), AbortSignal.timeout(30_000)); await restored.close(); } finally { lock.release(); } });
+  await restored.advance(f.current(), signal);
+  await vi.waitFor(async () => expect(await restored.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }), { timeout: 30_000, interval: 100 });
+  expect(receipts.map(result => [result.receipt.kind, result.receipt.executionGeneration, result.receipt.controllerInstanceId])).toEqual([
+    ["register", "1", original.controllerInstanceId], ["grant", "2", f.current().intent!.controllerInstanceId],
+  ]);
+  expect(store.read(f.current())).toMatchObject({ pending: null, registration: { receipt: { executionGeneration: "1", controllerInstanceId: original.controllerInstanceId } }, current: { receipt: { executionGeneration: "2" } } });
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, executionGeneration: "2" });
+  expect(f.register).toHaveBeenCalledOnce(); expect(await f.launches()).toHaveLength(2);
+  const nativeRequests = await f.requests();
+  expect(nativeRequests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  const resumes = nativeRequests.filter(request => request.method === "thread/resume");
+  expect(resumes).toHaveLength(1);
+  expect(resumes[0]!.params).toMatchObject({ threadId: f.nativeId, developerInstructions: original.roleConfiguration!.instructions, excludeTurns: true });
+  expect(nativeRequests.filter(request => request.method === "turn/start")).toHaveLength(0);
+  expect(calls.some(call => call.includes("/test-sessions/"))).toBe(false);
+  expect(errors).toEqual([]); expect(f.relayErrors).toEqual([]);
+}, 120_000);
 
 test("deletes every private generation after real Controller stop while preserving cwd, native history and an independent Task worktree", async () => {
   const f = await fixture({ aliases: true }), signal = AbortSignal.timeout(100_000);
@@ -444,7 +867,7 @@ test("deletes every private generation after real Controller stop while preservi
   const receipts: BotDeletionReceipt[] = [];
   const api = { ...f.api, completeDeletion: async (_record: BotRecord, receipt: BotDeletionReceipt): Promise<BotDeleted> => {
     if (receipt.result.state === "completed") {
-      expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses)).toBe(true);
+      expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses, undefined, f.observerFor(finalWriter.controllerProcess!))).toBe(true);
       expect(existsSync(controllerExecutionDirectory(f.home, first.executionId))).toBe(false);
     }
     receipts.push(structuredClone(receipt));
@@ -475,6 +898,50 @@ test("deletes every private generation after real Controller stop while preservi
 }, 120_000);
 
 
+test("explicit recovery stops a real journal-bound Controller after its Bot execution index is lost", async () => {
+  const f = await fixture({ hosted: true, localRecovery: true }), signal = new AbortController().signal;
+  await launchAndObserveReady(f, signal);
+  const ticket = await f.process.readTicket(f.current()), original = f.journal()!;
+  expect(original.controllerProcess).not.toBeNull(); expect(original.nativeStopped).toBe(false);
+  const proof = original.controllerProcess!;
+  const cleanupLease = process.platform === "win32" ? await acquireControllerJobLease(ticket.launchId, proof, Date.now() + 10_000) : undefined;
+  // Keep independently authenticated cleanup authority even if compensation fails.
+  cleanups.push(async () => {
+    try { await cleanupFixtureProcesses(proof, original.nativeProcesses, cleanupLease); }
+    finally { if (cleanupLease !== undefined) releaseControllerJobLease(cleanupLease); }
+  });
+  const paths = resolveWorkerPaths(f.home), db = new Database(paths.databaseFile);
+  try { db.prepare("DELETE FROM bot_executions").run(); } finally { db.close(); }
+  const bot = f.getBot();
+  const workerCleanup = { state: "failed", code: "execution_evidence_missing" } as const, serverCleanup = { state: "pending", code: null } as const;
+  const deleted: BotDeleted = { id: bot.id, workerId: bot.workerId, version: String(BigInt(bot.version) + 1n),
+    deletion: { deletionId: randomUUID(), requestedVersion: bot.version, workerCleanup, serverCleanup } };
+  f.store.observe(f.owner, deleted, Date.now());
+  const requests: string[] = [];
+  f.http!.on("request", (request, response) => {
+    requests.push(request.method!);
+    response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+    const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+    if (request.method !== "GET" || pathname !== `/api/v1/me/bots/${bot.id}`) {
+      response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Unexpected recovery request", requestId: "fixture" } })); return;
+    }
+    response.end(JSON.stringify(deleted));
+  });
+  const input = { homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd,
+    serverUrl: f.owner.serverOrigin, ownerUserId: f.owner.ownerUserId, serverToken: "fixture-parent-token", botId: bot.id, bot: deleted, signal };
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(await confirmControllerProcessesStopped(proof, original.nativeProcesses, undefined, cleanupLease)).toBe(true);
+  const stopped = f.journal()!;
+  expect(stopped).toMatchObject({ lifecycle: "stopped", nativeStopped: true, executionGeneration: original.executionGeneration, controllerInstanceId: original.controllerInstanceId });
+  if (process.platform === "win32") expect(readProvenWindowsStoppedControllerGeneration(f.current().intent!.journalPath, ticket)).toEqual(stopped);
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(f.journal()!.stoppedAt).toBe(stopped.stoppedAt);
+  expect(f.executions.get(f.current())).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+  expect(f.current().observed).toEqual(deleted); expect(existsSync(f.current().intent!.ticketPath)).toBe(true);
+  expect(existsSync(f.current().intent!.journalPath)).toBe(true); expect(existsSync(paths.lockFile)).toBe(false);
+  expect(requests).toEqual(["GET", "GET"]); expect(await f.launches()).toHaveLength(1);
+}, 120_000);
+
 test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
   const f = await fixture({ hosted: true }), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];
   // Native credentials and command aliases are fixture-owned; the host, stores,
@@ -491,6 +958,9 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
       calls.push({ method: request.method!, path: pathname, body });
       expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
       const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (request.method === "GET" && ["/api/v1/assistant-tasks", "/api/v1/assistant-task-events"].includes(pathname)) {
+        return send({ items: [], nextCursor: null, observedAt: new Date().toISOString() });
+      }
       if (request.method === "GET" && pathname.endsWith(`/workers/${f.owner.workerId}/bots`)) return send({ items: [deleted ?? f.getBot()], nextCursor: null });
       if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}`)) return send(deleted ?? f.getBot());
       if (request.method === "POST" && pathname.endsWith("/register")) {
@@ -527,7 +997,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   });
   const paths = { ...resolveWorkerPaths(f.home), databaseFile: path.join(f.home, "worker.sqlite") };
   const makeHost = () => createWorkerBotHost({ homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd, paths, owner: f.owner,
-    serverToken: parentToken, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
+    serverToken: parentToken, canAdmitNewExecution: () => true, selectToolLaunch: f.selectToolLaunch, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
     recoveryLimit: () => 3, pollIntervalMs: () => 50, emit: event => { if (event.kind === "bot-unavailable") errors.push(event.message); } });
   let host = makeHost(), cancellation = new AbortController(), running = host.run(cancellation.signal);
   void running.catch(error => errors.push(String(error)));

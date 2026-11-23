@@ -7,10 +7,12 @@ import type { SessionArchive } from '../../daynight/src/session/archive';
 import { botFixture } from './helpers/bot-session';
 
 const clients: TaskSessionClient[] = [];
+// Keep IndexedDB cleanup on its real task queue while controlling Session deadlines.
+const fakeSessionClock = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
 afterEach(() => { clients.splice(0).forEach(client => client.close()); vi.unstubAllGlobals(); vi.useRealTimers(); sessionStorage.clear(); localStorage.clear(); });
 const refused = (userId: string, code = 'resource_conflict') => new Response(JSON.stringify({ error: { code, message: 'The resource cannot be read.', requestId: 'deletion-read' } }), { status: 409, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
 function fixture(bot: boolean, archived = false) {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = botFixture(), { binding } = f;
   if (archived) f.change({ ...f.snapshot(), lifecycle: 'archived', connectionState: 'disconnected', operations: { canSend: false, canCancel: false, canRespond: false } });
   let deny = false;

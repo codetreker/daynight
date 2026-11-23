@@ -1,7 +1,7 @@
 import type { NativeInputPublicationIdentity, NativeInputPublicationRequest, NativeInputPublicationResult, NativeInputPublicationQuery } from "../media/native-publication-types.js";
 import type { CaptureStageInput } from "../media/preparations.js";
 import type { LocalImageCheckpoint } from "../markdown/local-source-proof.js";
-import type { ImagePart, ImageUnavailablePart, ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage, ProviderImageCapabilities } from "../../../session/image-values.js";
+import type { DirectCaptureSubmission, ImagePart, ImageUnavailablePart, ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage, ProviderImageCapabilities } from "../../../session/image-values.js";
 import type { NativeMediaSpool } from "../media/native-spool.js";
 import type { SessionCommand, OperationState } from "../../../session/protocol.js";
 import type { SessionControls } from "../../../session/controls.js";
@@ -9,7 +9,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ProcessProof } from "../process-proof.js";
 import type { InteractionResponse, SessionCapabilities, SessionSnapshot, TimelineEntry, TextPart } from "../../../session/protocol.js";
 /** Private immutable files are supplied only by the Controller's input lease. */
-export type NativeImagePart = { readonly type: "image"; readonly imageId: string; readonly resourceId: string; readonly mediaType: string; readonly byteLength: string; readonly sha256: string; readonly localPath: string };
+export type NativeImagePart = { readonly type: "image"; readonly imageId: string; readonly resourceId: string; readonly mediaType: string; readonly byteLength: string; readonly sha256: string; readonly localPath: string; readonly validated?: ValidatedImage };
 export type NativeInput = { readonly content: readonly (TextPart | NativeImagePart)[] };
 export type NativeImageFile = { kind: "file"; path: string; byteLength: string; sha256: string; release(): void };
 export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEntry ? Omit<T, "entrySeq"> : never : never;
@@ -40,10 +40,20 @@ export type NativeImageRuntime = {
   writeState(key: string, value: unknown): void;
   createSpool(maximumBytes: number): NativeMediaSpool;
   indexDirectory(): string;
-  reserveIndex(additionalBytes: number): void;
-  acquireIndexReservation(additionalBytes: number, owner?: ProcessProof): { release(): void };
+  acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  copilotBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  claudeBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  codexBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
+  usageRuntime?: {
+    ready?(input: { nativeSessionId: string; providerVersion: string }): void;
+    bindTurn?(turnId: string): void;
+    observe(input: { nativeSessionId: string; providerVersion: string; event: unknown }): void;
+    gap(reason: string): void;
+  };
+  toolLaunch?: import("../../../platform/tool-executables.js").ResolvedToolLaunch;
+  toolRuntimeRoot?: string;
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
   /** Frozen role text for native prompt append on start and resume, separate from user input. */
   instructions?: string;
@@ -52,6 +62,10 @@ export type ProviderOptions = {
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   imageRuntime?: NativeImageRuntime;
+  /** Recheck the owning Controller before a new native side effect. */
+  assertNativeDispatch?(): void;
+  /** Original persistent admission identity for native helper dispatch. */
+  nativeLifecycleFence?: import("../native-lifecycle.js").NativeLifecycleFence;
   onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;
@@ -66,16 +80,26 @@ export type ProviderOptions = {
   /** Join source writers after invalidation, before changing native permissions. */
   drainNativeReadPolicy?(): Promise<void>;
   onControlConfirmed?(operationId: string): void;
+  /** Associate provenance and return the original durable entry identity for native history replay. */
+  onInputMessage?(operationId: string, nativeSessionId: string, entryId: string): string | void;
   /** Only true confirms durable image evidence; legacy text callbacks ignore the result. */
   onInputObserved?(observation: string | InputObservation): unknown;
   /** Registration is durable; capture must wait until the original position is acknowledged. */
   onImageOccurrence?(occurrence: ImageOccurrence, source: NativeImageSource | null): boolean;
   imageOccurrenceAcknowledged?(imageId: string): boolean;
+  prepareImageCapture?(request: ImageCaptureRequest, signal?: AbortSignal): Promise<void>;
+  verifyImageCapture?(captureId: string, attemptId: string): void;
+  freezeImageCapture?(submission: DirectCaptureSubmission): void;
+  submitImageCapture?(submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt>;
   registerImageCapture?(request: ImageCaptureRequest): Promise<ImageCaptureReceipt>;
   queryImageCapture?(captureId: string): Promise<ImageCaptureReceipt>;
   commitImageCapture?(captureId: string, attemptId: string, validated: ValidatedImage): Promise<ImageCaptureReceipt>;
   failImageCapture?(captureId: string, attemptId: string, error: ImageError): Promise<ImageCaptureReceipt>;
   stageImageCapture?(input: CaptureStageInput): Promise<ValidatedImage>;
+  /** Stage a registered native source under its current authority and join its writer. */
+  stageNativeImageCapture?(request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage>;
+  /** Observe an already admitted native stage without restarting source I/O. */
+  recoverNativeImageCapture?(request: ImageCaptureRequest): Promise<ValidatedImage | null>;
   /** The source owner opens only an acknowledged, registered capture and joins cancellation. */
   resolveImageCaptureSource?(request: ImageCaptureRequest, signal: AbortSignal): Promise<NativeImageFile>;
 };

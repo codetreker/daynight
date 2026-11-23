@@ -4,6 +4,8 @@ import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
 import { isNonemptyText } from "../../../platform/text.js";
 import type { WorkerAgent } from "../../../api/types.js";
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import type { FrozenToolObservation } from "../types.js";
 
 export type BotOwner = { serverOrigin: string; ownerUserId: string; workerId: string };
 export type BotSelectionSource = "explicit" | "preference" | "local" | "cloud" | "native" | "unknown";
@@ -29,9 +31,12 @@ export type BotLaunchIntent = {
   sessionId: string | null; executionGeneration: string; nativeSessionId: string | null;
   ticketPath: string; journalPath: string; credentialFile: string;
   recoveryLimit: number; roleConfiguration: BotRoleConfiguration | null;
+  toolLaunch?: ResolvedToolLaunch;
+  toolObservation?: FrozenToolObservation;
 };
 export type BotCleanup = {
   deletionId: string; requestedVersion: string;
+  workerId?: string;
   stop: import("./session-api.js").BotDeletionStop | null;
   targets: import("./delete-files.js").BotDeletionTarget[];
   localCompleted: boolean;
@@ -39,6 +44,7 @@ export type BotCleanup = {
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
   observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
+  migration?: { state: "registration_pending"; manifestPath: string };
 };
 
 export const botUUID = (value: unknown, field: string): string => {

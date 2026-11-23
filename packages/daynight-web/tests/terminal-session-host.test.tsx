@@ -5,25 +5,18 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { FixedSessionRecording, ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
-import { createTerminalSessionApi, parseTerminalSessionState, terminalEnvelope, type TerminalSessionState } from '../src/api/terminal-sessions';
+import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import { createSessionApi } from '../src/api/sessions';
 import type { LoadedSessionArchive } from '../src/api/sessions';
 import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { sessionImageBytes, sessionImageSamples } from './helpers/sessionImages';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
-import type { SessionHistoryItem } from '../src/api/terminal-sessions';
+import type { SessionHistoryItem, SessionRecordingReference } from '../src/api/terminal-sessions';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, readCachedSessionHistory, readSessionHistoryPaginationState, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider, TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 vi.mock('../src/api/sessions', () => ({ createSessionApi: vi.fn() }));
-const terminalCapture = vi.hoisted(() => ({ client: null as import('../src/features/task-agent-session/terminal-client').TerminalSessionClient | null }));
 vi.mock('../src/api/terminal-sessions', async importOriginal => ({ ...await importOriginal<typeof import('../src/api/terminal-sessions')>(), createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
-vi.mock('../src/features/task-agent-session/terminal-client', async importOriginal => {
-  const original = await importOriginal<typeof import('../src/features/task-agent-session/terminal-client')>();
-  return { ...original, TerminalSessionClient: class extends original.TerminalSessionClient {
-    constructor(options: ConstructorParameters<typeof original.TerminalSessionClient>[0]) { super(options); terminalCapture.client = this; }
-  } };
-});
 vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), completeSessionHistoryPagination: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
 beforeEach(() => {
@@ -36,7 +29,7 @@ beforeEach(() => {
   vi.mocked(beginSessionHistoryPagination).mockReset().mockImplementation(async () => pagination());
   vi.mocked(readSessionHistoryPaginationState).mockReset().mockImplementation(async () => pagination());
 });
-afterEach(() => { terminalCapture.client = null; vi.useRealTimers(); sessionStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); sessionStorage.clear(); vi.restoreAllMocks(); });
 const render = createLocaleRender('en', { taskCache: true });
 const projectId = '00000001-1111-4111-8111-111111111111';
 const taskId = '00000002-1111-4111-8111-111111111111';
@@ -64,46 +57,6 @@ async function imageRecording(schemaVersion: 1 | 3 = 3) {
   return { api, item, archive, resource, reader, blob, bytes };
 }
 describe('unified Session and managed records', () => {
-  it('retains the terminal screen and editable draft when account refresh stops the client after admission closes', async () => {
-    const read = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
-    const registration = read('valid-registration'), owner = registration.payload.owner;
-    const state = parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(registration), owner, binding: registration.payload.binding, connectionEpoch: '1', connected: true, capabilities: registration.payload.capabilities, control: { ...read('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: read('valid-snapshot').payload, ledger: read('valid-active-ledger').payload, archive: read('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin);
-    let receive: (value: TerminalSessionState) => void = () => {};
-    const close = vi.fn();
-    const api = { current: vi.fn(async () => state), state: vi.fn(async () => state), channel: vi.fn((_id, _browser, onState: (value: TerminalSessionState) => void) => { receive = onState; return { close }; }), command: vi.fn(), operation: vi.fn(), history: vi.fn(), archive: vi.fn(), nativeArchive: vi.fn(), resources: vi.fn() };
-    vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
-    const view = render(<TaskSessionHost ownerUserId={owner.ownerUserId} projectId={owner.projectId} taskId={owner.taskId} claimId={registration.claimId} mode="herdr" active current />, { taskCache: { viewerId: owner.ownerUserId } });
-    let resume = () => {};
-    try {
-      await waitFor(() => expect(api.channel).toHaveBeenCalledOnce());
-      act(() => receive(state));
-      const client = terminalCapture.client;
-      if (client === null) throw new Error('Terminal client was not constructed');
-      const frame = screen.getByRole('region', { name: /terminal/i });
-      expect(frame).toHaveTextContent('你好 <script> Ω 😀');
-      const draft = screen.getByRole('textbox', { name: 'Terminal input' });
-      fireEvent.change(draft, { target: { value: 'local draft' } });
-      act(() => {
-        resume = pauseAuthRequests();
-        expect(close).not.toHaveBeenCalled();
-        client.suspendForAccountRefresh();
-        expect(close).toHaveBeenCalledOnce();
-      });
-      expect(client.getSnapshot()).toMatchObject({ transport: 'paused', inputReady: false, session: state });
-      expect(screen.getByRole('region', { name: /terminal/i })).toBe(frame);
-      expect(frame).toHaveTextContent('你好 <script> Ω 😀');
-      expect(draft).toHaveValue('local draft');
-      expect(draft).not.toHaveAttribute('readonly');
-      fireEvent.change(draft, { target: { value: 'edited while paused' } });
-      expect(draft).toHaveValue('edited while paused');
-      resume();
-      vi.useFakeTimers();
-      await act(() => vi.advanceTimersByTimeAsync(30_000));
-      expect(api.channel).toHaveBeenCalledOnce(); expect(api.current).toHaveBeenCalledOnce(); expect(api.command).not.toHaveBeenCalled();
-      expect(screen.getByRole('region', { name: /terminal/i })).toBe(frame);
-      expect(draft).toHaveValue('edited while paused');
-    } finally { resume(); view.unmount(); }
-  });
   it('rechecks invalid recorded Markdown once without retrying its source or looping on the immutable manifest', async () => {
     const f = await imageRecording();
     const id = '00000007-1111-4111-8111-111111111111', text = 'Saved ![image](https://example.com/image.png)';
@@ -323,22 +276,55 @@ describe('unified Session and managed records', () => {
     expect(screen.getByText('Native timeline')).toBe(timeline);
     expect(api.history).not.toHaveBeenCalled(); expect(api.archive).not.toHaveBeenCalled();
   });
-  it('resolves a completed Herdr claim through current without opening a live channel or controls', async () => {
+  it.each([false, true])('finds a Herdr claim on a later history page without live requests (completed: %s)', async completed => {
     const api = fixture();
-    api.current.mockResolvedValue({ status: 'registered', ...record });
-    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
+    const other = { ...record, claimId: taskId, sessionId: '00000005-1111-4111-8111-111111111111' };
+    const wrongMode = { ...other, claimId, agentControlMode: 'web', contentKind: 'native_timeline' };
+    api.history.mockResolvedValueOnce({ items: [other, wrongMode], nextCursor: 'next' } as never).mockResolvedValueOnce({ items: [record], nextCursor: null });
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed={completed} />);
     expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
-    expect(api.archive).toHaveBeenCalledWith(expect.objectContaining({ sessionId: record.sessionId, claimId }), expect.any(AbortSignal));
+    expect(api.history).toHaveBeenNthCalledWith(1, null, expect.any(AbortSignal));
+    expect(api.history).toHaveBeenNthCalledWith(2, 'next', expect.any(AbortSignal));
+    expect(api.archive).toHaveBeenCalledWith(record, expect.any(AbortSignal));
+    expect(screen.queryByText('Native timeline')).toBeNull();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByRole('button', { name: /take control|paste|resume automatic/i })).toBeNull();
-    expect(api.history).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
+    expect(api.current).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
   });
-  it('refuses a current response from a different claim rather than substituting history', async () => {
+  it('does not substitute a different claim when the target is absent from history', async () => {
     const api = fixture();
-    api.current.mockResolvedValue({ status: 'registered', ...record, claimId: taskId });
+    api.history.mockResolvedValue({ items: [{ ...record, claimId: taskId }], nextCursor: null } as never);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
+    expect(await screen.findByText('No recording is available for this execution.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    expect(api.archive).not.toHaveBeenCalled(); expect(api.current).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();
+  });
+  it('reports a repeated history cursor and permits an explicit retry', async () => {
+    const api = fixture();
+    api.history.mockResolvedValueOnce({ items: [], nextCursor: 'same' } as never).mockResolvedValueOnce({ items: [], nextCursor: 'same' } as never).mockResolvedValueOnce({ items: [record], nextCursor: null });
     render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
     expect(await screen.findByRole('alert')).toBeVisible();
-    expect(api.archive).not.toHaveBeenCalled(); expect(api.history).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();
+    expect(api.archive).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
+    expect(api.archive).toHaveBeenCalledWith(record, expect.any(AbortSignal));
+  });
+  it.each(['timer', 'refresh'] as const)('rediscovers a recovered legacy generation on %s', async trigger => {
+    const api = fixture();
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current />);
+    expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
+    expect(api.archive).toHaveBeenCalledWith(record, expect.any(AbortSignal));
+    const recovered = { ...record, executionGeneration: '2' };
+    api.history.mockResolvedValue({ items: [recovered], nextCursor: null } as never);
+    if (trigger === 'refresh') fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    else {
+      const polls = timer.mock.calls.filter(([, milliseconds]) => milliseconds === 3000).map(([callback]) => callback);
+      expect(polls.length).toBeGreaterThan(0);
+      await act(async () => { for (const poll of polls) if (typeof poll === 'function') poll(); });
+    }
+    await waitFor(() => expect(api.archive).toHaveBeenCalledWith(recovered, expect.any(AbortSignal)));
+    expect(api.current).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
   });
   it('resolves completed Web through its own current protocol and reads only its archive', async () => {
     const api = fixture();
@@ -423,6 +409,33 @@ describe('unified Session and managed records', () => {
     expect(await screen.findByText('Private saved result.')).toBeVisible();
     expect(nativeArchive).toHaveBeenLastCalledWith(item, expect.any(AbortSignal));
   });
+  it.each([['web', 403], ['web', 404], ['herdr', 403], ['herdr', 404]] as const)('retains the loaded %s archive on a different principal %i refresh', async (mode, status) => {
+    let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+    const authority = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+    const nativeModule = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
+    const terminalModule = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+    vi.mocked(createSessionApi).mockReturnValue(nativeModule.createSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch));
+    const real = terminalModule.createTerminalSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch);
+    const image = mode === 'web' ? await imageRecording() : null;
+    const api = image?.api ?? fixture();
+    const item = image?.item ?? record;
+    if (image === null) {
+      const archive = JSON.parse(readFileSync('../daynight/test/session/fixtures/v2/valid-archive.json', 'utf8'));
+      api.archive.mockResolvedValueOnce({ status: { payload: { state: 'ready' } }, archive } as never);
+    }
+    const view = render(<FixedSessionRecording api={api as never} item={item} active projectId={projectId} />, { taskCache: { scope: authority } });
+    try {
+      const preserved = mode === 'web' ? await screen.findByText('Saved image record.') : await screen.findByRole('region', { name: 'Session recording' });
+      const savedImage = image === null ? null : await screen.findByRole('img', { name: image.resource.name });
+      if (image === null) api.archive.mockImplementationOnce(((value: typeof record, signal: AbortSignal) => real.archive(value, signal)) as never);
+      else image.api.nativeArchive.mockImplementationOnce(((value: SessionRecordingReference, signal: AbortSignal) => real.nativeArchive(value, signal)) as never);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } })));
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
+      expect(authority.signal.aborted).toBe(false); expect(preserved).toBeVisible(); expect(screen.queryByRole('alert')).toBeNull();
+      if (image !== null) { expect(image.reader.close).toHaveBeenCalledOnce(); expect(screen.getByRole('img', { name: image.resource.name })).toBe(savedImage); }
+    } finally { view.unmount(); resume(); authority.dispose(); }
+  });
   it.each([1, 3] as const)('shows schema %s saved images inside the record and retains them during an admission check', async schemaVersion => {
     const f = await imageRecording(schemaVersion), scopes = vi.spyOn(pageImageStore, 'createScope');
     const content = (current: boolean) => <FixedSessionRecording api={f.api as never} item={f.item} active current={current} projectId={projectId} />;
@@ -485,13 +498,23 @@ describe('unified Session and managed records', () => {
     expect(f.reader.close).toHaveBeenCalledOnce();
     expect(f.api.command).not.toHaveBeenCalled();
   });
-  it.each(['not_registered', 'not_applicable'] as const)('keeps completed %s recoverable without consulting old history', async status => {
-    const api = fixture();
-    api.current.mockResolvedValue({ status, claimId });
-    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
-    expect(await screen.findByText(status === 'not_registered' ? 'This execution has not registered a Session yet.' : 'No recording is available for this execution.')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
-    expect(api.history).not.toHaveBeenCalled(); expect(api.archive).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();
+  it('keeps the archive and resource reader when an image response proves another principal', async () => {
+    let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+    const authority = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+    const actual = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
+    const native = actual.createSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch);
+    const f = await imageRecording(), scopes = vi.spyOn(pageImageStore, 'createScope');
+    let close: ReturnType<typeof vi.spyOn> | null = null;
+    f.api.resources.mockImplementation(((fence: Parameters<typeof native.resources>[0], isCurrent: () => boolean) => {
+      const reader = native.resources(fence, isCurrent); close = vi.spyOn(reader, 'close'); return reader;
+    }) as never);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 403, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } })));
+    const view = render(<FixedSessionRecording api={f.api as never} item={f.item} active projectId={projectId} />, { taskCache: { scope: authority } });
+    try {
+      await screen.findByText('Saved image record.'); await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
+      expect(authority.signal.aborted).toBe(false); expect(screen.getByText('Saved image record.')).toBeVisible();
+      expect(scopes.mock.results[0]!.value.valid).toBe(true); expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alert')).toBeNull();
+    } finally { view.unmount(); resume(); authority.dispose(); }
   });
   it('managed attachment entries only open read-only records and do not expose mutation actions', async () => {
     const api = fixture(); render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
@@ -514,7 +537,7 @@ describe('unified Session and managed records', () => {
   it('shares the attachment sidebar and reader while preserving ordinary file drafts', async () => {
     const api = fixture();
     const stamp = '2026-11-03T10:00:00Z';
-    const attachments = { list: vi.fn(async () => ({ items: [{ path: 'report.txt', contentType: 'text/plain', sizeBytes: 12, createdAt: stamp, updatedAt: stamp }], nextCursor: null })), readText: vi.fn(async () => 'Original attachment'), checkPreview: vi.fn(), put: vi.fn(), remove: vi.fn() };
+    const attachments = { list: vi.fn(async () => ({ items: [{ path: 'report.txt', contentType: 'text/plain', sizeBytes: 12, createdAt: stamp, updatedAt: stamp }], nextCursor: null })), readText: vi.fn(async () => 'Original attachment'), put: vi.fn(), remove: vi.fn() };
     render(<TaskDetailReading projectId={projectId} taskId={taskId} api={attachments} description="[Read report](report.txt)" overview={node => node}
       sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} />);
     fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));

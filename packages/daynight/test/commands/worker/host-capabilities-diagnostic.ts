@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { AssistantHostIssue } from "../../../src/commands/worker/bots/host-capabilities.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, spawnHerdrProcess, type HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, spawnOwnedProcess, type OwnedSpawn } from "../../../src/commands/worker/owned-command.js";
 
 const flags = new Set(["--version", "--no-auto-update", "--headless", "--help", "app-server", "--stdio", "--print", "--input-format", "stream-json", "--output-format", "--permission-prompt-tool", "stdio", "--include-partial-messages"]);
 const label = (value: unknown): string | undefined => typeof value === "string" && /^[A-Za-z0-9_.-]{1,96}$/.test(value) ? value : undefined;
@@ -37,13 +37,13 @@ type Probe = { executable: string; args: string[]; events: Event[] };
 
 /** Records this test's fixed metadata probes; these events do not identify a directory lock owner. */
 export const createHostProbeDiagnostic = (
-  spawn: HerdrSpawn = spawnHerdrProcess,
+  spawn: OwnedSpawn = spawnOwnedProcess,
   now: () => number = () => performance.now(),
 ) => {
   const started = now(), probes: Probe[] = [];
   let truncated = false;
   const elapsedMs = (): number => Math.round((now() - started) * 1000) / 1000;
-  const start: HerdrSpawn = (file, args, options) => {
+  const start: OwnedSpawn = (file, args, options) => {
     if (probes.length >= 6) { truncated = true; return spawn(file, args, options); }
     const probe: Probe = { executable: label(path.win32.basename(path.basename(file))) ?? "unrecorded", args: args.slice(0, 16).map(arg => flags.has(arg) ? arg : "unrecorded"), events: [] };
     if (args.length > 16) truncated = true;
@@ -64,8 +64,8 @@ export const createHostProbeDiagnostic = (
     issues: issues.slice(0, 3).map(issue => {
       const error = inspectHostError(issue.error);
       return { provider: issue.provider, reason: issue.reason,
-        cleanupFailure: error.complete ? hasHerdrCommandCleanupFailure(issue.error) : null,
-        cleanupUnconfirmed: error.complete ? hasUnconfirmedHerdrCommandCleanup(issue.error) : null,
+        cleanupFailure: error.complete ? hasOwnedCommandCleanupFailure(issue.error) : null,
+        cleanupUnconfirmed: error.complete ? hasUnconfirmedOwnedCommandCleanup(issue.error) : null,
         cleanupClassificationIncomplete: !error.complete, error: error.detail };
     }),
   });

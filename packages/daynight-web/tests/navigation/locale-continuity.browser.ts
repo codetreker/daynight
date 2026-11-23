@@ -19,6 +19,7 @@ async function install(page: Page) {
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
@@ -185,18 +186,20 @@ test('graph fullscreen, task fullscreen, menus and confirmations yield Escape on
 test('short mobile drawer and account menu retain focus and the graph fullscreen fits resized viewports', async ({ page }) => {
   await install(page); await page.goto(`/projects/${projectId}`);
   await expect(page.getByRole('heading', { name: graph.project.name, exact: true })).toBeVisible();
-  await expect(page.locator('.stats .stat')).toHaveCount(6);
+  await expect(page.locator('.stats .stat')).toHaveCount(7);
   const sidebar = page.locator('.sidebar'), workspace = page.locator('.workspace');
   for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
-    await page.setViewportSize(viewport); await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
-    const opener = page.getByRole('button', { name: 'Expand sidebar', exact: true });
+    await page.setViewportSize(viewport); await expect(sidebar).toBeHidden();
+    const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
     const background = await workspace.boundingBox(), overflow = await page.locator('body').evaluate(element => element.style.overflow), scroll = await page.evaluate(() => scrollY);
     await opener.click(); const drawer = page.getByRole('dialog', { name: 'Workspace navigation', exact: true });
     await expect(drawer).toHaveAttribute('aria-modal', 'true'); await expect.poll(async () => (await drawer.boundingBox())?.width).toBe(220);
     await expect(workspace).toHaveAttribute('inert', ''); await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     expect(await workspace.boundingBox()).toEqual(background);
-    const toggle = drawer.locator('button[aria-expanded="true"]'); await toggle.focus(); await page.keyboard.press('Tab');
-    await expect(drawer.locator('a').first()).toBeFocused(); await page.keyboard.press('Shift+Tab'); await expect(toggle).toBeFocused();
+    const close = drawer.getByRole('button', { name: 'Close navigation', exact: true });
+    await close.focus(); await page.keyboard.press('Shift+Tab');
+    await expect(drawer.getByRole('link', { name: 'Test Sessions', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(close).toBeFocused();
     await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0); await expect(opener).toBeFocused();
     await expect(workspace).not.toHaveAttribute('inert', ''); expect(await page.locator('body').evaluate(element => element.style.overflow)).toBe(overflow); expect(await page.evaluate(() => scrollY)).toBe(scroll);
     await opener.click(); await page.locator('.sidebar-backdrop').click({ position: { x: viewport.width - 12, y: 20 } }); await expect(opener).toBeFocused();

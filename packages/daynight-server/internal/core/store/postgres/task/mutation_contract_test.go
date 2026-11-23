@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -41,7 +42,7 @@ func cancelledMaterialWrite(t *testing.T, database *postgres.Store, current mode
 func TestTaskMutationStore(t *testing.T) {
 	suite := newTaskStoreSuite(t)
 	suite.run(t, "CancelledTaskStoragePreservesMaterialsAndTerminalProjections", testCancelledTaskStoragePreservesMaterialsAndTerminalProjections)
-	suite.run(t, "CancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker", testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker)
+	suite.run(t, "CancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties", testCancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties)
 	suite.run(t, "TaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts", testTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts)
 	suite.run(t, "TaskCompletionCommitsAtMaximumRevision", testTaskCompletionCommitsAtMaximumRevision)
 	suite.run(t, "TaskDeleteAndDependentLookupFailuresPreserveCauses", testTaskDeleteAndDependentLookupFailuresPreserveCauses)
@@ -72,21 +73,12 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		values.AllowAgents, values.AssignedTo, values.RequiredPlatform = true, &owner.UserID, &platform
 		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr/1","title":"Retained result"}]`)}
 	})
-	testutil.SeedStep(t, database.Pool, target.ID, "abcdef01", 0)
 	message := writerAppendThread(t, database, target.ID, owner.UserID, "Retained discussion")
 	attachment, created, err := database.PutAttachment(ctx, model.Attachment{
 		ProjectID: project.ID, TaskID: target.ID, Path: "retained.txt", ContentType: "text/plain", SizeBytes: 25,
 	})
 	if err != nil || !created {
 		t.Fatalf("attachment material fixture: %#v created=%t %v", attachment, created, err)
-	}
-	var beforeSteps []model.TaskStep
-	if err := writerRead(t, database, func(scope store.TaskReader) error {
-		var err error
-		beforeSteps, err = scope.TaskSteps(ctx, target.ID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 	var beforeEpoch string
 	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&beforeEpoch); err != nil {
@@ -109,10 +101,6 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		presence, err := scope.TaskPresence(ctx, project.ID, target.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("cancelled Task became absent or deleted: %#v %v", presence, err)
-		}
-		steps, err := scope.TaskSteps(ctx, target.ID)
-		if err != nil || !reflect.DeepEqual(steps, beforeSteps) {
-			t.Fatalf("cancellation changed or hid Steps: %#v %v", steps, err)
 		}
 		storedMessage, err := scope.ThreadMessage(ctx, target.ID, message.ID)
 		if err != nil || !reflect.DeepEqual(storedMessage, message) {
@@ -193,8 +181,8 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 	}
 }
 
-func testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *testing.T, database *postgres.Store) {
-	owner, _, project := testutil.ProjectMembershipFixture(t, database)
+func testCancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties(t *testing.T, database *postgres.Store) {
+	_, _, project := testutil.ProjectMembershipFixture(t, database)
 	target := writerTask(t, database, project.ID, 11, model.TaskTodo)
 	started := cancelledMaterialWrite(t, database, target, func(values *store.TaskWrite) { values.Status = model.TaskInProgress })
 	completed := cancelledMaterialWrite(t, database, started, func(values *store.TaskWrite) { values.Status = model.TaskDone })
@@ -211,15 +199,14 @@ func testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *test
 		t.Fatalf("done cancellation changed an already-started follower: %#v %#v", follower, got)
 	}
 	released := writerTask(t, database, project.ID, 13, model.TaskTodo)
-	history := testutil.WorkerClaim(13, owner.UserID, testutil.QueryID(50), model.WorkerReleased)
 	released = cancelledMaterialWrite(t, database, released, func(values *store.TaskWrite) {
 		values.AllowAgents = true
-		values.Properties = testutil.TaskProperties(t, history)
+		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr","title":"retained"}]`)}
 	})
 	beforeProperties := released.Properties
 	retained := cancelledMaterialWrite(t, database, released, func(values *store.TaskWrite) { values.Status = model.TaskCancelled })
-	if !reflect.DeepEqual(retained.Properties, beforeProperties) || !reflect.DeepEqual(testutil.Worker(t, retained.Properties), history) {
-		t.Fatalf("cancellation rewrote released Worker history: %#v", retained)
+	if !reflect.DeepEqual(retained.Properties, beforeProperties) {
+		t.Fatalf("cancellation rewrote ordinary properties: %#v", retained)
 	}
 }
 
@@ -602,16 +589,17 @@ func writerWorkerPage(t *testing.T, database *postgres.Store, projectID string, 
 
 func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
-	owner, other, workerID := testutil.QueryID(2), testutil.QueryID(3), testutil.QueryID(5)
+	owner, other, workerID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", testutil.QueryID(3), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	writerTask(t, database, project.ID, 10, model.TaskTodo)
 	writerWorkerTask(t, database, project.ID, 11, testutil.WorkerClaim(11, owner, testutil.QueryID(6), model.WorkerActive), true, nil)
 	writerWorkerTask(t, database, project.ID, 12, testutil.WorkerClaim(12, other, workerID, model.WorkerActive), true, nil)
-	writerWorkerTask(t, database, project.ID, 13, testutil.WorkerClaim(13, owner, workerID, model.WorkerReleased), true, nil)
+	writerWorkerTask(t, database, project.ID, 13, nil, true, nil)
 	writerWorkerTask(t, database, project.ID, 14, testutil.WorkerClaim(14, owner, workerID, model.WorkerCompleted), true, nil)
 	first := writerWorkerTask(t, database, project.ID, 15, testutil.WorkerClaim(15, owner, workerID, model.WorkerActive), true, nil)
 	writerWorkerTask(t, database, project.ID, 16, testutil.WorkerClaim(16, other, workerID, model.WorkerActive), true, nil)
 	second := writerWorkerTask(t, database, project.ID, 17, testutil.WorkerClaim(17, owner, workerID, model.WorkerActive), true, nil)
 	manual := writerWorkerTask(t, database, project.ID, 18, testutil.WorkerClaim(18, owner, workerID, model.WorkerActive), false, testutil.Pointer(model.PlatformWindows))
+	testutil.MustExec(t, database.Pool, `UPDATE tasks SET created_at='2026-01-01T00:00:00Z' WHERE id = ANY($1::uuid[])`, []string{first.ID, second.ID, manual.ID})
 	testutil.MustExec(t, database.Pool, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, first.ID, testutil.QueryID(14))
 	want := []string{first.ID, second.ID, manual.ID}
 	query := store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: owner, WorkerID: workerID}}
@@ -632,6 +620,12 @@ func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	}
 	if !slices.Equal(ids, want) {
 		t.Fatalf("ownership filter did not precede the page limit: %v want %v", ids, want)
+	}
+	for _, worker := range []store.WorkerQuery{{UserID: strings.ToUpper(owner), WorkerID: workerID}, {UserID: owner, WorkerID: strings.ToUpper(workerID)}} {
+		page := writerWorkerPage(t, database, project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &worker})
+		if len(page.Items) != 0 || page.HasMore {
+			t.Fatalf("case-insensitive worker match: %+v", page)
+		}
 	}
 	for _, test := range []struct {
 		query store.TaskQuery
@@ -677,10 +671,14 @@ func testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 		}
 	}
 	check(claim)
-	for _, state := range []model.WorkerState{model.WorkerReleased, model.WorkerActive, model.WorkerCompleted, model.WorkerActive} {
-		claim = testutil.WorkerClaim(20+int(target.Version), owner, workerID, state)
+	for _, state := range []model.WorkerState{"", model.WorkerActive, model.WorkerCompleted, model.WorkerActive} {
 		values := testutil.TaskWrite(target)
-		values.Properties = testutil.TaskProperties(t, claim)
+		if state == "" {
+			values.Properties = model.TaskProperties{}
+		} else {
+			claim = testutil.WorkerClaim(20+int(target.Version), owner, workerID, state)
+			values.Properties = testutil.TaskProperties(t, claim)
+		}
 		if state == model.WorkerCompleted {
 			values.Status = model.TaskDone
 		} else {
@@ -713,11 +711,12 @@ func testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 func testTaskWorkerInventoryPreservesJSONDecodeFailure(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	target := writerTask(t, database, project.ID, 2, model.TaskTodo)
-	testutil.PutTaskProperty(t, database.Pool, target.ID, "worker", []byte(`{"workerId":123}`))
+	owner, workerID := testutil.QueryID(3), testutil.QueryID(4)
+	testutil.PutTaskProperty(t, database.Pool, target.ID, "worker", []byte(fmt.Sprintf(`{"state":"active","userId":%q,"workerId":%q,"phase":123}`, owner, workerID)))
 	var page store.TaskPage
 	err := writerRead(t, database, func(scope store.TaskReader) error {
 		var err error
-		page, err = scope.Tasks(context.Background(), project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: testutil.QueryID(3), WorkerID: testutil.QueryID(4)}})
+		page, err = scope.Tasks(context.Background(), project.ID, store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: owner, WorkerID: workerID}})
 		return err
 	})
 	var failure *store.Error
@@ -843,15 +842,15 @@ func testTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T, data
 func testTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
-	ids := make([]string, 16)
+	ids := make([]string, 30)
 	for i := range ids {
 		ids[i] = writerTask(t, database, project.ID, i+11, model.TaskTodo).ID
 	}
 	var target model.Task
-	values := store.TaskWrite{Title: "Target", Status: model.TaskTodo, DependsOn: slices.Clone(ids[:15]), ExternalDependsOn: slices.Clone(ids[:2])}
+	values := store.TaskWrite{Title: "Target", Status: model.TaskTodo, DependsOn: slices.Clone(ids[:30]), ExternalDependsOn: slices.Clone(ids[:2])}
 	if err := writerWrite(t, database, project.ID, func(scope store.TaskWriteDAO) error {
 		var err error
-		target, err = scope.CreateTask(ctx, testutil.QueryID(30), values)
+		target, err = scope.CreateTask(ctx, testutil.QueryID(100), values)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -860,8 +859,8 @@ func testTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T, da
 	if err := database.Pool.QueryRow(ctx, `SELECT ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 ORDER BY depends_on_task_id),ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 AND external ORDER BY depends_on_task_id)`, target.ID).Scan(&stored, &external); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(stored, ids[:15]) || !slices.Equal(external, ids[:2]) || target.Ready {
-		t.Fatalf("fifteen stored edges lost order/classification: %#v %#v %#v", stored, external, target)
+	if !slices.Equal(stored, ids[:30]) || !slices.Equal(external, ids[:2]) || target.Ready {
+		t.Fatalf("thirty stored edges lost order/classification: %#v %#v %#v", stored, external, target)
 	}
 }
 

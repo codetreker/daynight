@@ -17,6 +17,9 @@ export const GoalMutationError = ({ error, action, outcomeUnknown = false }: { r
     not_found: zh ? 'Goal 或项目不可用。' : 'The Goal or project is unavailable.',
     task_deleted: zh ? 'Goal 已删除。' : 'The Goal was deleted.',
     invalid_transition: zh ? '当前状态不允许此操作。' : 'This action is unavailable in the current state.',
+    goal_dependency_unsatisfied: zh ? '无法完成。仍有前置 Goal 未完成。' : 'Cannot complete this Goal. A prerequisite Goal is unfinished.',
+    goal_dependency_done_successor: zh ? '已有已完成的下游 Goal 依赖此成果，无法更改状态。' : 'A completed dependent Goal requires this result. Its status cannot change.',
+    goal_dependency_referenced: zh ? '仍有下游 Goal 引用此成果，无法删除。' : 'Dependent Goals still reference this result. It cannot be deleted.',
     write_outcome_unknown: zh ? '操作结果尚未确认，请核对当前状态。' : 'The operation outcome is unknown. Check the current state.',
   };
   const text = outcomeUnknown ? (zh ? '操作结果尚未确认，请核对当前状态。' : 'The operation outcome is unknown. Check the current state.')

@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotSessionCache } from '../src/features/bots/session-cache';
-import { BotSessionHost } from '../src/features/bots/BotSessionHost';
+import { BotSessionHost, useBotSessionCache } from '../src/features/bots/BotSessionHost';
+import { pauseAuthRequests } from '../src/api/client';
 import { BotsPage } from '../src/features/bots/BotsPage';
 import * as sessions from '../src/api/sessions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
@@ -13,13 +14,53 @@ import type { SessionArchive } from '../../daynight/src/session/archive';
 const render = createLocaleRender('en');
 const caches: BotSessionCache[] = [];
 afterEach(() => { caches.splice(0).forEach(cache => cache.close()); });
+it('stops every Bot Session synchronously and stops panes created during account pause', async () => {
+  const first = botFixture(botBinding(1)), second = botFixture(botBinding(2));
+  const scope = createTaskCacheScope({ userId: botOwner, onIdentityMismatch: vi.fn() });
+  const api = vi.spyOn(sessions, 'createBotSessionApi').mockImplementation(binding => binding.botId === first.binding.botId ? first.api : second.api);
+  let cache!: BotSessionCache;
+  const Owner = () => { cache = useBotSessionCache(); return null; };
+  const view = render(<TaskCacheProvider scope={scope}><Owner /></TaskCacheProvider>);
+  let resume = () => {};
+  try {
+    act(() => cache.select(first.binding, first.binding));
+    await waitFor(() => expect(first.api.channel).toHaveBeenCalledOnce());
+    const pane = cache.snapshot()[0]!;
+    act(() => pane.client.setDraft('local draft'));
+    act(() => { resume = pauseAuthRequests(); expect(first.channel.close).toHaveBeenCalledOnce(); });
+    expect(pane.client.snapshot().draft.text).toBe('local draft');
+    act(() => cache.select(second.binding));
+    const later = cache.snapshot().find(value => value.binding.botId === second.binding.botId)!;
+    expect(later.client.snapshot().authPaused).toBe(true);
+    expect(second.api.current).not.toHaveBeenCalled();
+  } finally { resume(); view.unmount(); scope.dispose(); api.mockRestore(); }
+});
 function fixture() {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api }); caches.push(cache);
   const view = render(<BotSessionHost cache={cache} displayBinding={botBinding(1)} actionBinding={botBinding(1)} />);
-  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()); };
+  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => { const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toBeEnabled(); expect(input).not.toHaveAttribute('readonly'); }); };
   return { bots, cache, view, select };
 }
+it('gives Bot provider settings named-container touch presentation through the shared composer', async () => {
+  const bot = botFixture();
+  bot.change({ ...bot.snapshot(), controls: { revision: '1', settings: [
+    { id: 'model', category: 'model', label: 'Model selection', description: null, value: 'native-a', mutable: true, scope: 'session',
+      options: [{ value: 'native-a', label: 'Native A' }, { value: 'native-b', label: 'Native B' }] },
+  ], commands: [], settingsError: null, commandsError: null } });
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => bot.api });
+  caches.push(cache);
+  render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+  const select = screen.getByRole('combobox', { name: 'Model' });
+  expect(select.parentElement).toHaveAttribute('data-touch-mode', 'container');
+  expect(select.parentElement).toHaveAttribute('data-density', 'form');
+  expect(select.parentElement).toHaveAttribute('data-layout', 'fill');
+  expect(select).toHaveValue('native-a');
+  expect(bot.api.command).not.toHaveBeenCalled();
+});
+
 it('retains the actual shared Session DOM and independent drafts across A/B/A and releases a fourth pane', async () => {
   const f = fixture(); await f.select(1);
   const shell = f.view.container.firstElementChild, a = screen.getByRole('textbox', { name: 'Message' });
@@ -76,6 +117,7 @@ it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and clie
   const cache=new BotSessionCache({userId:botOwner,isCurrent:()=>true,isPaused:()=>paused,storage:null,onPrincipalMismatch:vi.fn(),createApi:()=>bot.api}); caches.push(cache);
   const view=render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   const pane=cache.snapshot()[0]!, client=pane.client, timeline=view.container.querySelector('.session-timeline');
   fireEvent.change(input,{target:{value:'kept draft'}}); const firstGeneration=client.snapshot().connectionGeneration;
   const now=Date.now(); let clock: ReturnType<typeof vi.spyOn>|undefined;
@@ -390,6 +432,7 @@ it('preserves a nonfollowing reading anchor through details, fullscreen and resp
   try {
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await waitFor(() => expect(input).toBeEnabled());
+    await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
     await screen.findByText('Retained reading message');
     fireEvent.change(input, { target: { value: 'Draft while reading earlier content' } });
     const cache = selections.mock.contexts.find(candidate => candidate instanceof BotSessionCache)!;

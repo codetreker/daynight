@@ -86,7 +86,7 @@ func TestProjectResolveProtocol(t *testing.T) {
 					tool = candidate
 				}
 			}
-			if tool == nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+			if tool == nil || tool.OutputSchema != nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
 				t.Fatalf("annotations: %+v", tool)
 			}
 			inputBytes, err := json.Marshal(tool.InputSchema)
@@ -97,7 +97,7 @@ func TestProjectResolveProtocol(t *testing.T) {
 			if err := json.Unmarshal(inputBytes, &schema); err != nil {
 				t.Fatal(err)
 			}
-			if schema["additionalProperties"] != false || !requiredExactly(schema["required"], "repoUrl") || len(object(t, schema["properties"])) != 1 {
+			if schema["additionalProperties"] != false || !reflect.DeepEqual(schema["required"], []any{"repoUrl"}) || len(object(t, schema["properties"])) != 1 {
 				t.Fatalf("input schema: %s", inputBytes)
 			}
 			call := func(args any) *sdk.CallToolResult {
@@ -122,17 +122,6 @@ func TestProjectResolveProtocol(t *testing.T) {
 			}
 			if result.IsError || seen != address || !reflect.DeepEqual(data, want) || object(t, doc["meta"])["outcome"] != nil {
 				t.Fatalf("success: %+v", doc)
-			}
-			outputSchema, err := resolveSchema(tool.OutputSchema)
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoded, err := json.Marshal(doc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := validateJSON(outputSchema, encoded); err != nil {
-				t.Fatalf("success does not satisfy advertised output schema: %v", err)
 			}
 			result = call(map[string]any{"repoUrl": address + "é"})
 			if !result.IsError || object(t, structured(t, result)["error"])["code"] != "invalid_input" {
@@ -298,16 +287,20 @@ func TestMCPOutputConstructionFailureLog(t *testing.T) {
 type mcpOrgProjectReader struct {
 	t *testing.T
 	store.ProjectReader
-	ScopedProjectsCall func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error)
-	ProjectCall        func(ctx context.Context, id string) (model.Project, error)
-	ProjectAccessCall  func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error)
-	TransferTeamCall   func(ctx context.Context, id string) (store.TransferTeam, error)
-	TransferRoleCall   func(ctx context.Context, user, project, team string) (*model.ProjectRole, error)
-	InvitationCall     func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
+	ScopedProjectsCall                   func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error)
+	FindVisibleRepositoryForCreationCall func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error)
+	ProjectCall                          func(ctx context.Context, id string) (model.Project, error)
+	ProjectAccessCall                    func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error)
+	TransferTeamCall                     func(ctx context.Context, id string) (store.TransferTeam, error)
+	TransferRoleCall                     func(ctx context.Context, user, project, team string) (*model.ProjectRole, error)
+	InvitationCall                       func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
 }
 
 func (d mcpOrgProjectReader) ScopedProjects(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
 	return requireCallback(d.t, "MCP DAO ScopedProjectsCall", d.ScopedProjectsCall)(ctx, actor, scope, page)
+}
+func (d mcpOrgProjectReader) FindVisibleRepositoryForCreation(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
+	return requireCallback(d.t, "MCP DAO FindVisibleRepositoryForCreationCall", d.FindVisibleRepositoryForCreationCall)(ctx, actor, teamID, identity)
 }
 func (d mcpOrgProjectReader) Project(ctx context.Context, id string) (model.Project, error) {
 	return requireCallback(d.t, "MCP DAO ProjectCall", d.ProjectCall)(ctx, id)
@@ -369,7 +362,7 @@ type mcpOrgTeamWriter struct {
 	LockInvitationCall    func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
 	InvitationTeamCall    func(ctx context.Context) (model.TeamRef, error)
 	InvitationMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
-	AddInvitedMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
+	AddMemberCall         func(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error)
 	ConsumeInvitationCall func(ctx context.Context, id, user string, now time.Time) error
 	RevokeInvitationCall  func(ctx context.Context, id string, now time.Time) (bool, error)
 }
@@ -389,8 +382,8 @@ func (d mcpOrgTeamWriter) InvitationTeam(ctx context.Context) (model.TeamRef, er
 func (d mcpOrgTeamWriter) InvitationMember(ctx context.Context, user string) (model.TeamMember, error) {
 	return requireCallback(d.t, "MCP DAO InvitationMemberCall", d.InvitationMemberCall)(ctx, user)
 }
-func (d mcpOrgTeamWriter) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
-	return requireCallback(d.t, "MCP DAO AddInvitedMemberCall", d.AddInvitedMemberCall)(ctx, user)
+func (d mcpOrgTeamWriter) AddMember(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
+	return requireCallback(d.t, "MCP DAO AddMemberCall", d.AddMemberCall)(ctx, user, role)
 }
 func (d mcpOrgTeamWriter) ConsumeInvitation(ctx context.Context, id, user string, now time.Time) error {
 	return requireCallback(d.t, "MCP DAO ConsumeInvitationCall", d.ConsumeInvitationCall)(ctx, id, user, now)
@@ -460,8 +453,16 @@ func (s mcpOrgTeamScope) EligibilityDAO() store.WebhookEligibilityDAO {
 type mcpOrgProjectScope struct {
 	t *testing.T
 	store.ProjectWriteScope
-	project     store.ProjectWriteDAO
-	eligibility store.WebhookEligibilityDAO
+	project          store.ProjectWriteDAO
+	eligibility      store.WebhookEligibilityDAO
+	goalDependencies store.ProjectGoalDependencyDAO
+}
+
+func (s mcpOrgProjectScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	if s.goalDependencies == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.ProjectGoalDependencyDAO")
+	}
+	return s.goalDependencies
 }
 
 func (s mcpOrgProjectScope) ProjectDAO() store.ProjectWriteDAO {
@@ -516,12 +517,12 @@ func mcpOrgWriteTeam(t *testing.T, tx *httpTestStore, id string, dao store.TeamW
 	}
 	tx.WriteTeamCall = mcpOrgWrite[store.TeamWriteScope](t, id, mcpOrgTeamScope{t: t, team: dao, eligibility: eligibility})
 }
-func mcpOrgWriteProject(t *testing.T, tx *httpTestStore, id string, dao store.ProjectWriteDAO, eligibility store.WebhookEligibilityDAO) {
+func mcpOrgWriteProject(t *testing.T, tx *httpTestStore, id string, dao store.ProjectWriteDAO, eligibility store.WebhookEligibilityDAO, goalDependencies store.ProjectGoalDependencyDAO) {
 	if d, ok := dao.(mcpOrgProjectWriter); ok {
 		d.t = t
 		dao = d
 	}
-	tx.WriteProjectCall = mcpOrgWrite[store.ProjectWriteScope](t, id, mcpOrgProjectScope{t: t, project: dao, eligibility: eligibility})
+	tx.WriteProjectCall = mcpOrgWrite[store.ProjectWriteScope](t, id, mcpOrgProjectScope{t: t, project: dao, eligibility: eligibility, goalDependencies: goalDependencies})
 }
 
 type httpTestStore struct {
@@ -550,6 +551,12 @@ func (s *httpTestStore) WriteIdentity(ctx context.Context, fn func(store.Identit
 func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
 	if s.WriteProjectCall == nil {
 		unexpectedHTTPCall(s.t, "WriteProject")
+	}
+	return s.WriteProjectCall(ctx, id, fn)
+}
+func (s *httpTestStore) WriteProjectTransfer(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if s.WriteProjectCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectTransfer")
 	}
 	return s.WriteProjectCall(ctx, id, fn)
 }
@@ -628,7 +635,7 @@ func (d projectHTTPCreateDAO) LockCreationTeam(ctx context.Context, id string) (
 func (d projectHTTPCreateDAO) CreationTeamMember(ctx context.Context, id string) (bool, error) {
 	return requireCallback(d.t, "ProjectCreation.CreationTeamMember", d.MemberCall)(ctx, id)
 }
-func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, team string) (model.Project, model.ProjectAccess, error) {
+func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, identity, team string) (model.Project, model.ProjectAccess, error) {
 	return requireCallback(d.t, "ProjectCreation.InsertProject", d.InsertCall)(ctx, id, name, repo, team)
 }
 func projectHTTPCheck(t *testing.T, got, want any) {
@@ -662,4 +669,25 @@ func requireCallback[T any](t *testing.T, name string, callback T) T {
 		unexpectedHTTPCall(t, name)
 	}
 	return callback
+}
+
+func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	if identity == "" {
+		panic("missing creation identity")
+	}
+	return false, nil
+}
+
+func (d mcpOrgProjectWriter) RepositoryIdentity(ctx context.Context) (*string, error) {
+	if d.MoveOwnershipCall == nil {
+		d.t.Fatal("unexpected repository identity read")
+	}
+	identity := "scp://host:repo"
+	return &identity, nil
+}
+func (d mcpOrgProjectWriter) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	if d.MoveOwnershipCall == nil || identity != "scp://host:repo" {
+		d.t.Fatal("unexpected repository occupancy read")
+	}
+	return false, nil
 }

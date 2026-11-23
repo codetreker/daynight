@@ -41,7 +41,22 @@ unqualified selection.
 
 The [inspection design](../../../../docs/design/daynight-task-inspection.md#独立完整任务详情)
 owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
-owns indexed and native-history boundaries. This extends the shared entry model
+owns indexed and native-history boundaries. The [Goal description tab decision](2026-11-12-goal-description-tab.md) extends
+the eligible tab selections without changing the root and nested history boundary.
+The [Goal detail information decision](2026-11-12-goal-detail-information.md)
+removes the detail Task panel while keeping controlled graph and child selections;
+cross-Goal Details selects the target Goal and child together, while external
+Expand selects that Goal and complete chain graph for a multi-member target.
+Unparented chain expansion uses a transient project graph witness; it does not
+change the root and nested detail sharing contract.
+The account-level in-progress overview uses the same detail and Goal child
+owners with an identity-bound reading entry for the selected project, resource
+and group pages. Its direct reader does not depend on membership in the filtered
+list. A selected project alone owns the full graph and assignee receipt; changing
+projects retires that host. Resource retirement also fences earlier overview
+entries, and draft admission follows the root and actual child selection.
+
+This extends the shared entry model
 in the [account reading-history decision](2026-11-11-account-reading-history.md)
 and partially supersedes the dialog-local history boundary in the archived
 [standalone detail decision](../../archived/architecture/2026-10-24-standalone-task-detail.md).
@@ -61,6 +76,6 @@ cannot restore the browser's sequence of nested reading choices.
 Back and Forward restore reading choices without replaying business operations.
 The state contains no business response, draft, permissions or DOM; existing
 resource, identity and access lifecycles continue to own admission and cleanup.
-Closing does not skip older entries. Nested selections are not a cross-refresh
-or shareable-link contract, and native unnumbered entries retain the existing
-navigation limits.
+Closing does not skip older entries. Standalone nested selections are not a
+cross-refresh or shareable-link contract; overview selections restore the current
+entry on reload. Native unnumbered entries retain the existing navigation limits.

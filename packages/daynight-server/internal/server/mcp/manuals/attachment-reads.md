@@ -1,158 +1,49 @@
-# Read attachments and preserve references
+# Attachment reads and references
 
-Read this to list, inspect or consume attachment bytes. A Task read includes
-neither its attachment inventory nor those bytes. Address files by authenticated
-service, Project, Task and exact relative path. [Materials](daynight://manuals/materials.md)
-owns content sufficiency; [Attachment writes](daynight://manuals/attachment-writes.md)
-owns publication and removal.
+Read [Overview](daynight://manuals/overview.md) first. Use this topic to list attachment metadata, resolve paths and consume complete bytes. A Task read includes neither attachment inventory nor bytes. [Attachment writes](daynight://manuals/attachment-writes.md) owns publication/removal; [Materials](daynight://manuals/materials.md) owns input sufficiency.
 
-## Exact paths and link bases
+## Paths and link bases
 
-Paths preserve case and Unicode and use `/` separators. They are logical file
-paths relative to one Task's attachment root, not filesystem paths, encoded URLs
-or recursive upload directories. Send the unencoded logical path in JSON.
-Leading/trailing slashes, empty or `.`/`..` segments, backslashes, controls and
-absolute drive prefixes are invalid. `docs/design.md` is valid;
-`docs//design.md`, `docs/../design.md` and `C:/design.md` are invalid.
+Identify each file by authenticated service, Project, Task and complete case-sensitive relative path. Preserve Unicode and `/` separators. Send the unencoded logical path, not a filesystem path or URL. Leading/trailing slashes, empty or `.`/`..` segments, backslashes, controls and absolute drive prefixes are invalid. For example, `docs/design.md` is valid; `docs//design.md`, `docs/../design.md` and `C:/design.md` are invalid.
 
-New/replacement paths are limited to 1,024 Unicode code points including
-separators; MIME types to 2,048 bytes. Path-based MCP reads additionally have a
-4,096-byte UTF-8 limit. A file cannot also be another file's parent directory.
-`path_conflict` is a real storage naming conflict; do not silently alter case or
-required references to bypass it.
+New/replacement paths allow at most 1,024 Unicode code points including separators; MIME types allow 2,048 bytes. Path-based MCP reads also impose a 4,096-byte UTF-8 limit. A file cannot be another file's parent directory. Treat `path_conflict` as a storage naming conflict; do not silently change case or required references.
 
-| Link location | Resolution base | Example |
-| --- | --- | --- |
-| Task description | Owning Task's attachment root | `[Design](docs/design.md)` resolves to `docs/design.md`. |
-| Attachment `docs/design.md` | That file's directory, `docs/` | `[Constraints](constraints.md)` resolves to `docs/constraints.md`. |
-
-Images use the same bases. Preserve supporting resource layout. For another
-Task's material, identify its Project, Task, full path, applicable section and
-purpose; a local relative path cannot cross Task roots. Keep shared inputs at
-their owner and use verified application references when available, without
-invented cross-Task URL schemes. Inventory entries and timestamps do not prove
-that required content has been read.
-
-## List, inspect or read complete small content
-
-`task_attachment_list` returns one metadata page with `items` and `nextCursor`.
-Entries contain `path`, `contentType`, decimal-string `sizeBytes`, `createdAt` and
-`updatedAt`. Continue the returned cursor unchanged under the same Project and
-Task until null or absent. Pages are not a cross-page content snapshot. Exact
-limits are in the schema; the default is 50, range 1–100.
-
-`task_attachment_read` defaults to `action: "inspect"`: it checks access and
-returns `attachment`, `sizeBytes`, `contentRef` and `contentIncluded: false`, not
-bytes. Select `action: "inline"` to consume the whole small file. `maxBytes` is a
-byte ceiling, default 8,192, range 1–524,288. Oversize content fails with
-`content_too_large`, never an undisclosed prefix.
-
-The example is a `tools/call` params object with fictional IDs. Actual business
-data appears under `structuredContent.data`.
-
-```json
-{
-  "name": "task_attachment_read",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "inline",
-    "path": "notes/greeting.txt",
-    "format": "text",
-    "maxBytes": 8192
-  }
-}
-```
-
-| `format` | Interpretation |
+| Reference location | Resolution base |
 | --- | --- |
-| `auto` (default) | Valid text returns UTF-8; binary content returns `contentIncluded: false`, `requiresExplicitBinaryRead: true` and a reference. No omitted binary range has been consumed. |
-| `text` | Requires valid UTF-8 and usable character boundaries; invalid content fails with `invalid_encoding`. |
-| `base64` | Explicit exact-byte representation in `contentBase64`, with `encoding: "base64"`; decode before consuming or hashing. |
+| Task description | Owning Task's attachment root: `[Design](docs/design.md)` selects `docs/design.md` |
+| Attachment `docs/design.md` | Its directory: `[Constraints](constraints.md)` selects `docs/constraints.md` |
 
-For `Hello\n`, inline text includes `sizeBytes: "6"`, `encoding: "utf8"`,
-`text: "Hello\n"`, `eof: true` and SHA-256
-`66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18`.
-The hash covers returned decoded bytes. Neither MIME type nor omitted binary
-content establishes readability.
+Images follow the same rules; preserve supporting layout. Relative references cannot cross Task roots. For another Task's material, identify Project, Task, complete path, applicable section and purpose; use verified application references when available, without inventing cross-Task URL schemes. Keep shared inputs at their owner. Inventory/timestamps do not establish content consumption.
 
-## Read larger content from one immutable snapshot
+## Inventory, inspection and inline content
 
-Use `open` → bounded `chunk` reads → `close`. A snapshot is a private immutable
-copy: its ranges remain consistent after the original path is replaced.
-Inspection followed by independent inline reading has no such guarantee.
+`task_attachment_list` defaults to 50 entries, range 1–100. Results contain `items` and `nextCursor`; entries have `path`, `contentType`, decimal-string `sizeBytes`, `createdAt` and `updatedAt`. Continue the unchanged cursor under the same Project/Task until null or absent. Pages do not form a cross-page content snapshot.
 
-Generate and retain a canonical UUID `transferId` before opening:
+`task_attachment_read` defaults to `action: "inspect"`, returning `attachment`, `sizeBytes`, `contentRef` and `contentIncluded: false` after access checks. It returns no bytes. `action: "inline"` reads the whole small file; `maxBytes` is a byte ceiling, default 8,192, range 1–524,288. Oversize content fails with `content_too_large`; no undisclosed prefix counts as success.
 
-```json
-{
-  "name": "task_attachment_read",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "open",
-    "path": "notes/greeting.txt",
-    "transferId": "33333333-3333-4333-8333-333333333333"
-  }
-}
-```
+| Format | Meaning |
+| --- | --- |
+| `auto` (default) | Valid text returns UTF-8; binary returns `contentIncluded: false`, `requiresExplicitBinaryRead: true` and a reference, without consuming omitted bytes |
+| `text` | Requires valid UTF-8 and usable character boundaries; otherwise `invalid_encoding` |
+| `base64` | Exact bytes in `contentBase64`, `encoding: "base64"`; decode before consuming or hashing |
 
-A readable open result contains transfer ID, `direction: "download"`,
-`state: "readable"`, attachment metadata, decimal-string `totalBytes`, complete
-snapshot `sha256`, `nextOffset: "0"`, `maxChunkBytes` and `expiresAt`; it does not
-return the body. `preparing` is not readable completion. Observe the same binding
-or report the unresolved state. Repeating open under the same binding observes
-that transfer; it does not take a new snapshot of a replaced source.
+Inline results identify size, encoding, content, EOF and SHA-256 of returned decoded bytes. For example, `Hello\n` has `sizeBytes: "6"`, `encoding: "utf8"`, `text: "Hello\n"` and `eof: true`. MIME type alone does not establish readability.
 
-The binding fixes owner account, original authority (PAT or OAuth grant), Project,
-Task, direction and path. A different credential for the same account is not an
-interchangeable authority. Each request checks current credential validity and
-Project/Task access. Deleted parent resources, revoked access and established
-cleanup barriers cannot be bypassed with a retained transfer.
+## Immutable download lifecycle
 
-```json
-{
-  "name": "task_attachment_read",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "action": "chunk",
-    "transferId": "33333333-3333-4333-8333-333333333333",
-    "offset": "0",
-    "maxBytes": 65536,
-    "format": "base64"
-  }
-}
-```
+Use `open` → bounded `chunk` reads → `close`. The private immutable snapshot stays consistent after the original path is replaced; independent inspect/inline requests have no such guarantee.
 
-Offsets and byte counts are canonical nonnegative decimal strings, retaining
-exact integer digits: `"0"` is valid; `"00"`, `"+1"`, fractions and exponent
-notation are not. `maxBytes` remains a JSON integer with inline's default/range.
-Chunks return `offset`, `readBytes`, `nextOffset`, `totalBytes`, `eof`, encoding,
-returned content, chunk `sha256` and expiry facts.
+Generate and retain a canonical UUID `transferId` before open. Its binding fixes owner account, original authority (PAT or OAuth grant), Project, Task, direction and path. Another credential for the same account is not interchangeable. Every request rechecks current credential validity and access; retained transfers bypass neither parent deletion, revoked access nor cleanup barriers.
 
-1. Start at `"0"`, decode each returned range and retain bytes in order.
-2. Continue at returned `nextOffset`, not requested `maxBytes`: text ranges can
-   shorten to avoid splitting a UTF-8 character.
-3. Stop at `eof: true`; require final offset and assembled size equal `totalBytes`.
-4. Hash all assembled bytes against open's whole-snapshot hash. A chunk hash
-   verifies only that returned chunk.
+Readable open returns transfer ID, `direction: "download"`, `state: "readable"`, attachment metadata, decimal-string `totalBytes`, whole-snapshot `sha256`, `nextOffset: "0"`, `maxChunkBytes` and `expiresAt`, without body bytes. `preparing` is not readable completion: observe the same binding or retain the unresolved result. Repeating open with that binding observes the same transfer, not a fresh snapshot.
 
-If auto omits binary bytes, explicitly request base64 at the same offset. Text
-from a mid-character offset or too-small ceiling can fail; use base64 for exact
-arbitrary ranges. Beyond-total offsets are invalid; total-equal can return an
-empty final range with `eof: true`.
+Request chunks with the same Project/Task/transfer ID, an exact `offset` and optional byte ceiling/format. Offsets and byte counts use canonical nonnegative decimal strings: `"0"` is valid; leading zeros, signs, fractions and exponent notation are invalid. `maxBytes` remains a JSON integer with inline's default/range. Results contain `offset`, `readBytes`, `nextOffset`, `totalBytes`, `eof`, encoding/content, chunk `sha256` and expiry facts.
 
-## Close and retain completed content
+1. Start at `"0"`; decode and retain returned ranges in order.
+2. Continue at returned `nextOffset`, not requested ceiling: text ranges may shorten at UTF-8 boundaries.
+3. Stop at `eof: true`; require final offset and assembled byte length equal `totalBytes`.
+4. Verify the assembled SHA-256 against open's whole-snapshot hash; a chunk hash verifies only that chunk.
 
-Call `task_attachment_read` with `action: "close"`, the same Project/Task and
-transfer ID. `cleanupState: "pending"` means cleanup is outstanding;
-`"complete"` accompanies a closed transfer. Cleanup and expiry reclaim the
-snapshot, not the original attachment.
+If auto omits binary, request base64 at the same offset. A mid-character text offset or too-small ceiling can fail; base64 supports exact arbitrary ranges. Beyond-total offsets are invalid; total-equal can return an empty EOF range.
 
-Transfers have an initial one-hour idle lifetime and 24-hour hard lifetime.
-Activity can renew idle expiry only up to the hard deadline; use returned
-`expiresAt`. Expired or cleanup-bound transfers cannot be revived. Temporary
-capacity or current permissions can prevent opening or continuation. Release
-after use and retain complete verified bytes before declaring the input consumed;
-an earlier snapshot only proves that snapshot's content, not a later live read.
+Close with the same Project/Task/transfer ID. `cleanupState: "pending"` leaves cleanup outstanding; `"complete"` accompanies a closed transfer. Cleanup/expiry reclaim the snapshot, not the attachment. Transfers have a one-hour initial idle and 24-hour hard lifetime; activity can renew idle expiry only up to the hard deadline. Follow returned `expiresAt`; expired/cleanup-bound transfers cannot revive. Capacity or current permissions may prevent opening/continuation. Release after use and retain complete verified bytes before declaring consumption. An old snapshot proves only its own bytes.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
@@ -62,6 +63,88 @@ func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {
 	req.Body = io.NopCloser(archiveBrokenReader{})
 	if _, err := archiveBody(httptest.NewRecorder(), req); err == nil {
 		t.Fatal("read error ignored")
+	}
+}
+
+type revokedArchivePermit struct {
+	closed int
+}
+
+func (p *revokedArchivePermit) Close() error {
+	p.closed++
+	return filestorage.ErrGateLost
+}
+
+func (*revokedArchivePermit) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	cancel(filestorage.ErrGateLost)
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+func TestArchiveResultFailsIfGateWasLostWhileRequestIsLive(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPut, "/archive", nil)
+	permit := &revokedArchivePermit{}
+	w := httptest.NewRecorder()
+	routes := NewRoutes(nil, nil, testLogger())
+	routes.archiveResult(w, r, map[string]string{"archive": "ready"}, permit)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"cleanup_unknown"`) || permit.closed != 1 {
+		t.Fatalf("revoked archive return = %d %q, close calls %d", w.Code, w.Body.String(), permit.closed)
+	}
+}
+
+type responseArchivePermit struct {
+	ctx    context.Context
+	closed int
+}
+
+func (p *responseArchivePermit) GateContext(context.Context) (context.Context, context.CancelFunc) {
+	return p.ctx, func() {}
+}
+
+func (p *responseArchivePermit) Close() error {
+	p.closed++
+	return context.Cause(p.ctx)
+}
+
+type archiveLeaseWriter struct {
+	*httptest.ResponseRecorder
+	loseLease   context.CancelCauseFunc
+	deadline    chan struct{}
+	interrupted bool
+}
+
+func (w *archiveLeaseWriter) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && !deadline.After(time.Now()) {
+		close(w.deadline)
+	}
+	return nil
+}
+
+func (w *archiveLeaseWriter) Write([]byte) (int, error) {
+	w.loseLease(filestorage.ErrGateLost)
+	select {
+	case <-w.deadline:
+		w.interrupted = true
+	case <-time.After(2 * time.Second):
+	}
+	return 0, context.DeadlineExceeded
+}
+
+func TestArchiveDownloadInterruptsWriteWhenWrappedLeaseIsLost(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/archive/content", nil)
+	ctx, lose := context.WithCancelCause(r.Context())
+	defer lose(context.Canceled)
+	permit := &responseArchivePermit{ctx: ctx}
+	content := archiveContent{Data: []byte(`{"archive":{}}`), Closer: permit}
+	w := &archiveLeaseWriter{ResponseRecorder: httptest.NewRecorder(), loseLease: lose, deadline: make(chan struct{})}
+	routes := NewRoutes(nil, nil, testLogger())
+	abort := func() (value any) {
+		defer func() { value = recover() }()
+		routes.sendArchive(w, r, content.Data, time.Minute, content)
+		return nil
+	}()
+	if abort != http.ErrAbortHandler || !w.interrupted || permit.closed != 1 || r.Context().Err() != nil {
+		t.Fatalf("archive after lease loss: abort=%v interrupted=%t closes=%d requestErr=%v", abort, w.interrupted, permit.closed, r.Context().Err())
 	}
 }
 

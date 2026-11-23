@@ -9,7 +9,7 @@ const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-22T12:34:56.123456Z";
-const task = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
+const task = { type: 'task', parentId: null, assignedTo: null, tags: [], requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo",
   version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -122,8 +122,8 @@ describe.each(['proposed', 'todo', 'in_progress', 'done'] as const)('%s status t
       const fetcher = fetchResponse(response(saved)); const abortSignal = signal();
       await expect(setTaskStatus(projectId.toUpperCase(), taskId.toUpperCase(), target, version, abortSignal, admission)).resolves.toEqual(saved);
       expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/status`, {
-        method: 'PUT', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2' }, body: `{"version":${version},"status":"${target}"}`,
+        method: 'PUT', redirect: 'error', signal: expect.any(AbortSignal), cache: 'no-store', credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2', 'Daynight-Task-Relations': 'task-parent-v1' }, body: `{"version":${version},"status":"${target}"}`,
       });
     }
   });

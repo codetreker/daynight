@@ -59,7 +59,8 @@ func taskControlAuthorizationFixture(state sp.State) (*Execution, *record, task)
 	}
 	worker := &model.WorkerClaim{ClaimID: fence.ClaimID, AgentControlMode: model.AgentControlModeWeb, State: model.WorkerActive}
 	execution := &Execution{Engine: &Engine{now: func() time.Time { return now }}}
-	return execution, &record{Snapshot: snapshot, LastSeen: &now}, task{Worker: worker, Status: "in_progress"}
+	expiry := now.Add(time.Minute)
+	return execution, &record{Snapshot: snapshot, LastSeen: &now, ConnectionExpiry: &expiry}, task{Worker: worker, Status: "in_progress"}
 }
 
 func requireControlConflict(t *testing.T, err error) {
@@ -72,6 +73,7 @@ func requireControlConflict(t *testing.T, err error) {
 
 func TestControlsPermissionProjectionDoesNotMutateCatalog(t *testing.T) {
 	now := time.Now()
+	expiry := now.Add(time.Minute)
 	native := "native"
 	original := sp.Snapshot{Controls: nativeControls(), Lifecycle: "active", ConnectionState: "connected", Synchronized: true, Identity: sp.Identity{NativeSessionID: &native}, InitialInputState: "confirmed", Activity: "idle"}
 	for _, test := range []struct {
@@ -90,7 +92,7 @@ func TestControlsPermissionProjectionDoesNotMutateCatalog(t *testing.T) {
 		{"unknown", true, func(r *record) { r.Snapshot.Activity = "unknown" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			r := record{Snapshot: original, LastSeen: &now}
+			r := record{Snapshot: original, LastSeen: &now, ConnectionExpiry: &expiry}
 			test.mutate(&r)
 			view := permissions(&r, test.write, now)
 			if view.Controls.Settings[0].Mutable || view.Controls.Commands[0].Available {
@@ -104,7 +106,7 @@ func TestControlsPermissionProjectionDoesNotMutateCatalog(t *testing.T) {
 			}
 		})
 	}
-	view := permissions(&record{Snapshot: original, LastSeen: &now}, true, now)
+	view := permissions(&record{Snapshot: original, LastSeen: &now, ConnectionExpiry: &expiry}, true, now)
 	if !view.Controls.Settings[0].Mutable || !view.Controls.Commands[0].Available {
 		t.Fatal("owner controls disabled")
 	}
@@ -466,7 +468,7 @@ func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string, over
 	f.SelectReceiptWrite(t)
 	selectContentHandle(t, f)
 	stored, err := fixtureOperation(f, context.Background(), v, id)
-	if err != nil || stored.State != "rejected" {
-		t.Fatal("rejection not durable", stored, err)
+	if err != nil || stored.State != "rejected" || stored.Error == nil || stored.Error.Code != "permission_or_state_changed" {
+		t.Fatal("rejection proof not durable", stored, err)
 	}
 }

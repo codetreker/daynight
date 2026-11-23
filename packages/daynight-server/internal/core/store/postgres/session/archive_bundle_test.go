@@ -38,7 +38,6 @@ func TestSessionArchiveStore(t *testing.T) {
 	suite.run(t, "ArchiveConnectionEpochAndConsumedGrantCommitTogether", testArchiveConnectionEpochAndConsumedGrantCommitTogether)
 	suite.run(t, "ArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow", testArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow)
 	suite.run(t, "ArchiveUnavailableInlinePresenceIsMetadataOnly", testArchiveUnavailableInlinePresenceIsMetadataOnly)
-	suite.run(t, "SessionDAOTerminalLedgerEvidenceAndHistory", testSessionDAOTerminalLedgerEvidenceAndHistory)
 }
 
 func testActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts(t *testing.T, db *postgres.Store) {

@@ -84,8 +84,12 @@ func startupTaskModel(value api.Task) model.Task {
 		v := model.TaskPlatform(*value.RequiredPlatform)
 		platform = &v
 	}
+	var tags []model.TagReference
+	for _, tag := range value.Tags {
+		tags = append(tags, model.TagReference{ID: tag.ID, Name: tag.Name})
+	}
 	return model.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description,
-		Properties: taskproperty.Clone(value.Properties), Status: model.TaskStatus(value.Status), Version: value.Version,
+		Properties: taskproperty.Clone(value.Properties), Tags: tags, Status: model.TaskStatus(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt,
 		CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn,
 		BlockedBy: value.BlockedBy, RequiredPlatform: platform, AssignedTo: value.AssignedTo, AllowAgents: value.AllowAgents, Ready: value.Ready}
@@ -103,7 +107,11 @@ func startupReportValue(t *testing.T, body map[string]any) sp.StartupReport {
 func startupReportedTask(t *testing.T, current model.Task, report sp.StartupReport) model.Task {
 	t.Helper()
 	result := current
-	result.Properties = taskproperty.Clone(current.Properties)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(current.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result.Properties["sessionStartup"] = rawProperty(t, report)
 	result.Version, result.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	return result
@@ -139,6 +147,14 @@ func startupExpectWrite(t *testing.T, f *startupTaskFixture, current model.Task,
 			panic("invalid startup DAO call")
 		}
 	}
+	if observed != nil {
+		scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+			return taskHTTPClaimAdmission{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+				check(ctx, "admission", user == principal.UserID && worker != "" && counts["task"] == 1)
+				return nil, nil
+			}}
+		}
+	}
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
@@ -165,6 +181,11 @@ func startupExpectWrite(t *testing.T, f *startupTaskFixture, current model.Task,
 	}
 	if returned != nil {
 		wanted := taskcore.CurrentWrite(*returned)
+		var err error
+		wanted.Properties, err = taskproperty.NormalizeStored(wanted.Properties)
+		if err != nil {
+			t.Fatal(err)
+		}
 		tasks.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 			check(ctx, "update", id == current.ID && reflect.DeepEqual(values, wanted) && counts["task"] == 1)
 			return *returned, nil
@@ -237,7 +258,7 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 		v := string(*value.RequiredPlatform)
 		platform = &v
 	}
-	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
+	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Tags: tagHTTPReferences(value.Tags), Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
 
@@ -380,7 +401,10 @@ func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 	f := startupTaskSetup(t)
 	sendStartup(t, f, startupBody(f))
 	current := startupTaskModel(f.task)
-	released := startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "released" })
+	released := current
+	released.Properties = taskproperty.Clone(current.Properties)
+	delete(released.Properties, "worker")
+	delete(released.Properties, "sessionStartup")
 	released.Status, released.Version, released.UpdatedAt = model.TaskTodo, current.Version+1, current.UpdatedAt.Add(time.Second)
 	released.Ready = true
 	startupExpectWrite(t, f, current, nil, false, &released, nil, f.handler.principal, nil)

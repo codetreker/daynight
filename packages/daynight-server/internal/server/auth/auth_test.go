@@ -50,6 +50,7 @@ type identityHTTPScope struct {
 
 var _ store.IdentityScope = (*identityHTTPScope)(nil)
 var _ store.IdentityDAO = (*identityHTTPScope)(nil)
+var _ store.BrowserSessionDAO = (*identityHTTPScope)(nil)
 var _ store.PersonalTeamDAO = (*identityHTTPScope)(nil)
 
 func (s *identityHTTPScope) invoke(name string, args ...any) any {
@@ -67,7 +68,22 @@ func (s *identityHTTPScope) invoke(name string, args ...any) any {
 	return call.check(args)
 }
 
-func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
+func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	return nil
+}
+func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO { return s }
+func (s *identityHTTPScope) SessionTime(ctx context.Context) (time.Time, error) {
+	return s.invoke("SessionTime", ctx).(time.Time), nil
+}
+func (s *identityHTTPScope) LockBrowserSession(ctx context.Context, hash []byte, preview bool) (model.Session, time.Time, error) {
+	result := s.invoke("LockBrowserSession", ctx, hash, preview).(identityHTTPBrowserSession)
+	return identityHTTPCloneSession(result.session), result.now, nil
+}
+func (s *identityHTTPScope) TouchBrowserSession(ctx context.Context, id string, used, expires time.Time) error {
+	s.invoke("TouchBrowserSession", ctx, id, used, expires)
+	return nil
+}
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) AdmitLogin(ctx context.Context, hash []byte, global, browser int) (time.Time, string, error) {
 	return s.invoke("AdmitLogin", ctx, hash, global, browser).(time.Time), "", nil
@@ -260,12 +276,11 @@ func identityHTTPUser(persona string) model.User {
 		user.Email = text("shared@example.test")
 		user.EmailVerified = boolean(true)
 		user.AvatarURL = text("https://images.example.test/alice.png")
-	case "alice-updated":
+	case "alice-updated", "alice-null":
 		user.Name = text("Alice Updated")
 		user.Email = text("refreshed@example.test")
 		user.EmailVerified = boolean(false)
 		user.AvatarURL = text("https://images.example.test/alice-updated.png")
-	case "alice-null":
 	case "bob":
 		user.ID = "bf84dd53-62bf-4b7e-8476-51c16bbabbd2"
 		user.PersonalTeam.ID = "b7fdd87c-b68e-4fe6-9fe4-29e93e3af813"
@@ -280,12 +295,16 @@ func identityHTTPUser(persona string) model.User {
 }
 
 func (p *identityHTTPPlan) complete(persona string) {
+	issuedAt := time.Date(2026, 11, 20, 10, 0, 0, 123000000, time.UTC)
 	user := identityHTTPUser(persona)
 	var teamID string
 	calls := []identityHTTPCall{{"UpsertUser", func(args []any) any {
 		draft := args[1].(model.User)
 		identityHTTPNow(p.t, args[2].(time.Time))
 		actual, want := profileprotocol.FromUser(draft), profileprotocol.FromUser(user)
+		if persona == "alice-null" {
+			want.Email, want.EmailVerified, want.Name, want.AvatarURL = nil, nil, nil, nil
+		}
 		actual.ID = ""
 		want.ID = ""
 		_, err := uuid.Parse(draft.ID)
@@ -308,6 +327,9 @@ func (p *identityHTTPPlan) complete(persona string) {
 		_, err := uuid.Parse(teamID)
 		identityHTTPCheck(p.t, err == nil && args[2].(string) == user.ID, "personal team write owner")
 		identityHTTPNow(p.t, args[3].(time.Time))
+		if persona == "alice" || persona == "bob" {
+			user.PersonalTeam.ID = teamID
+		}
 		return persona == "alice" || persona == "bob"
 	}}}
 	if persona == "alice" || persona == "bob" {
@@ -322,10 +344,18 @@ func (p *identityHTTPPlan) complete(persona string) {
 			return store.PersonalTeamFacts{ID: user.PersonalTeam.ID, MemberCount: 1, OwnerAdminCount: 1}
 		}})
 	}
+	calls = append(calls, identityHTTPCall{"IdentityUser", func(args []any) any {
+		identityHTTPCheck(p.t, args[1].(string) == user.ID, "login identity read actor")
+		return user
+	}})
+	calls = append(calls, identityHTTPCall{"SessionTime", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil, "session issuance context")
+		return issuedAt
+	}})
 	calls = append(calls, identityHTTPCall{"InsertSession", func(args []any) any {
 		session := args[1].(model.Session)
 		_, err := uuid.Parse(session.ID)
-		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.ExpiresAt.Sub(session.CreatedAt) == identitycore.SessionLifetime, "session write arguments")
+		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.CreatedAt == issuedAt && session.ExpiresAt == issuedAt.Add(identitycore.SessionLifetime) && session.LastUsedAt != nil && *session.LastUsedAt == issuedAt, "session write arguments")
 		identityHTTPNow(p.t, session.CreatedAt)
 		p.mu.Lock()
 		p.sessionDraft = identityHTTPCloneSession(session)
@@ -348,6 +378,27 @@ func (p *identityHTTPPlan) authenticate(user model.User, kind model.CredentialKi
 		}
 		return identityHTTPPrincipal(user, kind)
 	}})
+}
+
+type identityHTTPBrowserSession struct {
+	session model.Session
+	now     time.Time
+}
+
+func (p *identityHTTPPlan) activity(user model.User, token string) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 456000000, time.UTC)
+	principal := identityHTTPPrincipal(user, model.SessionCredential)
+	p.expect(identityHTTPCall{"LockBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && bytes.Equal(args[1].([]byte), secret.Hash(token)) && !args[2].(bool), "browser activity lock credential")
+		return identityHTTPBrowserSession{session: model.Session{ID: principal.CredentialID, UserID: user.ID, TokenHash: secret.Hash(token), CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}, now: now}
+	}}, identityHTTPCall{"TouchBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && args[1].(string) == principal.CredentialID && args[2].(time.Time) == now && args[3].(time.Time) == now.Add(identitycore.SessionLifetime), "browser activity write uses locked database time")
+		return nil
+	}})
+}
+
+func (integration *identityIntegration) activity(t *testing.T, browser *http.Client, user model.User) {
+	integration.plan.activity(user, identityCookie(t, browser, integration.server.URL, integration.sessionCookie))
 }
 
 func (p *identityHTTPPlan) user(user model.User) {
@@ -563,27 +614,37 @@ func (logs *identityIntegrationLogs) Write(value []byte) (int, error) {
 	return logs.buffer.Write(value)
 }
 
-func (logs *identityIntegrationLogs) count(value string) int {
-	logs.mu.Lock()
-	defer logs.mu.Unlock()
-	return strings.Count(logs.buffer.String(), value)
-}
-
 func (logs *identityIntegrationLogs) contains(value string) bool {
 	logs.mu.Lock()
 	defer logs.mu.Unlock()
 	return strings.Contains(logs.buffer.String(), value)
 }
 
+type identityResultTransport struct {
+	origin   string
+	base     http.RoundTripper
+	requests atomic.Int64
+}
+
+func (transport *identityResultTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	// Subprocess logs can arrive after the callback response. Observe SDK requests
+	// synchronously while preserving the real gateway transport and response.
+	if request.URL.Scheme+"://"+request.URL.Host == transport.origin && request.Method == http.MethodPost && request.URL.Path == "/auth/result" {
+		transport.requests.Add(1)
+	}
+	return transport.base.RoundTrip(request)
+}
+
 type identityIntegration struct {
-	plan          *identityHTTPPlan
-	server        *httptest.Server
-	gateway       string
-	client        *uniauth.Client
-	logs          *identityIntegrationLogs
-	sessionCookie string
-	callbackPath  string
-	secrets       []string
+	plan            *identityHTTPPlan
+	server          *httptest.Server
+	gateway         string
+	client          *uniauth.Client
+	resultTransport *identityResultTransport
+	logs            *identityIntegrationLogs
+	sessionCookie   string
+	callbackPath    string
+	secrets         []string
 }
 
 func newIdentityIntegration(t *testing.T) *identityIntegration {
@@ -602,14 +663,15 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	ready := testauth.StartGatewayWithOutput(t, callback, logs)
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(base.CloseIdleConnections)
-	client, err := uniauth.New(uniauth.Config{BaseURL: ready.Origin, AppID: ready.AppID, AppSecret: ready.AppSecret, AllowLoopbackHTTP: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: base}})
+	resultTransport := &identityResultTransport{origin: ready.Origin, base: base}
+	client, err := uniauth.New(uniauth.Config{BaseURL: ready.Origin, AppID: ready.AppID, AppSecret: ready.AppSecret, AllowLoopbackHTTP: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: resultTransport}})
 	if err != nil {
 		t.Fatal("construct real UniAuth SDK client failed")
 	}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	server.Config.Handler = identityHTTPHandler(t, plan, origin, callback, client, logger)
 	server.Start()
-	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
+	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, resultTransport: resultTransport, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
 }
 
 func identityHTTPHandler(t *testing.T, plan *identityHTTPPlan, origin, callback string, client *uniauth.Client, logger *slog.Logger) http.Handler {
@@ -728,7 +790,7 @@ func (integration *identityIntegration) completeFor(t *testing.T, browser *http.
 	integration.plan.consume(callback.Query().Get("state"), identityCookie(t, browser, integration.server.URL, identityHTTPBinding(callback.Query().Get("state"))), true)
 	integration.plan.complete(persona)
 	response, _ := identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/projects?view=tasks" {
+	if response.Header.Get("Location") != "/auth/complete?"+(url.Values{"callbackPath": {integration.callbackPath}, "returnPath": {"/projects?view=tasks"}}).Encode() {
 		t.Fatal("successful login did not retain its main-site return path")
 	}
 	for _, cookie := range response.Cookies() {
@@ -766,9 +828,9 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	if updated.ID != alice.ID || updated.Name == nil || *updated.Name != "Alice Updated" || updated.Email == nil || *updated.Email != "refreshed@example.test" || updated.EmailVerified == nil || *updated.EmailVerified || updated.AvatarURL == nil || *updated.AvatarURL == *alice.AvatarURL {
 		t.Fatal("repeat login did not refresh the existing user's full profile")
 	}
-	cleared := integration.login(t, aliceBrowser, "alice-null")
-	if cleared.ID != alice.ID || cleared.Email != nil || cleared.EmailVerified != nil || cleared.Name != nil || cleared.AvatarURL != nil {
-		t.Fatal("nullable upstream profile must clear old values without changing local identity")
+	retained := integration.login(t, aliceBrowser, "alice-null")
+	if !reflect.DeepEqual(retained, updated) {
+		t.Fatal("nullable upstream profile must retain existing values and identity")
 	}
 	integration.me(t, bobBrowser, identityHTTPUser("bob"), nil)
 	_, data := identityRequest(t, bobBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusOK)
@@ -780,7 +842,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	sessionActor := identityHTTPPrincipal(aliceUser, model.SessionCredential)
 	integration.session(t, aliceBrowser, aliceUser)
 	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, nil, http.StatusForbidden)
-	integration.session(t, aliceBrowser, aliceUser)
+	integration.activity(t, aliceBrowser, aliceUser)
 	var draftedToken model.PersonalAccessToken
 	var draftMu sync.Mutex
 	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"CleanupCredentials", func(args []any) any { identityHTTPNow(t, args[1].(time.Time)); return nil }}, identityHTTPCall{"InsertPAT", func(args []any) any {
@@ -806,7 +868,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	patBrowser := identityBrowser(t)
 	integration.me(t, patBrowser, aliceUser, bearer)
 	_, data = identityRequest(t, patBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", bearer, http.StatusOK)
-	if !reflect.DeepEqual(identityDecode[api.User](t, data), cleared) {
+	if !reflect.DeepEqual(identityDecode[api.User](t, data), retained) {
 		t.Fatal("PAT did not authenticate its owning user")
 	}
 	integration.plan.authenticate(aliceUser, model.PATCredential, token.Token, true)
@@ -826,7 +888,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	if len(listed.Items) != 1 || listed.Items[0].ID != token.ID || bytes.Contains(data, []byte(token.Token)) {
 		t.Fatal("token list must expose only its owner's token metadata")
 	}
-	integration.session(t, aliceBrowser, aliceUser)
+	integration.activity(t, aliceBrowser, aliceUser)
 	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"DeletePAT", func(args []any) any {
 		identityHTTPCheck(t, args[1].(string) == aliceUser.ID && args[2].(string) == token.ID, "PAT delete actor and ID")
 		return nil
@@ -852,18 +914,18 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	browser, stranger := identityBrowser(t), identityBrowser(t)
 	callback := integration.providerCallback(t, browser, integration.start(t, browser), "alice")
-	before := integration.logs.count("type=fixture_result_request")
+	before := integration.resultTransport.requests.Load()
 	identityRequest(t, stranger, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
 	identityRequest(t, stranger, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
+	if integration.resultTransport.requests.Load() != before {
 		t.Fatal("an unbound callback retrieved the gateway result")
 	}
 	integration.complete(t, browser, callback)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
+	if integration.resultTransport.requests.Load() != before+1 {
 		t.Fatal("a bound login must retrieve its one-time gateway result exactly once")
 	}
 	identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
+	if integration.resultTransport.requests.Load() != before+1 {
 		t.Fatal("a repeated Daynight callback retrieved the result again")
 	}
 	_, err := integration.client.Retrieve(t.Context(), callback.Query().Get("code"))
@@ -881,7 +943,7 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings := deniedBrowser.Jar.Cookies(mainURL)
-	before = integration.logs.count("type=fixture_result_request")
+	before = integration.resultTransport.requests.Load()
 	deniedBinding := identityCookie(t, deniedBrowser, integration.server.URL, identityHTTPBinding(denied.Query().Get("state")))
 	integration.plan.consume(denied.Query().Get("state"), deniedBinding, true)
 	response, _ := identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusSeeOther)
@@ -892,7 +954,7 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	deniedBrowser.Jar.SetCookies(mainURL, bindings)
 	integration.plan.consume(denied.Query().Get("state"), deniedBinding, false)
 	identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
+	if integration.resultTransport.requests.Load() != before {
 		t.Fatal("provider denial or its replay retrieved an identity result")
 	}
 	for _, secret := range integration.secrets {
@@ -900,4 +962,17 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 			t.Fatal("authentication logs exposed a credential or OAuth handover value")
 		}
 	}
+}
+
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	return model.User{}, false, nil
+}
+func (d httpRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
+	return model.User{}, nil
 }

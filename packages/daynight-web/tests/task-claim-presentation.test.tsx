@@ -13,7 +13,7 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const timestamp = '2026-10-27T00:00:00Z';
 const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: id(3), workerId: id(4), machine: { id: id(5), name: 'macmini.local' }, platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp };
 const member = (userId = worker.userId, role: ProjectParticipant['effectiveRole'] = 'member'): ProjectParticipant => ({ inheritedFrom: null, userId, profile: { name: 'Jianjun', email: 'jianjun@example.com', avatarUrl: null }, effectiveRole: role, directGrant: { projectId: id(100), userId, role, version: 1n, createdAt: timestamp, updatedAt: timestamp } });
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, id: id(1), projectId: id(100), title: 'Claimed task', description: '', status: 'in_progress', version: 4n, allowAgents: true, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: timestamp, completedAt: null, cancelledAt: null, properties: { worker, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp };
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, id: id(1), projectId: id(100), title: 'Claimed task', description: '', status: 'in_progress', version: 4n, allowAgents: true, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: timestamp, completedAt: null, cancelledAt: null, properties: { worker, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
 const operation = { action: 'withdraw' as const, claimId: worker.claimId, version: detail.version };
 
@@ -23,7 +23,6 @@ describe('claim ownership presentation', () => {
     expect(mayWithdrawClaim(worker, id(10), "admin")).toBe(true);
     expect(mayWithdrawClaim(worker, id(10), "member")).toBe(false);
     expect(mayWithdrawClaim(worker, worker.userId, null)).toBe(false);
-    expect(mayWithdrawClaim({ ...worker, state: 'released' }, worker.userId, "member")).toBe(true);
     expect(mayWithdrawClaim({ ...worker, state: 'completed' }, worker.userId, "member")).toBe(false);
   });
 
@@ -43,11 +42,11 @@ describe('claim ownership presentation', () => {
     expect(screen.getByRole('button', { name: '强制撤回' })).toBeVisible();
   });
 
-  it.each([['copilot', 'Copilot'], ['claude', 'Claude Code']] as const)('represents released %s claims and former owners by their actual identity', (agent, label) => {
-    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'released', agent }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
-    expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(worker.userId);
+  it.each([['copilot', 'Copilot'], ['claude', 'Claude Code']] as const)('represents active %s claims and former owners by their actual identity', (agent, label) => {
+    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'active', agent }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
+    expect(screen.getByRole('region', { name: 'Claimed by' })).toHaveTextContent(worker.userId);
     expect(screen.getByText('Former project member')).toBeVisible();
-    expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(label);
+    expect(screen.getByRole('region', { name: 'Claimed by' })).toHaveTextContent(label);
     expect(screen.queryByRole('button', { name: 'Force withdraw' })).toBeNull();
   });
 

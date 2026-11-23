@@ -19,41 +19,82 @@ const resolveTeam = "22222222-2222-4222-8222-222222222222"
 
 var resolvePrincipal = model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "44444444-4444-4444-8444-444444444444"}
 
+var registrationPrincipal = model.Principal{Kind: model.SessionCredential, UserID: "55555555-5555-4555-8555-555555555555", CredentialID: "66666666-6666-4666-8666-666666666666"}
+
+const registrationTeam = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
 type repositoryCreationPlan struct {
 	*completionProjectReadPlan
 	store.ProjectCreationDAO
+	actor           model.Principal
+	input           core.CreateProject
+	teamID          string
+	identity        string
+	snapshotDone    bool
+	completionFact  store.Completion
+	completionErr   error
+	writeSteps      []string
 	writes, inserts int
 	created         model.Project
 }
 
+func (f *repositoryCreationPlan) ReadSnapshot(ctx context.Context, op func(store.SnapshotScope) error) error {
+	err := f.completionProjectReadPlan.ReadSnapshot(ctx, op)
+	f.snapshotDone = err == nil
+	return err
+}
+
 func (f *repositoryCreationPlan) WriteProjectCreation(ctx context.Context, user string, op func(store.ProjectCreationDAO) error) (store.Completion, error) {
 	f.writes++
-	if ctx != f.ctx || user != resolvePrincipal.UserID || f.snapshots != 1 || f.completion != nil {
-		f.t.Fatal("creation did not follow successful snapshot")
+	if f.writes != 1 || len(f.writeSteps) == 0 || ctx != f.ctx || user != f.actor.UserID || !f.snapshotDone || len(f.pending) != 0 {
+		f.t.Fatalf("unexpected creation after snapshot: writes=%d user=%s pending=%v completion=%v", f.writes, user, f.pending, f.completion)
 	}
 	if err := op(f); err != nil {
-		return store.Completion{}, err
+		f.t.Fatalf("creation callback failed: %v", err)
 	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
+	if len(f.writeSteps) != 0 {
+		f.t.Fatalf("creation callback omitted %v", f.writeSteps)
+	}
+	return f.completionFact, f.completionErr
 }
-func (f *repositoryCreationPlan) LockCreationTeam(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
-	if ctx != f.ctx || id != resolveTeam {
-		f.t.Fatal("unexpected creation Team")
+
+func (f *repositoryCreationPlan) expectCreationStep(ctx context.Context, step, teamID string) {
+	f.t.Helper()
+	if ctx != f.ctx || len(f.writeSteps) == 0 || f.writeSteps[0] != step || teamID != f.teamID {
+		f.t.Fatalf("unexpected creation step %s for Team %s, pending=%v", step, teamID, f.writeSteps)
 	}
+	f.writeSteps = f.writeSteps[1:]
+}
+
+func (f *repositoryCreationPlan) LockCreationTeam(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
+	f.expectCreationStep(ctx, "lock Team", id)
 	return store.ProjectCreationTeam{ID: id}, nil
 }
+
 func (f *repositoryCreationPlan) CreationTeamMember(ctx context.Context, id string) (bool, error) {
-	if ctx != f.ctx || id != resolveTeam {
-		f.t.Fatal("unexpected creation membership")
-	}
+	f.expectCreationStep(ctx, "read membership", id)
 	return true, nil
 }
-func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, team string) (model.Project, model.ProjectAccess, error) {
-	f.inserts++
-	if ctx != f.ctx || uuid.Validate(id) != nil || name != "Repository" || address != resolveAddress || team != resolveTeam {
-		f.t.Fatalf("unexpected creation: %s %s %s %s", id, name, address, team)
+
+func (f *repositoryCreationPlan) RepositoryOccupied(ctx context.Context, teamID, identity string) (bool, error) {
+	f.expectCreationStep(ctx, "check occupancy", teamID)
+	if identity != f.identity {
+		f.t.Fatalf("occupancy identity = %q, want %q", identity, f.identity)
 	}
-	f.created = model.Project{ID: id, Name: name, RepoURL: address}
+	return false, nil
+}
+
+func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, identity, teamID string) (model.Project, model.ProjectAccess, error) {
+	f.expectCreationStep(ctx, "insert Project", teamID)
+	f.inserts++
+	if uuid.Validate(id) != nil || name != f.input.Name || address != f.input.RepoURL || identity != f.identity {
+		f.t.Fatalf("unexpected insertion: id=%q name=%q address=%q identity=%q", id, name, address, identity)
+	}
+	f.created = model.Project{
+		ID: id, Name: name, RepoURL: address,
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		Ownership: model.ProjectOwnership{TeamID: teamID, Version: 1},
+	}
 	return f.created, model.ProjectAccess{}, nil
 }
 
@@ -62,6 +103,20 @@ func resolveCandidate(id, address string) model.Project {
 }
 func resolveCall(page store.Page, result store.ProjectPage, err error) completionProjectReadCall {
 	return completionProjectReadCall{name: "scoped", args: []any{resolvePrincipal, store.ProjectScope{Kind: store.ProjectScopeAll}, page}, result: result, err: err}
+}
+func creationMatchCall(principal model.Principal, teamID, identity string, items []model.Project, err error) completionProjectReadCall {
+	return completionProjectReadCall{name: "creation matches", args: []any{principal, teamID, identity}, result: items, err: err}
+}
+func (s *completionProjectReadPlan) FindVisibleRepositoryForCreation(ctx context.Context, principal model.Principal, teamID, identity string) ([]model.Project, error) {
+	call := s.take(ctx, "creation matches", principal, teamID, identity)
+	if call.result == nil {
+		return nil, call.err
+	}
+	items, ok := call.result.([]model.Project)
+	if !ok {
+		s.t.Fatal("creation match read requires explicit result facts")
+	}
+	return items, call.err
 }
 func resolveFault(t *testing.T, err error, code string) {
 	t.Helper()
@@ -206,29 +261,53 @@ func TestResolveRepositoryValidationBeforeSnapshot(t *testing.T) {
 }
 
 func TestRegisterRepositorySnapshotAndCreationGuard(t *testing.T) {
-	existing := resolveCandidate("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "git@github.com:Org/Repo.git")
-	team := resolveTeam
-	input := core.CreateProject{Name: "Repository", RepoURL: resolveAddress, TeamID: &team, ExpectedUserID: resolvePrincipal.UserID}
+	const githubIdentity = "github.com/Org/Repo"
+	const ipv6Identity = "[::1]/repo"
+	patProject := resolveCandidate("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "git@github.com:Org/Repo.git")
+	githubProject := resolveCandidate("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "https://GitHub.com/Org/Repo.git")
+	githubProject.Ownership = model.ProjectOwnership{TeamID: registrationTeam, Version: 1}
+	ipv6Project := resolveCandidate("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "ssh://git@::1:22/repo")
+	ipv6Project.Ownership = githubProject.Ownership
 	for _, tc := range []struct {
-		name    string
-		items   []model.Project
-		confirm bool
-		code    string
-		create  bool
+		name      string
+		principal model.Principal
+		team      string
+		address   string
+		identity  string
+		items     []model.Project
+		confirm   bool
+		code      string
+		create    bool
 	}{
-		{"reuse without confirmation", []model.Project{existing}, false, "", false},
-		{"reject unconfirmed creation", nil, false, "invalid_input", false},
-		{"confirmed creation", nil, true, "", true},
-		{"reject ambiguous even when confirmed", []model.Project{existing, existing}, true, "resource_conflict", false},
+		{"PAT reuse without confirmation", resolvePrincipal, resolveTeam, resolveAddress, githubIdentity, []model.Project{patProject}, false, "", false},
+		{"PAT reject unconfirmed creation", resolvePrincipal, resolveTeam, resolveAddress, githubIdentity, nil, false, "invalid_input", false},
+		{"PAT confirmed creation", resolvePrincipal, resolveTeam, resolveAddress, githubIdentity, nil, true, "", true},
+		{"PAT reject ambiguous even when confirmed", resolvePrincipal, resolveTeam, resolveAddress, githubIdentity, []model.Project{patProject, patProject}, true, "resource_conflict", false},
+		{"Session reject unconfirmed creation", registrationPrincipal, registrationTeam, githubProject.RepoURL, githubIdentity, nil, false, "invalid_input", false},
+		{"Session confirmed creation", registrationPrincipal, registrationTeam, githubProject.RepoURL, githubIdentity, nil, true, "", true},
+		{"Session reuse HTTPS", registrationPrincipal, registrationTeam, githubProject.RepoURL, githubIdentity, []model.Project{githubProject}, false, "", false},
+		{"Session reuse SCP", registrationPrincipal, registrationTeam, "git@github.com:Org/Repo.git", githubIdentity, []model.Project{githubProject}, false, "", false},
+		{"Session reuse SSH with default port", registrationPrincipal, registrationTeam, "ssh://git@github.com:22/Org/Repo.git", githubIdentity, []model.Project{githubProject}, false, "", false},
+		{"Session reject distinct relative path", registrationPrincipal, registrationTeam, "git@github.com:./Org/Repo.git", "scp://git@github.com:./Org/Repo", nil, false, "invalid_input", false},
+		{"Session reject distinct SSH port", registrationPrincipal, registrationTeam, "ssh://git@github.com:2222/Org/Repo.git", "ssh://git@github.com:2222/Org/Repo", nil, false, "invalid_input", false},
+		{"Session reject distinct path case", registrationPrincipal, registrationTeam, "https://github.com/org/Repo.git", "github.com/org/Repo", nil, false, "invalid_input", false},
+		{"Session create unbracketed IPv6", registrationPrincipal, registrationTeam, ipv6Project.RepoURL, ipv6Identity, nil, true, "", true},
+		{"Session reuse bracketed IPv6", registrationPrincipal, registrationTeam, "https://[::1]/repo", ipv6Identity, []model.Project{ipv6Project}, false, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
-			plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: tc.items}, nil)})
-			fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
-			got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, tc.confirm)
+			team := tc.team
+			input := core.CreateProject{Name: "Repository", RepoURL: tc.address, TeamID: &team, ExpectedUserID: tc.principal.UserID}
+			plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(tc.principal, tc.team, tc.identity, tc.items, nil)})
+			fixture := &repositoryCreationPlan{completionProjectReadPlan: plan, actor: tc.principal, input: input, teamID: tc.team, identity: tc.identity}
+			if tc.create {
+				fixture.writeSteps = []string{"lock Team", "read membership", "check occupancy", "insert Project"}
+				fixture.completionFact = store.Completion{Outcome: store.TransactionCommitted}
+			}
+			got, created, err := NewProjects(fixture).RegisterRepository(ctx, tc.principal, input, tc.confirm)
 			if tc.code != "" {
 				resolveFault(t, err, tc.code)
-				if tc.name == "reject unconfirmed creation" && err.Error() != "Project creation requires confirmation." {
+				if tc.code == "invalid_input" && err.Error() != "Project creation requires confirmation." {
 					t.Fatalf("confirmation message = %v", err)
 				}
 			} else if err != nil {
@@ -239,11 +318,45 @@ func TestRegisterRepositorySnapshotAndCreationGuard(t *testing.T) {
 			if tc.create {
 				want = fixture.created
 				writes = 1
-			} else if tc.code == "" {
-				want = existing
+			} else if len(tc.items) == 1 {
+				want = tc.items[0]
 			}
-			if !reflect.DeepEqual(got, want) || created != tc.create || fixture.writes != writes || fixture.inserts != writes {
+			if got != want || created != tc.create || fixture.writes != writes || fixture.inserts != writes {
 				t.Fatalf("result=%+v created=%v writes=%d inserts=%d", got, created, fixture.writes, fixture.inserts)
+			}
+		})
+	}
+}
+
+func TestRegisterRepositoryDoesNotReturnUnconfirmedCreation(t *testing.T) {
+	principal := registrationPrincipal
+	team := registrationTeam
+	input := core.CreateProject{Name: "Repository", RepoURL: "https://GitHub.com/Org/Repo.git", TeamID: &team, ExpectedUserID: principal.UserID}
+	const identity = "github.com/Org/Repo"
+	cause := errors.New("commit response lost")
+	for _, tc := range []struct {
+		name    string
+		outcome store.TransactionOutcome
+		err     error
+	}{
+		{"not committed", store.TransactionNotCommitted, nil},
+		{"unknown", store.TransactionUnknown, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: cause}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(principal, team, identity, nil, nil)})
+			fixture := &repositoryCreationPlan{
+				completionProjectReadPlan: plan, actor: principal, input: input, teamID: registrationTeam, identity: identity,
+				writeSteps:     []string{"lock Team", "read membership", "check occupancy", "insert Project"},
+				completionFact: store.Completion{Outcome: tc.outcome}, completionErr: tc.err,
+			}
+			got, created, err := NewProjects(fixture).RegisterRepository(ctx, principal, input, true)
+			var fault *model.Fault
+			if err == nil || errors.As(err, &fault) || got != (model.Project{}) || created || fixture.writes != 1 || fixture.inserts != 1 {
+				t.Fatalf("unconfirmed creation returned: result=%+v created=%v writes=%d inserts=%d error=%v", got, created, fixture.writes, fixture.inserts, err)
+			}
+			if tc.err != nil && (!errors.Is(err, tc.err) || !errors.Is(err, cause)) {
+				t.Fatalf("creation lost completion error: %v", err)
 			}
 		})
 	}
@@ -256,12 +369,26 @@ func TestRegisterRepositoryDoesNotCreateAfterSnapshotFailure(t *testing.T) {
 	failure := errors.New("snapshot completion failed")
 	for _, items := range [][]model.Project{nil, {existing}, {existing, existing}} {
 		ctx := t.Context()
-		plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: items}, nil)})
+		plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(resolvePrincipal, resolveTeam, "github.com/Org/Repo", items, nil)})
 		plan.completion = failure
 		fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
 		got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, true)
 		if !errors.Is(err, failure) || !reflect.DeepEqual(got, model.Project{}) || created || fixture.writes != 0 {
 			t.Fatalf("result=%+v created=%v error=%v writes=%d", got, created, err, fixture.writes)
 		}
+	}
+}
+
+func TestRegisterRepositoryDoesNotCreateAfterMatchQueryFailure(t *testing.T) {
+	team := resolveTeam
+	input := core.CreateProject{Name: "Repository", RepoURL: resolveAddress, TeamID: &team, ExpectedUserID: resolvePrincipal.UserID}
+	failure := errors.New("match query failed")
+	ctx := t.Context()
+	plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(resolvePrincipal, resolveTeam, "github.com/Org/Repo", nil, failure)})
+	plan.callbackErr = failure
+	fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
+	got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, true)
+	if !errors.Is(err, failure) || !reflect.DeepEqual(got, model.Project{}) || created || fixture.writes != 0 {
+		t.Fatalf("result=%+v created=%v error=%v writes=%d", got, created, err, fixture.writes)
 	}
 }

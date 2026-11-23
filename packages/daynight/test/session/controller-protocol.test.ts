@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { parseControllerMessage, parseRegistrationRequest, parseBrowserMessage, parseRelayMessage } from "../../src/session/controller-protocol.js";
 const id = "00000000-0000-4000-8000-000000000001";
 describe("relay transport", () => {
+  it("retains distinct effective and provider image revisions only in an explicit authorization", () => {
+    const frame = { type: "operation_authorized", protocol: "daynight.session.v1", sessionId: id, claimId: id, executionGeneration: "2", connectionEpoch: "3", operationId: id };
+    const imageAuthorization = { revision: "7", providerRevision: "2", expectedNativeSessionId: "native", modelId: "model", controlsRevision: "3", send: "supported", steer: "unsupported", reasonCode: null, inputMediaTypes: ["image/png"], maxImageBytes: "100", maxMessageImageBytes: "200", maxImagesPerMessage: 2, geometry: { version: 1, known: true, maxWidth: 32, maxHeight: 32, maxPixels: 1024, maxFrames: 1 } };
+    expect(parseRelayMessage(frame)).toEqual(frame);
+    expect(parseRelayMessage({ ...frame, imageAuthorization })).toEqual({ ...frame, imageAuthorization });
+    for (const invalid of [null, { ...imageAuthorization, providerRevision: undefined }, { ...imageAuthorization, revision: "0" }, { ...imageAuthorization, geometry: { ...imageAuthorization.geometry, known: false } }]) expect(() => parseRelayMessage({ ...frame, imageAuthorization: invalid })).toThrow();
+  });
   it.each(["codex", "claude", "copilot"])("requires exact %s registration identity", (provider) => {
     const request = { protocol: "daynight.session.v1", registrationId: id, claimId: id, workerId: id, worktreeId: id, provider, controllerId: id, controllerInstanceId: id };
     expect(parseRegistrationRequest(request)).toEqual(request);

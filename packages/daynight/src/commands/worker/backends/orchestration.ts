@@ -3,7 +3,8 @@ import { lstat, readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
-import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { controllerPayloadHash } from "../../controller/launch-ticket.js";
+import type { ControllerOperation, ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { ProcessProof } from "../../controller/process-proof.js";
 import type { LocalTask } from "./web-types.js";
 
@@ -39,7 +40,20 @@ export const preservesControllerEvidence = (previous: ControllerSnapshot, observ
   (previous.nativeSessionId === null || observed.nativeSessionId === previous.nativeSessionId)
   && (previous.controllerProcess === null || preservesControllerProcessProof(previous.controllerProcess, observed.controllerProcess, launchId))
   && preservesNativeProcessPrefix(previous.nativeProcesses, observed.nativeProcesses)
-  && (previous.initialInputState === "not_submitted" || observed.initialInputState !== "not_submitted");
+  && preservesInitialInputEvidence(previous.initialInputState, observed.initialInputState);
+
+export const preservesInitialInputEvidence = (previous: ControllerSnapshot["initialInputState"], observed: ControllerSnapshot["initialInputState"]): boolean =>
+  previous === "not_submitted" || observed !== "not_submitted"
+    && (!["provider_accepted", "confirmed"].includes(previous) || ["provider_accepted", "confirmed"].includes(observed));
+
+/** The current ticket authenticates the journal; an inherited initial operation retains its original positive generation and frozen payload. */
+export const matchesInitialOperation = (operation: ControllerOperation, owner: { initialOperationId: string; initialPrompt: string; executionGeneration: string }, inherited: boolean): boolean => {
+  const payload = { text: owner.initialPrompt };
+  return operation.operationId === owner.initialOperationId && operation.kind === "initial"
+    && typeof operation.executionGeneration === "string" && /^[1-9][0-9]*$/.test(operation.executionGeneration)
+    && (inherited ? BigInt(operation.executionGeneration) < BigInt(owner.executionGeneration) : operation.executionGeneration === owner.executionGeneration)
+    && operation.payloadHash === controllerPayloadHash({ kind: "initial", payload }) && controllerPayloadHash(operation.payload) === controllerPayloadHash(payload);
+};
 
 /** Process capture can continue after any generation's first observation. Delivery and retry authorization are separate gates. */
 const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot, allowFirstNativeBinding = false): boolean => {
@@ -52,11 +66,18 @@ const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot
     && snapshot.startup?.state === "ready" && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
     && snapshot.controllerProcess !== null && execution.controllerProcess !== null
     && preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, execution.launchId)
-    && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses);
+    && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses)
+    && preservesInitialInputEvidence(execution.initialInputState, snapshot.initialInputState);
 };
 
 export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
-  runningOriginalGeneration(task, snapshot) && snapshot.initialInputState === "confirmed";
+  runningOriginalGeneration(task, snapshot) && ["provider_accepted", "confirmed"].includes(snapshot.initialInputState);
+
+/** A later generation may continue the original initial input only with separate journal evidence. */
+export const recoveringInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
+  task.webExecution !== null && BigInt(task.webExecution.executionGeneration) > 1n
+  && task.webExecution.initialInputState === "not_submitted" && snapshot.initialInputState === "not_submitted"
+  && runningOriginalGeneration(task, snapshot);
 
 /** An authenticated first-generation observation can establish its first native identity without creating another conversation. */
 export const continuingInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
@@ -66,6 +87,16 @@ export const continuingInitialGeneration = (task: LocalTask, snapshot: Controlle
     && runningOriginalGeneration(task, snapshot, true)
     && ["not_submitted", "dispatching", "provider_accepted", "unknown", "confirmed"].includes(snapshot.initialInputState)
     && (snapshot.initialInputState !== "not_submitted" || execution.initialInputState === "not_submitted");
+};
+/** Later generations may observe the inherited first input without replaying it or consuming another recovery. */
+export const continuingOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot, operation?: ControllerOperation | null): boolean => {
+  if (continuingInitialGeneration(task, snapshot)) return true;
+  const execution = task.webExecution;
+  return execution !== null && BigInt(execution.executionGeneration) > 1n && task.recovery.pauseReason === null
+    && !task.recovery.retryAuthorized && !execution.restartAfterShutdown && runningOriginalGeneration(task, snapshot)
+    && ["dispatching", "unknown"].includes(snapshot.initialInputState) && operation != null && execution.initialPrompt !== null
+    && (matchesInitialOperation(operation, { ...execution, initialPrompt: execution.initialPrompt }, true)
+      || matchesInitialOperation(operation, { ...execution, initialPrompt: execution.initialPrompt }, false));
 };
 export const stoppedOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;

@@ -1,26 +1,35 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
-import { accountHistory, emptyResourceReading, projectHistory, readAccountHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
-import { parseAuthRoute, parseRoute } from './router';
+import { emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
+import { parseAuthRoute, parseGoalGraphUrl, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
-type ResourceFence = { generation: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
+type ResourceFence = { generation: number; accessRetirements: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
 const resourceFences = new WeakMap<TaskCacheScope, Map<string, ResourceFence>>();
-const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence => {
+const resourceFencesFor = (scope: TaskCacheScope): Map<string, ResourceFence> => {
   let projects = resourceFences.get(scope);
-  if (projects === undefined) { projects = new Map(); resourceFences.set(scope, projects); }
-  let fence = projects.get(projectId);
-  if (fence !== undefined) return fence;
-  fence = { generation: 0, entries: new Map(), listeners: new Set() };
-  projects.set(projectId, fence);
-  const current = fence;
+  if (projects !== undefined) return projects;
+  projects = new Map();
+  resourceFences.set(scope, projects);
+  const all = projects;
   const unsubscribe = scope.subscribe(event => {
-    if (event.projectId !== projectId || !(event.historyChanged || event.accessRevoked)) return;
-    current.generation++;
-    for (const listener of current.listeners) listener();
+    if (!(event.historyChanged || event.accessRevoked)) return;
+    let fence = all.get(event.projectId);
+    if (fence === undefined) { fence = { generation: 0, accessRetirements: 0, entries: new Map(), listeners: new Set() }; all.set(event.projectId, fence); }
+    if (event.accessRevoked) fence.accessRetirements++;
+    fence.generation++;
+    for (const listener of fence.listeners) listener();
   });
   scope.signal.addEventListener('abort', unsubscribe, { once: true });
+  return projects;
+};
+const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence => {
+  const projects = resourceFencesFor(scope);
+  let fence = projects.get(projectId);
+  if (fence !== undefined) return fence;
+  fence = { generation: 0, accessRetirements: 0, entries: new Map(), listeners: new Set() };
+  projects.set(projectId, fence);
   return fence;
 };
 
@@ -40,35 +49,65 @@ export const isRetiredResourceEntry = (scope: TaskCacheScope, projectId: string,
   return fence.entries.get(entryId) !== fence.generation;
 };
 
-/** The active account page consumes only admitted, identity-bound selections. */
-export function useAccountHistory(userId: string, active: boolean) {
+/** Restored entries are admitted until this identity observes a retirement. */
+export const isRetiredMyTasksEntry = (scope: TaskCacheScope, projectId: string, entryId: string): boolean => {
+  const fence = resourceFence(scope, projectId);
+  return (fence.entries.get(entryId) ?? 0) !== fence.generation;
+};
+
+/** The overview retains page positions and resource readers, never their contents. */
+export function useMyTasksHistory(userId: string, active: boolean, scope: TaskCacheScope) {
+  resourceFencesFor(scope);
   const location = useBrowserLocation();
   const navigation = browserNavigation();
-  const retained = useRef<{ userId: string; tab: AccountTab }>({ userId, tab: 'profile' });
-  if (retained.current.userId !== userId) retained.current = { userId, tab: 'profile' };
-  const onPage = active && location.pathname === '/account';
-  let selected: AccountTab | null = null;
+  const retained = useRef<{ userId: string; scope: TaskCacheScope; selection: MyTasksReading; onPage: boolean; fence: ResourceFence | null; generation: number }>({ userId, scope, selection: emptyMyTasksReading(), onPage: false, fence: null, generation: 0 });
+  if (retained.current.userId !== userId || retained.current.scope !== scope) retained.current = { userId, scope, selection: emptyMyTasksReading(), onPage: false, fence: null, generation: 0 };
+  const onPage = active && parseAuthRoute(location.pathname, location.search).kind === 'myTasks';
+  if (onPage && !retained.current.onPage) retained.current.selection = emptyMyTasksReading();
+  retained.current.onPage = onPage;
+  let selected: MyTasksReading | null = null;
   let error = false;
   if (onPage) {
-    try { selected = readAccountHistory(location.view, userId); }
+    try { selected = readMyTasksHistory(location.view, userId); }
     catch { error = true; }
   }
-  const tab = !onPage || location.entryId === null ? retained.current.tab : selected ?? 'profile';
+  const projectId = selected?.detail?.projectId ?? retained.current.selection.detail?.projectId;
+  const fence = projectId === undefined ? null : resourceFence(scope, projectId);
+  const subscribe = useCallback((listener: () => void) => {
+    if (fence === null) return () => {};
+    fence.listeners.add(listener);
+    return () => { fence.listeners.delete(listener); };
+  }, [fence]);
+  const generation = useSyncExternalStore(subscribe, () => fence?.generation ?? 0);
+  if (retained.current.fence === fence && retained.current.generation !== generation) retained.current.selection = { ...retained.current.selection, detail: null };
+  retained.current.fence = fence;
+  retained.current.generation = generation;
+  const retired = selected?.detail !== null && selected?.detail !== undefined && location.entryId !== null &&
+    isRetiredMyTasksEntry(scope, selected.detail.projectId, location.entryId);
+  if (retired && selected !== null) selected = { ...selected, detail: null };
+  const selection = !onPage || location.entryId === null ? retained.current.selection : selected ?? emptyMyTasksReading();
   useLayoutEffect(() => {
     if (!onPage || error) return;
-    retained.current.tab = tab;
-    if (location.entryId !== null && selected === null) navigation.setView(accountHistory(userId, tab), { replace: true });
-  }, [onPage, error, tab, selected, location.entryId, navigation, userId]);
-  const select = (next: AccountTab, replace = false) => {
+    retained.current.selection = selection;
+    if (location.entryId !== null && (selected === null || retired)) navigation.setView(myTasksHistory(userId, selection), { replace: true });
+  }, [onPage, error, selection, selected, retired, location.entryId, navigation, userId, generation]);
+  const select = (next: MyTasksReading, replace = false, onCommit?: () => void) => {
     if (!onPage || error) return;
-    if (location.entryId !== null && selected === null) navigation.setView(accountHistory(userId, tab), { replace: true });
-    if (next !== tab) navigation.setView(accountHistory(userId, next), { replace });
+    if (location.entryId !== null && selected === null) navigation.setView(myTasksHistory(userId, selection), { replace: true });
+    navigation.setView(myTasksHistory(userId, next), { replace, onCommit: () => {
+      const entryId = navigation.snapshot().entryId;
+      if (next.detail !== null && entryId !== null) {
+        const nextFence = resourceFence(scope, next.detail.projectId);
+        nextFence.entries.set(entryId, nextFence.generation);
+      }
+      onCommit?.();
+    } });
   };
-  return { tab, select, error };
+  return { selection, select, error };
 }
 
 /** Project entries hold the complete reading position, while preferences remain user actions. */
-export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope) {
+export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope, isDisplayedGoal: (witness: string) => boolean = () => false, isDisplayedChainUsage: (detailId: string | null) => boolean = () => false) {
   const location = useBrowserLocation();
   const navigation = browserNavigation();
   const fence = resourceFence(scope, projectId);
@@ -79,10 +118,12 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   const generation = useSyncExternalStore(subscribe, () => fence.generation);
   const key = `${userId}/${projectId}`;
   const empty = (): ProjectReading => ({ ...defaults, projectGraphWitness: null, detail: null });
-  const retained = useRef<{ key: string; generation: number; selection: ProjectReading; onPage: boolean }>({ key, generation, selection: empty(), onPage: false });
-  if (retained.current.key !== key || retained.current.generation !== generation) retained.current = { key, generation, selection: empty(), onPage: false };
+  const nativeViews = useRef(new WeakMap<object, { key: string; fence: ResourceFence; generation: number }>());
+  const retained = useRef<{ key: string; fence: ResourceFence; accessRetirements: number; generation: number; selection: ProjectReading; entryId: string | null; onPage: boolean }>({ key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false });
+  if (retained.current.key !== key || retained.current.fence !== fence) retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false };
   const route = parseRoute(location.pathname, location.search);
   const onPage = active && route.kind === 'project' && route.projectId === projectId;
+  const goalUrl = onPage ? parseGoalGraphUrl(location.pathname, location.search) : { kind: 'none' } as const;
   if (onPage && !retained.current.onPage) retained.current.selection = empty();
   retained.current.onPage = onPage;
   let selected: ProjectReading | null = null;
@@ -93,22 +134,67 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   }
   const readSelection = selected;
   const retired = location.entryId !== null && selected !== null && isRetiredResourceEntry(scope, projectId, location.entryId);
+  const previous = retained.current;
+  const witness = previous.selection.projectGraphWitness;
+  // A displayed reader may survive a content epoch change only on its current
+  // entry and identity. Access retirement always wins over a later epoch.
+  const canCarry = retired && onPage && previous.onPage && location.entryId === previous.entryId &&
+    previous.accessRetirements === fence.accessRetirements && !scope.isInvalidated && !scope.hasIdentityMismatch && scope.userId === userId;
+  const carryGoal = canCarry && previous.selection.section === 'tasks' && previous.selection.view === 'goals' && witness !== null &&
+    selected?.section === 'tasks' && selected.view === 'goals' && selected.projectGraphWitness === witness && isDisplayedGoal(witness);
+  const detailId = previous.selection.detail?.id ?? null;
+  const carryUsage = canCarry && previous.selection.section === 'tasks' && previous.selection.view === 'chains' &&
+    previous.selection.projectGraphWitness === null && selected?.section === 'tasks' && selected.view === 'chains' &&
+    selected.projectGraphWitness === null && (selected.detail?.id ?? null) === detailId && isDisplayedChainUsage(detailId);
   if (retired) selected = null;
-  const selection = !onPage || location.entryId === null ? retained.current.selection : selected ?? empty();
+  const nativeBinding = typeof location.view === 'object' && location.view !== null ? nativeViews.current.get(location.view) : undefined;
+  const nativeSelected = nativeBinding?.key === key && nativeBinding.fence === fence && nativeBinding.generation === generation ? selected : null;
+  const admitted = carryGoal ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
+    : carryUsage ? previous.selection
+    : !onPage || location.entryId === null ? (previous.generation === generation ? nativeSelected ?? previous.selection : empty()) : selected ?? empty();
+  const urlSection = onPage && route.kind === 'project' ? route.tab : null;
+  const mismatch = urlSection !== null && admitted.section !== urlSection;
+  const admittedSelection: ProjectReading = mismatch ? { ...empty(), section: urlSection } : admitted;
+  const goalMatches = goalUrl.kind === 'goal' && admittedSelection.section === 'tasks' && admittedSelection.view === 'goals' && admittedSelection.projectGraphWitness === goalUrl.goalId;
+  // An address is an intent, not an already authorized reader. Hide a previous
+  // entry until the current Project snapshot has admitted the requested Goal.
+  const pendingGoal = goalUrl.kind !== 'none' && !goalMatches;
+  const selection: ProjectReading = pendingGoal
+    ? { ...admittedSelection, projectGraphWitness: null, detail: null, ...(goalUrl.kind === 'goal' ? { section: 'tasks', view: 'goals' } as const : {}) }
+    : admittedSelection;
   useLayoutEffect(() => {
     if (!onPage || error) return;
-    retained.current.selection = selection;
+    retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection, entryId: location.entryId, onPage };
     if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
-    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: () => {
-      const entryId = navigation.snapshot().entryId;
-      if (entryId !== null) fence.entries.set(entryId, generation);
-    } });
-  }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, fence, generation, retired, readSelection]);
-  const select = (next: ProjectReading, replace = false, onCommit?: () => void) => {
+    // setView intentionally does nothing for equal values, so bind that entry here.
+    if ((carryUsage || carryGoal && readSelection?.detail === null) && location.entryId !== null) fence.entries.set(location.entryId, generation);
+    if (!pendingGoal && location.entryId !== null && (selected === null || mismatch || urlSection === null)) {
+      const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
+      url.searchParams.set('tab', selection.section);
+      navigation.setView(projectHistory(userId, projectId, selection), { to: url.pathname + url.search + url.hash, replace: true, onCommit: () => {
+        const entryId = navigation.snapshot().entryId;
+        if (entryId !== null) fence.entries.set(entryId, generation);
+      } });
+    }
+  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carryGoal, carryUsage, mismatch, urlSection, pendingGoal]);
+  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment: boolean | 'chain' | 'goal' | 'goal-invalid' = false) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };
-    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: record });
-    navigation.setView(projectHistory(userId, projectId, next), { replace, onCommit: () => { record(); onCommit?.(); } });
+    const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
+    if (next.section !== selection.section || consumeFragment) {
+      url.searchParams.set('tab', next.section);
+      url.hash = '';
+    }
+    if (next.section !== selection.section || consumeFragment === 'chain') url.searchParams.delete('chain');
+    if (consumeFragment === 'goal-invalid') {
+      url.searchParams.delete('goalGraph');
+      url.searchParams.delete('chain');
+    } else if (goalUrl.kind !== 'none' && !(goalUrl.kind === 'goal' && next.section === 'tasks' && next.view === 'goals' && next.projectGraphWitness === goalUrl.goalId)) {
+      url.searchParams.delete('goalGraph');
+    }
+    const view = projectHistory(userId, projectId, next);
+    if (location.entryId === null && consumeFragment) nativeViews.current.set(view, { key, fence, generation });
+    navigation.setView(view, { to: url.pathname + url.search + url.hash, replace: replace || Boolean(consumeFragment), preserveNative: Boolean(consumeFragment), onCommit: () => { record(); onCommit?.(); } });
   };
   return { selection, select, error };
 }
@@ -154,11 +240,11 @@ export function useResourceHistory(userId: string, projectId: string, taskId: st
       if (fence !== null && entryId !== null) fence.entries.set(entryId, generation);
     } });
   }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, taskId, fence, generation, retired, readSelection]);
-  const select = (next: ResourcePageReading, replace = false) => {
+  const select = (next: ResourcePageReading, replace = false, onCommit?: () => void) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (fence !== null && entryId !== null) fence.entries.set(entryId, generation); };
     if (location.entryId !== null && selected === null) navigation.setView(resourceHistory(userId, projectId, taskId, selection), { replace: true, onCommit: record });
-    navigation.setView(resourceHistory(userId, projectId, taskId, next), { replace, onCommit: record });
+    navigation.setView(resourceHistory(userId, projectId, taskId, next), { replace, onCommit: () => { record(); onCommit?.(); } });
   };
   return { selection, select, error };
 }

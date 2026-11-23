@@ -125,7 +125,7 @@ func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *tes
 			if target.Body.Len() != 0 || cap(w.body) > sp.MaxHistoryResponseBytes {
 				t.Fatal("partial output or excess buffer capacity")
 			}
-			if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil)); err != nil {
+			if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil), nil); err != nil {
 				t.Fatal(err)
 			}
 			if overflow {
@@ -144,7 +144,7 @@ func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *tes
 		t.Fatalf("buffered response lost transport deadline: %v", err)
 	}
 	_, _ = w.Write([]byte("result"))
-	if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil)); !errors.Is(err, io.ErrShortWrite) || target.writes != 1 {
+	if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil), nil); !errors.Is(err, io.ErrShortWrite) || target.writes != 1 {
 		t.Fatalf("short write: %v calls=%d", err, target.writes)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -152,7 +152,7 @@ func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *tes
 	target = &sessionReadShortWriter{header: make(http.Header)}
 	w = &sessionReadResponseWriter{ResponseWriter: target}
 	_, _ = w.Write([]byte("result"))
-	if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)); err != nil || target.writes != 0 {
+	if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx), nil); err != nil || target.writes != 0 {
 		t.Fatal("canceled response was delivered")
 	}
 }
@@ -229,7 +229,6 @@ func TestSessionReadAdmissionLeavesOtherReadsComplete(t *testing.T) {
 	f := newSessionReadFixture(t)
 	definition := sessionReadToolDefinition("current")
 	definition.Name = "ordinary_read"
-	definition.OutputSchema.(map[string]any)["properties"].(map[string]any)["data"] = readString()
 	if err := registerTypedReadTool(f.entry, definition, BudgetControl, func(context.Context, RequestActor, sessionReadInput) (ToolResult, error) {
 		return ToolResult{Data: strings.Repeat("x", sp.MaxHistoryResponseBytes+1000)}, nil
 	}); err != nil {

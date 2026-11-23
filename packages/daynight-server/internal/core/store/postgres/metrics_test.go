@@ -67,6 +67,7 @@ func gatherPoolMetrics(t *testing.T, registry *prometheus.Registry) map[string]m
 }
 
 func TestPoolCollectorMapsOneSnapshotPerScrape(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	calls := 0
 	collector := poolCollector{snapshot: func() poolSnapshot { calls++; return fixedPoolSnapshot{} }}
 	registry := prometheus.NewRegistry()
@@ -134,6 +135,7 @@ func awaitPoolWait(t *testing.T, ctx *waitObservedContext) {
 }
 
 func TestPoolCollectorReflectsRealAcquiresWithoutSQL(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	raw := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
 	if raw == "" {
 		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")

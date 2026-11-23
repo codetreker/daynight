@@ -35,11 +35,14 @@ Authenticated product manual Resources share this entry and its delivery lifetim
 the [manual decision](../feature/2026-11-09-mcp-product-manuals.md) owns their
 content and admission.
 
-Registered tools advertise input and output schemas. The low-level wrapper
-validates inputs, supplies safe structured errors and preserves explicit
-completion facts. Successful reads use ordinary JSON encoding without runtime
-output-schema or result-byte admission; writes retain output validation and
-capacity checks. The [ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
+Registered tools advertise input schemas and omit `outputSchema` from discovery.
+The low-level wrapper validates inputs, supplies structured errors and preserves
+explicit completion facts. The original public output schemas supported client
+validation and type discovery; the [private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
+records the trade-off in omitting them. The [output schema removal decision](../simplification/2026-11-16-remove-mcp-output-schemas.md)
+removes internal output definitions and validation. Successful reads use ordinary
+JSON encoding without shared result-byte admission; applicable writes and uploads
+retain their capacity checks. The [ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
 records that read responsibility. The production registry exposes registered
 business adapters, and the [Team adapter decision](2026-11-06-mcp-team-management.md)
 records its authority, versions and count pagination.

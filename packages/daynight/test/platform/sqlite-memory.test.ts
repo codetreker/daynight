@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, type SqliteMigrationEvent } from "../../src/platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, type SqliteMigrationEvent } from "../../src/platform/sqlite-access.js";
 import type { SqliteFormat } from "../../src/platform/sqlite-format.js";
 import { createMemoryDatabase } from "../helpers/sqlite.js";
 
@@ -26,12 +26,11 @@ afterEach(() => {
 });
 
 describe("supplied in-memory SQLite connections", () => {
-  it("initializes the original connection and runs startup inside the migration transaction", () => {
+  it("initializes the original connection before returning it", () => {
     const db = connect(), events: SqliteMigrationEvent[] = [];
     const opened = openSqliteDatabase({
       file: db, format, allowCreate: true, timeoutMs: 17,
       onMigration: event => { events.push(event); },
-      onReady: ready => { expect(ready).toBe(db); expect(ready.inTransaction).toBe(true); ready.exec("INSERT INTO records VALUES (1,'ready',NULL)"); },
     });
     expect(opened).toBe(db);
     expect(db.memory).toBe(true);
@@ -39,7 +38,8 @@ describe("supplied in-memory SQLite connections", () => {
     expect(db.pragma("journal_mode", { simple: true })).toBe("memory");
     expect(db.pragma("synchronous", { simple: true })).toBe(2);
     expect(db.pragma("busy_timeout", { simple: true })).toBe(17);
-    expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "ready", extra: null }]);
+    expect(db.inTransaction).toBe(false);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([]);
     expect(events.map(event => [event.file, event.kind, event.outcome])).toEqual([[":memory:", "started", "not-started"], [":memory:", "completed", "committed"]]);
     closeSqliteDatabase(db, { file: db, format });
     expect(db.open).toBe(false);
@@ -52,16 +52,14 @@ describe("supplied in-memory SQLite connections", () => {
     expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "original", extra: null }]);
   });
 
-  it("rolls startup back before closing an owned connection", () => {
+  it("retains the converted format after a later business rollback", () => {
     const db = connect(); seed(db);
-    const primary = new Error("startup rejected"), originalClose = db.close.bind(db);
-    let beforeClose: unknown;
-    vi.spyOn(db, "close").mockImplementation(() => {
-      beforeClose = { version: db.pragma("user_version", { simple: true }), rows: db.prepare("SELECT * FROM records").all() };
-      return originalClose();
-    });
-    expect(() => openSqliteDatabase({ file: db, format, allowCreate: false, onMigration: quiet, onReady: ready => { ready.exec("UPDATE records SET value='changed'"); throw primary; } })).toThrow(primary);
-    expect(beforeClose).toEqual({ version: 1, rows: [{ id: 1, value: "original" }] });
+    const primary = new Error("startup rejected");
+    openSqliteDatabase({ file: db, format, allowCreate: false, onMigration: quiet });
+    expect(() => runSqliteImmediate(db, () => { db.exec("UPDATE records SET value='changed'"); throw primary; })).toThrow(primary);
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "original", extra: null }]);
+    closeSqliteDatabase(db, { file: db, format });
     expect(db.open).toBe(false);
   });
 

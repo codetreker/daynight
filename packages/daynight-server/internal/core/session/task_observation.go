@@ -17,10 +17,37 @@ func copyObservationPointer[T any](value *T) *T {
 	return observationPointer(*value)
 }
 
+// TaskObservationTime uses the same clock as Session observations.
+func (s *Engine) TaskObservationTime(ctx context.Context) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return s.now().UTC(), nil
+}
+
 // ObserveTaskSessions consumes authorized Task snapshot sources. It samples only
 // committed live scalars; authorization and selected Task versions remain owned
 // by the caller's snapshot coordinator.
 func (s *Engine) ObserveTaskSessions(ctx context.Context, p model.Principal, sources []store.TaskSessionSource) (map[string]sp.TaskSessionObservation, error) {
+	rows, err := s.ObserveTaskSessionRows(ctx, p, sources)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]sp.TaskSessionObservation, len(rows))
+	for id, row := range rows {
+		out[id] = row.Session
+	}
+	return out, nil
+}
+
+type TaskSessionRow struct {
+	Session sp.TaskSessionObservation
+	Row     model.TaskSyncObservation
+}
+
+// ObserveTaskSessionRows derives detailed and list observations from one live
+// sample so reading admission cannot differ between the two representations.
+func (s *Engine) ObserveTaskSessionRows(ctx context.Context, p model.Principal, sources []store.TaskSessionSource) (map[string]TaskSessionRow, error) {
 	if err := model.RequirePrincipal(p); err != nil {
 		return nil, err
 	}
@@ -37,13 +64,14 @@ func (s *Engine) ObserveTaskSessions(ctx context.Context, p model.Principal, sou
 		return nil, err
 	}
 	now := s.now().UTC()
-	out := make(map[string]sp.TaskSessionObservation, len(sources))
+	out := make(map[string]TaskSessionRow, len(sources))
 	for _, source := range sources {
 		var state *taskSessionLiveState
 		if source.Session != nil {
 			state = live[source.Session.SessionID]
 		}
-		out[source.TaskID] = s.observeTaskSession(p, source, state, now, false)
+		observation := s.observeTaskSession(p, source, state, now, false)
+		out[source.TaskID] = TaskSessionRow{Session: observation, Row: taskSessionRowObservation(source, state, observation, now)}
 	}
 	if err := taskSessionReadAdmission(ctx, op); err != nil {
 		return nil, err

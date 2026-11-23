@@ -10,7 +10,8 @@ export type TaskDetailDialogProps = Omit<TaskDetailSurfaceProps, 'fullscreen' | 
   readonly onClose: () => void;
   readonly onRestoreFocus: () => void;
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
-  readonly initialWitness?: string;
+  readonly onNavigateExternalChain?: (id: string, trigger: HTMLElement) => void;
+  readonly goalGraphError?: unknown;
   readonly goalChildren?: GoalChildren;
   readonly onGoalChildrenChange?: (next: GoalChildren, options?: { readonly replace?: boolean }) => void;
   readonly requireParentMatch?: boolean;

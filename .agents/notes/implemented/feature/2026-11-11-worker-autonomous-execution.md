@@ -8,38 +8,31 @@ A background Worker can encounter facts that invalidate its initial steps withou
 invalidating its assigned goal. Treating every information, decision, authority
 or action gap as a reason for human intervention interrupts delivery even when
 the agent can inspect the situation and continue within the confirmed scope.
-At the same time, changing a confirmed requirement or authorization to work
-around a conflict would exceed the assignment.
+Repeated requests for already granted procedural authorization can also interrupt
+delivery. At the same time, changing a confirmed requirement or authorization to
+work around a conflict would exceed the assignment.
 
 ## Decision
 
-The Worker's built-in startup, macOS continuation or recovery, and periodic
-ping inputs share an instruction to inspect task and repository constraints and
-available evidence, adjust the execution approach, investigate failed approaches
-and choose feasible alternatives. Significant deviations and their reasons are
-recorded. The agent preserves confirmed goals, scope, acceptance, external
-commitments and authorization.
+The original startup prompt stated sufficient authorization to complete the task
+and asked the agent not to repeat procedural authorization questions. Task scope,
+independent pauses and revocations, and CI, review and merge gates remained binding.
 
-Human intervention is requested for an evidenced severe design conflict only
-when confirmed requirements or architecture constraints cannot all be met,
-there is no feasible compatible alternative, and resolution requires changing a
-confirmed constraint. The agent records evidence, affected requirements,
-alternatives and the specific decision needed before using the existing
-versioned pause and verified resume workflow. Ordinary information gaps, tool
-unavailability, failed approaches, recoverable errors and obsolete steps alone
-are not pause triggers. Pending review, approval, CI and polling timeouts remain
-ongoing work. Independent pauses, restrictions, revocations and identity or
-permission changes remain binding.
+Startup, continuation and ping inputs instructed the agent to investigate
+unexpected conditions, choose feasible alternatives within the confirmed goal,
+and record significant deviations. The original decision limited intervention to
+an evidenced severe design conflict that required changing a confirmed constraint.
+This reduced unnecessary pauses for recoverable gaps while preserving the original
+claim and versioned pause workflow.
 
 The [earlier pause decision](../../archived/feature/2026-11-02-task-paused-worker-pings.md)
-introduced a verified pause for necessary human intervention, including specific
-information, decisions, authorization or actions unavailable within scope. That
-threshold made sense to prevent an agent from continuing without necessary
-human input. The new prompt narrows the agent-initiated pause trigger to the
-verified design conflict above, while retaining the pause property's runtime
-semantics and the original claim and resume checks. Current behavior is specified
-in the [Worker specification](../../../../docs/spec/daynight-worker.md) and its
-[prompt assembly](../../../../docs/design/daynight-worker.md).
+provided a broader verified pause for necessary human intervention. The narrower
+threshold addressed excessive interruption of work that an agent could resolve.
+The [subsequent execution and waiting decision](2026-11-18-worker-action-and-waiting.md)
+replaces that threshold to handle genuine blockers requiring external resources
+or input, and specifies action on existing failures before waiting. Current behavior
+is specified in the [Worker specification](../../../../docs/spec/daynight-worker.md)
+and its [prompt assembly](../../../../docs/design/daynight-worker.md).
 
 ## Alternatives
 
@@ -54,9 +47,7 @@ constraints.
 
 ## Consequences
 
-Equivalent instructions reach each automatic business-input path, so recovery or
-a ping does not restore the broader pause trigger. Agents must investigate and
-document material deviations and conflicts; prompt wording cannot itself prove
-that their judgment or evidence is correct. The existing property, claim and
-Worker lifecycle, scheduling, input delivery and custom prompt layers are not
-changed by this decision.
+The original decision retained the property, claim and Worker lifecycle,
+scheduling, input delivery and custom prompt layers. Prompt wording cannot itself
+prove that an agent's judgment or evidence is correct. The replacement decision
+continues these boundaries while revising the shared guidance.

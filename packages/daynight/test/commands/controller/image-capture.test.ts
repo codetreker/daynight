@@ -1,33 +1,39 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { unlinkSync } from "node:fs";
 import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
+import { ImageCaptureNotDispatchedError, ImageCaptureRequestError } from "../../../src/commands/controller/media/capture-error.js";
+import { ImageHistorySyncFailedError } from "../../../src/commands/controller/media/history-sync.js";
 import { createMarkdownCaptureCoordinator } from "../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
-import type { NativeProvider } from "../../../src/commands/controller/providers/types.js";
-import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
+import type { NativeProvider, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
+import type { NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
+import type { DirectCaptureSubmission, ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart, NativeImageSource } from "../../../src/session/image-values.js";
 import type { createControllerRelay } from "../../../src/commands/controller/relay.js";
-const disk = vi.hoisted(() => ({ freeBytes: null as bigint | null }));
+const disk = vi.hoisted(() => ({ freeBytes: null as bigint | null, statfs: vi.fn() }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs, statfsSync: (...args: Parameters<typeof fs.statfsSync>) => {
+    disk.statfs();
     const value = fs.statfsSync(...args);
     return disk.freeBytes === null ? value : { ...value, bavail: disk.freeBytes / BigInt(value.bsize) };
   } };
 });
 const policy = () => ({ verify() {}, close() {} });
 const roots: string[] = [];
-afterEach(async () => { disk.freeBytes = null; await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
-const fixture = async () => {
+afterEach(async () => { disk.freeBytes = null; disk.statfs.mockClear(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
+const fixture = async (contentOwnedLocally = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-capture-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "c-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
-  const file = path.join(home, "journal.sqlite"), options = { imageDecoder: validateImageFile };
+  const file = path.join(home, "journal.sqlite"), options = { imageDecoder: validateImageFile, contentOwnedLocally };
   const journal = openControllerLifecycleStore(file, ticket, options); journal.patchSnapshot({ nativeSessionId: "native" });
   const entryId = randomUUID(), imageId = randomUUID();
   journal.projectTimeline({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text: "original occurrence" }] });
@@ -44,6 +50,327 @@ const fixture = async () => {
   return { home, file, ticket, options, journal, request, receipt, source };
 };
 const bridge = (journal: ReturnType<typeof openControllerLifecycleStore>, capture: ReturnType<typeof createControllerRelay>["capture"], provider: NativeProvider | null = null) => createControllerCaptureBridge({ journal, capture, beforeCapture: async () => {}, provider: () => provider, writable: () => true });
+
+test("native retry updates the original slot durably and an older pending failure cannot replace it", async () => {
+  const f = await fixture(), entryId = randomUUID(), attemptId = randomUUID(), resourceId = randomUUID();
+  let stateKey = "", failPatch = true;
+  const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => {
+    if (action !== "submit" || !("request" in body)) throw new Error("Unexpected capture operation.");
+    return { captureId: body.request.captureId, attemptId: body.attemptId, revision: "1", occurrence: body.request.occurrence, state: "failed", resourceId: null, resource: null, error: { code: "source_unavailable", message: "Original attempt failed." } };
+  };
+  const consumer = bridge(f.journal, capture);
+  const options = { ...consumer.providerOptions,
+    onTimeline: (entry: ProviderEntry) => f.journal.projectTimeline(entry),
+    onImageOccurrence: (occurrence: ImageOccurrence, native: NativeImageSource | null) => f.journal.registerImageOccurrence(occurrence, native).acknowledged,
+    imageOccurrenceAcknowledged: (id: string) => f.journal.imageOccurrenceAcknowledged(id),
+    imageRuntime: { readState: (key: string) => f.journal.readNativeImageState(key), writeState: (key: string, value: unknown) => { stateKey = key; f.journal.writeNativeImageState(key, value); }, patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => { if (failPatch) { failPatch = false; throw new Error("injected timeline failure"); } return f.journal.patchNativeImagePart(occurrence, part); } },
+  } as unknown as ProviderOptions;
+  const projector = new ProviderImageProjector(options);
+  const native = { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "message", nativePartId: "0" };
+  try {
+    projector.publish({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text: "image" }] }, [{ index: 0, label: "original", native, payload: { kind: "source", locator: { kind: "local", path: "/original/unchanged.png", contextId: randomUUID() } } }]);
+    f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); projector.acknowledged(); await projector.settled();
+    const first = f.journal.readNativeImageState(stateKey) as NativeImageProjectionState;
+    expect(first).toMatchObject({ phase: "settled", part: { type: "image_unavailable", error: { code: "source_unavailable" } } });
+    const retry = f.journal.retryImageCaptureRequest(first.request.captureId, attemptId);
+    const resource = { resourceId, revision: "1", status: "available" as const, name: "saved.png", mediaType: "image/png" as const, byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1, error: null };
+    const committed: ImageCaptureReceipt = { captureId: first.request.captureId, attemptId, revision: "3", occurrence: first.request.occurrence, state: "committed", resourceId, resource, error: null };
+    f.journal.observeImageCaptureReceipt(committed);
+    const originalEntry = f.journal.getTimelineEntry(entryId)!;
+    f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "2", content: [{ type: "text", text: "Position temporarily unavailable" }] });
+    expect(() => f.journal.applyNativeImageReceipt(retry, committed)).toThrow("original slot");
+    expect(f.journal.readNativeImageState(stateKey)).toMatchObject({ attemptId: first.attemptId, phase: "settled" });
+    f.journal.projectTimeline(originalEntry);
+    f.journal.applyNativeImageReceipt(retry, committed);
+    projector.acknowledged(); await projector.settled();
+    expect(f.journal.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", imageId: first.request.occurrence.imageId, resourceId }] });
+    expect(f.journal.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", attemptId, part: { type: "image", resourceId } });
+    f.journal.applyNativeImageReceipt(first.request, { ...committed, attemptId: first.attemptId, revision: "1", state: "failed", resourceId: null, resource: null, error: { code: "source_unavailable", message: "Original attempt failed." } });
+    expect(f.journal.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", resourceId }] });
+  } finally { await projector.close(); await f.journal.stopMedia(); f.journal.close(); }
+  const reopened = openControllerLifecycleStore(f.file, f.ticket, f.options);
+  try {
+    expect(reopened.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", resourceId }] });
+    expect(reopened.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", attemptId, part: { type: "image", resourceId } });
+  } finally { await reopened.stopMedia(); reopened.close(); }
+});
+
+test("relay captures require the original acknowledged position on the current connection", async () => {
+  const f = await fixture(), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "relay-position" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "image", error: { code: "source_unavailable", message: "Waiting" } }] });
+  const position = f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(position.sourceSequence);
+  const request = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence, locator: { kind: "resource" as const, resourceId: randomUUID() } };
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  let ack = "0";
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockResolvedValue({ ...f.receipt(), captureId: request.captureId, attemptId: request.attemptId, occurrence });
+  const beforeCapture = vi.fn(async () => {});
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture, provider: () => null, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => ack, sourceEpoch: f.ticket.executionId });
+  try {
+    await expect(consumer.providerOptions.prepareImageCapture!(request)).rejects.toThrow("current connection ACK");
+    ack = position.sourceSequence;
+    await consumer.providerOptions.prepareImageCapture!(request);
+    const submission = { request, attemptId: request.attemptId, outcome: { kind: "resource" as const } };
+    await consumer.providerOptions.submitImageCapture!(submission);
+    expect(capture).toHaveBeenCalledExactlyOnceWith("submit", { ...submission, sourceEpoch: f.ticket.executionId, sourceSeq: position.sourceSequence });
+    expect(beforeCapture).not.toHaveBeenCalled();
+    f.journal.projectTimeline({ entryId, revision: "2", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "new label", error: { code: "source_unavailable", message: "Waiting" } }] });
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toThrow("waiting for ACK");
+    ack = f.journal.getLastSourceSequence(); f.journal.acknowledgeEvents(ack);
+    await consumer.providerOptions.submitImageCapture!(submission);
+    expect(capture).toHaveBeenLastCalledWith("submit", { ...submission, sourceEpoch: f.ticket.executionId, sourceSeq: ack });
+    f.journal.projectTimeline({ entryId, revision: "3", kind: "assistant_message", imageProjectionError: null, content: [{ type: "text", text: "Moved" }, { type: "image_unavailable", imageId, label: "new label", error: { code: "source_unavailable", message: "Waiting" } }] });
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toMatchObject({ code: "capability_changed" });
+    expect(capture).toHaveBeenCalledTimes(2);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("a display-budget replacement ACK does not prove an image position", async () => {
+  const f = await fixture(true), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "oversized-position" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "text", text: "x".repeat(750_000) }, { type: "text", text: "y".repeat(750_000) }, { type: "image_unavailable", imageId, label: "image", error: { code: "source_unavailable", message: "Waiting" } }] });
+  const position = f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(position.sourceSequence);
+  const request = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence };
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture: async () => { throw new Error("must not dispatch"); }, beforeCapture: async () => {}, provider: () => null, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => position.sourceSequence, sourceEpoch: f.ticket.executionId });
+  try { await expect(consumer.providerOptions.prepareImageCapture!(request)).rejects.toMatchObject({ code: "capability_changed" }); }
+  finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("relay retry settles a removed position on the original attempt without reading source", async () => {
+  const f = await fixture(), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "retry-position" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "image", error: { code: "source_unavailable", message: "Waiting" } }] });
+  const position = f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(position.sourceSequence);
+  const request = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence }, attemptId = randomUUID();
+  f.journal.registerImageCaptureRequest(request);
+  f.journal.projectTimeline({ entryId, revision: "2", kind: "assistant_message", content: [{ type: "text", text: "Position removed" }] });
+  const receipt = { ...f.receipt(), captureId: request.captureId, attemptId, occurrence, revision: "2" };
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockImplementation(async (action) => action === "query" ? receipt : { ...receipt, revision: "3", state: "failed", resourceId: null, error: { code: "capability_changed", message: "The original image position is no longer available." } });
+  const source = vi.fn(async () => { throw new Error("must not read source"); });
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture: async () => {}, provider: () => null, retrySource: source, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => position.sourceSequence, sourceEpoch: f.ticket.executionId });
+  try {
+    await expect(consumer.retry({ captureId: request.captureId, attemptId }, new AbortController().signal)).rejects.toMatchObject({ imageError: { code: "capability_changed", message: "The original image position is no longer available." } });
+    expect(source).not.toHaveBeenCalled();
+    expect(capture.mock.calls).toEqual([["query", { captureId: request.captureId }], ["submit", { request, attemptId, outcome: { kind: "failed", error: { code: "capability_changed", message: "The original image position is no longer available." } } }]]);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("relay retry reconciles a lost submit receipt without releasing or rereading its sealed attempt", async () => {
+  const f = await fixture(), entryId = randomUUID(), imageId = randomUUID(), input = await f.source("blue");
+  const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "retry-lost-receipt" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "image", error: { code: "source_unavailable", message: "Waiting" } }] });
+  const position = f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(position.sourceSequence);
+  const request = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence }, attemptId = randomUUID();
+  f.journal.registerImageCaptureRequest(request);
+  const receipt = { ...f.receipt(), captureId: request.captureId, attemptId, occurrence, revision: "2" };
+  let queries = 0;
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockImplementation(async action => {
+    if (action === "query") return ++queries === 1 ? receipt : { ...receipt, revision: "3", state: "copying" };
+    throw new Error("receipt lost");
+  });
+  const source = vi.fn(async () => f.journal.media().stageCapture({ ...input, captureId: request.captureId, attemptId, imageId }));
+  const release = vi.spyOn(f.journal.media(), "releaseCaptureSource");
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture: async () => {}, provider: () => null, retrySource: source, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => position.sourceSequence, sourceEpoch: f.ticket.executionId });
+  try {
+    await expect(consumer.retry({ captureId: request.captureId, attemptId }, new AbortController().signal)).rejects.toMatchObject({ name: "ImageCaptureRetryUnknownError" });
+    const saved = f.journal.media().captureStatus(request.captureId, attemptId);
+    expect(await consumer.retry({ captureId: request.captureId, attemptId }, new AbortController().signal)).toEqual(saved);
+    expect(source).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledTimes(1); expect(release).toHaveBeenCalledWith(request.captureId, request.attemptId);
+    expect(capture.mock.calls.map(call => call[0])).toEqual(["query", "submit", "query"]);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("relay retry replays its frozen failure after the position disappears", async () => {
+  const f = await fixture(), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "frozen-failure" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "image", error: { code: "source_unavailable", message: "Waiting" } }] });
+  const position = f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(position.sourceSequence);
+  const request = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence }, attemptId = randomUUID();
+  f.journal.registerImageCaptureRequest(request); f.journal.retryImageCaptureRequest(request.captureId, attemptId);
+  const failure = { code: "source_not_found", message: "The original image source could not be captured." };
+  const submission = f.journal.freezeImageCaptureSubmission({ request, attemptId, outcome: { kind: "failed", error: failure } });
+  f.journal.projectTimeline({ entryId, revision: "2", kind: "assistant_message", content: [{ type: "text", text: "Position removed" }] });
+  const receipt = { ...f.receipt(), captureId: request.captureId, attemptId, occurrence, revision: "2" };
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockImplementation(async action => action === "query" ? receipt : { ...receipt, revision: "3", state: "failed", resourceId: null, error: failure });
+  const source = vi.fn(async () => { throw new Error("must not read source"); });
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture: async () => {}, provider: () => null, retrySource: source, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => "0", sourceEpoch: f.ticket.executionId });
+  try {
+    await expect(consumer.retry({ captureId: request.captureId, attemptId }, new AbortController().signal)).rejects.toMatchObject({ imageError: failure });
+    expect(capture.mock.calls).toEqual([["query", { captureId: request.captureId }], ["submit", submission]]);
+    expect(source).not.toHaveBeenCalled();
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("native capture rechecks a removed position after asynchronous prepare and before source IO", async () => {
+  const f = await fixture(), entryId = randomUUID(), read = vi.fn(async () => { throw new Error("must not read source"); });
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture: async () => { throw new Error("must not dispatch"); }, beforeCapture: async () => {}, provider: () => null, writable: () => true, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => f.journal.getLastAcknowledgedSequence(), sourceEpoch: f.ticket.executionId });
+  const prepare = consumer.providerOptions.prepareImageCapture!;
+  const options = { ...consumer.providerOptions,
+    prepareImageCapture: async (request: ImageCaptureRequest) => {
+      await prepare(request);
+      f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "2", content: [{ type: "text", text: "Position removed" }] });
+    },
+    onTimeline: (entry: ProviderEntry) => f.journal.projectTimeline(entry),
+    onImageOccurrence: (occurrence: ImageOccurrence, native: NativeImageSource | null) => f.journal.registerImageOccurrence(occurrence, native).acknowledged,
+    imageOccurrenceAcknowledged: (id: string) => f.journal.imageOccurrenceAcknowledged(id),
+    imageRuntime: { readState: (key: string) => f.journal.readNativeImageState(key), writeState: (key: string, value: unknown) => f.journal.writeNativeImageState(key, value), patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => f.journal.patchNativeImagePart(occurrence, part) },
+  } as unknown as ProviderOptions;
+  const projector = new ProviderImageProjector(options);
+  try {
+    projector.publish({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text: "image" }] }, [{ index: 0, label: "image", native: { provider: "codex", nativeSessionId: "native", nativeMessageId: "message", nativePartId: "0" }, payload: { kind: "deferred", read } }]);
+    f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); projector.acknowledged();
+    await projector.settled();
+    expect(read).not.toHaveBeenCalled();
+  } finally { await projector.close(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("direct submission freezes the original business before dispatch and reuses sealed bytes after reopen", async () => {
+  const f = await fixture(), source = await f.source("blue"), lost = new Error("Submit receipt was lost");
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockRejectedValue(lost);
+  const consumer = bridge(f.journal, capture);
+  await consumer.providerOptions.prepareImageCapture!(f.request);
+  const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+  const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+  try {
+    expect(capture).not.toHaveBeenCalled();
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toBe(lost);
+    expect(capture).toHaveBeenCalledExactlyOnceWith("submit", submission);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+  await rm(source.inputPath);
+  const journal = openControllerLifecycleStore(f.file, f.ticket, f.options);
+  const replay = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockResolvedValue(f.receipt({ state: "copying" }));
+  try {
+    await expect(bridge(journal, replay).providerOptions.submitImageCapture!(submission)).resolves.toMatchObject({ state: "copying" });
+    expect(replay).toHaveBeenCalledExactlyOnceWith("submit", submission);
+    const bytes = await journal.media().readCapture({ captureId: f.request.captureId, attemptId: f.request.attemptId, sha256: validated.sha256, byteLength: validated.byteLength, offset: "0", limit: 524288 }, policy);
+    expect(bytes.data).toBe(source.bytes.toString("base64"));
+    await expect(bridge(journal, replay).providerOptions.submitImageCapture!({ ...submission, outcome: { kind: "failed", error: { code: "changed", message: "Changed outcome" } } })).rejects.toThrow("frozen outcome");
+    expect(replay).toHaveBeenCalledOnce();
+  } finally { await journal.stopMedia(); journal.close(); }
+});
+
+test("a sealed direct submission waits for a fresh history checkpoint without rereading its source", async () => {
+  const f = await fixture(), source = await f.source("blue");
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockResolvedValue(f.receipt({ state: "copying" }));
+  const beforeCapture = vi.fn(async () => {});
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture, provider: () => null, writable: () => true });
+  let release!: () => void;
+  try {
+    await consumer.providerOptions.prepareImageCapture!(f.request);
+    const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+    await rm(source.inputPath);
+    const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+    beforeCapture.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const submitting = consumer.providerOptions.submitImageCapture!(submission);
+    expect(beforeCapture).toHaveBeenCalledTimes(2); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+    release(); await submitting;
+    expect(capture).toHaveBeenCalledExactlyOnceWith("submit", submission);
+    beforeCapture.mockRejectedValueOnce(new Error("New tail ACK is pending."));
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+    expect(capture).toHaveBeenCalledOnce(); expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+  } finally { release?.(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("a native source finishing offline is sealed locally and its frozen bytes survive reopen and submit reconciliation", async () => {
+  const f = await fixture(), source = await f.source("blue");
+  let journal = f.journal, online = true, stateKey = "", resolveRead!: (value: { kind: "file"; path: string; byteLength: string; sha256: string; release(): void }) => void;
+  const release = vi.fn(() => unlinkSync(source.inputPath));
+  const read = vi.fn(() => new Promise<Parameters<typeof resolveRead>[0]>(resolve => { resolveRead = resolve; }));
+  const beforeCapture = vi.fn(async () => { if (!online) throw new ImageCaptureNotDispatchedError("History connection is offline."); });
+  const submissions: DirectCaptureSubmission[] = [], actions: string[] = [];
+  const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => {
+    actions.push(action);
+    if (action === "query") throw new ImageCaptureRequestError({ code: "capture_not_found", message: "No capture was registered." });
+    if (action !== "submit" || !("request" in body)) throw new Error("Unexpected legacy capture exchange.");
+    const submission = body as DirectCaptureSubmission;
+    submissions.push(structuredClone(submission));
+    if (submissions.length === 1) throw new Error("Submit receipt was lost.");
+    if (submission.outcome.kind !== "validated") throw new Error("The original native bytes were not sealed.");
+    return { captureId: submission.request.captureId, attemptId: submission.attemptId, revision: "1", occurrence: submission.request.occurrence, state: "committed", resourceId: f.receipt().resourceId, error: null,
+      resource: { resourceId: f.receipt().resourceId!, revision: "1", status: "available", name: "original.png", error: null, ...submission.outcome.validated } };
+  };
+  const stages: ReturnType<typeof vi.fn>[] = [];
+  const options = (): ProviderOptions => {
+    const consumer = createControllerCaptureBridge({ journal, capture, beforeCapture, provider: () => null, writable: () => online });
+    const stage = vi.fn(consumer.providerOptions.stageImageCapture!); stages.push(stage);
+    return { ...consumer.providerOptions, stageImageCapture: stage,
+      onTimeline: (entry: ProviderEntry) => journal.projectTimeline(entry),
+      onImageOccurrence: (occurrence: ImageOccurrence, native: NativeImageSource | null) => journal.registerImageOccurrence(occurrence, native).acknowledged,
+      imageOccurrenceAcknowledged: (imageId: string) => journal.imageOccurrenceAcknowledged(imageId),
+      imageRuntime: { readState: (key: string) => journal.readNativeImageState(key), writeState: (key: string, value: unknown) => { stateKey = key; journal.writeNativeImageState(key, value); }, patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => journal.patchNativeImagePart(occurrence, part) },
+    } as unknown as ProviderOptions;
+  };
+  const entry: ProviderEntry = { entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Native image" }] };
+  const slot = { index: 0, label: "Native image", native: { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "original-message", nativePartId: "content/0" }, payload: { kind: "deferred" as const, read } };
+  let projector = new ProviderImageProjector(options());
+  try {
+    projector.publish(entry, [slot]); journal.acknowledgeEvents(journal.getLastSourceSequence()); projector.acknowledged();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce()); expect(beforeCapture).toHaveBeenCalledOnce();
+    online = false;
+    resolveRead({ kind: "file", path: source.inputPath, byteLength: source.byteLength, sha256: source.sha256, release });
+    await projector.settled();
+    const frozen = journal.readNativeImageState(stateKey) as NativeImageProjectionState;
+    expect(frozen).toMatchObject({ phase: "submit", submission: { outcome: { kind: "validated", validated: { sha256: source.sha256 } } } });
+    expect(journal.media().captureStatus(frozen.request.captureId, frozen.attemptId)).toEqual(frozen.submission!.outcome.kind === "validated" ? frozen.submission!.outcome.validated : null);
+    expect(actions).toEqual([]); expect(release).toHaveBeenCalledOnce(); expect(beforeCapture).toHaveBeenCalledOnce(); expect(stages[0]).toHaveBeenCalledOnce();
+    await projector.close(); await journal.stopMedia(); journal.close();
+    journal = openControllerLifecycleStore(f.file, f.ticket, f.options); online = true;
+    projector = new ProviderImageProjector(options()); projector.publish(entry, [slot]);
+    await vi.waitFor(() => expect(actions).toEqual(["submit", "query", "submit"]), { timeout: 4000 }); await projector.settled();
+    expect(submissions).toEqual([frozen.submission, frozen.submission]);
+    expect(read).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce(); expect(stages[0]).toHaveBeenCalledOnce(); expect(stages[1]).not.toHaveBeenCalled();
+    expect(journal.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.receipt().resourceId } });
+    expect(await journal.media().read({ resourceId: f.receipt().resourceId!, offset: "0", limit: 524288 })).toMatchObject({ data: source.bytes.toString("base64") });
+  } finally { resolveRead?.({ kind: "file", path: source.inputPath, byteLength: source.byteLength, sha256: source.sha256, release }); await projector.close(); await journal.stopMedia(); journal.close(); }
+});
+
+test.each(["missing", "corrupt"] as const)("direct replay refuses %s sealed files while retaining the frozen identity", async kind => {
+  const f = await fixture(), source = await f.source("blue"), capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockRejectedValue(new Error("Original receipt lost"));
+  const consumer = bridge(f.journal, capture);
+  try {
+    await consumer.providerOptions.prepareImageCapture!(f.request);
+    const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+    const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toThrow("receipt lost");
+    const db = new Database(f.file, { readonly: true });
+    let filename: string;
+    try { filename = (db.prepare("SELECT filename FROM image_captures WHERE capture_id=?").get(`${f.request.captureId}:${f.request.attemptId}`) as { filename: string }).filename; } finally { db.close(); }
+    const sealed = path.join(`${f.file}.media-staging`, filename);
+    await chmod(sealed, 0o600);
+    if (kind === "missing") await rm(sealed); else await writeFile(sealed, Buffer.alloc(source.bytes.length));
+    await rm(source.inputPath);
+    expect(f.journal.media().captureStatus(f.request.captureId, f.request.attemptId)).toEqual(validated);
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toThrow(kind === "missing" ? "ENOENT" : "digest differs");
+    expect(capture).toHaveBeenCalledOnce();
+    expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("history synchronization failures cannot be mistaken for an unknown capture dispatch", async () => {
+  const f = await fixture(), lost = new Error("History response lost");
+  const beforeCapture = vi.fn().mockRejectedValueOnce(lost).mockResolvedValueOnce(undefined);
+  const capture = vi.fn(async () => f.receipt());
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture, provider: () => null, writable: () => true });
+  try {
+    const failure = await consumer.providerOptions.registerImageCapture!(f.request).catch(error => error);
+    expect(failure).toBeInstanceOf(ImageCaptureNotDispatchedError);
+    expect(failure.cause).toBe(lost); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.getImageCaptureRequest(f.request.captureId)).toEqual(f.request);
+    expect(await consumer.providerOptions.registerImageCapture!(f.request)).toEqual(f.receipt());
+    expect(capture).toHaveBeenCalledExactlyOnceWith("register", f.request);
+    const refused = new ImageHistorySyncFailedError({ code: "quota_exceeded", message: "History capacity exhausted." });
+    beforeCapture.mockRejectedValueOnce(refused);
+    await expect(consumer.providerOptions.registerImageCapture!(f.request)).rejects.toMatchObject({ name: "ImageCapturePrerequisiteError", code: "quota_exceeded", message: "History capacity exhausted." });
+    expect(capture).toHaveBeenCalledOnce();
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
 
 test("an unknown register survives reopen and observes only the original capture identity", async () => {
   const f = await fixture(), calls: unknown[] = [];
@@ -177,7 +504,7 @@ test.each(["local", "external"] as const)("cached %s retries share admission wor
   const first = consumer.retry(f.request, abort.signal), second = consumer.retry(f.request, abort.signal);
   const outcomes = Promise.allSettled([first, second]);
   try {
-    expect(resolver).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(resolver).toHaveBeenCalledOnce());
     abort.abort(reason); released.resolve();
     expect(await outcomes).toEqual([{ status: "rejected", reason }, { status: "rejected", reason }]);
     expect(await consumer.retry(f.request, new AbortController().signal)).toEqual(f.validated);
@@ -216,34 +543,45 @@ test("query reconciles a service retry whose request was lost without reviving a
     await expect(consumer.providerOptions.commitImageCapture!(f.request.captureId, f.request.attemptId, { mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 })).rejects.toThrow("attempt conflict");
     current = f.receipt({ revision: "4" });
     await expect(consumer.providerOptions.queryImageCapture!(f.request.captureId)).rejects.toThrow("attempt conflict");
-  } finally { f.journal.close(); }
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
 
-test("source IO reserves both complete copies durably and never reopens an interrupted source", async () => {
+test("a delayed old query cannot cancel the current attempt source writer", async () => {
+  const f = await fixture(), query = Promise.withResolvers<ImageCaptureReceipt>();
+  const consumer = bridge(f.journal, async () => query.promise);
+  f.journal.registerImageCaptureRequest(f.request);
+  f.journal.observeImageCaptureReceipt(f.receipt({ state: "failed", resourceId: null, error: { code: "decode_failed", message: "Previous source failed" } }));
+  const oldQuery = consumer.providerOptions.queryImageCapture!(f.request.captureId), result = oldQuery.catch(error => error);
+  const attemptId = randomUUID(); f.journal.retryImageCaptureRequest(f.request.captureId, attemptId);
+  const lease = f.journal.media().reserveCaptureSource(f.request.captureId, attemptId), started = Promise.withResolvers<AbortSignal>(), finish = Promise.withResolvers<void>();
+  const writer = lease.runWriter(async (_filename, signal) => { started.resolve(signal); await finish.promise; });
+  const signal = await started.promise;
+  try {
+    query.resolve(f.receipt({ state: "failed", resourceId: null, error: { code: "decode_failed", message: "Previous source failed" } }));
+    expect(await result).toMatchObject({ message: "Image capture receipt attempt conflict." });
+    expect(signal.aborted).toBe(false);
+    expect(f.journal.getImageCaptureAttempt(f.request.captureId)).toBe(attemptId);
+  } finally { finish.resolve(); await writer; await lease.release(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("source IO retains its original attempt and never reopens an interrupted source", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), lease = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
   expect((await stat(lease.outputPath)).size).toBe(0);
-  const ledger = new Database(path.join(f.home, "controller/media/budget.sqlite"), { readonly: true });
-  const charge = () => (ledger.prepare("SELECT reserved_bytes AS bytes FROM allocations WHERE execution_id=?").get(f.ticket.executionId) as { bytes: number }).bytes;
-  const reserved = charge();
-  expect(reserved).toBeGreaterThanOrEqual(2 * 10 * 1024 * 1024);
   const uploadId = randomUUID();
   await media.prepare({ uploadId, imageId: randomUUID(), target: { serverOrigin: f.ticket.serverOrigin, actorUserId: f.ticket.userId!, fence: { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: "native" }, name: "other.png", mediaType: "image/png", byteLength: "10485760", sha256: "a".repeat(64) });
-  expect(charge()).toBeGreaterThanOrEqual(reserved + 10 * 1024 * 1024);
   await media.release({ uploadId });
   await expect(lease.runWriter(async filename => { await writeFile(filename, Buffer.from("partial")); })).resolves.toBeUndefined();
   await f.journal.stopMedia(); f.journal.close();
   const journal = openControllerLifecycleStore(f.file, f.ticket, f.options);
   try {
     expect(() => journal.media().reserveCaptureSource(f.request.captureId, f.request.attemptId)).toThrow("query");
-    expect(charge()).toBeGreaterThanOrEqual(reserved);
     expect(await readFile(lease.outputPath, "utf8")).toBe("partial");
     await journal.media().releaseCaptureSource(f.request.captureId, f.request.attemptId);
     await expect(stat(lease.outputPath)).rejects.toThrow();
-    expect(charge()).toBeLessThan(reserved - 19 * 1024 * 1024);
-  } finally { ledger.close(); await journal.stopMedia(); journal.close(); }
+  } finally { await journal.stopMedia(); journal.close(); }
 });
 
 test("source release joins the writer before unlink and retains a validated stage", async () => {
@@ -304,18 +642,18 @@ test("capture staging rejects bytes whose decoded format differs from the declar
 });
 
 
-test("source reservations retain the free-space margin for every unwritten copy", async () => {
+test("source reservations admit both live sources without predicting their future disk copies", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);
   const secondRequest = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence: { ...f.request.occurrence, imageId: randomUUID(), sourceKey: "second-source" } };
   f.journal.registerImageOccurrence(secondRequest.occurrence, null); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); f.journal.registerImageCaptureRequest(secondRequest);
-  const media = f.journal.media(); disk.freeBytes = BigInt((512 + 30) * 1024 * 1024);
+  const media = f.journal.media(); disk.freeBytes = 0n;
   try {
     const first = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
-    expect(() => media.reserveCaptureSource(secondRequest.captureId, secondRequest.attemptId)).toThrow("free-space");
-    await first.release();
     const second = media.reserveCaptureSource(secondRequest.captureId, secondRequest.attemptId);
-    await second.release();
+    expect(media.tryAcquireMediaBlock()).toBeNull();
+    await first.release(); await second.release();
+    expect(disk.statfs).not.toHaveBeenCalled();
   } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
@@ -354,11 +692,9 @@ test("prepared delivery stays inside the policy lease before a queued revocation
   } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
-test("committed adoption checks the exact service receipt and reserves the third-copy peak", async () => {
+test("committed adoption checks the exact service receipt and retains the saved original", async () => {
   const f = await fixture(), source = await f.source("blue"); f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), reservation = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
-  const ledger = new Database(path.join(f.home, "controller/media/budget.sqlite"), { readonly: true });
-  const charge = () => (ledger.prepare("SELECT reserved_bytes AS bytes FROM allocations WHERE execution_id=?").get(f.ticket.executionId) as { bytes: number }).bytes;
   try {
     await reservation.runWriter(async filename => { await writeFile(filename, source.bytes); });
     const validated = await media.stageCapture({ ...source, inputPath: reservation.outputPath, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
@@ -374,12 +710,10 @@ test("committed adoption checks the exact service receipt and reserves the third
     const transfer = media.tryAcquireMediaBlock()!;
     try { expect(() => media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("source_capacity"); }
     finally { transfer.close(); }
-    const before = charge();
     media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
-    expect(charge()).toBeGreaterThanOrEqual(before + source.bytes.length);
     expect(f.journal.readResource(resource.resourceId, "0", 524288)).toMatchObject({ data: source.bytes.toString("base64"), eof: true });
     await reservation.release();
-  } finally { ledger.close(); await f.journal.stopMedia(); f.journal.close(); }
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
 test("committed originals survive source removal and reopen without recopying or repairing missing saved bytes", async () => {
@@ -388,10 +722,7 @@ test("committed originals survive source removal and reopen without recopying or
   const resource = { resourceId: f.receipt().resourceId!, status: "available" as const, name: "saved.png", ...validated, error: null, revision: "1" };
   f.journal.observeImageCaptureReceipt(f.receipt({ state: "committed", revision: "2", resource }));
   await rm(source.inputPath);
-  disk.freeBytes = BigInt(512 * 1024 * 1024 + source.bytes.length - 1);
-  expect(() => media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("free-space");
-  expect(() => f.journal.readResource(resource.resourceId, "0", 524288)).toThrow("unavailable");
-  disk.freeBytes = null;
+  disk.freeBytes = 0n;
   media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
   const blob = path.join(`${f.file}.pending-content/blobs`, createHash("sha256").update(resource.resourceId).digest("hex") + ".bin"), before = await stat(blob);
   await f.journal.stopMedia(); f.journal.close();
@@ -399,6 +730,7 @@ test("committed originals survive source removal and reopen without recopying or
   try {
     journal.media().adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
     expect((await stat(blob)).ino).toBe(before.ino);
+    expect(disk.statfs).not.toHaveBeenCalled();
     expect(journal.readResource(resource.resourceId, "0", 524288)).toMatchObject({ data: source.bytes.toString("base64") });
     await rm(blob);
     expect(() => journal.media().adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("missing");

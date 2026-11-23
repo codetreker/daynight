@@ -1,13 +1,16 @@
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { openDB } from 'idb';
 import { ApiError, getTaskSync, pauseAuthRequests } from '../src/api/client';
 import type { TaskSync, TaskSyncRead, WorkerClaim } from '../src/api/types';
 import { useTaskGraph } from '../src/features/projects/useTaskGraph';
 import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, taskSyncReadFixture, TEST_VIEWER_ID } from './helpers/taskSync';
+import { observationFor } from '../src/features/task-session-summary/project-observations';
 
 vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTaskSync: vi.fn() }));
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -32,6 +35,112 @@ const mount = (scope: TaskCacheScope) => renderHook(() => useTaskGraph(projectId
 });
 beforeEach(() => { vi.mocked(getTaskSync).mockReset(); });
 afterEach(() => scopes.splice(0).forEach((scope) => scope.dispose()));
+
+it('distinguishes a missing or mismatched observation from a confirmed failure and expiration', async () => {
+  const missing = { ...sync({}), taskObservations: {} };
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(missing));
+  const view = mount(cache());
+  const displayed = () => observationFor(view.result.current.observationStore.snapshot(), task);
+  await waitFor(() => expect(view.result.current.status).toBe('ready'));
+  expect(displayed()).toEqual({ state: 'unobserved', needsAttention: null, canOpen: false });
+  const failed = { taskVersion: 1n, state: 'unavailable' as const, observedAt: null, freshUntil: null, needsAttention: null, canOpen: false };
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...sync({}, query), tasks: [], taskObservations: { [taskId]: failed } }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(displayed()?.state).toBe('unavailable'));
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...sync({}, query), tasks: [], taskObservations: { [taskId]: { ...failed, taskVersion: 2n } } }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(displayed()?.state).toBe('unobserved'));
+  const expired = { taskVersion: 1n, state: 'working' as const, observedAt: '2026-10-22T09:59:00Z', freshUntil: '2026-10-22T09:59:30Z', needsAttention: false, canOpen: true };
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...sync({}, query), tasks: [], taskObservations: { [taskId]: expired } }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(displayed()).toEqual({ state: 'expired', needsAttention: null, canOpen: false }));
+  view.unmount();
+});
+
+it('marks a failed project read unavailable, withdraws its Session entrance and recovers on success', async () => {
+  const live = { taskVersion: 1n, state: 'working' as const, observedAt: '2026-10-22T10:00:00Z', freshUntil: '2026-10-22T10:00:30Z', needsAttention: false, canOpen: true };
+  const withLive = (query: { readonly epoch?: string; readonly since?: string } = {}) => ({ ...sync({}, query), taskObservations: { [taskId]: live } });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(withLive()));
+  const view = mount(cache());
+  await waitFor(() => expect(view.result.current.observationStore.snapshot().get(taskId)?.canOpen).toBe(true));
+  vi.mocked(getTaskSync).mockRejectedValueOnce(new ApiError('network'));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(view.result.current.observationStore.snapshot().get(taskId)).toEqual({ state: 'unavailable', needsAttention: null, canOpen: false }));
+  expect(view.result.current.observationStore.matches(view.result.current.snapshot!.summaries.get(taskId)!)).toBe(true);
+  expect(view.result.current.error).toMatchObject({ kind: 'network' });
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...withLive(query), tasks: [] }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(view.result.current.observationStore.snapshot().get(taskId)).toEqual({ state: 'working', needsAttention: false, canOpen: true }));
+  expect(view.result.current.error).toBeNull();
+  view.unmount();
+});
+
+it.each(['no worker', 'completed worker'] as const)('rejects a readable Session on a same-version delta with %s', async (kind) => {
+  const properties = kind === 'no worker' ? {} : { worker: { ...worker, state: 'completed' as const } };
+  const restarted = { ...task, properties };
+  const base = (query: { readonly epoch?: string; readonly since?: string } = {}) => taskSyncFromGraph(graphFixture([restarted]), {
+    query, versionForTask: () => 1n, propertiesForTask: () => properties,
+    taskObservations: { [taskId]: { taskVersion: 1n, state: 'no_session', observedAt: '2026-10-22T10:00:00Z', freshUntil: '2026-10-22T10:00:30Z', needsAttention: null, canOpen: false } },
+  });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(base()));
+  const scope = cache(); const view = mount(scope);
+  await waitFor(() => expect(view.result.current.observationStore.snapshot().get(taskId)?.state).toBe('no_session'));
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture({ ...base(query), tasks: [],
+    taskObservations: { [taskId]: { taskVersion: 1n, state: 'working', observedAt: '2026-10-22T10:00:00Z', freshUntil: '2026-10-22T10:00:30Z', needsAttention: false, canOpen: true } },
+  }));
+  act(() => view.result.current.refresh());
+  await waitFor(() => expect(view.result.current.error).toMatchObject({ kind: 'protocol' }));
+  expect(view.result.current.observationStore.snapshot().get(taskId)?.canOpen).not.toBe(true);
+  expect(view.result.current.snapshot?.summaries.get(taskId)?.properties).toEqual(properties);
+  view.unmount();
+});
+
+it('publishes a readable active herdr Session even when its activity is unavailable', async () => {
+  const herdr: WorkerClaim = { ...worker, agentControlMode: 'herdr', herdr: { session: 'session', workspaceId: 'workspace', paneId: 'pane' } };
+  const running = { ...task, properties: { worker: herdr } };
+  const response = taskSyncFromGraph(graphFixture([running]), { versionForTask: () => 1n, propertiesForTask: () => running.properties,
+    taskObservations: { [taskId]: { taskVersion: 1n, state: 'unavailable', observedAt: '2026-10-22T10:00:00Z', freshUntil: '2026-10-22T10:00:30Z', needsAttention: null, canOpen: true } },
+  });
+  vi.mocked(getTaskSync).mockResolvedValueOnce(taskSyncReadFixture(response));
+  const view = mount(cache());
+  await waitFor(() => expect(view.result.current.observationStore.snapshot().get(taskId)).toEqual({ state: 'unavailable', needsAttention: null, canOpen: true }));
+  expect(view.result.current.error).toBeNull();
+  view.unmount();
+});
+
+it('persists a hidden background Task update without publishing its Session', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  let visibility: DocumentVisibilityState = 'visible';
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(sync({ [taskId]: 'working' })));
+  const scope = cache();
+  const applied = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const applySync = scope.applySync.bind(scope); let applications = 0;
+  vi.spyOn(scope, 'applySync').mockImplementation((...args) => {
+    const result = applySync(...args); const index = applications++;
+    void result.then(() => applied[index]?.resolve(), (error) => applied[index]?.reject(error));
+    return result;
+  });
+  const view = mount(scope);
+  act(() => view.result.current.sessionStore.setChain('chain', [taskId], true));
+  await act(async () => { await applied[0]!.promise; });
+  expect(view.result.current.sessionStore.snapshot().get(taskId)?.indicator).toBe('working');
+  const changed = { ...task, title: 'Background update', version: 2n, updatedAt: '2026-10-22T10:00:01Z' };
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture(taskSyncFromGraph(graphFixture([changed]), {
+    query, sessions: { [taskId]: 'notice' }, versionForTask: () => 2n, propertiesForTask: () => changed.properties,
+  })));
+  act(() => { visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+  expect(view.result.current.sessionStore.snapshot().size).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  await act(async () => { await applied[1]!.promise; });
+  expect(view.result.current.snapshot?.summaries.get(taskId)?.version).toBe(2n);
+  expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe('Background update');
+  expect(view.result.current.sessionStore.snapshot().size).toBe(0);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  try {
+    expect((await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId]))?.summary).toMatchObject({ titlePreview: 'Background update', version: 2n });
+  } finally { database.close(); view.unmount(); }
+});
 
 it('only publishes this page producer and accepts Session-only empty deltas', async () => {
   vi.mocked(getTaskSync).mockImplementation(async (_project, query) => taskSyncReadFixture(sync({ [taskId]: 'working' }, query)));

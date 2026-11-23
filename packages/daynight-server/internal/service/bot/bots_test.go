@@ -209,6 +209,65 @@ func TestBotReadsForwardScopeAndSuppressResultsOnFailure(t *testing.T) {
 		}
 	}
 }
+func TestBotListContinuesWithinItsScope(t *testing.T) {
+	const workerID = "624f73c9-e6b5-4806-8c8d-4c04690d1d1b"
+	for _, tc := range []struct {
+		name     string
+		workerID *string
+	}{
+		{name: "global"},
+		{name: "worker", workerID: pointer(workerID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBotFixture(t, "snapshot", "list", "read_done", "snapshot", "list", "read_done")
+			first := frozenBot(f.p, botInput(workerID))
+			second := frozenBot(f.p, botInput(workerID))
+			second.CreatedAt = first.CreatedAt.Add(time.Second)
+			calls := 0
+			f.service.operations.list = func(ctx context.Context, scope store.SnapshotScope, principal model.Principal, worker *string, page store.Page) (store.BotPage, error) {
+				f.plan.call("list")
+				identical(t, ctx, f.ctx)
+				identical(t, scope, f.snapshot)
+				same(t, principal, f.p)
+				same(t, worker, tc.workerID)
+				calls++
+				if calls == 1 {
+					same(t, page, store.Page{Limit: 1})
+					return store.BotPage{Items: []model.Bot{first}, HasMore: true}, nil
+				}
+				if page.Limit != 1 || page.After == nil || page.After.ID != first.ID || !page.After.CreatedAt.Equal(first.CreatedAt) {
+					t.Fatalf("Bot list continuation did not forward its keyset: got %+v, want ID=%q CreatedAt=%v limit=1", page, first.ID, first.CreatedAt)
+				}
+				return store.BotPage{Items: []model.Bot{second}}, nil
+			}
+			list := func(request model.PageRequest) (botcore.BotPage, error) {
+				if tc.workerID == nil {
+					return f.service.List(f.ctx, f.p, request)
+				}
+				return f.service.ListWorker(f.ctx, f.p, strings.ToUpper(*tc.workerID), request)
+			}
+			page, err := list(model.PageRequest{Limit: 1})
+			if err != nil || page.NextCursor == nil {
+				t.Fatalf("first Bot list page: %+v %v", page, err)
+			}
+			same(t, page.Items, []model.Bot{first})
+			nextRequest := model.PageRequest{Limit: 1, Cursor: page.NextCursor}
+			next, err := list(nextRequest)
+			if err != nil || next.NextCursor != nil {
+				t.Fatalf("final Bot list page: %+v %v", next, err)
+			}
+			same(t, next.Items, []model.Bot{second})
+
+			if tc.workerID == nil {
+				// The strict fixture allows no further snapshot calls.
+				rejected, err := f.service.ListWorker(f.ctx, f.p, workerID, nextRequest)
+				requireFault(t, err, "invalid_input")
+				same(t, rejected, botcore.BotPage{})
+			}
+		})
+	}
+}
+
 func TestBotAdmissionRejectsBeforeOpeningScope(t *testing.T) {
 	f := newBotFixture(t)
 	in := botInput(uuid.NewString())

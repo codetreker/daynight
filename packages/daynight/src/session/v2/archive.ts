@@ -1,7 +1,7 @@
-import { assertNativeSessionIdProgression, assertTerminalBinding, parseSessionV2Owner, parseSessionV2Runs, parseSessionV2UnavailableEvidence, parseTerminalBinding, parseTerminalFrame } from "./protocol.js";
+import { assertNativeSessionIdProgression, assertTerminalBinding, parseSessionV2Owner, parseSessionV2Runs, parseSessionV2UnavailableEvidence, parseTerminalBinding, parseTerminalFrame } from "./recording.js";
 import { SESSION_V2_LIMITS, byteLength, canonicalSessionJson, choice, decodeStrictSessionJson, exact, fail, hash, hashSessionBytes, list, literal, nullable, seq, text, timestamp, unique, utf8, uuid } from "./values.js";
-import type { SessionV2Archive, SessionV2BoundaryGap, SessionV2BoundaryEndpoint, SessionV2IntervalGap, SessionV2UnavailableRun, SessionV2FrameFile, SessionV2FrameIndex, SessionV2Gap, SessionV2Segment, TerminalFrame } from "./types.js";
-export type { SessionV2Archive, SessionV2BoundaryGap, SessionV2BoundaryEndpoint, SessionV2IntervalGap, SessionV2UnavailableRun, SessionV2FrameFile, SessionV2FrameIndex, SessionV2Gap, SessionV2Segment } from "./types.js";
+import type { SessionV2Archive, SessionV2BoundaryGap, SessionV2BoundaryEndpoint, SessionV2IntervalGap, SessionV2UnavailableRun, SessionV2FrameFile, SessionV2FrameIndex, SessionV2Gap, SessionV2Segment, TerminalFrame } from "./recording-types.js";
+export type { SessionV2Archive, SessionV2BoundaryGap, SessionV2BoundaryEndpoint, SessionV2IntervalGap, SessionV2UnavailableRun, SessionV2FrameFile, SessionV2FrameIndex, SessionV2Gap, SessionV2Segment } from "./recording-types.js";
 const inRange = (value: string, start: string, end: string): boolean => Date.parse(value) >= Date.parse(start) && Date.parse(value) <= Date.parse(end);
 const parseSegment = (value: unknown): SessionV2Segment => {
   const o = exact(value, ["segmentId", "segmentOrdinal", "executionGeneration", "binding", "startedAt", "endedAt", "durationMs"]);

@@ -40,6 +40,7 @@ type ProjectDeletionWriter interface {
 }
 
 type ProjectDeletionScope interface {
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	EligibilityDAO() WebhookEligibilityDAO
 	ProjectDAO() ProjectDeletionDAO
 	SessionDAO() ProjectSessionRetirementDAO

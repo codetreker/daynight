@@ -21,8 +21,7 @@ Overview navigation also saves the resulting assignee condition when it must
 clear an obstruction. Read, validation and write failures leave current-session
 interaction available and report the preference error.
 
-Only this filter is added to browser persistence; status, search and page
-numbers retain their existing lifetimes. The [filter decision](2026-11-05-task-list-status-filter.md)
+The [status preference decision](2026-11-16-project-status-multiselect.md) also persists the status set; search and page numbers retain their existing lifetimes. The [filter decision](2026-11-05-task-list-status-filter.md)
 retains the combined matching, pagination and complete-chain guarantees. The
 [original browsing preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md)
 explains why browser-local, independent records were chosen for viewing
@@ -44,5 +43,6 @@ Restoration is local to one browser origin and does not synchronize across
 browsers. Account and project isolation prevent one choice from becoming
 another account's or project's default. Browser storage can be unavailable or
 contain invalid data; an error is visible and the session remains usable without
-claiming the value was saved. The full project snapshot, graph context and
-statistics remain independent of the displayed filter.
+claiming the value was saved. The full project snapshot, graph context and overview statistics remain
+independent of the displayed filter. The [tab count decision](../bug-fix/2026-11-13-assignee-scoped-tab-counts.md)
+uses the restored assignee selection when deriving tab counts.

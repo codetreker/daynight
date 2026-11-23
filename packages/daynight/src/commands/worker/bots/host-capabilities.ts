@@ -1,3 +1,5 @@
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { createWorkerToolInspector } from "../native-selection.js";
 import { constants, existsSync } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -7,11 +9,11 @@ import type { Operation } from "../../../api/operation.js";
 import type { WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerAssistantProvider } from "../../../api/types.js";
 import { copilotExecutable } from "../../controller/providers/copilot-runtime.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "../herdr/command.js";
-import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandDeadlineError, OwnedCommandError, runOwnedCommand, spawnOwnedProcess } from "../owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../owned-command.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../codex-probe-owner.js";
 import type { CodexProbeOwner } from "../codex-probe-owner.js";
-import { NativeVersionOutputError, parseNativeAgentVersion } from "../herdr/version-probe.js";
+import { NativeVersionOutputError, parseNativeAgentVersion } from "../native-version.js";
 import type { ExecutionConfiguration } from "../types.js";
 
 export type AssistantHostIssue = { provider: WorkerAgent; reason: WorkerAssistantHostReason; error: unknown };
@@ -21,12 +23,12 @@ const providers = ["codex", "claude", "copilot"] as const;
 const validText = (value: string, bytes: number): boolean => value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) && Buffer.byteLength(value) <= bytes;
 const hasCode = (error: unknown, codes: readonly string[]): boolean => error instanceof Error && (("code" in error && codes.includes(String(error.code))) || hasCode(error.cause, codes));
 const reasonOf = (error: unknown): WorkerAssistantHostReason => {
-  if (hasHerdrCommandCleanupFailure(error)) return "unavailable";
-  if (error instanceof OperationError || error instanceof HerdrCommandDeadlineError) return "timeout";
+  if (hasOwnedCommandCleanupFailure(error)) return "unavailable";
+  if (error instanceof OperationError || error instanceof OwnedCommandDeadlineError) return "timeout";
   if (hasCode(error, ["ENOENT", "ENOTDIR", "MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"])) return "not_found";
   if (hasCode(error, ["EACCES", "EPERM"])) return "permission_denied";
   if (error instanceof NativeVersionOutputError) return "invalid_output";
-  if (error instanceof HerdrCommandError) return "command_failed";
+  if (error instanceof OwnedCommandError) return "command_failed";
   return "unavailable";
 };
 
@@ -65,7 +67,12 @@ export const createAssistantHostCollector = (options: {
   configuration: ExecutionConfiguration | (() => ExecutionConfiguration);
   environment: NodeJS.ProcessEnv;
   resolveExecutable?: (provider: WorkerAgent) => string;
-  runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+  selectToolLaunch?: (provider: WorkerAgent, operation: Operation) => Promise<ResolvedToolLaunch | undefined>;
+  copilotRequired?: () => boolean;
+  hasCopilotProof?: () => boolean;
+  toolRuntimeRoot?: string;
+  toolInspector?: ReturnType<typeof createWorkerToolInspector>;
+  runCommand?: (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || !validText(options.workingDirectory, 4096)) throw new TypeError("Assistant host startup directory must be a valid absolute path of at most 4096 bytes.");
   const configuration = typeof options.configuration === "function" ? options.configuration : (() => {
@@ -75,10 +82,11 @@ export const createAssistantHostCollector = (options: {
   const environment = { ...options.environment };
   for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete environment[key];
   const resolveExecutable = options.resolveExecutable ?? assistantProviderExecutable;
-  const runCommand = options.runCommand ?? ((command, operation) => runHerdrCommand(command, operation, spawnHerdrProcess, { cleanupWithinDeadline: true }));
+  const runCommand = options.runCommand ?? ((command, operation) => runOwnedCommand(command, operation, spawnOwnedProcess, { cleanupWithinDeadline: true }));
   const cleanupFailures = new Map<WorkerAgent, unknown>();
   const codexEnvironment = captureCodexProbeEnvironment(environment);
   const localCodexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
+  const toolInspectors = new Map<CodexProbeOwner, ReturnType<typeof createWorkerToolInspector>>();
   let pendingDirectory = false;
   const directory = async (operation: Operation): Promise<string> => {
     if (pendingDirectory) throw new OperationError("deadline");
@@ -93,10 +101,16 @@ export const createAssistantHostCollector = (options: {
     return observe(request, operation);
   };
   return {
+    close: async (): Promise<void> => {
+      const results = await Promise.allSettled([...toolInspectors.values()].map(inspector => inspector.close()).concat(localCodexProbes.close()));
+      const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Assistant tool probe cleanup remains unconfirmed.");
+    },
     collect: async (operation: Operation, codexProbes: CodexProbeOwner = localCodexProbes): Promise<AssistantHostSample> => {
       operation.check();
       const current = configuration();
       const configured = { ...current, args: [...current.args] };
+      const copilotRequired = options.copilotRequired?.() ?? true;
       const collection = createOperation({ signal: operation.signal, limits: { ...operation.limits, totalMs: Math.max(1, Math.floor(Math.min(5_000, operation.remainingMs()))), requestMs: Math.min(5_000, operation.limits.requestMs) } });
       const observedAt = new Date().toISOString();
       const issues: AssistantHostIssue[] = [];
@@ -104,6 +118,10 @@ export const createAssistantHostCollector = (options: {
       try {
         try { cwd = await directory(collection); } catch (error) { directoryError = error; }
         const entries = await Promise.all(providers.map(async (provider): Promise<WorkerAssistantProvider> => {
+          if (provider === "copilot" && !copilotRequired) {
+            const available = directoryError === undefined && (options.hasCopilotProof?.() ?? false);
+            return { provider, available, reason: available ? null : "unavailable", model: null, args: [] };
+          }
           const model = provider === configured.agent ? configured.model : null;
           const args = provider === configured.agent ? [...configured.args] : [];
           const fail = (reason: WorkerAssistantHostReason, error: unknown, hideConfiguration = false): WorkerAssistantProvider => {
@@ -117,11 +135,22 @@ export const createAssistantHostCollector = (options: {
           if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
           if (cleanupFailures.has(provider)) {
             const previous = cleanupFailures.get(provider);
-            if (hasUnconfirmedHerdrCommandCleanup(previous)) return fail("unavailable", previous);
+            if (hasUnconfirmedOwnedCommandCleanup(previous)) return fail("unavailable", previous);
             cleanupFailures.delete(provider);
           }
           try {
             collection.check();
+            if (options.selectToolLaunch && provider !== "claude") {
+              const launch = await options.selectToolLaunch(provider, collection);
+              if (!launch || launch.tool !== provider || launch.context !== "web") throw new Error("The assistant's selected Web tool is unavailable.");
+              let inspector = options.toolInspector ?? toolInspectors.get(codexProbes);
+              if (!inspector) {
+                inspector = createWorkerToolInspector({ cwd, environment, codexProbes, ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) });
+                toolInspectors.set(codexProbes, inspector);
+              }
+              await inspector.check(launch, collection); collection.check();
+              return { provider, available: true, reason: null, model, args };
+            }
             const file = resolveExecutable(provider);
             const probeEnvironment = provider === "codex" && file === "codex" ? codexEnvironment : environment;
             const observeProvider = async (): Promise<WorkerAssistantProvider> => {
@@ -134,7 +163,7 @@ export const createAssistantHostCollector = (options: {
             };
             return provider === "codex" ? await codexProbes.observe({ file, environment: probeEnvironment, workingDirectory: options.workingDirectory }, collection, observeProvider) : await observeProvider();
           } catch (error) {
-            if (hasHerdrCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
+            if (hasOwnedCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
             return fail(reasonOf(error), error);
           }
         }));

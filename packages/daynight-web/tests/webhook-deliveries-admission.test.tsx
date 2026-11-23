@@ -116,6 +116,21 @@ describe("webhook delivery admission in the complete page", () => {
     expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(document.activeElement).toBe(code); expect(document.body).not.toHaveTextContent("private=hidden"); expect(view.writes).toHaveLength(0);
     view.state.ownerDenied = true; fireEvent.focus(window); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(document.body).not.toHaveTextContent("retained payload"); expect(document.body).not.toHaveTextContent("Retained history");
   });
+  it("cancels the rejected redelivery endpoint read when navigation changes and returns", async () => {
+    const view = mount(), dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Retained history");
+    const held = barrier<Response>(), original = view.fetch.getMockImplementation()!; let heldSignal: AbortSignal | undefined, hold = true;
+    view.fetch.mockImplementation((input, init = {}) => {
+      if (hold && (init.method ?? "GET") === "GET" && new URL(input, location.origin).pathname === `/api/v1/teams/${teamId}/webhooks/${endpointId}`) { hold = false; heldSignal = init.signal as AbortSignal; return held.promise; }
+      return original(input, init);
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ })); view.state.rejectRedelivery = true;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Register redelivery" })); await waitFor(() => expect(heldSignal).toBeDefined());
+    await act(async () => { navigate(webhookUrl({ owner: "team", teamId, endpointId: null, tab: "configuration" })); });
+    expect(heldSignal!.aborted).toBe(true);
+    await act(async () => { navigate(webhookUrl({ owner: "team", teamId, endpointId, tab: "deliveries", deliveryId })); held.resolve(response({ ...endpoint, name: "Stale endpoint" })); });
+    await screen.findByRole("heading", { name: "Shared endpoint", level: 2 }); expect(screen.queryByText("Stale endpoint")).toBeNull();
+  });
+
   it("revalidates a resource-only redelivery403 without erasing still-valid owner management", async () => {
     const view = mount(), dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Retained history");
     fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ })); view.state.rejectRedelivery = true; view.state.resourceDenied = true; fireEvent.click(within(dialog).getByRole("button", { name: "Register redelivery" }));

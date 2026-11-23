@@ -58,7 +58,7 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 			t.Fatal("later scope changed an earlier property/version response")
 		}
 	}
-	if f.reads != 3 {
+	if f.reads != 6 {
 		t.Fatalf("property states used %d snapshots", f.reads)
 	}
 }

@@ -241,3 +241,62 @@ describe('Bot account API', () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 });
+
+describe('Bot attention API', () => {
+  it('requests the attention projection for list, detail and create but not defaults', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(botResponse({ items: [botDefinition()], nextCursor: null }))
+      .mockResolvedValueOnce(botResponse(botDefinition())).mockResolvedValueOnce(botResponse(botDefinition()))
+      .mockResolvedValueOnce(botResponse(botDefaults()));
+    vi.stubGlobal('fetch', fetch);
+    await listBots({}, signal(), admission());
+    await getBot(botId(), signal(), admission());
+    await createBot({ id: botId(), name: 'Assistant 1' }, signal(), admission());
+    await getBotDefaults(null, signal(), admission());
+    expect(fetch.mock.calls.map(([, options]) => new Headers(options.headers).get('Daynight-Bot-Attention'))).toEqual(['1', '1', '1', null]);
+  });
+  it.each([null, '2', '1, 1'])('rejects an unconfirmed attention projection %s without replaying creation', async header => {
+    const response = (value: unknown) => {
+      const result = botResponse(value);
+      if (header === null) result.headers.delete('Daynight-Bot-Attention');
+      else result.headers.set('Daynight-Bot-Attention', header);
+      return result;
+    };
+    const fetch = vi.fn().mockResolvedValueOnce(response({ items: [botDefinition()], nextCursor: null }))
+      .mockResolvedValueOnce(response(botDefinition())).mockResolvedValueOnce(response(botDefinition()));
+    vi.stubGlobal('fetch', fetch);
+    await expect(listBots({}, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(getBot(botId(), signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(createBot({ id: botId(), name: 'Assistant 1' }, signal(), admission())).rejects.toMatchObject({ name: 'BotCreationUnknown', id: botId() });
+    expect(fetch.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(1);
+  });
+
+  it.each([-1, 0.5, '1', null, undefined, Number.MAX_SAFE_INTEGER + 1])('rejects invalid attention counts %s', attentionCount => {
+    expect(() => parseBot({ ...botDefinition(), attentionCount }, BOT_USER)).toThrow();
+  });
+  it('preserves the server attention count and sends one exact seen request', async () => {
+    expect(parseBot({ ...botDefinition(), attentionCount: 3 }, BOT_USER)).toMatchObject({ attentionCount: 3 });
+    const fetch = vi.fn().mockResolvedValue(botResponse({ targetBotId: botId() })); vi.stubGlobal('fetch', fetch);
+    await botsApi.markBotAttentionSeen(botId().toUpperCase(), signal(), admission());
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/bots/${botId()}/attention/seen`);
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST', body: '{}' });
+  });
+  it.each([
+    () => Promise.reject(new TypeError('response lost')),
+    () => Promise.resolve(botResponse({ targetBotId: botId(2) })),
+    () => Promise.resolve(botResponse({ targetBotId: botId() }, BOT_USER, 201)),
+    () => Promise.resolve(botResponse({ targetBotId: botId() }, null)),
+    () => Promise.resolve(botError(403, 'forbidden')),
+  ])('does not replay a failed or unconfirmed seen request %#', async response => {
+    const fetch = vi.fn(response); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.markBotAttentionSeen(botId(), signal(), admission())).rejects.toBeDefined();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('rejects a changed principal and invalid request identity', async () => {
+    const gate = admission(), fetch = vi.fn().mockResolvedValue(botResponse({ targetBotId: botId() }, botId(40))); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.markBotAttentionSeen(botId(), signal(), gate)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(gate.onPrincipalMismatch).toHaveBeenCalledOnce();
+    await expect(botsApi.markBotAttentionSeen('bad', signal(), gate)).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});

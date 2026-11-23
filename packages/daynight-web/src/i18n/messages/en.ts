@@ -4,7 +4,9 @@ import { workspace } from "./en/workspace";
 import { graph } from "./en/graph";
 import { platform } from "./en/platform";
 import { automation } from "./en/automation";
+import { markdown } from "./en/markdown";
 import { inspection } from "./en/inspection";
+import { completion } from "./en/completion";
 import { execution } from "./en/execution";
 import { auth } from "./en/auth";
 import { setup } from "./en/setup";
@@ -17,12 +19,14 @@ export const en: Messages = {
   workers,
   graph,
   inspection,
+  markdown,
   automation,
   platform,
   auth,
   setup,
   landing,
   execution,
+  completion,
   common: {
     retrySave: "Retry saving language",
     status: { proposed: "Proposed", todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled", ended: "Ended" },

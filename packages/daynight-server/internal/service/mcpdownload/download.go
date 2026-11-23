@@ -30,6 +30,10 @@ type Opener interface {
 	Open(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
+type admittedOpener interface {
+	OpenAdmitted(context.Context, model.Principal, string, string, string, func(context.Context) error) (model.Attachment, filestorage.Object, error)
+}
+
 type Input struct {
 	ProjectID, TaskID, Path, Action, TransferID, Offset, Format string
 	MaxBytes                                                    int
@@ -46,6 +50,9 @@ type Service struct {
 func New(attachments Opener, lifecycle *mcptransfer.Lifecycle, files filestorage.TransferStorage) *Service {
 	return &Service{attachments: attachments, lifecycle: lifecycle, authorize: (*mcptransfer.Lifecycle).Authorize, files: files, renewInterval: 20 * time.Second}
 }
+
+// Scoped reports whether the lifecycle performs current credential checks.
+func (s *Service) Scoped() bool { return s != nil && s.lifecycle != nil && s.lifecycle.Scoped() }
 
 type snapshot struct {
 	Attachment model.Attachment `json:"attachment"`
@@ -313,7 +320,25 @@ func (s *Service) existingOpen(ctx context.Context, a mcptransfer.Actor, binding
 // source rechecks the credential and authority even when opening fails, so a
 // revoked caller cannot learn whether the attachment exists.
 func (s *Service) source(ctx context.Context, a mcptransfer.Actor, in Input) (model.Attachment, filestorage.Object, error) {
-	metadata, obj, openErr := s.attachments.Open(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path)
+	if s.lifecycle.Scoped() {
+		if err := s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID); err != nil {
+			return model.Attachment{}, filestorage.Object{}, err
+		}
+	}
+	var metadata model.Attachment
+	var obj filestorage.Object
+	var openErr error
+	if s.lifecycle.Scoped() {
+		opener, ok := s.attachments.(admittedOpener)
+		if !ok {
+			return metadata, obj, errors.New("scoped attachment open admission unavailable")
+		}
+		metadata, obj, openErr = opener.OpenAdmitted(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path, func(ctx context.Context) error {
+			return s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID)
+		})
+	} else {
+		metadata, obj, openErr = s.attachments.Open(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path)
+	}
 	if unsafeCompletion(openErr) {
 		if obj.Body != nil {
 			openErr = errors.Join(openErr, obj.Body.Close())
@@ -475,11 +500,14 @@ func textPrefix(b []byte, atEnd bool) (int, bool) {
 	return len(b), true
 }
 func (s *Service) close(ctx context.Context, a mcptransfer.Actor, in Input) (map[string]any, error) {
-	_, err := s.bound(ctx, a, in)
+	r, err := s.lifecycle.LookupBoundForCleanup(ctx, a, in.TransferID)
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.lifecycle.RequestCleanup(ctx, a, in.TransferID)
+	if r.Direction != "download" || r.ProjectID != in.ProjectID || r.TaskID != in.TaskID {
+		return nil, mcptransfer.ErrConflict
+	}
+	r, err = s.lifecycle.RequestCleanup(ctx, a, in.TransferID)
 	if err != nil {
 		return nil, err
 	}

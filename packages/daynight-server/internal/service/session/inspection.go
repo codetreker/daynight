@@ -69,13 +69,19 @@ func (s *Inspection) readSource(ctx context.Context, p model.Principal, projectI
 	var source store.TaskSessionSource
 	found := false
 	err := s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		check, err := snapshotReadCheck(ctx, snapshot, p)
+		if err != nil {
+			return err
+		}
 		if err := s.authorize(ctx, snapshot.CredentialDAO(), p); err != nil {
 			return err
 		}
 		if err := s.projectRead(ctx, snapshot.ProjectDAO(), p, projectID); err != nil {
 			return err
 		}
-		var err error
+		if err := check(); err != nil {
+			return err
+		}
 		source, err = snapshot.SessionDAO().TaskSessionInspectionSource(ctx, projectID, taskID, sessionID)
 		if errors.Is(err, model.ErrNotFound) {
 			return nil

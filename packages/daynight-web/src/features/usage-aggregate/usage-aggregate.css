@@ -1,0 +1,12 @@
+.usage-aggregate{min-width:0;color:#172132;padding:14px 18px;font-size: var(--text-sm);overflow-wrap:anywhere}
+.usage-aggregate-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.usage-aggregate-heading h3{margin:0;font-size: var(--text-lg)}
+.usage-aggregate-observed{color:#556176;font-size:var(--text-xs)}
+.usage-aggregate-policy,.usage-aggregate-reasons{color:#556176;font-size: var(--text-sm)}
+.usage-aggregate-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:16px 0}
+.usage-aggregate-counts>div{min-width:0}.usage-aggregate-counts dt{color:#556176;font-size: var(--text-sm)}.usage-aggregate-counts dd{margin:4px 0 0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.usage-aggregate-members{list-style:none;padding:0;display:grid;gap:8px}.usage-aggregate-members li{display:flex;gap:6px 12px;align-items:baseline;flex-wrap:wrap;border-bottom:1px solid #d5dce5;padding:8px 0}
+.usage-aggregate-member{background:none;border:0;text-align:start;padding:4px 0;color:#285b9f;text-decoration:underline;font:inherit;cursor:pointer;overflow-wrap:anywhere;max-width:100%}.usage-aggregate-member:focus-visible{outline:2px solid #344054;outline-offset:3px}
+.usage-aggregate-reasons{flex-basis:100%}.usage-aggregate-error{color:#a3322b;background:#fff0ef;padding:10px;border:1px solid #df9d96;border-radius:6px;margin-top:12px}
+.usage-aggregate-disclosure{flex:none;min-width:0;border-bottom:1px solid #d5dce5;background:#fff}.usage-aggregate-disclosure>summary{cursor:pointer;padding:9px 20px;font-size: var(--text-sm);color:#285b9f}.usage-aggregate-disclosure>summary:focus-visible{outline:2px solid #344054;outline-offset:-3px}.usage-aggregate-disclosure>.usage-aggregate{max-height:38dvh;overflow:auto}
+@media(max-width:480px){.usage-aggregate{padding:12px}.usage-aggregate-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.usage-aggregate-disclosure>summary{padding:9px 12px}.usage-aggregate-disclosure>.usage-aggregate{max-height:45dvh}}

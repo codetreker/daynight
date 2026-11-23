@@ -10,14 +10,26 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 
 const render = createLocaleRender('zh-CN');
 const item: Attachment = { path: 'site/index.html', contentType: 'text/html', sizeBytes: 10, createdAt: '2026-10-21T00:00:00Z', updatedAt: '2026-10-21T00:00:00Z' };
-const fixture = (): AttachmentApi => ({ list: vi.fn(async () => ({ items: [item], nextCursor: null })), checkPreview: vi.fn(async () => {}), readText: vi.fn(async () => ''), put: vi.fn(), remove: vi.fn() });
+const fixture = (): AttachmentApi => ({ list: vi.fn(async () => ({ items: [item], nextCursor: null })), readText: vi.fn(async () => ''), put: vi.fn(), remove: vi.fn() });
 const panels = (api: AttachmentApi, task = 'first') => <TaskDetailPanels key={task} overview={<a href="#overview">Overview link</a>} attachments={<TaskAttachments projectId="project" taskId={task} api={api} urls={{ page: (path) => `/reader/${path}`, previewRoot: "/fixtures/", preview: (path) => `/fixtures/${path}`, download: (path) => `/fixtures/${path}` }} />} />;
 
 describe('task detail panels', () => {
+  it('normalizes a Goal-only description request to the ordinary Task overview', async () => {
+    const onChange = vi.fn();
+    render(<TaskDetailPanels active="description" onChange={onChange} overview="Overview content" attachments="Attachments content" />);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['概览', '附件']);
+    const overview = screen.getByRole('tab', { name: '概览' });
+    expect(overview).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel', { name: '概览' })).toHaveTextContent('Overview content');
+    overview.focus();
+    await userEvent.setup().keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: '附件' })).toHaveFocus();
+  });
+
   it('associates panels, supports automatic arrow/Home/End activation and native Enter/Space, and excludes hidden controls', async () => {
     const view = render(panels(fixture()));
     const overview = screen.getByRole('tab', { name: '概览' });
-    const steps = screen.getByRole('tab', { name: '步骤' });
     const attachments = screen.getByRole('tab', { name: '附件' });
     expect(overview).toHaveAttribute('aria-selected', 'true');
     expect(attachments).toHaveAttribute('tabindex', '-1');
@@ -27,7 +39,7 @@ describe('task detail panels', () => {
     overview.focus();
     for (const key of ['{ArrowRight}', '{Home}', '{ArrowLeft}', '{End}']) {
       await user.keyboard(key);
-      const target = key === '{Home}' ? overview : key === '{ArrowRight}' ? attachments : steps;
+      const target = key === '{Home}' ? overview : attachments;
       expect(target).toHaveFocus();
       expect(target).toHaveAttribute('aria-selected', 'true');
     }
@@ -89,7 +101,6 @@ describe('task detail panels', () => {
     expect(input.files?.[0]).toBe(source);
     expect(directory).not.toHaveAttribute('open');
     expect(api.list).toHaveBeenCalledTimes(1);
-    expect(api.checkPreview).toHaveBeenCalledTimes(1);
     view.rerender(panels(api, 'second'));
     expect(screen.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
     expect(view.container.querySelector('iframe')).toBeNull();
@@ -104,9 +115,9 @@ describe('task detail panels', () => {
 
 describe('task session panel availability', () => {
   it('uses the visible order for keyboard navigation with all optional tabs', async () => {
-    render(<TaskDetailPanels overview="Overview" attachments="Attachments" steps="Steps" discussion="Discussion" session="Session" />);
+    render(<TaskDetailPanels overview="Overview" attachments="Attachments" discussion="Discussion" session="Session" />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map(tab => tab.textContent)).toEqual(['概览', '附件', '步骤', '讨论', 'Session']);
+    expect(tabs.map(tab => tab.textContent)).toEqual(['概览', '附件', '讨论', 'Session']);
     const user = userEvent.setup();
     tabs[0]!.focus();
     for (const tab of tabs.slice(1)) {
@@ -117,9 +128,9 @@ describe('task session panel availability', () => {
     await user.keyboard('{Home}');
     expect(tabs[0]).toHaveFocus();
     await user.keyboard('{ArrowLeft}');
-    expect(tabs[4]).toHaveFocus();
+    expect(tabs[3]).toHaveFocus();
     await user.keyboard('{End}');
-    expect(tabs[4]).toHaveFocus();
+    expect(tabs[3]).toHaveFocus();
   });
   it('adds a keyboard reachable session only when supplied and falls back when removed', () => {
     const view = render(<TaskDetailPanels overview={<p>Overview content</p>} attachments={<p>Attachments content</p>} session={<textarea aria-label="Session draft" />} />);

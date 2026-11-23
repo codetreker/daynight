@@ -1,9 +1,12 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 import { browserNavigation } from './navigation';
+import { projectSettingsSelection, type ProjectSettingsSelection } from './project-settings-route';
+import { accountSelection, type AccountSelection } from './account-route';
 
-export type TaskDetailTab = "overview" | "steps" | "attachments" | "discussion" | "session";
+export type TaskDetailTab = "description" | "overview" | "attachments" | "discussion" | "session" | "usage";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
+export type ProjectSection = "overview" | "statistics" | "tasks" | "prs" | "tags";
 
 export type WebhookRoute = {
   readonly kind: "webhooks";
@@ -48,31 +51,35 @@ export const webhookUrl = (selection: Pick<WebhookRoute, "owner" | "teamId" | "e
 
 export type Route =
   | { readonly kind: "projects" }
-  | { readonly kind: "project"; readonly projectId: string }
+  | { readonly kind: "project"; readonly projectId: string; readonly tab: ProjectSection | null }
   | ({ readonly kind: "task"; readonly projectId: string; readonly taskId: string } & TaskDetailNavigation)
   | ({ readonly kind: "attachment"; readonly projectId: string; readonly taskId: string; readonly path: string } & TaskDetailNavigation)
   | { readonly kind: "notFound" };
 
 export type ProtectedRoute = Route
   | WebhookRoute
-  | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
-  | { readonly kind: "sharedProjects" }
+  | { readonly kind: "team" | "teamSettings" | "teamMembers" | "teamGitHubApps"; readonly teamId: string }
+  | { readonly kind: "sharedProjects" | "myTasks" }
+  | { readonly kind: "githubApps"; readonly appId: string | null }
+  | { readonly kind: "githubAppAdmins" | "githubAppTeams"; readonly appId: string }
   | { readonly kind: "bots" }
+  | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals" | "inbox"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
   | { readonly kind: "workers" }
   | { readonly kind: "worker"; readonly workerId: string }
   | { readonly kind: "testSessions" }
   | { readonly kind: "testSession"; readonly sessionId: string }
-  | { readonly kind: "account" | "invitations" | "teamInvitations" }
+  | { readonly kind: "account"; readonly selection: AccountSelection }
+  | { readonly kind: "invitations" | "teamInvitations" | "githubAppInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
-  | { readonly kind: "members" | "settings"; readonly projectId: string };
+  | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
-  if (values.length === 0) return defaultTab;
-  return values.length === 1 && (values[0] === "overview" || values[0] === "steps" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session") ? values[0] : null;
+  if (values.length === 0 || values.length === 1 && values[0] === "steps") return defaultTab;
+  return values.length === 1 && (values[0] === "description" || values[0] === "overview" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session" || values[0] === "usage") ? values[0] : null;
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {
@@ -103,18 +110,89 @@ export const parseRoute = (pathname: string, search = ""): Route => {
     return { kind: "notFound" };
   }
   const projectId = canonicalId(decoded);
-  return projectId === null ? { kind: "notFound" } : { kind: "project", projectId };
+  const tabs = new URLSearchParams(search).getAll("tab");
+  if (projectId === null || tabs.length > 1) return { kind: "notFound" };
+  const tab = tabs[0];
+  if (tab !== undefined && tab !== "overview" && tab !== "statistics" && tab !== "tasks" && tab !== "prs" && tab !== "tags") return { kind: "notFound" };
+  return { kind: "project", projectId, tab: tab ?? null };
+};
+
+export const projectSectionUrl = (projectId: string, section: ProjectSection): string => {
+  if (canonicalId(projectId) === null || !["overview", "statistics", "tasks", "prs", "tags"].includes(section)) throw new ApiError("protocol");
+  return `/projects/${encodeURIComponent(projectId)}?${new URLSearchParams({ tab: section })}`;
+};
+
+/** A chain link locates a current ordinary component through one of its members. */
+export const buildTaskChainUrl = (projectId: string, taskId: string): string => {
+  const project = canonicalId(projectId), task = canonicalId(taskId);
+  if (project === null || task === null) throw new ApiError("protocol");
+  return new URL(`/projects/${project}?${new URLSearchParams({ tab: "tasks", chain: task })}`, window.location.origin).href;
+};
+
+/** A Goal graph link remains in the address while its graph is open. */
+export const buildGoalGraphUrl = (projectId: string, goalId: string): string => {
+  const project = canonicalId(projectId), goal = canonicalId(goalId);
+  if (project === null || goal === null) throw new ApiError("protocol");
+  return new URL(`/projects/${project}?${new URLSearchParams({ tab: "tasks", goalGraph: goal })}`, window.location.origin).href;
+};
+
+export const parseGoalGraphUrl = (pathname: string, search: string): { readonly kind: "none" } | { readonly kind: "invalid" } | { readonly kind: "goal"; readonly goalId: string } => {
+  if (parseRoute(pathname).kind !== "project") return { kind: "none" };
+  const params = new URLSearchParams(search);
+  const values = params.getAll("goalGraph");
+  if (values.length === 0) return { kind: "none" };
+  const tabs = params.getAll("tab");
+  const goalId = values.length === 1 ? canonicalId(values[0]!) : null;
+  return goalId !== null && goalId === values[0] && tabs.length === 1 && tabs[0] === "tasks" && !params.has("chain")
+    ? { kind: "goal", goalId }
+    : { kind: "invalid" };
+};
+
+export const parseTaskChainUrl = (pathname: string, search: string): { readonly kind: "none" } | { readonly kind: "invalid" } | { readonly kind: "chain"; readonly taskId: string } => {
+  const route = parseRoute(pathname, search);
+  if (route.kind !== "project" || route.tab !== "tasks") return { kind: "none" };
+  const params = new URLSearchParams(search);
+  if (params.has("goalGraph")) return { kind: "none" };
+  const values = params.getAll("chain");
+  if (values.length === 0) return { kind: "none" };
+  const taskId = values.length === 1 ? canonicalId(values[0]!) : null;
+  return taskId !== null && taskId === values[0] ? { kind: "chain", taskId } : { kind: "invalid" };
 };
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
+  if (pathname === "/github-apps") return { kind: "githubApps", appId: null };
+  const githubTeams = /^\/github-apps\/([^/]+)\/teams$/.exec(pathname);
+  if (githubTeams !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubTeams[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubAppTeams", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
+  const githubAdmins = /^\/github-apps\/([^/]+)\/admins$/.exec(pathname);
+  if (githubAdmins !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubAdmins[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubAppAdmins", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
+  const githubApp = /^\/github-apps\/([^/]+)$/.exec(pathname);
+  if (githubApp !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubApp[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubApps", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
+  if (pathname === "/my-tasks") return { kind: "myTasks" };
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
-  const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
+  const team = /^\/teams\/([^/]+)(\/(?:settings|members|github-apps))?$/.exec(pathname);
   if (team !== null) {
-    try { const teamId = canonicalId(decodeURIComponent(team[1]!)); return teamId === null ? { kind: "notFound" } : { kind: team[2] === undefined ? "team" : team[2] === "/settings" ? "teamSettings" : "teamMembers", teamId }; }
+    try { const teamId = canonicalId(decodeURIComponent(team[1]!)); return teamId === null ? { kind: "notFound" } : { kind: team[2] === undefined ? "team" : team[2] === "/settings" ? "teamSettings" : team[2] === "/members" ? "teamMembers" : "teamGitHubApps", teamId }; }
     catch { return { kind: "notFound" }; }
   }
   if (pathname === "/bots") return { kind: "bots" };
+  const assistantTask = /^\/bots\/tasks\/([^/]+)$/.exec(pathname);
+  if (assistantTask) {
+    try {
+      const taskId = canonicalId(decodeURIComponent(assistantTask[1]!)), query = new URLSearchParams(search), tab = query.get('tab') ?? 'manual', rawRecord = query.get('recordId'), recordId = rawRecord === null ? null : canonicalId(rawRecord), rawEvent = query.get('eventId'), eventId = rawEvent === null ? null : canonicalId(rawEvent);
+      if (!taskId || !['manual','records','proposals','inbox'].includes(tab) || rawRecord !== null && !recordId || rawEvent !== null && !eventId || [...query.keys()].some(key => !['tab','recordId','eventId'].includes(key) || query.getAll(key).length !== 1)) return {kind:'notFound'};
+      return {kind:'assistantTask',taskId,tab:tab as 'manual'|'records'|'proposals'|'inbox',...(recordId ? {recordId} : {}),...(eventId ? {eventId} : {})};
+    } catch { return {kind:'notFound'}; }
+  }
   const bot = /^\/bots\/([^/]+)$/.exec(pathname);
   if (bot !== null) {
     try { const botId = canonicalId(decodeURIComponent(bot[1]!)); return botId === null ? { kind: "notFound" } : { kind: "bot", botId }; }
@@ -132,7 +210,8 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
     try { const sessionId = canonicalId(decodeURIComponent(test[1]!)); return sessionId === null ? { kind: "notFound" } : { kind: "testSession", sessionId }; }
     catch { return { kind: "notFound" }; }
   }
-  if (pathname === "/account") return { kind: "account" };
+  if (pathname === "/account") return { kind: "account", selection: accountSelection(search) };
+  if (pathname === "/github-app-admin-invitations") return { kind: "githubAppInvitations" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/team-invitations") return { kind: "teamInvitations" };
   if (pathname === "/oauth/consent") {
@@ -147,7 +226,9 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   const management = /^(\/projects\/[^/]+)\/(members|settings)$/.exec(pathname);
   if (management !== null) {
     const project = parseRoute(management[1]!);
-    return project.kind === "project" ? { kind: management[2] as "members" | "settings", projectId: project.projectId } : { kind: "notFound" };
+    if (project.kind !== "project") return { kind: "notFound" };
+    return management[2] === "members" ? { kind: "settings", projectId: project.projectId, selection: { kind: "tab", tab: "members" } }
+      : { kind: "settings", projectId: project.projectId, selection: projectSettingsSelection(search) };
   }
   return parseRoute(pathname, search);
 };

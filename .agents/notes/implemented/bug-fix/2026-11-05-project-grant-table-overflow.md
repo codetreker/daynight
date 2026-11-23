@@ -17,6 +17,8 @@ owns reachability, and the [auth design](../../../../docs/design/daynight-auth.m
 describes the local scrolling mechanism. The existing
 [grant management decision](../../archived/architecture/2026-11-04-project-grant-management.md)
 records the rationale for the existing mutation and access-receipt mechanisms.
+The [grant row isolation decision](2026-11-13-grant-row-style-isolation.md)
+keeps the account authorization layout from overriding these five columns.
 
 ## Alternatives
 

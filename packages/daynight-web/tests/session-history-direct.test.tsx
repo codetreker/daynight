@@ -3,10 +3,10 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
-import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph } from './helpers/taskSync';
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph, directAccessFixture } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 import { createTerminalSessionApi, type SessionHistoryItem } from '../src/api/terminal-sessions';
-import { ApiError, pauseAuthRequests } from '../src/api/client';
+import { ApiError, pauseAuthRequests, subscribeUnauthorized } from '../src/api/client';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessionProvider, useTaskDetailSessions, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
@@ -28,7 +28,7 @@ function DirectRecords({ active = true, onSessions }: { active?: boolean; onSess
   return <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} direct>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
 }
 function setup(taskEpoch = epoch, onSessions?: (sessions: TaskDetailSessions) => void) {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': taskEpoch }) })));
   const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(async () => ({ status: { payload: { state: 'pending' } }, archive: null })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
@@ -183,15 +183,33 @@ it('withdraws direct records and selection across a batched access recheck, and 
   expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next', null, null]);
 });
 
-it('does not retry direct records while project access is uncertain or its recheck fails', async () => {
+it.each(['same account', 'different account'] as const)('does not retry direct records until project access is rechecked for the %s', async account => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
+  vi.stubGlobal('BroadcastChannel', TestChannel);
   let sessions!: TaskDetailSessions;
   const { scope, api } = setup(epoch, value => { sessions = value; });
   fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
-  const emit = (scope as unknown as { emit(event: { projectId: string; directAccessUncertain?: true; directAccessRecheck?: true; error?: unknown }): void }).emit.bind(scope);
-  act(() => emit({ projectId, directAccessUncertain: true }));
+  const sender = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(sender);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  const firstAccess = Promise.withResolvers<Response>(); let accessReads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.endsWith('/access')) {
+      if (++accessReads === 1) return firstAccess.promise;
+      const viewer = account === 'same account' ? TEST_VIEWER_ID : '00000000-0000-4000-8000-000000000202';
+      return wireResponse(directAccessFixture(projectId), { headers: viewerHeaders(viewer) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const events: { directAccessUncertain?: true; directAccessRecheck?: true; error?: unknown }[] = [];
+  const unsubscribe = scope.subscribe(event => events.push(event));
+  await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessUncertain: true })));
+  await waitFor(() => expect(accessReads).toBe(1));
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  act(() => emit({ projectId, directAccessRecheck: true, error: new Error('Access check failed') }));
+  await act(async () => firstAccess.reject(new TypeError('Access check failed')));
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.anything() })));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await act(async () => { await Promise.resolve(); });
   expect(api.history).toHaveBeenCalledOnce();
@@ -199,9 +217,17 @@ it('does not retry direct records while project access is uncertain or its reche
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
   api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
   act(() => sessions.load(projectId, taskId, 1, 'refresh'));
-  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
-  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
+  if (account === 'same account') {
+    expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+    expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
+  } else {
+    await waitFor(() => expect(scope.hasIdentityMismatch).toBe(true));
+    expect(api.history).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  }
+  expect(accessReads).toBeGreaterThanOrEqual(2);
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  unsubscribe();
 });
 
 it.each(['same mount', 'remount'] as const)('recovers direct records after confirmed project withdrawal and reauthorization on %s', async mode => {
@@ -406,6 +432,86 @@ it('withdraws a direct-only peer during a same-account identity pause', async ()
   } finally { resume(); }
 });
 
+it.each([403, 404])('retains direct records and peers on a different principal %i response', async status => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+  const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, peer);
+  const report = vi.spyOn(first, 'reportDirectSessionDenied');
+  let finish!: (response: Response) => void; const held = new Promise<Response>(resolve => { finish = resolve; });
+  let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests === 3) return held;
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<><div data-testid="first"><TaskCacheProvider scope={first}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div><div data-testid="peer"><TaskCacheProvider scope={peer}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div></>);
+  try {
+    await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+    await waitFor(() => expect(within(screen.getByTestId('peer')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+    fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' }));
+    await waitFor(() => expect(historyRequests).toBe(3));
+    const response = wireResponse({ error: { code: 'forbidden', message: 'Denied', requestId: 'other-user' } }, { status, headers: viewerHeaders('00000000-0000-4000-8000-000000000202') });
+    await act(async () => { finish(response); await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); });
+    expect(first.signal.aborted).toBe(false); expect(first.isInvalidated).toBe(false);
+    expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(within(screen.getByTestId('peer')).getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(report).not.toHaveBeenCalled();
+  } finally { view.unmount(); resume(); vi.mocked(createTerminalSessionApi).mockReset(); }
+});
+
+it.each([401, 403, 404, 410])('withdraws direct records on a trusted %i response with an invalid body', async status => {
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  const mismatch = vi.fn(), unauthorized = vi.fn(); const unsubscribe = subscribeUnauthorized(unauthorized);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch }); scopes.push(scope);
+  let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests > 1) return new Response('invalid', { status, headers: status === 401 ? {} : viewerHeaders(TEST_VIEWER_ID) });
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  try {
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull());
+    expect(screen.getByRole('alert')).toHaveTextContent('You no longer have permission');
+    expect(mismatch).not.toHaveBeenCalled(); expect(unauthorized).toHaveBeenCalledTimes(status === 401 ? 1 : 0);
+  } finally { view.unmount(); unsubscribe(); vi.mocked(createTerminalSessionApi).mockReset(); }
+});
+
+it.each([null, 'invalid'])('does not withdraw direct records for an untrusted 403 principal %s', async principal => {
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  const mismatch = vi.fn(); const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch }); scopes.push(scope);
+  const report = vi.spyOn(scope, 'reportDirectSessionDenied'); let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests > 1) return new Response('invalid', { status: 403, headers: principal === null ? {} : { 'Daynight-User-ID': principal } });
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  try {
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The session could not be loaded or verified.');
+    expect(screen.getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(mismatch).not.toHaveBeenCalled(); expect(report).not.toHaveBeenCalled();
+  } finally { view.unmount(); vi.mocked(createTerminalSessionApi).mockReset(); }
+});
+
 it('does not publish records after a peer silently replaces the user fence', async () => {
   vi.stubGlobal('BroadcastChannel', undefined);
   const { scope, api } = setup();
@@ -419,6 +525,7 @@ it('does not publish records after a peer silently replaces the user fence', asy
   await act(async () => finish({ items: [item], nextCursor: null }));
   await waitFor(() => expect(scope.isInvalidated || scope.signal.aborted).toBe(true));
   expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  await scope.invalidateScope();
 });
 
 it('does not broadcast a stale denial after the cache generation changes', async () => {
@@ -675,34 +782,4 @@ it('ignores a delayed rotation marker after a newer Session success', async () =
     await waitFor(() => expect(verified).toBe(true));
     expect(within(screen.getByTestId('second')).getByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   } finally { transaction.mockRestore(); }
-});
-
-it('keeps session history readable during Step reconciliation and stops new reads after a parent failure', async () => {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  let sessions!: TaskDetailSessions; let parentReads = 0;
-  let resolveParent!: (response: Response) => void;
-  const parent = new Promise<Response>(resolve => { resolveParent = resolve; });
-  const step = { id: '00000001', title: 'Step', description: '', status: 'todo', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T10:00:00Z' };
-  const response = (value: unknown) => wireResponse(value, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
-  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') return Promise.resolve(response({ projectId, taskId, version: 2n, steps: [{ ...step, status: 'done' }] }));
-    if (url.endsWith('/steps')) return Promise.resolve(response({ projectId, taskId, version: 1n, steps: [step] }));
-    return ++parentReads === 1 ? Promise.resolve(response(detailFixture(projectId, taskId))) : parent;
-  }));
-  const api = { history: vi.fn(async () => ({ items: [item], nextCursor: null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
-  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
-  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords onSessions={value => { sessions = value; }} /></TaskDetailSessionProvider></TaskCacheProvider>);
-  await screen.findByRole('button', { name: /Herdr/ });
-  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
-  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
-  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
-  await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ phase: 'confirmed', reconciling: true }));
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
-  await act(async () => resolveParent(wireResponse({ error: { code: 'internal_error', message: 'unavailable', requestId: 'failed' } }, { status: 503, headers: viewerHeaders(TEST_VIEWER_ID) })));
-  await waitFor(() => expect(sessions.captureDirectSessionQualification(projectId, taskId)).toBeNull());
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await new Promise(resolve => setTimeout(resolve, 20));
-  expect(api.history).toHaveBeenCalledTimes(2);
-  unsubscribe();
 });

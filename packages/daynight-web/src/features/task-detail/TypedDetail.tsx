@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { ApiError } from '../../api/client';
@@ -19,7 +20,8 @@ import { ResourceChildDraftHost } from './TaskDraftNavigation';
 
 type Props = TaskDetailSurfaceProps & {
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
-  readonly initialWitness?: string;
+  readonly onNavigateExternalChain?: (id: string, trigger: HTMLElement) => void;
+  readonly goalGraphError?: unknown;
   readonly goalChildren?: GoalChildren;
   readonly onGoalChildrenChange?: (next: GoalChildren, options?: { readonly replace?: boolean }) => void;
   readonly requireParentMatch?: boolean;
@@ -56,8 +58,14 @@ export const TypedDetail = (props: Props) => {
   const restoreLoading = useRef(true);
   const activeGoal = useRef<string | null>(null);
   const parentAdmitted = useRef(false);
+  const admittedTask = useRef<{ identity: string; scope: typeof scope } | null>(null);
+  if (admittedTask.current?.identity !== identity || admittedTask.current.scope !== scope || scope.isInvalidated || scope.hasIdentityMismatch || scope.isProjectSuspended(props.projectId) || task.status === 'deleted' || isThreadScopeLoss(task.error)) admittedTask.current = null;
   const detail = waitingForSummary ? null : task.detail;
   if (detail === null) {
+    if (props.retainHistoryDraft && admittedTask.current !== null) {
+      activeGoal.current = null; restoreLoading.current = false;
+      return <TaskDetailSurface {...props} resourceState={task} />;
+    }
     activeGoal.current = null; restoreLoading.current = true;
     return <TypedDetailLoading {...props} task={task} restoreOnUnmount={() => restoreLoading.current} />;
   }
@@ -66,7 +74,11 @@ export const TypedDetail = (props: Props) => {
     parentAdmitted.current = true;
   }
   restoreLoading.current = false;
-  if (detail.type === 'task') { activeGoal.current = null; return <TaskDetailSurface {...props} resourceState={task} />; }
+  if (detail.type === 'task') {
+    if (task.status === 'ready' && !task.requiresFreshRead) admittedTask.current = { identity, scope };
+    activeGoal.current = null; return <TaskDetailSurface {...props} resourceState={task} />;
+  }
+  admittedTask.current = null;
   const goalKey = `${props.projectId}/${props.taskId}/${task.historyGeneration}`;
   activeGoal.current = goalKey;
   return props.presentation === 'dialog'
@@ -100,25 +112,27 @@ const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeo
     else props.onGoalChildrenChange?.({ ...props.goalChildren, task: next }, { replace });
   };
   useLayoutEffect(() => { if (props.fullscreen.active) props.fullscreen.onChange(false); }, []);
-  const closeChain = useRef<(() => void) | null>(null);
   const [retired, setRetired] = useState(false);
   const refusal = useRef<unknown>(null);
   if (isThreadScopeLoss(props.detailError)) refusal.current = props.detailError;
   const scopeLost = retired || isThreadScopeLoss(props.detailError);
   useLayoutEffect(() => {
-    if (isThreadScopeLoss(props.detailError)) { setRetired(true); setLocalNested(null); closeChain.current?.(); }
+    if (isThreadScopeLoss(props.detailError)) { setRetired(true); setLocalNested(null); }
     else if (retired && props.detailError === null && !props.detailRefreshing && props.detailFresh) { refusal.current = null; setRetired(false); }
   }, [props.detailError, props.detailRefreshing, props.detailFresh, retired]);
-  return <GoalDetailSurface {...props} closeChain={closeChain} resourceUnavailable={scopeLost} detailError={props.detailError ?? (scopeLost ? refusal.current : null)} detail={props.detail} snapshot={props.snapshot ?? null}
+  return <GoalDetailSurface {...props} graphError={props.goalGraphError} resourceUnavailable={scopeLost} detailError={props.detailError ?? (scopeLost ? refusal.current : null)} detail={props.detail} snapshot={props.snapshot ?? null}
     onSelectTask={(id, trigger) => { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); }}
     renderNested={(owner: RefObject<HTMLElement | null>) => nested === null || admittedNested.current !== nested.id ? null : <ResourceChildDraftHost><TaskDetailDialog projectId={props.projectId} taskId={nested.id} parentGoalId={props.taskId} snapshot={props.snapshot ?? null}
       observation={childObservation.current!.input}
       {...(props.goalChildren !== undefined && !props.snapshot?.index.nodes.has(nested.id) ? { requireParentMatch: true } : {})}
       {...(props.goalChildren === undefined ? {} : { navigation: nested.navigation, onNavigate: (navigation: ResourceReading['navigation']) => setNested({ ...nested, navigation }) })}
+      {...(props.onNavigateParent === undefined ? {} : { onNavigateParent: props.onNavigateParent })}
       onClose={() => setNested(null, true)} onRestoreFocus={() => { const trigger = nestedTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus({ preventScroll: true }); else { const fallback = owner.current?.querySelector<HTMLElement>('.task-chain-close, .task-detail-title') ?? document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title'); if (fallback !== null && fallback !== undefined && !fallback.closest('[hidden], [inert]')) fallback.focus({ preventScroll: true }); } }}
-      onSelectTask={(id) => { const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : nestedTrigger.current ?? owner.current ?? document.body; if (props.onNavigateExternalTask !== undefined && props.snapshot?.index.nodes.get(id)?.parentId !== props.taskId) { flushSync(() => { if (props.goalChildren === undefined) setLocalNested(null); closeChain.current?.(); }); props.onNavigateExternalTask(id, trigger); } else { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); } }} onRefreshGraph={props.onRefreshGraph}
-      {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })} /></ResourceChildDraftHost>}
-    {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })} />;
+      onSelectTask={(id) => { const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : nestedTrigger.current ?? owner.current ?? document.body; if (props.onNavigateExternalTask !== undefined && props.snapshot?.index.nodes.get(id)?.parentId !== props.taskId) { flushSync(() => { if (props.goalChildren === undefined) setLocalNested(null); }); props.onNavigateExternalTask(id, trigger); } else { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); } }} onRefreshGraph={props.onRefreshGraph}
+      {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })}
+      {...(props.onNavigateExternalChain === undefined ? {} : { onNavigateExternalChain: props.onNavigateExternalChain })} /></ResourceChildDraftHost>}
+    {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })}
+      {...(props.onNavigateExternalChain === undefined ? {} : { onNavigateExternalChain: props.onNavigateExternalChain })} />;
 };
 
 const TypedDetailLoading = (props: Props & { readonly task: ReturnType<typeof useTaskDetail>; readonly restoreOnUnmount: () => boolean }) => {
@@ -134,7 +148,7 @@ const TypedDetailLoading = (props: Props & { readonly task: ReturnType<typeof us
   const title = props.task.status === 'deleted' ? messages.inspection.deletion.deleted : props.task.status === 'error' ? m.failed : m.loading;
   const content = <OverlayOwnerContext value={root}><DetailFrame modal={modal} root={root} headingId={heading} className={modal ? 'task-detail-dialog' : 'task-detail-page'}>
     {!modal && <TaskDetailPageBar projectId={props.projectId} />}
-    <header className="task-detail-header"><h2 id={heading} className="task-detail-title">{title}</h2>
+    <header className="task-detail-header"><h2 id={heading} className="task-detail-title">{title}</h2><AccountRefreshNotice />
       {modal && <button className="button task-detail-close" type="button" ref={close} aria-label={m.close} onClick={props.onClose}>×</button>}
     </header>
     {props.task.status === 'loading' && <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>}

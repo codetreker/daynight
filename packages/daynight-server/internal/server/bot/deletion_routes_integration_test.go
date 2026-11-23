@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 )
 
@@ -79,34 +81,80 @@ func TestBotDeletionHTTPBoundSessionAndReceiptReconciliation(t *testing.T) {
 	if read := decodeResponse[api.Task](t, projectRequest(h, "GET", taskPath, ""), 200); !reflect.DeepEqual(read, task) {
 		t.Fatalf("Bot deletion changed an independent task: %+v", read)
 	}
+	t.Run("unbound cleanup", func(t *testing.T) {
+		bot := seedHTTPBot(t, db, h, worker)
+		path := "/api/v1/me/bots/" + bot.ID
+		base := "/api/v1/me/workers/" + worker + "/bots/" + bot.ID + "/deletion-complete"
+		if read := decodeResponse[api.Bot](t, projectRequest(h, "GET", path, ""), 200); read.BotDefinition == nil ||
+			read.SessionID != nil || read.TestExecutionID != nil {
+			t.Fatalf("cleanup fixture is bound to a Session: %+v", read)
+		}
+		id := uuid.NewString()
+		receipt := botUnboundReceiptBody(id)
+		foreign := strings.Replace(base, worker, uuid.NewString(), 1)
+		assertProjectError(t, projectRequest(h, "POST", foreign, receipt), 403, "forbidden")
+		intent := decodeResponse[api.Bot](t, projectRequest(h, "DELETE", path, `{"ifVersion":"1","deletionId":"`+id+`"}`), 200)
+		if intent.BotDefinition != nil || intent.Deletion == nil || intent.Deletion.DeletionID != id ||
+			intent.Deletion.WorkerCleanup.State != "pending" || intent.Deletion.ServerCleanup.State != "pending" {
+			t.Fatalf("unbound deletion did not retain pending obligations: %+v", intent)
+		}
+		done := decodeResponse[api.Bot](t, projectRequest(h, "POST", base, receipt), 200)
+		if done.BotDefinition != nil || done.Deletion == nil || done.Deletion.DeletionID != id || done.Deletion.RequestedVersion != 1 ||
+			done.Version <= intent.Version || done.Deletion.WorkerCleanup.State != "completed" || done.Deletion.ServerCleanup.State != "completed" {
+			t.Fatalf("unbound cleanup did not complete: %+v", done)
+		}
+		if read := decodeResponse[api.Bot](t, projectRequest(h, "GET", path, ""), 200); !reflect.DeepEqual(read, done) {
+			t.Fatalf("unbound cleanup did not persist: %+v", read)
+		}
+	})
+}
+
+func botUnboundReceiptBody(id string) string {
+	return `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null}}`
 }
 
 func TestBotDeletionHTTPStrictReceiptAndAdmission(t *testing.T) {
-	db := projectTestStore(t)
-	h := projectTestHandler(t, db, io.Discard)
-	worker := uuid.NewString()
-	reportSnapshotHTTP(t, h, worker, workerSnapshotReportBody())
-	bot := seedHTTPBot(t, db, h, worker)
-	base := "/api/v1/me/workers/" + worker + "/bots/" + bot.ID + "/deletion-complete"
-	id := uuid.NewString()
-	valid := `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null}}`
-	for _, body := range []string{`null`, `{}`, valid + ` {}`, `{"deletionId":"` + id + `","deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null}}`, `{"deletionId":null,"stop":null,"result":{"state":"completed","code":null}}`, `{"deletionId":"` + id + `","stop":{},"result":{"state":"completed","code":null}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed"}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":null,"code":null}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null,"extra":true}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"failed","code":"\ud800"}}`} {
-		assertProjectError(t, projectRequest(h, "POST", base, body), 400, "invalid_input")
+	f := newBotExpiryFixture(t, defaultHTTPPrincipal())
+	const worker, bot, id = botDefinitionsWorker, botDefinitionsID, botDefinitionsIntent
+	base := "/api/v1/me/workers/" + worker + "/bots/" + bot + "/deletion-complete"
+	valid := botUnboundReceiptBody(id)
+	request := func(path, body string, c *botExpiryCall) *httptest.ResponseRecorder {
+		t.Helper()
+		return f.runtimeRequest("POST", path, body, botRuntimeJSON, true, c)
 	}
-	assertProjectError(t, projectRequest(h, "POST", base, strings.Replace(valid, `"code":null`, `"code":123`, 1)), 400, "invalid_input")
-	request := httptest.NewRequest("POST", base, strings.NewReader(valid))
-	request.Header.Set("X-Request-ID", "project-test")
-	authorizeResourceRequest(h, request)
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	assertProjectError(t, response, 400, "invalid_input")
-	assertProjectError(t, projectRequest(h, "GET", base, ""), 405, "method_not_allowed")
-	assertProjectError(t, projectRequest(h.Handler, "POST", base, valid), 401, "unauthenticated")
-	assertProjectError(t, projectRequest(h, "POST", base+"?unknown=1", valid), 400, "invalid_input")
-	assertProjectError(t, projectRequest(h, "POST", strings.Replace(base, worker, uuid.NewString(), 1), valid), 403, "forbidden")
-	decodeResponse[api.Bot](t, projectRequest(h, "DELETE", "/api/v1/me/bots/"+bot.ID, `{"ifVersion":"1","deletionId":"`+id+`"}`), 200)
-	done := decodeResponse[api.Bot](t, projectRequest(h, "POST", base, valid), 200)
-	if done.Deletion.WorkerCleanup.State != "completed" || done.Deletion.ServerCleanup.State != "completed" {
-		t.Fatal("unbound cleanup did not complete")
+	for _, body := range []string{`null`, `{}`, valid + ` {}`, `{"deletionId":"` + id + `","deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null}}`, `{"deletionId":null,"stop":null,"result":{"state":"completed","code":null}}`, `{"deletionId":"` + id + `","stop":{},"result":{"state":"completed","code":null}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed"}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":null,"code":null}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"completed","code":null,"extra":true}}`, `{"deletionId":"` + id + `","stop":null,"result":{"state":"failed","code":"\ud800"}}`} {
+		assertProjectError(t, request(base, body, nil), 400, "invalid_input")
+	}
+	assertProjectError(t, request(base, strings.Replace(valid, `"code":null`, `"code":123`, 1), nil), 400, "invalid_input")
+	assertProjectError(t, f.runtimeRequest("POST", base, valid, "", true, nil), 400, "invalid_input")
+	method := f.runtimeRequest("GET", base, "", botRuntimeJSON, true, nil)
+	assertProjectError(t, method, 405, "method_not_allowed")
+	if method.Header().Get("Allow") != "POST" {
+		t.Fatalf("unexpected completion methods: %v", method.Header())
+	}
+	assertProjectError(t, f.runtimeRequest("POST", base, valid, botRuntimeJSON, false, nil), 401, "unauthenticated")
+	assertProjectError(t, request(base+"?unknown=1", valid, nil), 400, "invalid_input")
+
+	call := func(worker string, result model.Bot, err error) *botExpiryCall {
+		return &botExpiryCall{method: "CompleteBotDeletion", worker: worker, bot: bot,
+			input:  botservice.BotDeletionReceipt{DeletionID: id, Result: model.BotCleanupResult{State: "completed"}},
+			result: result, err: err}
+	}
+	const foreign = "b0000000-0000-4000-8000-000000000092"
+	assertProjectError(t, request(strings.Replace(base, worker, foreign, 1), valid,
+		call(foreign, model.Bot{}, &model.Fault{Code: "forbidden", Message: "Session access is not available."})), 403, "forbidden")
+
+	response := request(base, valid, call(worker, model.Bot{
+		ID: bot, WorkerID: worker, OwnerUserID: f.principal.UserID, Version: 4, Name: "private definition",
+		ResolvedConfiguration: model.BotConfiguration{Cwd: "/private/bot-work"},
+		Deletion: &model.BotDeletion{DeletionID: id, RequestedVersion: 1, ReceiptDigest: "private-digest",
+			WorkerCleanup: model.BotCleanupResult{State: "completed"}, ServerCleanup: model.BotCleanupResult{State: "completed"}},
+	}, nil))
+	done := decodeResponse[api.Bot](t, response, 200)
+	want := api.Bot{ID: bot, WorkerID: worker, Version: 4,
+		Deletion: &api.BotDeletion{DeletionID: id, RequestedVersion: 1,
+			WorkerCleanup: api.BotResult{State: "completed"}, ServerCleanup: api.BotResult{State: "completed"}}}
+	if !reflect.DeepEqual(done, want) || response.Body.String() != jsonBody(t, want) {
+		t.Fatalf("unbound cleanup receipt projection: %s", response.Body)
 	}
 }

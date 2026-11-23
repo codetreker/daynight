@@ -30,8 +30,19 @@ test("cancellation waits for the actual helper process to exit", async () => {
   const f = await fixture(`import{writeFileSync}from'node:fs';writeFileSync(new URL('./pid',import.meta.url),String(process.pid));setInterval(()=>{},1000);`);
   const controller = new AbortController(); const pending = createImageDecoder(f.configuration)(f.request, controller.signal); const assertion = expect(pending).rejects.toThrow("cancelled");
   let pid: number | undefined;
-  for (let n = 0; n < 100; n++) { try { pid = Number(await readFile(path.join(f.root, "pid"), "utf8")); break; } catch { await new Promise(resolve => setTimeout(resolve, 10)); } }
-  expect(pid).toBeGreaterThan(0); controller.abort(new Error("cancelled")); await assertion;
+  try {
+    for (let n = 0; n < 100; n++) {
+      try {
+        const observed = Number(await readFile(path.join(f.root, "pid"), "utf8"));
+        // Opening the file precedes writing its PID, so an empty read is not readiness.
+        if (Number.isSafeInteger(observed) && observed > 0) { pid = observed; break; }
+      } catch { /* The helper has not published its PID yet. */ }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(pid).toBeGreaterThan(0);
+  } finally {
+    controller.abort(new Error("cancelled")); await assertion;
+  }
   expect(() => process.kill(pid!, 0)).toThrow();
 });
 test("a helper deadline and output overflow terminate and join the process", async () => {

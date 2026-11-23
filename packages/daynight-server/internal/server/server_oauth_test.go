@@ -22,6 +22,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -31,6 +32,7 @@ import (
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -196,6 +198,7 @@ func (d *oauthHTTPAuthorizationDAO) FreshTime(_ context.Context, now time.Time) 
 }
 
 type oauthHTTPFamilyDAO struct {
+	store.OAuthScopeDAO
 	store.CredentialFamilyDAO
 	t            *testing.T
 	plan         *httpCallPlan
@@ -227,12 +230,15 @@ func (d *oauthHTTPFamilyDAO) RevokeFamily(_ context.Context, id string, now time
 	}
 	return d.revoke(id, now)
 }
-func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, id, resource string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	d.plan.Called("authenticate")
 	if d.authenticate == nil {
 		unexpectedHTTPCall(d.t, "Family.Authenticate")
 	}
-	return d.authenticate(hash, id, resource, now)
+	if len(bindings) != 1 || bindings[0].ClientID != "" {
+		d.t.Fatalf("unexpected OAuth bindings: %+v", bindings)
+	}
+	return d.authenticate(hash, bindings[0].Resource, bindings[0].Scope, now)
 }
 
 type oauthHTTPClientDAO struct {
@@ -370,6 +376,7 @@ func oauthHTTPDecision(t *testing.T, f *oauthHTTPFixture, row store.OAuthAuthori
 	oauthHTTPPlan(t, f, row, true, want, func(a store.OAuthAuthorization) error {
 		expected := row
 		expected.Status = status
+		expected.ApprovedScopes = a.ApprovedScopes
 		expected.State = ""
 		expected.StatePresent = false
 		expected.UserID = f.Principal.UserID
@@ -398,7 +405,7 @@ func oauthHTTPExpectAccess(t *testing.T, f *oauthHTTPFixture, token, resource st
 		if !bytes.Equal(hash, secret.Hash(token)) || actualResource != resource || scope != core.Scope || now.IsZero() {
 			unexpectedHTTPCall(t, "OAuth access arguments")
 		}
-		return store.OAuthAccessIdentity{Principal: p, GrantID: grant}, err
+		return store.OAuthAccessIdentity{Principal: p, GrantID: grant, ExpiresAt: now.Add(time.Hour)}, err
 	}}
 	f.Store.WriteCredentialFamilyCall = func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
 		plan.Called("transaction")
@@ -460,6 +467,13 @@ func oauthHTTPExpectRedeem(t *testing.T, f *oauthHTTPFixture, row store.OAuthAut
 	grant := store.OAuthGrant{ID: row.GrantID, UserID: row.UserID, ClientID: row.ClientID, Resource: row.Resource, Scope: row.Scope, ClientSnapshot: row.Client, CreatedAt: f.Now, ExpiresAt: f.Now.Add(core.GrantLifetime)}
 	family := &oauthHTTPFamilyDAO{t: t, plan: plan, issue: func(in store.OAuthFamilyIssue) error {
 		expectedGrant := store.OAuthGrant{ID: in.Grant.ID, UserID: row.UserID, ClientID: row.ClientID, Resource: row.Resource, Scope: core.Scope, ClientSnapshot: row.Client, CreatedAt: f.Now, ExpiresAt: f.Now.Add(core.GrantLifetime)}
+		if row.ApprovedScopes != nil {
+			policy, err := scopepolicy.NewPolicy(scopepolicy.MCP, row.ApprovedScopes, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedGrant.ScopePolicy = &policy
+		}
 		if _, e := uuid.Parse(in.Grant.ID); e != nil {
 			t.Error(e)
 		}
@@ -529,6 +543,14 @@ func (d *oauthHTTPLifecycleDAO) AccessGrant(context.Context, []byte) (string, er
 func (d *oauthHTTPLifecycleDAO) OwnerGrants(context.Context, string) ([]store.OAuthGrant, error) {
 	unexpectedHTTPCall(d.t, "Lifecycle.OwnerGrants")
 	return nil, nil
+}
+func (d *oauthHTTPLifecycleDAO) UpdateOwnerGrantDescription(context.Context, string, string, *string, *string) (bool, error) {
+	unexpectedHTTPCall(d.t, "Lifecycle.UpdateOwnerGrantDescription")
+	return false, nil
+}
+func (d *oauthHTTPLifecycleDAO) OwnerGrantExists(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "Lifecycle.OwnerGrantExists")
+	return false, nil
 }
 func (d *oauthHTTPLifecycleDAO) PruneCredentials(context.Context, time.Time, int) (int, error) {
 	unexpectedHTTPCall(d.t, "Lifecycle.PruneCredentials")
@@ -806,6 +828,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	session := h.Session
 	config := configuredTestConfig()
 	config.Server.PublicOrigin, config.Server.AllowHTTPTestOrigin = h.Origin, true
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(h.Origin)
 	config.UniAuth.CallbackURL = h.Origin + "/api/v1/auth/callback"
 	config.OAuth.PreregisteredClients = map[string][]byte{"known": []byte(`{"client_id":"known","client_name":"Known","redirect_uris":["https://client.example/callback"]}`)}
 	handler, err := newTestHandler(Dependencies{Store: h.Store, Files: attachmentTestFiles(t)}, config, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -919,19 +942,19 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 		t.Fatalf("consent: %d %s", w.Code, w.Body.String())
 	}
 	oauthHTTPRead(t, h, pending)
-	w = send("GET", "/api/v1/oauth/requests/"+id, "", "", session, binding)
-	var view struct{ UserID, Status, ClientProvenance string }
+	w = send("GET", "/api/v2/oauth/requests/"+id, "", "", session, binding)
+	var view struct{ UserID, Status, ClientProvenance, CatalogRevision string }
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 || view.UserID == "" || view.Status != "pending" || view.ClientProvenance != "dcr" {
 		t.Fatalf("inspect: %d %s %v", w.Code, w.Body.String(), err)
 	}
 	wrongAccount, _ := json.Marshal(map[string]string{"expectedUserId": "00000000-0000-4000-8000-000000000001", "decision": "approve"})
-	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(wrongAccount), "application/json", session, binding)
+	w = send("POST", "/api/v2/oauth/requests/"+id+"/decision", string(wrongAccount), "application/json", session, binding)
 	if w.Code == http.StatusOK {
 		t.Fatal("decision accepted a changed account")
 	}
-	body, _ := json.Marshal(map[string]string{"expectedUserId": view.UserID, "decision": "approve"})
+	body, _ := json.Marshal(map[string]any{"expectedUserId": view.UserID, "decision": "approve", "catalogRevision": view.CatalogRevision, "scopes": []string{"task:read"}})
 	decisionCapture := oauthHTTPDecision(t, h, pending, "approved")
-	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
+	w = send("POST", "/api/v2/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
 	var decision struct {
 		RedirectURI string `json:"redirectUri"`
 	}
@@ -947,6 +970,10 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {redirect.Query().Get("code")}, "client_id": {registration.ClientID}, "redirect_uri": {callback}, "resource": {h.Origin + "/mcp"}, "code_verifier": {verifier}}
 	approved := oauthHTTPApproved(h, pending, redirect.Query().Get("code"))
+	approved.ApprovedScopes = decisionCapture.Load().ApprovedScopes
+	if !reflect.DeepEqual(approved.ApprovedScopes, []scopepolicy.ScopeID{"task:read"}) {
+		t.Fatalf("unexpected approved scopes: %v", approved.ApprovedScopes)
+	}
 	var issue store.OAuthFamilyIssue
 	oauthHTTPExpectRedeem(t, h, approved, true, false, false, &issue)
 	w = send("POST", "/oauth/token", form.Encode(), "application/x-www-form-urlencoded")
@@ -966,7 +993,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 			if !bytesEqualOAuthHash(token.AccessToken, hash) || resource != h.Origin+"/mcp" || scope != core.Scope || now.IsZero() {
 				unexpectedHTTPCall(t, "public profile access authentication")
 			}
-			return store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: h.Principal.UserID, CredentialID: issue.AccessID}, GrantID: issue.Grant.ID}, nil
+			return store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: h.Principal.UserID, CredentialID: issue.AccessID}, GrantID: issue.Grant.ID, ExpiresAt: issue.AccessExpiresAt}, nil
 		}}
 		e := fn(oauthHTTPFamilyScope{families: dao})
 		return oauthHTTPCompletion(e), e
@@ -975,7 +1002,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := mcpPATClient(t, server.URL, token.AccessToken)
+	client := mcpPATClientWithOrigin(t, server.URL, token.AccessToken, config.Server.PublicOrigin)
 	if _, err := client.ListTools(ctx, nil); err != nil {
 		t.Fatalf("OAuth MCP: %v", err)
 	}
@@ -1126,7 +1153,7 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 				if bytes.Equal(hash, secret.Hash(replacement)) {
 					actor = replacementPrincipal
 				}
-				return store.OAuthAccessIdentity{Principal: actor, GrantID: grantID}, nil
+				return store.OAuthAccessIdentity{Principal: actor, GrantID: grantID, ExpiresAt: now.Add(time.Hour)}, nil
 			}}
 			e := fn(oauthHTTPFamilyScope{families: dao})
 			return oauthHTTPCompletion(e), e
@@ -1135,6 +1162,7 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	configureAccess(false)
 	config := configuredTestConfig()
 	config.Server.PublicOrigin = f.Origin
+	config.Server.PreviewOrigin = "https://preview.daynight.test"
 	config.UniAuth.CallbackURL = f.Origin + "/api/v1/auth/callback"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	production, err := newTestHandler(Dependencies{Store: f.Store, Files: attachmentTestFiles(t)}, config, logger)
@@ -1159,7 +1187,11 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 		team   string
 		denied bool
 	}{{"personal", false}, {privateTeam, true}} {
-		plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "team": 1})
+		snapshots := 3
+		if tc.denied {
+			snapshots = 2
+		}
+		plan := newHTTPCallPlan(t, map[string]int{"snapshot": snapshots, "team": 1})
 		snapshot := newHTTPTestSnapshot(t)
 		snapshot.Teams = &oauthMCPTeamReader{t: t, plan: plan, actor: p.UserID, selector: tc.team, id: personalTeam, denied: tc.denied}
 		f.Store.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {

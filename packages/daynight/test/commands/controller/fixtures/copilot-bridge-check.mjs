@@ -2,16 +2,26 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldNative, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { startCopilotRuntime } from "../../../../dist/commands/controller/providers/copilot-runtime.js";
-import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
+import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages, observeCopilotBridgeRoute } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
 import { CopilotReadCorrelation, copilotReadMarker } from "../../../../dist/commands/controller/providers/copilot-read-authority-correlation.js";
 import { openNativeMediaSpool } from "../../../../dist/commands/controller/media/native-spool.js";
 import { validateImageFile } from "../../../../dist/commands/controller/media/image-validation.js";
 
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
+const gracefulNativeShutdown = ["route-undeclared-transport", "read-authority", "graceful-shutdown"].includes(mode);
+const nativeStopSignals = [];
+const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
+const routeClockArmed = path.join(root, "route-clock-armed-5000"), routeClockRelease = path.join(root, "route-clock-release");
+if (mode === "route-timeout") {
+  const preload = new URL("copilot-bridge-route-clock.mjs", import.meta.url);
+  for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key];
+  environment.NODE_OPTIONS = `--import=${preload.href} ${process.env.NODE_OPTIONS ?? ""}`.trim();
+  environment.DAYNIGHT_TEST_ROUTE_CLOCK_ROOT = root;
+}
 let permissionRequest;
 const correlation = new CopilotReadCorrelation("b".repeat(64), "fixture-session"), hidden = [];
 const records = () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -19,25 +29,68 @@ const eventually = async predicate => {
   for (let attempt = 0; attempt < 400; attempt++) { if (predicate()) return; await delay(10); }
   throw new Error("Fixture observation timed out.");
 };
-let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0;
+const within = async (result, stage) => {
+  let timer;
+  try {
+    return await Promise.race([result, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${stage} did not complete.`)), 4000); })]);
+  } finally { clearTimeout(timer); }
+};
+let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0, bridgeSecretLeak = false, secretTail = "";
 const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNativeSessionId: null,
   executable: fileURLToPath(new URL("copilot-bridge-native.mjs", import.meta.url)),
-  env: { ...process.env, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType }, onTimeline() {}, onState() {},
+  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType,
+    DAYNIGHT_TEST_BRIDGE_SHUTDOWN: gracefulNativeShutdown ? "exit" : "linger" }, onTimeline() {}, onState() {},
   onSpawn(child) {
     children.push(child);
+    if (children.length === 1 && mode === "normal") {
+      // Observe the signal without changing what the live native process receives.
+      const kill = child.kill.bind(child);
+      child.kill = signal => { nativeStopSignals.push(signal); return kill(signal); };
+    }
     if (children.length === 2) {
       let bytes = 0;
-      child.stdout.on("data", chunk => { peakControllerRss = Math.max(peakControllerRss, process.memoryUsage().rss); for (const byte of chunk) { bytes++; if (byte === 10) { maxFrameBytes = Math.max(maxFrameBytes, bytes); bytes = 0; } } });
+      child.stdout.on("data", chunk => { const scan = secretTail + String(chunk); bridgeSecretLeak ||= scan.includes("endpoint-secret-canary"); secretTail = scan.slice(-64); peakControllerRss = Math.max(peakControllerRss, process.memoryUsage().rss); for (const byte of chunk) { bytes++; if (byte === 10) { maxFrameBytes = Math.max(maxFrameBytes, bytes); bytes = 0; } } });
     }
   }, onDiagnostic(line) { traces.push(line); },
 }, error => losses.push(error), undefined, mode === "no-media" ? undefined : { createSpool(maxBytes) {
   if (mode === "capture-failure") throw new Error("Fixture shared media owner capacity exhausted.");
   return openNativeMediaSpool(path.join(root, randomUUID()), maxBytes, () => {}, () => {});
 } });
+const closeAfterNativeGrace = async () => {
+  const [native, helper] = children;
+  const schedule = globalThis.setTimeout;
+  const armed = Promise.withResolvers();
+  let expire;
+  // The shutdown RPC and bridge deadlines run before the helper exits. Only
+  // the acknowledged native exit grace is armed after that successful exit.
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    if (milliseconds !== 1500 || helper.exitCode !== 0) return schedule(callback, milliseconds, ...args);
+    const handle = schedule(() => {}, 20_000).unref();
+    expire = () => { clearTimeout(handle); callback(...args); };
+    globalThis.setTimeout = schedule;
+    armed.resolve(true);
+    return handle;
+  };
+  let closing;
+  try {
+    closing = runtime.close();
+    assert.equal(await Promise.race([armed.promise, closing.then(() => false)]), true, "Acknowledged shutdown must arm the 1500 ms native exit grace.");
+    await yieldNative();
+    assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+    assert.equal(native.exitCode, null, "The native process must remain live during the grace period.");
+    assert.equal(native.signalCode, null);
+    assert.deepEqual(nativeStopSignals, [], "The native process must receive no signal before the grace expires.");
+  } finally {
+    globalThis.setTimeout = schedule;
+    expire?.();
+    await closing;
+  }
+};
 let releaseReader;
 process.once("SIGTERM", () => { void runtime.close(true).finally(() => process.exit(1)); });
 try {
   const client = await runtime.ready;
+  assert.equal(records().find(record => Object.hasOwn(record, "routeGate")).routeGate, mode === "no-media" ? null : "true");
   assert.equal(children.length, 2);
   assert.notEqual(children[0].pid, children[1].pid);
   const config = { sessionId: "fixture-session", onEvent(event) { if (correlation.suppress(event)) { hidden.push(event); return; } if (event.id === "permission-event") assert.equal(event.data.permissionRequest, permissionRequest, "The bridge must preserve the exact callback object."); events.push(event); }, onPermissionRequest(request, context) {
@@ -50,10 +103,55 @@ try {
     const other = client.createSession({ sessionId: "second-session", onPermissionRequest: config.onPermissionRequest });
     await assert.rejects(other, /binding/); await opening;
     assert.equal(records().filter(record => record.method === "session.create").length, 1);
+  } else if (mode === "admission-revoked" || mode === "admission-close") {
+    const session = await client.createSession(config), filename = path.join(root, "admission.png"), bytes = Buffer.alloc(524288, 7);
+    const observation = await observeCopilotBridgeRoute(session); assert(observation);
+    writeFileSync(filename, bytes, { mode: 0o400 });
+    let allowed = true, checks = 0;
+    const pending = sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [{ path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" }] }, () => {
+      checks++; assert.equal(allowed, true, "effective image qualification shrank while encoding");
+    }, observation);
+    const refused = assert.rejects(pending);
+    if (mode === "admission-revoked") allowed = false;
+    else await runtime.close(true);
+    await refused;
+    assert.equal(records().filter(record => record.method === "session.send").length, 0);
+    if (mode === "admission-revoked") assert.equal(checks, 1);
   } else {
     const session = await client.createSession(config);
     assert.equal(session.sessionId, "fixture-session");
-    if (mode === "kill-helper" || mode === "kill-native" || mode === "malformed") {
+    if (mode === "route-timeout") {
+      let settled = false;
+      const pending = observeCopilotBridgeRoute(session);
+      const markSettled = () => { settled = true; };
+      void pending.then(markSettled, markSettled);
+      await eventually(() => existsSync(routeClockArmed) && records().some(record => record.method === "session.provider.getEndpoint"));
+      assert.equal(await within(session.send({ prompt: "text while observation is pending" }), "Concurrent text acknowledgement"), "sent-1");
+      assert.equal(settled, false, "Route observation must still be pending after the text acknowledgement.");
+      writeFileSync(routeClockRelease, "", { flag: "wx" });
+      assert.equal(await within(pending, "Released route timeout"), null);
+      assert.equal(await observeCopilotBridgeRoute(session), null);
+      assert.equal(await session.send({ prompt: "text after observation timeout" }), "sent-2");
+      assert.equal(records().filter(record => record.method === "session.provider.getEndpoint").length, 1);
+    } else if (mode === "route-races") {
+      const stale = await observeCopilotBridgeRoute(session), current = await observeCopilotBridgeRoute(session);
+      assert(stale); assert(current); assert.notEqual(stale.generation, current.generation);
+      const filename = path.join(root, "route.png"), bytes = Buffer.alloc(1024, 7); writeFileSync(filename, bytes, { mode: 0o400 });
+      const input = { prompt: "", mode: "immediate", attachments: [{ path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" }] };
+      await assert.rejects(sendCopilotBridgeImages(session, input, () => {}, stale), /observation changed/);
+      assert.equal(records().filter(record => record.method === "session.send").length, 0);
+      let mutation, reading;
+      assert.equal(await sendCopilotBridgeImages(session, input, () => {
+        mutation = assert.rejects(session.rpc.provider.add({}), /in progress/);
+        reading = observeCopilotBridgeRoute(session).then(value => assert.equal(value, null));
+      }, current), "sent-1");
+      await mutation; await reading;
+      assert.equal(records().filter(record => record.method === "session.provider.add").length, 0);
+      assert.equal(records().filter(record => record.method === "session.send").length, 1);
+    } else if (mode === "route-error" || mode === "route-malformed") {
+      assert.equal(await observeCopilotBridgeRoute(session), null);
+      assert(!JSON.stringify({ events, losses, traces }).includes("endpoint-secret-canary"));
+    } else if (mode === "kill-helper" || mode === "kill-native" || mode === "malformed") {
       const pending = client.ping("hold"), rejected = assert.rejects(pending, /unknown|exited|frame/);
       const history = session.rpc.eventLog.read({ cursor: "hold", max: 1, includeEphemeral: false }), historyRejected = assert.rejects(history, /unknown|exited|frame/);
       await eventually(() => records().some(record => record.method === "ping"));
@@ -82,14 +180,18 @@ try {
       assert.equal(catalog.models.length, 500); assert.equal(catalog.models[499].description, "catalog".repeat(800));
       const filename = path.join(root, "input.png"), bytes = Buffer.from("first-image"); writeFileSync(filename, bytes, { mode: 0o400 });
       const input = { path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" };
-      assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }), "sent-1");
+      const observation = await observeCopilotBridgeRoute(session);
+      assert(observation); assert(!JSON.stringify(observation).includes("endpoint-secret-canary"));
+      if (mode === "route-undeclared-transport") assert.equal(observation.backendIdentity, createHash("sha256").update(JSON.stringify({ endpoint: "https://fixture.invalid/", kind: "native_declared_route_v1", modelId: "fixture-model", transport: null, type: "openai", wireApi: "responses" })).digest("hex"));
+      await assert.rejects(session.rpc.provider.getEndpoint(), /credentials/);
+      assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }, () => {}, observation), "sent-1");
       await eventually(() => events.some(event => event.id === "permission-event"));
       await session.rpc.permissions.handlePendingPermissionRequest({ requestId: "permission-request", result: { kind: "reject" } });
       await eventually(() => records().some(record => record.method === "session.permissions.handlePendingPermissionRequest"));
       const send = records().find(record => record.method === "session.send");
       assert.equal(send.params.prompt, ""); assert.equal(send.params.mode, "immediate");
       assert.deepEqual(send.params.attachments, [{ type: "blob", data: bytes.toString("base64"), mimeType: "image/png" }, { type: "blob", data: bytes.toString("base64"), mimeType: "image/png", displayName: "second.png" }]);
-      await assert.rejects(sendCopilotBridgeImages(session, { prompt: "must not send", mode: "immediate", attachments: [input, { ...input, sha256: "f".repeat(64) }] }), /integrity/);
+      await assert.rejects(sendCopilotBridgeImages(session, { prompt: "must not send", mode: "immediate", attachments: [input, { ...input, sha256: "f".repeat(64) }] }, () => {}, observation), /integrity/);
       assert.equal(records().filter(record => record.method === "session.send").length, 1);
       await assert.rejects(session.getEvents(), /bounded/);
       await assert.rejects(session.rpc.eventLog.read({ max: 500, includeEphemeral: false }), /max=1/);
@@ -138,7 +240,9 @@ try {
         await client.ping("emit"); await eventually(() => events.some(event => event.id === "tool-event"));
         const liveMarker = events.find(event => event.id === "tool-event").data.result.contents[1].data;
         releaseReader = retainCopilotBridgeImage(liveMarker);
-        await runtime.close(); assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
+        if (mode === "normal") await closeAfterNativeGrace();
+        else await runtime.close();
+        assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
         releaseReader(); releaseReader = undefined; assert(!existsSync(liveMarker.path)); assert(!isCopilotBridgeImage(liveMarker));
         assert.equal(runtime.bridgeMetrics().mediaCount, 0);
       }
@@ -154,7 +258,10 @@ try {
     for (const child of children) assert(child.exitCode !== null || child.signalCode !== null, "Owned process must exit before returning.");
   }
 }
-if (mode === "graceful-shutdown") assert(children.every(child => child.exitCode === 0 && child.signalCode === null), "Graceful shutdown must join both children without signals.");
+if (gracefulNativeShutdown || mode === "normal") assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+if (gracefulNativeShutdown) assert(children.every(child => child.exitCode === 0 && child.signalCode === null && !child.killed), "Graceful shutdown must join both children without signals.");
+if (mode === "normal") assert.deepEqual(nativeStopSignals, ["SIGTERM"], "A native process that acknowledges shutdown and lingers must be stopped once.");
+assert.equal(bridgeSecretLeak, false, "Endpoint credentials crossed the bridge.");
 if (["kill-helper", "kill-native", "malformed"].includes(mode)) assert(traces.every(line => line === "Copilot SDK cleanup failed; the owned runtime was terminated."), traces.join(""));
 else assert.equal(traces.join(""), "", traces.join(""));
 process.stdout.write(JSON.stringify({ mode, decodedImages, expectedFrames: Number(expectedFrames), processesJoined: children.length, maxFrameBytes, peakControllerRss, peakNativeRss: Math.max(0, ...records().filter(record => record.nativeMemory).map(record => record.nativeMemory.rss)), metrics: runtime.bridgeMetrics() }) + "\n");

@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -30,7 +32,7 @@ type Auth interface {
 	SessionCookieName() string
 	AuthenticateRequest(*http.Request) (model.Principal, error)
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
-	RegisterRoutes(*http.ServeMux)
+	RegisterRoutes(httpx.RouteRegistrar)
 }
 type AuthHarness[A Auth] struct {
 	Database *postgres.Store
@@ -42,7 +44,7 @@ type AuthHarness[A Auth] struct {
 	Origin   string
 }
 
-func NewAuthHarness[A Auth](t *testing.T, factory func(*identityservice.Identity, *slog.Logger) (A, error)) *AuthHarness[A] {
+func NewAuthHarness[A Auth](t *testing.T, factory func(*identityservice.Identity, *slog.Logger) (A, error), register ...func(A, httpx.RouteRegistrar) error) *AuthHarness[A] {
 	t.Helper()
 	h := &AuthHarness[A]{Database: TestStore(t), Origin: "http://127.0.0.1:8787"}
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,13 +78,17 @@ func NewAuthHarness[A Auth](t *testing.T, factory func(*identityservice.Identity
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	h.Identity = identityservice.New(h.Database, client, h.Origin+"/api/v1/auth/callback")
+	h.Identity = identityservice.NewScopedWithPreviewSSO(h.Database, client, h.Origin+"/api/v1/auth/callback", nil, ScopeCatalog(t, scopepolicy.PAT))
 	h.Auth, err = factory(h.Identity, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
+	if len(register) == 0 {
+		h.Auth.RegisterRoutes(mux)
+	} else if err := register[0](h.Auth, mux); err != nil {
+		t.Fatal(err)
+	}
 	mux.HandleFunc("POST /mutation", h.Auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) { w.WriteHeader(204) }))
 	h.Handler = httpx.RequestLogging(logger, mux)
 	return h
@@ -142,7 +148,7 @@ func (h *AuthHarness[A]) Login(t *testing.T, code string) *http.Cookie {
 	t.Helper()
 	state, binding := h.Start(t, "/projects?view=all")
 	response := h.Request("GET", "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {code}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if response.Code != 303 || response.Header().Get("Location") != "/projects?view=all" {
+	if response.Code != 303 || response.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects%3Fview%3Dall" {
 		t.Fatalf("callback: %d %s %s", response.Code, response.Header().Get("Location"), response.Body)
 	}
 	for _, cookie := range response.Result().Cookies() {
@@ -223,4 +229,53 @@ func JSONBody(t *testing.T, input any) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func ScopeCatalog(t testing.TB, kind scopepolicy.CredentialType) scopepolicy.CatalogSnapshot {
+	t.Helper()
+	entries, err := scopepolicy.Catalog(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]scopepolicy.ScopeID, len(entries))
+	for i, entry := range entries {
+		ids[i] = entry.ID
+	}
+	catalog, err := scopepolicy.NewCatalogSnapshot(kind, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func (h *AuthHarness[A]) MintPAT(t testing.TB, p model.Principal, input identitycore.CreatePAT) identitycore.MintedPAT {
+	t.Helper()
+	catalog, enabled := h.Identity.DeviceScopeCatalog()
+	if !enabled {
+		t.Fatal("fixture PAT catalog is unavailable")
+	}
+	entries, err := scopepolicy.Catalog(scopepolicy.PAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]scopepolicy.ScopeID, len(entries))
+	for i, entry := range entries {
+		ids[i] = entry.ID
+	}
+	minted, err := h.Identity.CreateScopedPAT(context.Background(), p, p.UserID, input, nil, catalog.CatalogRevision, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return minted
+}
+
+func (h *AuthHarness[A]) MintBrowserPAT(t testing.TB, cookie *http.Cookie, input identitycore.CreatePAT) identitycore.MintedPAT {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(cookie)
+	p, err := h.Auth.AuthenticateRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h.MintPAT(t, p, input)
 }

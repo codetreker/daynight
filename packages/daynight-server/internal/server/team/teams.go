@@ -1,6 +1,7 @@
 package team
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,17 +12,36 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
-type teamHandler struct {
-	teams  *teamservice.Teams
-	logger *slog.Logger
-	origin string
+type TeamOperations interface {
+	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
+	Get(context.Context, model.Principal, string) (model.Team, error)
+	List(context.Context, model.Principal, model.PageRequest) (coreteam.TeamPage, error)
+	SearchMemberCandidates(context.Context, model.Principal, string, coreteam.CandidateSearchInput) (coreteam.CandidatePage, error)
+	Rename(context.Context, model.Principal, string, coreteam.ChangeTeam) (model.Team, error)
+	Delete(context.Context, model.Principal, string, coreteam.ChangeTeam) error
+	Members(context.Context, model.Principal, string) ([]model.TeamMemberProfile, error)
+	SetMemberRole(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	RemoveMember(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	CreateInvitation(context.Context, model.Principal, string, string) (coreteam.MintedTeamInvitation, error)
+	ListInvitations(context.Context, model.Principal, string) ([]model.TeamInvitation, error)
+	RevokeInvitation(context.Context, model.Principal, string, string, string) (bool, error)
+	InspectInvitation(context.Context, model.Principal, string) (coreteam.TeamInvitationInspection, error)
+	AcceptInvitation(context.Context, model.Principal, string, string) (coreteam.TeamInvitationAcceptance, error)
 }
 
-func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
+type teamHandler struct {
+	teams             TeamOperations
+	addMember         func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
+	resolveMember     func(context.Context, model.Principal, string, coreteam.ResolveTeamMember) (*model.TeamMember, error)
+	addExistingMember func(context.Context, model.Principal, string, string, string) (coreteam.ExistingMemberResult, error)
+	logger            *slog.Logger
+	origin            string
+}
+
+func RegisterRoutes(mux httpx.RouteRegistrar, teams TeamOperations, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &teamHandler{teams: teams, logger: logger, origin: auth.Origin()}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))
@@ -29,10 +49,18 @@ func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}", auth.Require(h.rename))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}", auth.Require(h.remove))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/members", auth.Require(h.listMembers))
+	mux.HandleFunc("POST /api/v1/teams/{teamId}/member-candidates/search", auth.Require(h.searchMemberCandidates))
+	mux.HandleFunc("/api/v1/teams/{teamId}/member-candidates/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.setMemberRole))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		allowed := "POST, PATCH, DELETE"
+		if r.PathValue("userId") == "resolve" {
+			allowed = "POST"
+		}
+		httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, p)
+	}))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/invitations", auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/invitations", auth.Require(h.createInvitation))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(h.revokeInvitation))

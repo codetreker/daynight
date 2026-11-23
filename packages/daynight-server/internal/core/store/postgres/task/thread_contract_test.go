@@ -361,7 +361,7 @@ func testThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T, database *p
 func testThreadCredentialKindsAndExpiry(t *testing.T, database *postgres.Store) {
 	_, principal, session := testutil.AuthRecords(t, database)
 	ctx := context.Background()
-	pat := model.PersonalAccessToken{ID: testutil.QueryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: testutil.QueryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
 	pat.UserID = principal.UserID
 	if _, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, pat) }); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func testThreadSourceReadsOnlyWorkerAttribution(t *testing.T, database *postgres
 	ctx := context.Background()
 	ordinary := writerTask(t, database, project.ID, 10, model.TaskTodo)
 	reference := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 11, principal.UserID, testutil.QueryID(900))
-	testutil.PutTaskProperty(t, database.Pool, reference.TaskID, "paused", []byte(`false`))
+	testutil.PutTaskProperty(t, database.Pool, reference.TaskID, "blocked", []byte(`false`))
 	if err := writerThreadWrite(t, database, ctx, func(rawTx pgx.Tx, tx *taskpg.ThreadAccess) error {
 		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
 			return err

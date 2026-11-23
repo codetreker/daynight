@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ChainProjection } from '../src/features/task-graph/model';
-import { layoutGraph, TASK_NODE_COMPACT_HEIGHT, TASK_NODE_EXPANDABLE_HEIGHT, TASK_NODE_WIDTH, type CanvasLayout } from '../src/features/task-graph/layout';
+import type { ChainProjection, GraphProjection } from '../src/features/task-graph/model';
+import { getTaskNodeHeight, layoutGraph, TASK_NODE_ACTION_HEIGHT, TASK_NODE_COMPACT_HEIGHT, TASK_NODE_READING_HEIGHT, TASK_NODE_WIDTH, type CanvasLayout } from '../src/features/task-graph/layout';
 import { compileDependencyRoute } from '../src/features/task-graph/routes';
 import { entersRectangle, parseRoute, tangent } from './route-geometry';
 
@@ -69,13 +69,31 @@ const verifyGeometry = (actual: CanvasLayout, expected: ChainProjection) => {
 
 describe('horizontal task graph layout', () => {
   it('exports compact and expandable task card dimensions', () => {
-    expect(TASK_NODE_WIDTH).toBe(220);
-    expect(TASK_NODE_COMPACT_HEIGHT).toBe(96);
-    expect(TASK_NODE_EXPANDABLE_HEIGHT).toBe(136);
+    expect(TASK_NODE_WIDTH).toBe(240);
+    expect(TASK_NODE_COMPACT_HEIGHT).toBe(102);
+    expect(TASK_NODE_READING_HEIGHT).toBe(124);
+    expect(TASK_NODE_ACTION_HEIGHT).toBe(60);
+    const empty = { prerequisites: { ids: [], totalHidden: 0, addedEdges: 0 }, successors: { ids: [], totalHidden: 0, addedEdges: 0 } };
+    const expandable = { ...empty, successors: { ids: ['next'], totalHidden: 1, addedEdges: 1 } };
+    expect(getTaskNodeHeight(empty)).toBe(102);
+    expect(getTaskNodeHeight(empty, false, true)).toBe(124);
+    expect(getTaskNodeHeight(expandable)).toBe(162);
+    expect(getTaskNodeHeight(empty, true, true)).toBe(184);
   });
 
   it('returns an explicit empty layout without non-finite Dagre bounds', () => {
     expect(layoutGraph(projection([], []))).toEqual({ nodes: [], edges: [], width: 0, height: 0, direction: 'horizontal' });
+  });
+
+  it.each(['horizontal', 'vertical'] as const)('lays out a rootless projection with the same geometry in %s', (direction) => {
+    const chain = projection(['A', 'B', 'C'], [['A', 'B'], ['X', 'B']], ['X'], [['X', 'B']]);
+    const shared: GraphProjection = { mainIds: chain.mainIds, externalIds: chain.externalIds, edges: chain.edges };
+    const result = layoutGraph(shared, undefined, direction);
+    expect(result).toEqual(layoutGraph(chain, undefined, direction));
+    expect(result.nodes.map(({ id }) => id)).toEqual(['A', 'B', 'C', 'X']);
+    expect(result.edges.map(({ source, target, external }) => ({ source, target, external }))).toEqual([
+      { source: 'A', target: 'B', external: false }, { source: 'X', target: 'B', external: true },
+    ]);
   });
 
   it('routes mixed-height cards to their actual boundaries without overlapping cards', () => {

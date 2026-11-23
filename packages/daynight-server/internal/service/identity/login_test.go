@@ -136,9 +136,9 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 			} else {
 				f.plan = append(f.plan, "provider", "profile", "new-session", "write", "upsert")
 				if stage != "upsert" {
-					f.plan = append(f.plan, "bootstrap")
+					f.plan = append(f.plan, "admit-profile", "bootstrap")
 					if stage != "bootstrap" {
-						f.plan = append(f.plan, "session")
+						f.plan = append(f.plan, "lookup", "validate-team", "admit-response", "session")
 					}
 				}
 				f.plan = append(f.plan, "finish")
@@ -197,6 +197,29 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 				}
 				return user, nil
 			}
+			f.identity.ops.admitCompleteUser = func(got model.User, response bool) error {
+				if response {
+					f.hit("admit-response")
+					want := user
+					want.PersonalTeam = ref
+					f.equal(got, want)
+				} else {
+					f.hit("admit-profile")
+					f.equal(got, user)
+				}
+				return nil
+			}
+			f.identity.ops.user = func(ctx context.Context, dao store.IdentityDAO, principal model.Principal) (model.User, store.PersonalTeamFacts, error) {
+				f.hit("lookup")
+				f.bound(ctx, dao)
+				f.equal(principal.UserID, user.ID)
+				return user, store.PersonalTeamFacts{ID: ref.ID, MemberCount: 1, OwnerAdminCount: 1}, nil
+			}
+			f.identity.ops.validatePersonalTeam = func(facts store.PersonalTeamFacts) error {
+				f.hit("validate-team")
+				f.equal(facts.ID, ref.ID)
+				return nil
+			}
 			f.identity.ops.bootstrapPersonalTeam = func(ctx context.Context, dao store.PersonalTeamDAO, id string, now time.Time) (model.TeamRef, error) {
 				f.hit("bootstrap")
 				if ctx != f.ctx || dao != f.scope.personal {
@@ -213,18 +236,28 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 				f.bound(ctx, dao)
 				want := session
 				want.UserID = user.ID
+				want.CreatedAt = f.now
+				want.ExpiresAt = f.now.Add(core.SessionLifetime)
+				want.LastUsedAt = &f.now
 				f.equal(got, want)
 				if stage == "session" {
 					return failure
 				}
 				return nil
 			}
-			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			f.identity.ops.sessionTime = func(ctx context.Context, dao store.IdentityDAO) (time.Time, error) {
+				f.bound(ctx, dao)
+				return f.now, nil
+			}
+			got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			if stage == "success" {
 				wantUser := user
 				wantUser.PersonalTeam = ref
 				wantSession := session
 				wantSession.UserID = user.ID
+				wantSession.CreatedAt = f.now
+				wantSession.ExpiresAt = f.now.Add(core.SessionLifetime)
+				wantSession.LastUsedAt = &f.now
 				f.equal(got, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, User: wantUser, Session: wantSession, Secret: value})
 				if err != nil {
 					t.Fatal(err)
@@ -281,7 +314,7 @@ func TestCallbackSDKAdmissionAndProviderFailures(t *testing.T) {
 				f.plan = append(f.plan, "write", "consume", "finish")
 				f.transaction()
 			}
-			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			requireFault(t, err, tc.fault)
 			want := core.LoginCompletion{}
 			if tc.consume {
@@ -339,7 +372,7 @@ func TestCallbackSDKAdmissionAndProviderFailures(t *testing.T) {
 			}
 			f.identity.ops.admitProfileFields = func(model.User) error { f.hit("profile"); return failure }
 			f.replies["result"] = reply
-			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			f.equal(got, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath})
 			if err == nil {
 				t.Fatal("provider failure accepted")
@@ -383,7 +416,7 @@ func TestConsumedLoginRefusalNeverRetrieves(t *testing.T) {
 				f.transactions[0].callbackErr = cause
 				f.transactions[0].err = cause
 			}
-			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			f.equal(got, core.LoginCompletion{})
 			if err != cause || f.calls.Load() != 0 {
 				t.Fatalf("consume error=%v HTTP=%d", err, f.calls.Load())
@@ -408,7 +441,7 @@ func TestLoginTransportCancellationDrains(t *testing.T) {
 	f.before = func(*http.Request) { close(entered); <-release }
 	defer close(release)
 	result := make(chan error, 1)
-	go func() { _, err := f.identity.CompleteLogin(ctx, query, binding); result <- err }()
+	go func() { _, err := f.identity.CompleteLogin(ctx, query, binding, ""); result <- err }()
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -461,7 +494,7 @@ func TestLoginEncodedProfileAdmissionAndNullableFields(t *testing.T) {
 				f.transactions[1].before = stop
 				f.identity.ops.newSession = func(time.Time) (model.Session, string) { f.hit("new-session"); return model.Session{}, "opaque" }
 			}
-			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			f.equal(got, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath})
 			if tc.reject {
 				var provider *model.IdentityProviderError

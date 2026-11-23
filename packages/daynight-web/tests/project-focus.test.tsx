@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -5,8 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
-import { projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import { focusProjectList } from '../src/features/projects/project-list-focus';
 import type { RefObject } from 'react';
+
+// Focus fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
@@ -76,7 +85,7 @@ beforeEach(() => {
   detailRequest.mockImplementation(async (project, id) => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id)!;
     const blockedBy = task.blockedBy.length === 0 ? task.dependsOn : [];
-    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
+    return { ...task, tags: [], id, projectId: project, title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 };
   });
 });
@@ -91,7 +100,7 @@ const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
-  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+  if (filterTodo) selectStatus('todo');
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -113,6 +122,34 @@ const expectModalReleased = () => {
 };
 
 describe('project dialog focus restoration', () => {
+  it('uses the visible Goal of a historical graph witness when there is no runtime opener', () => {
+    const goalId = '30000000-0000-0000-0000-000000000001';
+    const index = buildGraphIndex(graph([{ ...task(rootId, '原任务链'), parentId: goalId }]));
+    root.innerHTML = `<section id="project-goal-list" tabindex="-1"><div data-goal-id="${goalId}"><button class="goal-list-toggle">展开</button></div></section>`;
+    const toggle = root.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const target = { kind: 'chain' as const, witnessTaskId: rootId, rootId };
+    expect(focusProjectList('goals', null, target, index)).toBe(true);
+    expect(toggle).toHaveFocus();
+    toggle.closest('[data-goal-id]')!.remove();
+    expect(focusProjectList('goals', null, target, index)).toBe(true);
+    expect(root.querySelector('#project-goal-list')).toHaveFocus();
+  });
+  it('restores a historical Goal member when its opener is no longer retained, then uses visible fallbacks', () => {
+    const goalId = '30000000-0000-0000-0000-000000000001';
+    const index = buildGraphIndex(graph([{ ...task(rootId, '原任务'), parentId: goalId }]));
+    root.innerHTML = `<section id="project-goal-list" tabindex="-1"><div data-goal-id="${goalId}"><button class="goal-list-toggle">展开</button><button id="chain-task-goal-${goalId}-${rootId}">任务</button></div></section>`;
+    const entry = root.querySelector<HTMLButtonElement>(`[id="chain-task-goal-${goalId}-${rootId}"]`)!;
+    const toggle = root.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    expect(focusProjectList('goals', null, null, index, null, rootId)).toBe(true);
+    expect(entry).toHaveFocus();
+    entry.hidden = true;
+    expect(focusProjectList('goals', null, null, index, null, rootId)).toBe(true);
+    expect(toggle).toHaveFocus();
+    toggle.closest('[data-goal-id]')!.remove();
+    expect(focusProjectList('goals', null, null, index, null, rootId)).toBe(true);
+    expect(root.querySelector('#project-goal-list')).toHaveFocus();
+  });
+
   it('restores focus to the graph trigger on Back and opens the detail on Forward', async () => {
     graphRequest.mockResolvedValue(graph());
     const { trigger } = await openDialog();
@@ -203,9 +240,9 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(graphClose);
     await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
     expectModalReleased();
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     if (!keepRemaining) {
-      fireEvent.change(await screen.findByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+      selectStatus('all');
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }
@@ -215,7 +252,9 @@ describe('project dialog focus restoration', () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await screen.findByRole('heading', { name: '暂无任务链' });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: '暂无任务链' })).not.toBeNull();
+    }, { container: document.body });
     await waitFor(() => expect(screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expectModalReleased();
@@ -235,6 +274,22 @@ describe('project dialog focus restoration', () => {
     expect(document.getElementById(`task-root-${remainingId}`)).toHaveAttribute('aria-expanded', 'false');
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
+  });
+
+  it('does not steal focus moved while replacement history is being read', async () => {
+    const replacement = resetSnapshot(graph(remainingChain));
+    const pending = Promise.withResolvers<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(replacement).mockReturnValueOnce(pending.promise);
+    const { dialog } = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const refresh = screen.getByRole('button', { name: '刷新' });
+    refresh.focus();
+    expect(refresh).toHaveFocus();
+    await act(async () => { pending.resolve(replacement); });
+    await waitFor(() => expect(screen.getByText('所选任务已不在新的任务图中，详情已关闭。')).toBeVisible());
+    expect(refresh).toHaveFocus();
   });
 
   it('returns focus to a surviving task when the dialog closes normally', async () => {

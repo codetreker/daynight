@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -115,21 +116,42 @@ func configurationNative(raw json.RawMessage, overrides, admit bool) (model.Work
 	return value, normalized, nil
 }
 
-// ParseWorkerConfiguration normalizes current and legacy values. Negotiated HTTP
-// writes use ParseWorkerConfigurationProtocol to require the advertised fields.
-func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
-	return parseWorkerConfiguration(raw, true)
+// ParseTaskTagFilter validates one authoritative filter independently of other configuration fields.
+func ParseTaskTagFilter(raw json.RawMessage) (model.TagNameFilter, error) {
+	if !jsonunicode.Valid(raw) {
+		return model.TagNameFilter{}, invalidInput("Task tag filter must contain valid Unicode.")
+	}
+	fields, err := configurationObject(raw, "taskTagFilter", false, "names", "match")
+	if err != nil {
+		return model.TagNameFilter{}, err
+	}
+	var namesRaw []json.RawMessage
+	if err := configurationDecode(fields["names"], &namesRaw); err != nil {
+		return model.TagNameFilter{}, err
+	}
+	names := make([]string, 0, len(namesRaw))
+	for _, rawName := range namesRaw {
+		var name string
+		if err := configurationDecode(rawName, &name); err != nil {
+			return model.TagNameFilter{}, err
+		}
+		names = append(names, name)
+	}
+	var match string
+	if err := configurationDecode(fields["match"], &match); err != nil {
+		return model.TagNameFilter{}, err
+	}
+	result, err := tag.NormalizeNameFilter(model.TagNameFilter{Names: names, Match: match})
+	if err != nil {
+		return model.TagNameFilter{}, invalidInput("Task tag filter is invalid.")
+	}
+	return result, nil
 }
 
-func configurationControlMode(raw json.RawMessage) (*model.WorkerAgentControlMode, error) {
-	if configurationNull(raw) {
-		return nil, nil
-	}
-	var mode model.WorkerAgentControlMode
-	if err := configurationDecode(raw, &mode); err != nil || (mode != model.AgentControlModeHerdr && mode != model.AgentControlModeWeb) {
-		return nil, invalidInput("Agent control mode must be herdr or web.")
-	}
-	return &mode, nil
+// ParseWorkerConfiguration normalizes the current domain configuration. Negotiated
+// HTTP inputs use ParseWorkerConfigurationProtocol for their declared wire shape.
+func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
+	return parseWorkerConfiguration(raw, true)
 }
 
 // Stored values need structural normalization for semantic comparisons even
@@ -139,14 +161,21 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode", "toolPaths")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "platformTaskMode", "native", "projects", "toolPaths", "archiveSessions", "enableSudoCleanup", "enableWindowsProcessCleanup", "taskTagFilter")
 	if err != nil {
 		return value, err
 	}
-	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"} {
+	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "platformTaskMode", "native", "projects"} {
 		if _, ok := fields[key]; !ok {
 			return value, invalidInput("configuration." + key + " is required.")
 		}
+	}
+	if rawFilter, ok := fields["taskTagFilter"]; ok {
+		filter, parseErr := ParseTaskTagFilter(rawFilter)
+		if parseErr != nil {
+			return value, parseErr
+		}
+		value.TaskTagFilter = &filter
 	}
 	if rawPaths, ok := fields["toolPaths"]; ok {
 		value.ToolPaths, err = parseToolPaths(rawPaths, true)
@@ -154,14 +183,28 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 			return value, err
 		}
 	}
-	if rawMode, ok := fields["agentControlMode"]; ok {
-		value.AgentControlMode, err = configurationControlMode(rawMode)
-		if err != nil {
+	if rawArchive, ok := fields["archiveSessions"]; ok {
+		var archive bool
+		if err := configurationDecode(rawArchive, &archive); err != nil {
+			return value, err
+		}
+		value.ArchiveSessions = &archive
+	}
+	if err := configurationDecode(fields["platformTaskMode"], &value.PlatformTaskMode); err != nil {
+		return value, err
+	}
+	if !value.PlatformTaskMode.Valid() {
+		return value, invalidInput("Worker platform task mode must be all, prefer or only.")
+	}
+	if rawSudo, ok := fields["enableSudoCleanup"]; ok {
+		if err := configurationDecode(rawSudo, &value.EnableSudoCleanup); err != nil {
 			return value, err
 		}
 	}
-	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
-		return value, err
+	if rawWindows, ok := fields["enableWindowsProcessCleanup"]; ok {
+		if err := configurationDecode(rawWindows, &value.EnableWindowsProcessCleanup); err != nil {
+			return value, err
+		}
 	}
 	value.MaxConcurrent, err = configurationInteger(fields["maxConcurrent"], 1, workerSafeInteger)
 	if err != nil {
@@ -250,7 +293,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if !jsonunicode.Valid(raw) {
 		return nil, invalidInput("Worker configuration exchange must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "controlModeBootstrap", "toolPathsBootstrap")
+	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "toolPathsBootstrap")
 	if err != nil {
 		return nil, err
 	}
@@ -267,16 +310,16 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		exchange.ToolPathsBootstrap = &paths
 	}
-	if candidate, exists := fields["controlModeBootstrap"]; exists {
-		exchange.ControlModeBootstrap, err = configurationControlMode(candidate)
-		if err != nil {
-			return nil, err
-		}
-	}
 	if !configurationNull(fields["bootstrap"]) {
 		value, err := ParseWorkerConfiguration(fields["bootstrap"])
 		if err != nil {
 			return nil, err
+		}
+		if value.PlatformTaskMode == model.PlatformTaskOnly {
+			return nil, invalidInput("Bootstrap cannot enable only platform tasks.")
+		}
+		if value.TaskTagFilter != nil {
+			return nil, invalidInput("Bootstrap cannot set a task tag filter.")
 		}
 		exchange.Bootstrap = &value
 	}
@@ -325,7 +368,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "agentControlMode"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "platformTaskMode", "enableSudoCleanup", "enableWindowsProcessCleanup", "native", "archiveSessions", "taskTagFilter"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -352,11 +395,21 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
-			case "agentControlMode":
-				_, err = configurationControlMode(item.AppliedValue)
-			case "preferPlatformSpecificTasks":
+			case "platformTaskMode":
+				var mode model.WorkerPlatformTaskMode
+				err = configurationDecode(item.AppliedValue, &mode)
+				if err == nil && !mode.Valid() {
+					err = invalidInput("Worker platform task mode must be all, prefer or only.")
+				}
+			case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)
+			case "taskTagFilter":
+				var digest string
+				err = configurationDecode(item.AppliedValue, &digest)
+				if err == nil && !validTaskTagFilterKey(digest) {
+					err = invalidInput("Task tag filter applied value must be a lowercase SHA-256 digest.")
+				}
 			case "native", "projectNative":
 				_, _, err = configurationNative(item.AppliedValue, false, true)
 			case "projectPreparation", "projectRemoval":
@@ -411,4 +464,17 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		return nil, InputLimit(err)
 	}
 	return exchange, nil
+}
+
+// validTaskTagFilterKey accepts the canonical lowercase digest representation.
+func validTaskTagFilterKey(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

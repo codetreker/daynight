@@ -24,11 +24,13 @@ export type WindowsOwnedJobKernel = WindowsJobKernel & {
   active(job: unknown): number;
   closeProcess(process: unknown): void;
 };
+export type WindowsNamedJobKernel = WindowsOwnedJobKernel & { openNamed(name: string): unknown | null };
 
-export const loadWindowsJobKernel = async (): Promise<WindowsOwnedJobKernel> => {
+export const loadWindowsJobKernel = async (): Promise<WindowsNamedJobKernel> => {
   const koffi = await import("koffi");
   const library = koffi.load("kernel32.dll");
   const create = library.func("void * __stdcall CreateJobObjectW(void *attributes, str16 name)");
+  const openNamed = library.func("void * __stdcall OpenJobObjectW(uint32_t access, int inherit, str16 name)");
   const lastError = library.func("uint32_t __stdcall GetLastError()");
   const setLastError = library.func("void __stdcall SetLastError(uint32_t code)");
   const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
@@ -53,6 +55,13 @@ export const loadWindowsJobKernel = async (): Promise<WindowsOwnedJobKernel> => 
   if (pointerSize !== 4 && pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
   const failure = (stage: string) => new WindowsJobError(stage, lastError() as number);
   return {
+    openNamed: name => {
+      const handle: unknown = openNamed(12, 0, name);
+      if (handle !== null) return handle;
+      const code = lastError() as number;
+      if (code === 2) return null;
+      throw new WindowsJobError("open-named-job", code);
+    },
     open: pid => {
       const handle: unknown = openProcess(0x00101101, 0, pid); // SYNCHRONIZE | QUERY_LIMITED_INFORMATION | SET_QUOTA | TERMINATE
       if (handle === null) {

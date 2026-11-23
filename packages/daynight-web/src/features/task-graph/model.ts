@@ -28,11 +28,14 @@ export type ProjectionEdge = {
   readonly external: boolean;
 };
 
-export type ChainProjection = {
-  readonly rootId: string;
+export type GraphProjection = {
   readonly mainIds: ReadonlySet<string>;
   readonly externalIds: ReadonlySet<string>;
   readonly edges: readonly ProjectionEdge[];
+};
+
+export type ChainProjection = GraphProjection & {
+  readonly rootId: string;
   readonly completed: number;
 };
 
@@ -172,6 +175,19 @@ export const tracePrerequisites = (index: GraphIndex, taskId: string): ReadonlyS
     if (result.has(id)) continue;
     result.add(id);
     for (const source of index.nodes.get(id)!.dependsOn) if (index.nodes.has(source)) pending.push(source);
+  }
+  return result;
+};
+
+export const traceSuccessors = (index: GraphIndex, taskId: string): ReadonlySet<string> => {
+  if (!index.nodes.has(taskId)) return rejectGraph();
+  const result = new Set<string>();
+  const pending = [taskId];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (result.has(id)) continue;
+    result.add(id);
+    for (const target of index.successors.get(id)!) pending.push(target);
   }
   return result;
 };

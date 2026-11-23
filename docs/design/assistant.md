@@ -1,14 +1,16 @@
 # 助手组合、定义与 Session 准入
 
-[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core/bot`、`service/bot` 和 `server/bot` 负责；`core/session` 与 `service/session` 在独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
+[需求规格](../spec/assistant.md)区分现行接口与须声明能力的新增要求。本文的管理、登记、grant、删除及独立恢复 v1 接口描述现行服务端机制；Worker 的 `botRecoveryVersion=1` 须在本地存储、进程互斥与 Provider 恢复验证完成后启用。管理定义由 `core/bot`、`service/bot` 和 `server/bot` 负责；`core/session` 与 `service/session` 在独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
 
 网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
+
+[助手任务服务端](assistant-task.md)拥有独立的用户工作登记、手册与协作材料；其认领不占用项目 Task 的 Worker 执行槽，也不改变本文的 Bot Session 生命周期。
 
 ## 产品组合
 
 Server 的正式构造入口将同一事务能力、文件存储和共享 Session engine 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
 
-Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。配置先按 Worker 自己的原生控制模式解析，助手采集器再检查 Web 参数兼容性；合法 Herdr 参数若不支持 Web，只将对应助手 Provider 报告为 `unsupported_arguments`，不能阻断普通 Task 状态报告。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
+Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。当前全局或项目选择 Copilot，或本 Worker 存在非删除的 Copilot Bot 定义时，后台准备 Copilot；定义包括 pending、failed 和可恢复的记录，删除后的清理责任不触发新探测。未使用时仍保留 Copilot 条目，但没有现成成功证明便报告 unavailable。助手采集器按 Web Provider 校验参数；不支持的参数使对应 Provider 报告 `unsupported_arguments`，不能阻断普通 Task 状态报告。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
 
 网页 `AuthenticatedApp` 与全局侧栏共同选择 `/bots` 或 `/bots/{id}`，复用既有身份 scope、`BotsPage`、`BotSessionHost` 和 `SessionView`。导航、关闭聊天、切换选择及详情只改变浏览器展示与连接，不进入 Worker 停止路径。三个 pane 的缓存、定向删除失效和共享阅读恢复继续由各自模块拥有。
 
@@ -59,6 +61,44 @@ Worker 的 assistantHost.creationConfigurationVersion=1 是支持新冻结格式
 Worker 保存完整冻结配置并使用它核对登记请求与执行身份。执行配置通过统一原生参数适配器生成，单助手值覆盖、去重原 args 中的 model/effort，保留其它已准入参数。首次原生启动复核最终组合；恢复沿用原 Session 和冻结意图，不借当前默认重配置，也不重写原生文件。Session 内临时切模型不进入 Bot 成功偏好写入路径。
 
 字段及失败语义由[助手规格](../spec/assistant.md)拥有；[原生选择决策](../../.agents/notes/implemented/architecture/2026-11-06-bot-native-selection.md)记录隔离能力查询与创建事务的原因。
+
+## Bot 独立存储与接管能力
+
+`botRecoveryVersion=1` 的[数据归属、迁移和接管要求](../spec/assistant.md#bot-本地存储与恢复合同)由 Bot 存储、Worker 对账和服务端生命周期共同实现。Bot 本机目录持有 SQLite、执行意图、票据、journal、业务认领凭据及 Provider 恢复材料；公共 Worker 库存只保留可重建索引。服务端继续使用现有数据库与资源存储，按 owner、Bot 和 Session 隔离。未登记恢复身份的 Bot 继续使用既有 Worker 绑定和父 PAT 校验；登记后的 Bot 使用独立恢复接口，旧 register、grant、report 返回 `upgrade_required`。
+
+迁移协调器在原 Worker、Bot 与 Controller 存储锁下核验原执行已停止，再复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后切换唯一写入位置。原 Worker 库事务将源行移除与迁移摘要回执一起提交；原票据和 journal 停证保持不变，由独立映射定位副本。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。本地提交后的 `registration_pending` 阻止旧路径执行，机制与只读历史入口由 [Worker 执行层设计](worker-bot-runtime.md#bot-专属位置与迁移责任)拥有。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
+
+新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
+
+接管请求、恢复身份与观察字段使用独立版本化合同，不向现有严格管理 DTO 或 `/grant` 静默增加字段。原请求身份及结果查询由接管用例持久保存，结果未知不重发业务输入。当前机器、状态及新鲜度来自版本化观测；数据库中的 ready 或可读缓存不授予发送资格。上述机制不声明跨机接管或真实 Provider 验收已完成。
+
+### 服务端恢复 v1 协议
+
+入口为 `/api/v1/me/workers/{workerId}/bots/{botId}/recovery/v1/`。`register`、`takeover`、`grant`、`report` 和 `operations/{operationId}` 均使用 POST；最后一项只查询原回执，不重发操作。恢复证明仅放在请求正文，错误与回执不回显秘密。Go API DTO 与 TypeScript 独立解析器保留十进制 int64 字符串，旧管理 DTO 和旧 grant 形状保持不变。
+
+所有请求包含 `botRecoveryVersion=1`、与配置 PublicOrigin 完全一致的 `serviceOrigin`、32 字节无填充 canonical base64url `recoveryIdentity`，且使用当前有效 PAT。`register` 另含 `operationId`、`botVersion`、`sessionId`、`testExecutionId`、必填可空 `nativeSessionId`。首次登记要求原 Worker、已绑定 Session 和当前 Bot 版本，将承载代次设为 1，并保存已锁定 Worker 报告的机器身份；不会新建 Session，也不延续旧 PAT 权限。已经登记的证明不能被另一登记覆盖。
+
+`takeover` 和 `grant` 另含持久原 `operationId`、`expectedHostingGeneration`、完整原 Session/native 绑定、既有 `grant` 参数和预先生成并落盘的 `controllerToken`。token 为 `dncontroller_` 加 32 字节 canonical base64url，每个新操作使用新 token；服务端在 Bot 锁内检查全部历史回执中的摘要，拒绝重用任何旧 token。服务端仅保存摘要；调用方凭自身保留的 token 和回执恢复授权。接管核对同机身份，原子推进 `bot_recovery.worker_id`、Bot version 和 hosting generation，重置启动状态；`bots.worker_id`、原始 `resolvedConfiguration.workerId`、显式 overrides、创建指纹和角色保持冻结，旧管理 DTO 仍表示创建时绑定。当前承载身份由恢复回执提供，不能用旧 Worker inventory 发现或授权恢复执行。普通恢复 grant 只允许当前 Worker 与当前承载代次，不推进承载代次。
+
+`service/bot/runtime.Recovery` 协调当前凭据、Bot、Session 和机器报告锁，`core/bot` 判断归属、恢复证明与承载代次，`core/session` 核验原会话及 Controller stopProof。`bot_recovery` 保存当前 Worker、服务域、机器、证明摘要和代次；`bot_recovery_operations` 保存原请求摘要和无秘密回执。它们与既有 Session 使用同一数据库事务。每次恢复 grant 都清除旧连接租约及同步资格。浏览器权限投影与命令准入共同要求当前持久连接租约有效；同 fence 的 relay 缓存只能提供阅读内容，不能覆盖租约撤销或过期。因此其它 relay 的旧缓存，以及提交成功但调用方只收到 unknown 的情况，都不能在新连接同步完成前恢复发送资格。连接失效不证明本机命令已停止。
+
+回执包含原 `operationId`、kind、Worker、承载代次、Bot version、平台和原生身份，以及可空的 grant 到期时间与 token SHA-256。`current` 表示该回执仍对应当前承载；含 grant 时还要求未过期、摘要仍被选中、Controller 身份相同，且父 PAT 就是本次认证的 PAT。新 PAT 可以读取旧回执，但旧授权不因此恢复。相同操作 ID 与相同请求只返回原回执，不重新签发；不同请求冲突。未知提交保留 `outcome_unknown`，查询不存在不能证明先前未提交。客户端须保留原请求，不能把历史成功或当前可读状态当作新授权。
+
+`report` 包含 `hostingGeneration` 和原 `report` 对象，先检查恢复证明、当前 Worker 与承载代次，再执行既有版本、fence、native ID 和 ready 同步检查。新恢复接口不参与普通 Task claim 或助手业务 claim 的流转。Worker 目录发现、独占锁、旧进程停证以及真实 Provider resume 仍由对应模块验收；服务端接口存在不自动启用这些能力。
+
+携带 `previousGeneration` 的 `TakeoverBot` 和 `GrantBotRecovery` 在 grant 事务开始前，先经 `service/session` 的既有生命周期包装执行媒体租约恢复。存储 gate 已释放的孤儿租约会被清理，避免崩溃残留阻止 active history 退役；仍被占用的 gate 保留真实活动租约。清理错误阻止 grant，等待文件系统 gate 时不持有数据库 scope。未推进执行代次的恢复授权不增加这一步。
+
+### 服务端观测 v1 协议
+
+`GET /api/v1/me/bots/{botId}/observation` 独立返回 `schemaVersion=1` 的 Bot 观测，支持 HEAD，不扩展旧管理 DTO。`server/bot` 解析路径与编码公开字段；`service/bot` 协调当前账号授权、数据库快照与 Session 采样；`core/bot.Observe` 拥有状态优先级和时效计算。应用组装注入同一个 Session engine，读取不经过启动、grant 或浏览器 Session 生命周期。
+
+第一次只读快照验证当前凭据和 Bot owner，读取 Bot、当前承载 Worker 与绑定 Session 的轻量元数据。`bot_recovery.worker_id` 优先于创建时 `bots.worker_id`；DAO 直接读取持久 Worker 行，不应用普通 inventory 的 72 小时过滤，也不读取其它 Task 的活动。恢复记录保存机器 ID 和最后登记名；同 ID 的当前 Worker 上报可更新显示名。未登记恢复身份的 Bot 从原 Worker 持久报告取得定位。Provider 来自冻结定义；平台 Session、test execution 和已知 native ID 来自现有绑定，不复制为另一套权威数据。
+
+释放快照后，`Engine.ObserveBotSession` 仅复制本 relay 对应 live cell 的已提交标量；它核对 server instance、execution generation 和 connection epoch，不加载正文、原凭据、controls 或操作能力，也不执行 `TestSnapshot` 的归档与授权生命周期。第二次只读快照重新授权并取得当前 Bot、Session 和连接租约。版本或 relay 发生变化时丢弃第一次 live 结果，精确 fence 及持久 lease 再决定能否报告活动。同 fence 的恢复授权清除了 lease 时，旧同步缓存也只能产生 recovering。
+
+状态先判断 Worker 失联，再判断当前机器身份、已确认启动失败与新鲜 Provider 失败。未绑定或首次缺 native ID 为 connecting；已有 native ID 但启动、连接或同步未完成为 recovering。只有当前同步来源才能产生 idle／working，`waiting_input` 表示 idle 并保留对应 reason。已停止、失败或非 active Session 为 abnormal。Worker 截止为最后报告加 120 秒；Session 截止为心跳加 30 秒、live 采样时间加 30 秒与持久 lease 截止的最早者；采用 Provider 失败时还受其预检时效约束。离线返回最后事实和 null `freshUntil`，不返回实时轮次。
+
+输出省略所有恢复证明与 token，不含 send 权限。它证明某次读取的定位与状态，不能证明原机器进程已停止、Provider 备份完整或用户下一次输入已获准。具体公开字段与消费者要求见[助手规格](../spec/assistant.md#字段版本与失败语义)。取舍见[Bot 观测决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-availability-observation.md)。
 
 ## 登记与恢复事务
 
@@ -127,6 +167,8 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/archived/architecture/2026-11-04-bot-history-deletion.md)。
 
 ## 扩展约束
+
+独立于项目 Task 的助手任务，其待实现的[认领凭据与转交合同](assistant-task-claims.md)规定跨 Worker 接收、原操作恢复和验证职责。该设计不改变本页已有 Bot 生命周期，也不表示助手任务 API 已交付。
 
 公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 

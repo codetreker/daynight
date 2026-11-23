@@ -1,12 +1,16 @@
+import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import path from "node:path";
+import { resolveBotControllerStateDirectory } from "./paths.js";
 import { randomUUID } from "node:crypto";
 import { closeSqliteDatabase, openSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { assertCurrentSqlite, type SqliteFormat } from "../../../platform/sqlite-format.js";
 import { parseStartupObservation, type StartupObservation } from "../../../session/startup.js";
 import { controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { ProcessProof } from "../../controller/process-proof.js";
 import { workerStoreFormat } from "../store-format.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { botUUID, botVersion, parseBotOwner, type BotRecord } from "./types.js";
 
 export type BotPreviousGeneration = { launchId: string; generation: string; instanceId: string; recordId: string; stoppedAt: string };
@@ -30,7 +34,7 @@ const checkProcess = (proof: ProcessProof): void => {
   if (proof === null || typeof proof !== "object" || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || proof.pid > 2_147_483_647
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 0 || proof.parentPid > 2_147_483_647
     || !(proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0)
-    || typeof proof.startedAt !== "string" || proof.startedAt.trim() === "" || !proof.startedAt.isWellFormed()
+    || !isProcessBirth(proof.startedAt)
     || typeof proof.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.commandHash)
     || proof.jobObjectName !== undefined && (typeof proof.jobObjectName !== "string" || proof.jobObjectName.trim() === "" || /\0/.test(proof.jobObjectName))) {
     throw new Error("Bot controller process evidence is invalid.");
@@ -42,7 +46,7 @@ const sameProcess = (previous: ProcessProof, next: ProcessProof): boolean => pre
   && previous.startedAt === next.startedAt && previous.commandHash === next.commandHash
   && (previous.jobObjectName === undefined || previous.jobObjectName === next.jobObjectName);
 
-const checkSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void => {
+export const validateBotExecutionSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void => {
   const intent = record.intent!;
   if (snapshot === null || typeof snapshot !== "object" || snapshot.executionId !== intent.executionId
     || snapshot.testExecutionId !== intent.registration.testExecutionId || snapshot.claimId !== undefined
@@ -82,7 +86,7 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   if (value.startup !== null) parseStartupObservation(value.startup);
   if (value.controllerProcess !== null) checkProcess(value.controllerProcess);
   if (value.snapshot !== null) {
-    checkSnapshot(record, value.snapshot);
+    validateBotExecutionSnapshot(record, value.snapshot);
     if (value.controllerProcess !== null && value.snapshot.controllerProcess !== null && !sameProcess(value.controllerProcess, value.snapshot.controllerProcess)) throw new Error("Bot snapshot has a conflicting controller process.");
   }
   if (value.launchSubmission === "not-submitted" && (value.controllerProcess !== null || value.snapshot !== null)) throw new Error("Bot process evidence requires a submitted launch.");
@@ -91,13 +95,29 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   return value;
 };
 
-/** The caller retains the Worker instance lock; these rows never enter Task capacity or cleanup inventory. */
-export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file, format: workerStoreFormat, allowCreate: true,
+/** Revalidate the retained launch before granting replay of its never-started deletion. */
+export const hasNeverStartedDeletionEvidence = (record: BotRecord, execution: BotExecution | null): boolean => {
+  const intent = record.intent, stop = record.cleanup?.stop;
+  if (intent === null || intent.executionGeneration !== "1" || intent.sessionId === null || intent.nativeSessionId !== null || execution === null
+    || stop == null || stop.stopProof.kind !== "never_started") return false;
+  check(record, execution);
+  const rejected = execution.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
+    && execution.controllerProcess === null && execution.snapshot === null;
+  return (execution.launchSubmission === "not-submitted" && execution.startup === null || rejected)
+    && stop.protocol === "daynight.session.v1" && stop.sessionId === intent.sessionId && stop.testExecutionId === intent.executionId
+    && stop.executionGeneration === intent.executionGeneration && stop.controllerId === intent.registration.controllerId
+    && stop.controllerInstanceId === intent.controllerInstanceId && stop.stopProof.previousControllerInstanceId === intent.controllerInstanceId
+    && stop.stopProof.recordId === intent.launchId;
+};
+
+/** The caller retains the owning storage lock; these rows never enter Task capacity or cleanup inventory. */
+export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; format?: SqliteFormat } = {}) => {
+  const format = options.format ?? workerStoreFormat;
+  const db = openSqliteDatabase({ file, format, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
-  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).immediate();
-  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).deferred();
+  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).immediate();
+  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).deferred();
   const current = (record: BotRecord): BotRecord => {
     const row = db.prepare(`SELECT record FROM bots WHERE ${predicate}`).get(identity(record)) as { record: string } | undefined;
     if (row === undefined) throw new Error("Bot execution requires its original inventory record.");
@@ -171,12 +191,28 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (typeof reason !== "string" || reason.trim() === "" || !reason.isWellFormed()) throw new Error("Bot recovery block requires a nonempty reason.");
       return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
     }),
+    /** The caller holds the Bot lock and publishes the replacement ticket first.
+     * Only local dispatch identity changes; the remote recovery fence may already be granted.
+     */
+    replaceUnsubmittedLaunch: (record: BotRecord, launchId: string, homeDirectory: string): BotRecord => atomic(() => {
+      const saved = current(record), execution = get(saved), intent = saved.intent!;
+      botUUID(launchId, "Bot launch ID");
+      if (saved.observed.deletion !== null || execution === null || execution.launchSubmission !== "not-submitted"
+        || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot launch replacement requires proven never-submitted execution.");
+      if (launchId === intent.launchId || execution.retainedLaunchIds.includes(launchId)
+        || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot launch replacement requires a new identity in its original private home.");
+      const next: BotRecord = { ...saved, intent: { ...intent, launchId,
+        ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) } };
+      db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
+      put(next, { ...execution, launchId, retainedLaunchIds: [...execution.retainedLaunchIds, intent.launchId] });
+      return next;
+    }),
     /** The caller first proves process-tree stop and commits the matching journal snapshot. */
-    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string): BotRecord => atomic(() => {
+    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch): BotRecord => atomic(() => {
       const saved = current(record), previous = get(saved), intent = saved.intent!;
       if (saved.observed.deletion !== null) throw new Error("A deleting Bot cannot recover execution.");
       if (previous === null || previous.launchSubmission === "not-submitted") throw new Error("Bot recovery requires the original submitted generation.");
-      checkSnapshot(saved, stopped);
+      validateBotExecutionSnapshot(saved, stopped);
       if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.nativeSessionId === null || stopped.controllerProcess === null
         || previous.snapshot?.nativeSessionId !== stopped.nativeSessionId
         || previous.controllerProcess !== null && !sameProcess(previous.controllerProcess, stopped.controllerProcess)
@@ -184,14 +220,21 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (previous.recoveryBlocked !== null) throw new Error(previous.recoveryBlocked);
       const orderly = previous.restartAfterShutdown && stopped.error === null;
       if (!orderly && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
-      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
+      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
+      if (intent.registration.provider !== "claude") {
+        const selected = toolLaunch ?? intent.toolLaunch;
+        if (selected === undefined) throw new ToolSelectionError(intent.registration.provider, "web", "launch", "legacy_tool_identity_missing");
+        const checked = parseResolvedToolLaunch(selected, { tool: intent.registration.provider, context: "web" });
+        if (intent.toolLaunch !== undefined && !same(intent.toolLaunch, checked)) throw new Error("Recovery cannot replace the original Bot tool selection.");
+        intent.toolLaunch = checked;
+      }
       const generation = botVersion(String(BigInt(intent.executionGeneration) + 1n));
       const launchId = randomUUID(), controllerInstanceId = randomUUID();
       const next: BotRecord = { ...saved, intent: { ...intent, executionGeneration: generation, launchId, controllerInstanceId,
-        ticketPath: controllerTicketPath(homeDirectory, launchId), nativeSessionId: stopped.nativeSessionId } };
+        ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)), nativeSessionId: stopped.nativeSessionId } };
       const recoveryCount = previous.recoveryCount + (orderly ? 0 : 1);
       if (!Number.isSafeInteger(recoveryCount)) throw new Error("Bot recovery count is exhausted.");
-      // Both rows share the Worker database and transaction; interruption cannot
+      // Both rows share their owning database and transaction; interruption cannot
       // expose a replacement intent paired with the old generation's evidence.
       db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
       put(next, { launchId, executionId: intent.executionId, executionGeneration: generation,
@@ -202,7 +245,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
         retainedAliasDirectories: [...new Set([...previous.retainedAliasDirectories, ...(previous.aliasDirectory === null ? [] : [previous.aliasDirectory])])] });
       return next;
     }),
-    close: (): void => closeSqliteDatabase(db, { file, format: workerStoreFormat }),
+    close: (): void => closeSqliteDatabase(db, { file, format }),
   };
 };
 export type BotExecutionStore = ReturnType<typeof openBotExecutionStore>;

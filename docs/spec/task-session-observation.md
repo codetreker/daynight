@@ -49,7 +49,7 @@ PAT 与 MCP OAuth 保留真实调用者、scope、有效期和撤销约束；观
 
 组页默认 20、最多 50 组，以 `cursor` 续页。每组目标预览最多 20 个，按 Task UUID 升序；`groupId` 与 `targetsCursor` 必须成对提供，不能与组 `cursor` 并用。目标续页继续同一组的进行中成员，摘要仍覆盖整组。游标绑定调用者、项目、负责人和 Task 图快照；Task 图变化返回 `reset_required`，要求从头读取。仅 Session 活动变化不改变分页成员集合。
 
-仅工作概览及目标续页采用完整编码响应不超过 256 KiB 的专用预算，包含 HTTP 换行或 MCP 协议包络。预算不足时提前结束，并返回对应最后实际输出组或目标的续页游标；连一个完整结果都无法容纳时明确返回 `resource_limit_exceeded`。普通 Task list、show、graph 继续完整返回，不引入通用响应字节上限。MCP 成功读取使用普通编码，公开严格输出 schema 并以协议测试验证，不恢复共享 wrapper 的运行时输出 schema 校验。
+仅工作概览及目标续页采用完整编码响应不超过 256 KiB 的专用预算，包含 HTTP 换行或 MCP 协议包络。预算不足时提前结束，并返回对应最后实际输出组或目标的续页游标；连一个完整结果都无法容纳时明确返回 `resource_limit_exceeded`。普通 Task list、show、graph 继续完整返回，不引入通用响应字节上限。MCP 工具发现省略 `outputSchema`；成功读取使用普通编码，协议测试直接断言实际结构化结果；共享入口不定义或校验输出 schema。
 
 ## 指定 Session inspection
 

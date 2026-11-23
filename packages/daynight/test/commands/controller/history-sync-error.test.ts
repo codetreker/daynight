@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
-import { historySyncHttpError } from "../../../src/commands/controller/media/history-sync-error.js";
+import { describeHistorySyncError } from "../../../src/commands/controller/media/history-sync-error.js";
+import { readArchiveRequestError } from "../../../src/commands/controller/archive-retry.js";
+import { ArchiveRequestError } from "../../../src/commands/controller/archive-error.js";
 
 const base = "Controller history synchronization GET status failed (409).";
-const observe = (response: Response, signal = new AbortController().signal) => historySyncHttpError(response, "GET status", signal);
+const observe = async (response: Response, signal = new AbortController().signal) => describeHistorySyncError(await readArchiveRequestError(response, signal), "GET status");
 const response = (value: unknown) => Response.json(value, { status: 409 });
 
 test("history HTTP diagnostics expose only bounded identifiers from the nested error envelope", async () => {
@@ -39,32 +41,33 @@ test.each(["", "private-non-json-canary", '{"error":{"code":"unfinished"', '[{"e
   expect(await observe(new Response(text, { status: 409 }))).toMatchObject({ status: 409, message: base });
 });
 
-test("history HTTP diagnostics accept exactly 16 KiB but discard and cancel an oversized stream", async () => {
+test("history HTTP diagnostics accept exactly 16 KiB but omit identifiers above their budget", async () => {
   const json = JSON.stringify({ error: { code: "bounded" } });
   expect((await observe(new Response(json.padEnd(16 * 1024, " "), { status: 409 }))).message).toContain("code=bounded");
   let canceled = 0;
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) { controller.enqueue(new TextEncoder().encode(json.padEnd(16 * 1024 + 1, " "))); },
+    start(controller) { controller.enqueue(new TextEncoder().encode(json.padEnd(16 * 1024 + 1, " "))); controller.close(); },
     cancel() { canceled++; },
   });
   expect(await observe(new Response(stream, { status: 409 }))).toMatchObject({ status: 409, message: base });
-  expect(canceled).toBe(1);
+  expect(canceled).toBe(0);
 });
 
 test("history HTTP diagnostics count byte length across chunks and ignore response headers", async () => {
   let canceled = 0;
   const bytes = new TextEncoder().encode("é".repeat(8193));
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) { controller.enqueue(bytes.subarray(0, 100)); controller.enqueue(bytes.subarray(100)); },
+    start(controller) { controller.enqueue(bytes.subarray(0, 100)); controller.enqueue(bytes.subarray(100)); controller.close(); },
     cancel() { canceled++; },
   });
   expect((await observe(new Response(stream, { status: 409, headers: { "X-Request-ID": "private-header-canary" } }))).message).toBe(base);
-  expect(canceled).toBe(1);
+  expect(canceled).toBe(0);
 });
 
-test("history HTTP diagnostics preserve the failure when a body errors or has invalid UTF-8", async () => {
-  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("private-stream-canary")); } });
-  expect(await observe(new Response(stream, { status: 409 }))).toMatchObject({ status: 409, message: base });
+test("history diagnostics preserve existing transport failure classification and malformed-body fallback", async () => {
+  const failure = new Error("Original response stream failed.");
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(failure); } });
+  await expect(observe(new Response(stream, { status: 409 }))).rejects.toBe(failure);
   expect((await observe(new Response(new Uint8Array([0xff]), { status: 409 }))).message).toBe(base);
 });
 
@@ -75,24 +78,23 @@ test("history HTTP diagnostics cancel a stalled body on the original request sig
     cancel() { canceled++; },
   });
   const pending = observe(new Response(stream, { status: 409 }), abort.signal);
-  await reading.promise; abort.abort(new Error("private-abort-canary"));
-  expect(await pending).toMatchObject({ status: 409, message: base });
+  const failure = new Error("Original request cancelled.");
+  const rejected = expect(pending).rejects.toBe(failure);
+  await reading.promise; abort.abort(failure);
+  await rejected;
   expect(canceled).toBe(1);
 });
 
-test("history HTTP diagnostics obey a request deadline without waiting for stream cancellation", async () => {
-  let canceled = 0;
-  const stream = new ReadableStream<Uint8Array>({ cancel() { canceled++; return new Promise<void>(() => {}); } });
-  expect(await observe(new Response(stream, { status: 409 }), AbortSignal.timeout(10))).toMatchObject({ status: 409, message: base });
-  expect(canceled).toBe(1);
-});
-
-test("history HTTP diagnostics retain HTTP status for absent, locked, or pre-aborted bodies", async () => {
+test("history diagnostics retain the existing failure without inventing unmeasured identifiers", async () => {
   expect((await observe(new Response(null, { status: 409 }))).message).toBe(base);
-  const locked = new Response("private-locked-canary", { status: 409 }), reader = locked.body!.getReader();
-  try { expect((await observe(locked)).message).toBe(base); } finally { await reader.cancel(); reader.releaseLock(); }
-  let canceled = 0;
-  const stream = new ReadableStream<Uint8Array>({ cancel() { canceled++; throw new Error("private-cancel-canary"); } });
-  expect((await observe(new Response(stream, { status: 409 }), AbortSignal.abort())).message).toBe(base);
-  expect(canceled).toBe(1);
+  const error = new ArchiveRequestError(429, "resource_busy", { error: { code: "resource_busy", requestId: "safe" } }, "1");
+  expect(describeHistorySyncError(error, "PUT chunk")).toBe(error);
+  expect(error).toMatchObject({ busy: true, code: "resource_busy", uploadVersion: "1", message: "Controller history synchronization PUT chunk failed (429)." });
+});
+
+test("diagnostic byte budget cannot weaken existing business classification or erase the original payload", async () => {
+  const payload = { error: { code: "resource_busy", requestId: "safe", message: "x".repeat(16 * 1024) } };
+  const error = await readArchiveRequestError(Response.json(payload, { status: 429, headers: { "Daynight-Archive-Upload-Version": "1" } }), new AbortController().signal);
+  expect(describeHistorySyncError(error, "PUT chunk")).toBe(error);
+  expect(error).toMatchObject({ status: 429, code: "resource_busy", busy: true, payload, uploadVersion: "1", message: "Controller history synchronization PUT chunk failed (429)." });
 });

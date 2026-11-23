@@ -9,6 +9,7 @@ import { createGitManager, GitCommandError } from "../../../src/commands/review/
 import { executeCommand, GitHubApiError } from "../../../src/commands/review/adapters/github.js";
 import type { GitHubClient } from "../../../src/commands/review/adapters/github.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
+import { OwnedCommandCleanupError, registerOwnedCommandCleanupConfirmation } from "../../../src/commands/worker/owned-command.js";
 
 import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
 
@@ -749,6 +750,78 @@ describe("foreground review coordination", () => {
     expect(f.launched).toHaveLength(1);
     run.abort.abort();
     await expect(run.completion).resolves.toEqual({ safeToReleaseLock: false });
+  });
+
+  it.each(["owned", "mixed", "incomplete-output"])("rechecks original owned cleanup after joining with %s uncertainty", async mode => {
+    const f = fixture(); f.update(1);
+    let closed = false;
+    const cleanup = new OwnedCommandCleanupError([new Error("stop save failed")], undefined);
+    registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
+    const failure = mode === "mixed" ? new AggregateError([cleanup, new Error("unconfirmed independent process")], "Mixed ownership failure") : cleanup;
+    const original = f.runner.run;
+    const run = f.start({ runner: { run: async (...args) => ({ ...await original(...args), completed: false,
+      directProcessClosed: false, captureComplete: mode !== "incomplete-output", processExclusionFailure: failure, errors: [failure] }) } });
+    await waitFor(() => f.store.listReviews(f.pr())[0]?.status === "interrupted", "retained native cleanup");
+    run.abort.abort();
+    const result = await run.completion;
+    expect(result.safeToReleaseLock).toBe(false);
+    closed = true;
+    expect(result.safeToReleaseLock).toBe(mode === "owned");
+    expect(f.launched).toHaveLength(1);
+    expect(f.store.listReviews(f.pr())[0]?.status).toBe("interrupted");
+  });
+
+  it.each(["read-only", "mixed-sibling", "mixed-cause", "source-sibling", "source-cause", "semantic-wrapper", "unregistered", "unregistered-wrapper"])("retains only the original read-only Git cleanup provenance under %s failure", async mode => {
+    const f = fixture(); f.update(1);
+    let closed = false;
+    const cleanup = new OwnedCommandCleanupError([new Error("prepared save failed")], undefined);
+    if (mode !== "unregistered") registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
+    mkdirSync(f.configurations[0]!.path, { recursive: true });
+    const sourceFailure = mode === "source-sibling" ? new AggregateError([cleanup, new Error("independent failure")])
+      : mode === "source-cause" ? new AggregateError([cleanup], "Mixed source", { cause: new Error("independent failure") }) : cleanup;
+    const git = createGitManager({ temporaryDirectory: path.join(f.configurations[0]!.path, "temporary"), client: f.client,
+      execute: async () => ({ error: sourceFailure, stdout: "", stderr: "" }) });
+    const wrapped = await git.ensureRepository(f.configurations[0]!).catch(error => error);
+    expect(wrapped).toMatchObject({ name: "GitCommandError", completed: false, cause: sourceFailure });
+    const independent = new GitCommandError("Independent Git effects are unknown.", new Error("lost mutation result"), false);
+    const failure = mode === "mixed-sibling" ? new AggregateError([wrapped, independent], "Mixed Git failure")
+      : mode === "mixed-cause" ? new AggregateError([wrapped], "Mixed Git failure", { cause: independent })
+      : mode === "semantic-wrapper" ? new GitCommandError("Origin update was not verified.", wrapped, false)
+      : mode === "unregistered-wrapper" ? new GitCommandError("Unregistered failure.", cleanup, false) : wrapped;
+    const run = f.start({ git: { ...f.git, ensureRepository: async () => { throw failure; } } });
+    await waitFor(() => f.events.some(event => event.phase === "poll" && event.error === failure), "wrapped Git failure");
+    run.abort.abort();
+    const result = await run.completion;
+    expect(result.safeToReleaseLock).toBe(false);
+    closed = true;
+    expect(result.safeToReleaseLock).toBe(mode === "read-only");
+    expect(f.launched).toHaveLength(0);
+  });
+
+  it.each(["preparation", "cleanup"])("rechecks a read-only Git wrapper retained during %s after all work joins", async phase => {
+    const f = fixture(); f.update(1);
+    let closed = false;
+    const cleanup = new OwnedCommandCleanupError([new Error("stop save failed")], undefined);
+    registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
+    mkdirSync(f.configurations[0]!.path, { recursive: true });
+    const manager = createGitManager({ temporaryDirectory: path.join(f.configurations[0]!.path, "temporary"), client: f.client,
+      execute: async () => ({ error: cleanup, stdout: "", stderr: "" }) });
+    const wrapped = await manager.ensureRepository(f.configurations[0]!).catch(error => error);
+    if (phase === "preparation") f.prepare(async () => { throw wrapped; });
+    else f.cleanup(async () => { throw wrapped; });
+    const run = f.start();
+    if (phase === "cleanup") {
+      await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 1, "review before cleanup");
+      f.update(1, { state: "closed" });
+    }
+    await waitFor(() => f.events.some(event => event.error === wrapped && event.phase === (phase === "preparation" ? "interrupted" : "cleanup")), "retained read-only failure");
+    run.abort.abort();
+    const result = await run.completion;
+    expect(result.safeToReleaseLock).toBe(false);
+    closed = true;
+    expect(result.safeToReleaseLock).toBe(true);
+    if (phase === "preparation") expect(f.store.listReviews(f.pr())[0]!.status).toBe("interrupted");
+    else expect(f.store.getPullRequest(f.pr())!.cleanupPending).toBe(true);
   });
 
   it("recovers old execution only after explicit proof and uses one advancing-clock recovery timestamp", async () => {

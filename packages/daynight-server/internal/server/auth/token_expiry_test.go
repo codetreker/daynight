@@ -4,19 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
-	"github.com/google/uuid"
 )
 
 func createHTTPPAT(t *testing.T, h *authHarness, cookie *http.Cookie, expiry *time.Time) api.CreatedPersonalAccessToken {
 	t.Helper()
-	return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", testsupport.JSONBody(t, map[string]any{"name": "Editable token", "expiresAt": expiry}), []*http.Cookie{cookie}, nil, h.Origin), 201)
+	return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createScopedHTTPPAT(t, h, cookie, "Editable token", expiry), 201)
 }
 
 func TestTokenExpiryHTTPCreateEditAndCurrentBearer(t *testing.T) {
@@ -74,62 +76,187 @@ func TestTokenExpiryHTTPCreateEditAndCurrentBearer(t *testing.T) {
 	}
 }
 
+func expectPATExpiry(actor model.Principal, tokenID string, input identitycore.UpdatePATExpiry, result model.PersonalAccessToken, err error) authRequestCall {
+	return authRequestCall{name: "UpdatePATExpiry", args: []any{actor, tokenID, input}, result: result, err: err}
+}
+
+func TestTokenExpiryResponseIncludesUsageTime(t *testing.T) {
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
+	token := authRequestMintedPAT(actor, "Editable token").Credential
+	zone := time.FixedZone("token storage", 2*60*60)
+	used := time.Date(2026, 1, 2, 3, 4, 5, 654321000, zone)
+	expiry := used.Add(time.Hour).UTC()
+	token.CreatedAt = used.Add(-time.Hour)
+	token.LastUsedAt = &used
+	savedExpiry := expiry.In(zone)
+	token.ExpiresAt = &savedExpiry
+	input := identitycore.UpdatePATExpiry{ExpiresAt: &expiry, ExpectedUserID: actor.UserID}
+	body := testsupport.JSONBody(t, map[string]any{"expiresAt": expiry, "expectedExpiresAt": nil, "expectedUserId": actor.UserID})
+	patch := h.request("PATCH", "/api/v1/me/tokens/"+token.ID, body, []*http.Cookie{cookie}, nil, authRequestOrigin,
+		expectAuthentication(actor, cookie.Value), expectPATExpiry(actor, token.ID, input, token, nil))
+	var changed map[string]json.RawMessage
+	if patch.Code != http.StatusOK || json.Unmarshal(patch.Body.Bytes(), &changed) != nil {
+		t.Fatalf("patch: %d %s", patch.Code, patch.Body)
+	}
+	want := map[string]string{
+		"id":         `"` + token.ID + `"`,
+		"name":       `"` + token.Name + `"`,
+		"createdAt":  `"` + token.CreatedAt.UTC().Format(time.RFC3339Nano) + `"`,
+		"expiresAt":  `"` + expiry.Format(time.RFC3339Nano) + `"`,
+		"lastUsedAt": `"` + used.UTC().Format(time.RFC3339Nano) + `"`,
+	}
+	if len(changed) != len(want) {
+		t.Fatalf("unexpected metadata fields: %v", changed)
+	}
+	for field, value := range want {
+		if string(changed[field]) != value {
+			t.Fatalf("expiry response field %s=%s, want %s", field, changed[field], value)
+		}
+	}
+	if patch.Header().Get("Cache-Control") != "no-store" || patch.Header().Get("Daynight-User-ID") != actor.UserID {
+		t.Fatalf("expiry response cache or admission headers: %v", patch.Header())
+	}
+}
+
 func TestTokenExpiryHTTPValidationOwnershipAndAccountSwitch(t *testing.T) {
-	h := authTestHarness(t)
-	alice := h.Login(t, "alice")
-	aliceCookies := []*http.Cookie{alice}
-	aliceUser := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", aliceCookies, nil, ""), 200)
-	minted := createHTTPPAT(t, h, alice, nil)
-	bob := h.Login(t, "bob")
-	bobCookies := []*http.Cookie{bob}
-	bobUser := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", bobCookies, nil, ""), 200)
-	path := "/api/v1/me/tokens/" + minted.ID
-	future := time.Now().UTC().Add(time.Hour)
-	body := testsupport.JSONBody(t, map[string]any{"expiresAt": future, "expectedExpiresAt": nil, "expectedUserId": aliceUser.ID})
-	testsupport.AssertProjectError(t, h.Request("PATCH", path, body, bobCookies, nil, h.Origin), 403, "forbidden")
-	listed := testsupport.DecodeResponse[api.PersonalAccessTokenList](t, h.Request("GET", "/api/v1/me/tokens", "", aliceCookies, nil, ""), 200)
-	if len(listed.Items) != 1 || listed.Items[0].ExpiresAt != nil {
+	h := newStrictAuthHTTP(t)
+	alice, _ := authRequestAccount(1)
+	bob, _ := authRequestAccount(2)
+	aliceCookie, bobCookie := h.cookie(authAliceCookie), h.cookie(authBobCookie)
+	aliceCookies, bobCookies := []*http.Cookie{aliceCookie}, []*http.Cookie{bobCookie}
+	aliceSession, bobSession := expectAuthentication(alice, aliceCookie.Value), expectAuthentication(bob, bobCookie.Value)
+	minted := authRequestMintedPAT(alice, "Editable token")
+	tokenID := minted.Credential.ID
+	path := "/api/v1/me/tokens/" + tokenID
+	future := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	input := identitycore.UpdatePATExpiry{ExpiresAt: &future, ExpectedUserID: alice.UserID}
+	body := testsupport.JSONBody(t, map[string]any{"expiresAt": future, "expectedExpiresAt": nil, "expectedUserId": alice.UserID})
+	switched := &model.Fault{Code: "forbidden", Message: "The signed-in account changed. Review the token again."}
+	response := h.request("PATCH", path, body, bobCookies, nil, authRequestOrigin, bobSession,
+		expectPATExpiry(bob, tokenID, input, model.PersonalAccessToken{}, switched))
+	testsupport.AssertProjectError(t, response, http.StatusForbidden, "forbidden")
+	if response.Header().Get("Daynight-User-ID") != bob.UserID {
+		t.Fatal("account-switch rejection lost the admitted principal")
+	}
+
+	listed := testsupport.DecodeResponse[api.PersonalAccessTokenList](t,
+		h.request("GET", "/api/v1/me/tokens", "", aliceCookies, nil, "", aliceSession,
+			authRequestCall{name: "ListPATs", args: []any{alice}, result: []model.PersonalAccessToken{minted.Credential}}),
+		http.StatusOK)
+	if len(listed.Items) != 1 || listed.Items[0].ID != tokenID || listed.Items[0].ExpiresAt != nil {
 		t.Fatal("changed account mutated reviewed credential")
 	}
+
 	for _, origin := range []string{"", "https://foreign.example"} {
-		testsupport.AssertProjectError(t, h.Request("PATCH", path, body, aliceCookies, nil, origin), 403, "forbidden")
+		response := h.request("PATCH", path, body, aliceCookies, nil, origin, aliceSession)
+		testsupport.AssertProjectError(t, response, http.StatusForbidden, "forbidden")
+		if response.Header().Get("Daynight-User-ID") != "" {
+			t.Fatal("rejected Origin advertised a principal")
+		}
 	}
-	testsupport.AssertProjectError(t, h.Request("PATCH", path, body, nil, nil, h.Origin), 401, "unauthenticated")
-	testsupport.AssertProjectError(t, h.Request("PATCH", path, body, nil, []string{"Bearer " + minted.Token}, ""), 403, "forbidden")
-	bodyOther := testsupport.JSONBody(t, map[string]any{"expiresAt": future, "expectedExpiresAt": nil, "expectedUserId": bobUser.ID})
-	testsupport.AssertProjectError(t, h.Request("PATCH", path, bodyOther, bobCookies, nil, h.Origin), 404, "not_found")
-	for _, invalid := range []string{
-		`{}`, `{"expiresAt":null}`, `{"expiresAt":null,"expectedExpiresAt":null}`, `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":null}`, `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":"bad"}`, `{"expiresAt":null,"expectedExpiresAt":7,"expectedUserId":"` + aliceUser.ID + `"}`, `{"expiresAt":false,"expectedExpiresAt":null,"expectedUserId":"` + aliceUser.ID + `"}`, `{"expiresAt":"invalidZ","expectedExpiresAt":null,"expectedUserId":"` + aliceUser.ID + `"}`, `{"expiresAt":"2030-01-01T00:00:00+00:00","expectedExpiresAt":null,"expectedUserId":"` + aliceUser.ID + `"}`, `{"expiresAt":"2020-01-01T00:00:00Z","expectedExpiresAt":null,"expectedUserId":"` + aliceUser.ID + `"}`, `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":"` + aliceUser.ID + `","extra":true}`,
+	response = h.request("PATCH", path, body, nil, nil, authRequestOrigin)
+	testsupport.AssertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	pat := model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: tokenID}
+	patRefusal := &model.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."}
+	response = h.request("PATCH", path, body, nil, []string{"Bearer " + minted.Secret}, "",
+		expectAuthentication(pat, minted.Secret), expectPATExpiry(pat, tokenID, input, model.PersonalAccessToken{}, patRefusal))
+	testsupport.AssertProjectError(t, response, http.StatusForbidden, "forbidden")
+
+	notFound := &model.Fault{Code: "not_found", Message: "Active token was not found.", Cause: model.ErrNotFound}
+	bodyOther := testsupport.JSONBody(t, map[string]any{"expiresAt": future, "expectedExpiresAt": nil, "expectedUserId": bob.UserID})
+	response = h.request("PATCH", path, bodyOther, bobCookies, nil, authRequestOrigin, bobSession,
+		expectPATExpiry(bob, tokenID, identitycore.UpdatePATExpiry{ExpiresAt: &future, ExpectedUserID: bob.UserID}, model.PersonalAccessToken{}, notFound))
+	testsupport.AssertProjectError(t, response, http.StatusNotFound, "not_found")
+
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	invalidInput := &model.Fault{Code: "invalid_input", Message: "Invalid token expiry input."}
+	for _, test := range []struct {
+		body      string
+		delegated *identitycore.UpdatePATExpiry
+	}{
+		{body: `{}`},
+		{body: `{"expiresAt":null}`},
+		{body: `{"expiresAt":null,"expectedExpiresAt":null}`},
+		{body: `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":null}`},
+		{body: `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":"bad"}`, delegated: &identitycore.UpdatePATExpiry{ExpectedUserID: "bad"}},
+		{body: `{"expiresAt":null,"expectedExpiresAt":7,"expectedUserId":"` + alice.UserID + `"}`},
+		{body: `{"expiresAt":false,"expectedExpiresAt":null,"expectedUserId":"` + alice.UserID + `"}`},
+		{body: `{"expiresAt":"invalidZ","expectedExpiresAt":null,"expectedUserId":"` + alice.UserID + `"}`},
+		{body: `{"expiresAt":"2030-01-01T00:00:00+00:00","expectedExpiresAt":null,"expectedUserId":"` + alice.UserID + `"}`},
+		{body: `{"expiresAt":"2020-01-01T00:00:00Z","expectedExpiresAt":null,"expectedUserId":"` + alice.UserID + `"}`,
+			delegated: &identitycore.UpdatePATExpiry{ExpiresAt: &past, ExpectedUserID: alice.UserID}},
+		{body: `{"expiresAt":null,"expectedExpiresAt":null,"expectedUserId":"` + alice.UserID + `","extra":true}`},
 	} {
-		testsupport.AssertProjectError(t, h.Request("PATCH", path, invalid, aliceCookies, nil, h.Origin), 400, "invalid_input")
+		calls := []authRequestCall{aliceSession}
+		if test.delegated != nil {
+			calls = append(calls, expectPATExpiry(alice, tokenID, *test.delegated, model.PersonalAccessToken{}, invalidInput))
+		}
+		response := h.request("PATCH", path, test.body, aliceCookies, nil, authRequestOrigin, calls...)
+		testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
-	for _, invalid := range []string{`{"name":"missing"}`, `{"name":"legacy","days":30}`, `{"name":"bad","expiresAt":7}`, `{"name":"bad","expiresAt":"2020-01-01T00:00:00Z"}`, `{"name":"bad","expiresAt":"2030-01-01T00:00:00+08:00"}`} {
-		testsupport.AssertProjectError(t, h.Request("POST", "/api/v1/me/tokens", invalid, aliceCookies, nil, h.Origin), 400, "invalid_input")
+	for _, test := range []struct {
+		body      string
+		delegated *identitycore.CreatePAT
+	}{
+		{body: `{"name":"missing"}`},
+		{body: `{"name":"legacy","days":30}`},
+		{body: `{"name":"bad","expiresAt":7}`},
+		{body: `{"name":"bad","expiresAt":"2020-01-01T00:00:00Z"}`, delegated: &identitycore.CreatePAT{Name: "bad", ExpiresAt: &past}},
+		{body: `{"name":"bad","expiresAt":"2030-01-01T00:00:00+08:00"}`},
+	} {
+		calls := []authRequestCall{aliceSession}
+		if test.delegated != nil {
+			calls = append(calls, authRequestCall{name: "CreatePAT", args: []any{alice, *test.delegated}, err: invalidInput})
+		}
+		response := h.request("POST", "/api/v1/me/tokens", test.body, aliceCookies, nil, authRequestOrigin, calls...)
+		testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
-	testsupport.AssertProjectError(t, h.Request("PATCH", "/api/v1/me/tokens/invalid", body, aliceCookies, nil, h.Origin), 400, "invalid_input")
-	testsupport.AssertProjectError(t, h.Request("PATCH", "/api/v1/me/tokens/"+uuid.NewString(), body, aliceCookies, nil, h.Origin), 404, "not_found")
-	if w := h.Request("GET", path, "", aliceCookies, nil, ""); w.Code != 405 || w.Header().Get("Allow") != "PATCH, DELETE" {
+
+	response = h.request("PATCH", "/api/v1/me/tokens/invalid", body, aliceCookies, nil, authRequestOrigin, aliceSession,
+		expectPATExpiry(alice, "invalid", input, model.PersonalAccessToken{}, invalidInput))
+	testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+	const missingID = "40000000-0000-4000-8000-000000000099"
+	response = h.request("PATCH", "/api/v1/me/tokens/"+missingID, body, aliceCookies, nil, authRequestOrigin, aliceSession,
+		expectPATExpiry(alice, missingID, input, model.PersonalAccessToken{}, notFound))
+	testsupport.AssertProjectError(t, response, http.StatusNotFound, "not_found")
+
+	response = h.request("GET", path, "", aliceCookies, nil, "", aliceSession)
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "PATCH, DELETE" {
 		t.Fatal("token metadata method contract changed")
 	}
-	if w := h.Request("DELETE", path, "", aliceCookies, nil, h.Origin); w.Code != 204 {
-		t.Fatal("token revocation failed")
+	response = h.request("DELETE", path, "", aliceCookies, nil, authRequestOrigin, aliceSession,
+		authRequestCall{name: "RevokePAT", args: []any{alice, tokenID}})
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 || response.Header().Get("Daynight-User-ID") != alice.UserID {
+		t.Fatalf("token revocation response: status=%d headers=%v", response.Code, response.Header())
 	}
-	testsupport.AssertProjectError(t, h.Request("PATCH", path, body, aliceCookies, nil, h.Origin), 404, "not_found")
+	response = h.request("PATCH", path, body, aliceCookies, nil, authRequestOrigin, aliceSession,
+		expectPATExpiry(alice, tokenID, input, model.PersonalAccessToken{}, notFound))
+	testsupport.AssertProjectError(t, response, http.StatusNotFound, "not_found")
 }
 
 func TestTokenExpiryHTTPExpiredAndOperationalFailure(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "edit-user")
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
 	cookies := []*http.Cookie{cookie}
-	user := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 200)
-	minted := createHTTPPAT(t, h, cookie, nil)
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE personal_access_tokens SET created_at=$2,expires_at=$3 WHERE id=$1`, minted.ID, time.Now().Add(-time.Hour), time.Now().Add(-time.Minute)); err != nil {
-		t.Fatal(err)
+	admit := expectAuthentication(actor, cookie.Value)
+	tokenID := authRequestMintedPAT(actor, "Editable token").Credential.ID
+	path := "/api/v1/me/tokens/" + tokenID
+	input := identitycore.UpdatePATExpiry{ExpectedUserID: actor.UserID}
+	body := testsupport.JSONBody(t, map[string]any{"expiresAt": nil, "expectedExpiresAt": nil, "expectedUserId": actor.UserID})
+	expired := &model.Fault{Code: "not_found", Message: "Active token was not found.", Cause: model.ErrNotFound}
+	response := h.request("PATCH", path, body, cookies, nil, authRequestOrigin, admit,
+		expectPATExpiry(actor, tokenID, input, model.PersonalAccessToken{}, expired))
+	testsupport.AssertProjectError(t, response, http.StatusNotFound, "not_found")
+
+	h.logs.Reset()
+	response = h.request("PATCH", path, body, cookies, nil, authRequestOrigin, admit,
+		expectPATExpiry(actor, tokenID, input, model.PersonalAccessToken{}, authMissingRelation("lock active token")))
+	testsupport.AssertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+	if !strings.Contains(h.logs.String(), `"cause":"database"`) || response.Header().Get("Daynight-User-ID") != actor.UserID ||
+		response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("operational expiry failure lost classification or admission headers: %v", response.Header())
 	}
-	body := testsupport.JSONBody(t, map[string]any{"expiresAt": nil, "expectedExpiresAt": nil, "expectedUserId": user.ID})
-	testsupport.AssertProjectError(t, h.Request("PATCH", "/api/v1/me/tokens/"+minted.ID, body, cookies, nil, h.Origin), 404, "not_found")
-	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE personal_access_tokens`); err != nil {
-		t.Fatal(err)
-	}
-	testsupport.AssertProjectError(t, h.Request("PATCH", "/api/v1/me/tokens/"+minted.ID, body, cookies, nil, h.Origin), 500, "internal_error")
 }

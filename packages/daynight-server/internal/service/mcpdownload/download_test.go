@@ -35,7 +35,7 @@ func newFixture(t *testing.T) fixture {
 	task := testsupport.CreateTask(t, tasks, session, project.ID, "download")
 	id := uuid.NewString()
 	hash := sha256.Sum256([]byte(id))
-	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
+	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload'],1,$1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	actor := mcptransfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: session.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}
@@ -202,33 +202,34 @@ func TestTextPrefix(t *testing.T) {
 	}
 }
 func TestOwnershipBindingAndPreparing(t *testing.T) {
-	f := newFixture(t)
-	f.put(t, []byte("original"))
-	in := f.input
-	in.Action = "open"
-	in.TransferID = uuid.NewString()
-	binding := mcptransfer.Binding{ID: in.TransferID, Direction: "download", ProjectID: in.ProjectID, TaskID: in.TaskID, Path: in.Path}
-	if _, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, binding); err != nil || !created {
-		t.Fatalf("record: %v", err)
+	f := newAdmissionFixture(t)
+	in := f.openInput()
+	record := f.record(in, "preparing")
+	touch, saved := f.touch(in, record)
+	f.expect(committedAdmissionScope(admissionGet(record), f.authorize(in)), touch)
+	result, err := f.service.Read(f.ctx, f.actor, in)
+	if err != nil || result["state"] != "preparing" || result["sha256"] != nil || result["eof"] != nil ||
+		result["transferId"] != in.TransferID || result["expiresAt"] != saved.ExpiresAt {
+		t.Fatalf("preparing: %#v %v", result, err)
 	}
-	r := f.read(t, in)
-	if r["state"] != "preparing" || r["sha256"] != nil || r["eof"] != nil {
-		t.Fatalf("preparing: %#v", r)
-	}
+
 	other := f.actor
-	other.AuthorityID = uuid.NewString()
+	other.AuthorityID = "20000000-0000-4000-8000-000000000002"
 	other.Principal.CredentialID = other.AuthorityID
-	if _, err := f.service.Read(t.Context(), other, in); err == nil {
-		t.Fatal("different credential accepted")
+	f.expect(failedAdmissionScope(mcptransfer.ErrConflict, admissionGet(saved)))
+	if result, err := f.service.Read(f.ctx, other, in); !errors.Is(err, mcptransfer.ErrConflict) || result != nil {
+		t.Fatalf("different credential: %#v %v", result, err)
 	}
+
 	in.Path = "other"
-	if _, err := f.service.Read(t.Context(), f.actor, in); !errors.Is(err, mcptransfer.ErrConflict) {
-		t.Fatalf("binding: %v", err)
+	f.expect(committedAdmissionScope(admissionGet(saved), f.authorize(in)))
+	if result, err := f.service.Read(f.ctx, f.actor, in); !errors.Is(err, mcptransfer.ErrConflict) || result != nil {
+		t.Fatalf("binding: %#v %v", result, err)
 	}
-	in.Path = "file"
-	in.Action = "chunk"
-	in.Offset = "0"
-	if _, err := f.service.Read(t.Context(), f.actor, in); err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("preparing chunk: %v", err)
+
+	in.Path, in.Action, in.Offset = "file", "chunk", "0"
+	f.expect(committedAdmissionScope(admissionGet(saved), f.authorize(in)))
+	if result, err := f.service.Read(f.ctx, f.actor, in); err == nil || result != nil || !strings.Contains(err.Error(), "not readable") {
+		t.Fatalf("preparing chunk: %#v %v", result, err)
 	}
 }

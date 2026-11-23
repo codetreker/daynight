@@ -22,7 +22,11 @@ uses separate native encoders and evidence matchers, with one shared operation,
 occurrence and immutable-resource contract. The original decision established
 these boundaries before native implementation. The adapters now connect them
 through the existing Controller journal and media owner; production qualification
-still requires the exact backend, model and platform evidence.
+still requires the exact backend, model and platform evidence. The later
+[qualification-boundary decision](2026-11-16-image-qualification-boundaries.md)
+separates immutable application originals and complete native-interface delivery
+from permitted native processing, and distinguishes combination qualification
+from complete feature acceptance.
 
 Codex uses stable localImage files and request/client identity, Claude uses
 ordered base64 sources and profile-proven root execution evidence, and Copilot
@@ -59,7 +63,7 @@ Claude's persisted Read result uses `toolUseResult`, while the live SDK exposes
 bounded logical-string signature and the complete native record's schema before
 discarding the redundant bytes. It retains the authoritative content block's
 offset, occurrence and failure state. Unknown or unmatched copies remain subject
-to the original metadata budget. This comparison only identifies a documented
+to the per-record and page limits. This comparison only identifies a documented
 copy within one record; it cannot establish input acceptance or merge distinct
 image occurrences.
 
@@ -89,9 +93,12 @@ follow full-file loading; item counts also do not bound bytes. Streaming or
 isolated readers therefore carry explicit frame, queue and process budgets.
 
 **Infer vision support from model names or missing negative flags.** Unknown
-backend, limits or cumulative context may reject otherwise small images. Exact
-profiles and conservative proven geometry envelopes trade availability for
-consistent, explainable rejection. Matching SDK and CLI versions to a published
+backend, limits or cumulative context may reject otherwise small images. The
+original conservative geometry-envelope requirement traded availability for
+consistent rejection while native processing limits were unproven. Its later
+qualification boundary preserves evidenced original-input limits without
+requiring a geometry envelope across every unobservable context branch.
+Matching SDK and CLI versions to a published
 model name also proves neither native acceptance nor the geometry of the actual
 backend and platform; public vision limits cannot substitute for qualification.
 
@@ -107,16 +114,22 @@ shared [content commit owner](2026-11-10-atomic-content-publication.md) publishe
 aliases, original references, occurrences, the actual entry revision and outbox
 sequence together. The original implementation persisted a recoverable plan
 before separate timeline and occurrence writes; that preserved recovery facts
-but could not meet the atomic requirement. Immutable candidate files and a
-SQLite commit pointer now govern every content reader. The Provider adopts the
+but could not meet the atomic requirement. Immutable candidates originally
+provided a SQLite commit pointer; the
+[SQL activation decision](2026-11-12-session-sqlite-activation.md) replaces them
+with one committed current body row and preserves the same guarantee. The Provider adopts the
 current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata
-store. Wire spools charge actual bytes to the shared media ledger and retain their
-charge until readers stop and removal is durable. Transcript index writers retain
-a process-bound reservation across crashes; recovery must prove that the original
-writer stopped before admitting another writer. None of these private adapters
-creates an independent upload or public resource protocol.
+store. Wire spools retain their files until readers stop and removal is durable.
+The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes the shared cumulative media accounting; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes spool growth estimates without changing file lifetime. Transcript index writers
+retain a process-bound reservation across crashes; recovery must prove that the
+original writer stopped before admitting another writer. None of these private
+adapters creates an independent upload or public resource protocol.
 
 An image modality in a model catalog does not prove geometry. Codex binds the
 actual thread backend before applying a profile; Copilot combines its model

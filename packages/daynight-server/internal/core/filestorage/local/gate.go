@@ -6,204 +6,218 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"golang.org/x/sys/unix"
 )
 
-// These files are persistent control objects, never attachment or transfer data.
+// Keep the former lock directory reserved so existing control files cannot be
+// addressed as ordinary storage objects.
 const gateDirectory = ".daynight-gates"
 
-type gatePermit struct {
-	file  *os.File
-	local chan struct{}
-	once  sync.Once
-	err   error
-}
-
-type residencyPermit struct {
-	storage *Storage
-	key     string
-	file    *os.File
-	once    sync.Once
-	err     error
-}
-
-func (p *residencyPermit) Close() error {
-	p.once.Do(func() {
-		p.err = p.file.Close()
-		p.storage.residencyMu.Lock()
-		delete(p.storage.residency, p.key)
-		p.storage.residencyMu.Unlock()
-	})
-	return p.err
-}
-
-var _ filestorage.ResidencyGate = (*Storage)(nil)
-
-// TryAcquireResidency uses a separate exact-key namespace from the blocking
-// striped gates. Lock files persist: unlinking one could split a lock across
-// descriptors that another instance has already opened.
-func (s *Storage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
-	if key == "" {
-		return nil, errors.New("empty residency gate key")
+func (s *Storage) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
+	if s.closed.Load() {
+		return nil, os.ErrClosed
 	}
-	if err := ctx.Err(); err != nil {
+	permit, err := s.gates.AcquireGate(ctx, domain, key)
+	if err != nil {
 		return nil, err
 	}
-	s.residencyMu.Lock()
-	if s.residency == nil {
-		s.residency = make(map[string]struct{})
+	if s.closed.Load() {
+		return nil, errors.Join(os.ErrClosed, permit.Close())
 	}
-	if _, exists := s.residency[key]; exists {
-		s.residencyMu.Unlock()
+	return permit, nil
+}
+
+func (s *Storage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
+	if s.closed.Load() {
+		return nil, os.ErrClosed
+	}
+	permit, err := s.gates.TryAcquireResidency(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if s.closed.Load() {
+		return nil, errors.Join(os.ErrClosed, permit.Close())
+	}
+	return permit, nil
+}
+
+func (s *Storage) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	if s.closed.Load() {
+		return nil, os.ErrClosed
+	}
+	permit, err := s.gates.TryAcquireArchive(ctx, owner, session, limit, cleanup)
+	if err != nil {
+		return nil, err
+	}
+	if s.closed.Load() {
+		return nil, errors.Join(os.ErrClosed, permit.Close())
+	}
+	return permit, nil
+}
+
+type standaloneGates struct {
+	root string
+}
+
+// NewStandaloneGates returns process-local gates shared by handles with the
+// same identity. The identity identifies one storage namespace and must not
+// contain credentials. These gates do not coordinate across processes.
+func NewStandaloneGates(identity string) (filestorage.Gates, error) {
+	if identity == "" {
+		return nil, errors.New("storage gate identity is required")
+	}
+	// A filesystem root cannot contain NUL, so this namespace is disjoint from
+	// the resolved roots used by local storage handles.
+	return standaloneGates{root: "\x00" + identity}, nil
+}
+
+type standaloneKey struct {
+	root      string
+	domain    filestorage.GateDomain
+	stripe    byte
+	residency string
+}
+
+// Handles opened on the same resolved root in this process share these permits.
+// Entries live only while a permit is held, even when its storage handle closes.
+var standalonePermits = struct {
+	sync.Mutex
+	held     map[standaloneKey]*standalonePermit
+	archives map[standaloneKey]*standaloneArchives
+}{held: make(map[standaloneKey]*standalonePermit), archives: make(map[standaloneKey]*standaloneArchives)}
+
+type standaloneArchives struct {
+	sessions map[string]bool
+	cleanup  bool
+	done     chan struct{}
+}
+
+type standaloneArchivePermit struct {
+	key     standaloneKey
+	session string
+	cleanup bool
+	once    sync.Once
+}
+
+func (p *standaloneArchivePermit) Close() error {
+	p.once.Do(func() {
+		standalonePermits.Lock()
+		defer standalonePermits.Unlock()
+		state := standalonePermits.archives[p.key]
+		if p.cleanup {
+			state.cleanup = false
+		} else {
+			delete(state.sessions, p.session)
+		}
+		if !state.cleanup && len(state.sessions) == 0 {
+			delete(standalonePermits.archives, p.key)
+			close(state.done)
+		}
+	})
+	return nil
+}
+
+func (g standaloneGates) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	key, err := filestorage.ArchiveGateKey(owner, session, limit, cleanup)
+	if err != nil {
+		return nil, err
+	}
+	k := standaloneKey{root: g.root, residency: key}
+	standalonePermits.Lock()
+	defer standalonePermits.Unlock()
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	state := standalonePermits.archives[k]
+	if standalonePermits.held[k] != nil || (state != nil && (state.cleanup || cleanup || len(state.sessions) >= limit || state.sessions[session])) {
 		return nil, filestorage.ErrGateBusy
 	}
-	s.residency[key] = struct{}{}
-	s.residencyMu.Unlock()
-	acquired := false
-	defer func() {
-		if !acquired {
-			s.residencyMu.Lock()
-			delete(s.residency, key)
-			s.residencyMu.Unlock()
-		}
-	}()
-	if err := s.root.Mkdir(gateDirectory, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return nil, fmt.Errorf("create gate directory: %w", err)
+	if state == nil {
+		state = &standaloneArchives{sessions: make(map[string]bool), done: make(chan struct{})}
+		standalonePermits.archives[k] = state
 	}
-	info, err := s.root.Lstat(gateDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("inspect gate directory: %w", err)
+	if cleanup {
+		state.cleanup = true
+	} else {
+		state.sessions[session] = true
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: gate directory", filestorage.ErrNotRegular)
-	}
-	hash := sha256.Sum256([]byte(key))
-	name := fmt.Sprintf("%s/residency-%x", gateDirectory, hash)
-	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open residency gate: %w", err)
-	}
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = filestorage.ErrNotRegular
-		}
-		return nil, errors.Join(err, file.Close())
-	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			err = filestorage.ErrGateBusy
-		}
-		return nil, errors.Join(err, file.Close())
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, errors.Join(err, file.Close())
-	}
-	acquired = true
-	return &residencyPermit{storage: s, key: key, file: file}, nil
+	return &standaloneArchivePermit{key: k, session: session, cleanup: cleanup}, nil
 }
 
-func (p *gatePermit) Close() error {
+type standalonePermit struct {
+	key  standaloneKey
+	done chan struct{}
+	once sync.Once
+}
+
+func (p *standalonePermit) Close() error {
 	p.once.Do(func() {
-		p.err = p.file.Close() // Closing the descriptor releases the advisory lock.
-		<-p.local
+		standalonePermits.Lock()
+		defer standalonePermits.Unlock()
+		delete(standalonePermits.held, p.key)
+		close(p.done)
 	})
-	return p.err
+	return nil
 }
 
-func (s *Storage) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
-	if domain == filestorage.MediaLeaseGate {
-		if key == "" {
-			return nil, errors.New("empty media lease key")
-		}
-		for {
-			permit, err := filestorage.TryAcquireMediaLease(ctx, s, key)
-			if !errors.Is(err, filestorage.ErrGateBusy) {
-				return permit, err
-			}
-			timer := time.NewTimer(10 * time.Millisecond)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, ctx.Err()
-			}
-		}
-	}
-	var index int
-	switch domain {
-	case filestorage.TargetGate:
-		index = 0
-	case filestorage.PrivateGate:
-		index = 1
-	default:
-		return nil, fmt.Errorf("invalid storage gate domain %q", domain)
-	}
+func (g standaloneGates) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
 	if key == "" {
 		return nil, errors.New("empty storage gate key")
 	}
-	stripe := sha256.Sum256([]byte(key))[0]
-	local := s.gates[index][stripe]
-	select {
-	case local <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	acquired := false
-	defer func() {
-		if !acquired {
-			<-local
+	switch domain {
+	case filestorage.TargetGate, filestorage.PrivateGate:
+		stripe := sha256.Sum256([]byte(key))[0]
+		return acquireStandalone(ctx, standaloneKey{root: g.root, domain: domain, stripe: stripe}, true)
+	case filestorage.MediaLeaseGate:
+		leaseKey, err := filestorage.MediaLeaseKey(key)
+		if err != nil {
+			return nil, err
 		}
-	}()
-	if err := ctx.Err(); err != nil {
-		return nil, err
+		return acquireStandalone(ctx, standaloneKey{root: g.root, residency: leaseKey}, true)
+	default:
+		return nil, fmt.Errorf("invalid storage gate domain %q", domain)
 	}
-	if err := s.root.Mkdir(gateDirectory, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return nil, fmt.Errorf("create gate directory: %w", err)
+}
+
+func (g standaloneGates) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
+	if key == "" {
+		return nil, errors.New("empty residency gate key")
 	}
-	info, err := s.root.Lstat(gateDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("inspect gate directory: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: gate directory", filestorage.ErrNotRegular)
-	}
-	name := fmt.Sprintf("%s/%s-%03d", gateDirectory, domain, stripe)
-	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open storage gate: %w", err)
-	}
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = filestorage.ErrNotRegular
-		}
-		return nil, errors.Join(err, file.Close())
-	}
+	return acquireStandalone(ctx, standaloneKey{root: g.root, residency: key}, false)
+}
+
+func acquireStandalone(ctx context.Context, key standaloneKey, wait bool) (io.Closer, error) {
 	for {
-		err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			if err = ctx.Err(); err != nil {
-				return nil, errors.Join(err, file.Close())
-			}
-			acquired = true
-			return &gatePermit{file: file, local: local}, nil
+		standalonePermits.Lock()
+		if err := context.Cause(ctx); err != nil {
+			standalonePermits.Unlock()
+			return nil, err
 		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) && !errors.Is(err, unix.EINTR) {
-			return nil, errors.Join(fmt.Errorf("lock storage gate: %w", err), file.Close())
+		held := standalonePermits.held[key]
+		archives := standalonePermits.archives[key]
+		if held == nil && archives == nil {
+			permit := &standalonePermit{key: key, done: make(chan struct{})}
+			standalonePermits.held[key] = permit
+			standalonePermits.Unlock()
+			return permit, nil
 		}
-		timer := time.NewTimer(10 * time.Millisecond)
+		standalonePermits.Unlock()
+		if !wait {
+			return nil, filestorage.ErrGateBusy
+		}
+		done := (<-chan struct{})(nil)
+		if held != nil {
+			done = held.done
+		} else {
+			done = archives.done
+		}
 		select {
-		case <-timer.C:
+		case <-done:
 		case <-ctx.Done():
-			timer.Stop()
-			return nil, errors.Join(ctx.Err(), file.Close())
+			return nil, context.Cause(ctx)
 		}
 	}
 }

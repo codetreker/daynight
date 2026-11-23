@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { useBodyScrollLock } from "../../app/useBodyScrollLock";
 import { WebhookIcon } from "./WebhookIcon";
@@ -24,7 +25,7 @@ export const WebhookDialog = ({ title, opener, children, footer, onClose }: {
   }, [opener]);
   return <dialog ref={ref} className="webhook-dialog" aria-labelledby={id} onCancel={event => { event.preventDefault(); onClose(); }} onKeyDown={event => { if (event.key === "Escape" || event.key === "Tab") event.stopPropagation(); }}>
     <div className="modal-layout">
-      <header className="dialog-header"><h2 id={id}>{title}</h2><button className="close-button" type="button" aria-label={m.close} onClick={onClose}><WebhookIcon name="close" size={18}/></button></header>
+      <header className="dialog-header"><h2 id={id}>{title}</h2><AccountRefreshNotice /><button className="close-button" type="button" aria-label={m.close} onClick={onClose}><WebhookIcon name="close" size={18}/></button></header>
       <div className="dialog-body">{children}</div><footer className="dialog-footer">{footer}</footer>
     </div>
   </dialog>;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, assertResponsePrincipal, isAbortError, json, request, requestId } from '../../api/client';
+import { ApiError, assertResponsePrincipal, isAbortError, json, request, requestId, responseSignal } from '../../api/client';
 import { parseTaskGraph } from '../../api/parse';
 import { decodeTaskGraphJson } from '../../api/project-json';
 import type { GraphTask } from '../../api/types';
@@ -62,14 +62,16 @@ export const useTaskRelations = (projectId: string, taskId: string, history: num
           });
           assertResponsePrincipal(response, scope.userId, scope.principalMismatch);
           const graph = await json(response, signal, (value) => parseTaskGraph(value, project), decodeTaskGraphJson);
+          const responseLifetime = responseSignal(response, signal);
+          responseLifetime.throwIfAborted();
           const nodes = new Map(graph.tasks.map((item) => [item.id, item]));
           if (!nodes.has(task)) throw new Error('Task graph does not contain its requested task.');
-          await scope.ready(signal);
+          await scope.ready(responseLifetime);
           // A same-history Task refresh may replace its receipt while this
           // independent graph read is in flight. Both the original opening and
           // the current Task must still be admitted before publishing it.
-          if (signal.aborted || !await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, signal) ||
-            sessions.captureDirectQualification(projectId, taskId) === null || signal.aborted) return;
+          if (responseLifetime.aborted || !await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, responseLifetime) ||
+            sessions.captureDirectQualification(projectId, taskId) === null || responseLifetime.aborted) return;
           pendingTimeout = null;
           setState({ owner, relations: { nodes, successors: graph.tasks.filter((item) => item.dependsOn.includes(task)).map((item) => item.id) }, error: null });
         } catch (error) {

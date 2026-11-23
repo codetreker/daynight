@@ -146,12 +146,12 @@ func TestTokenAdmissionAndDispatch(t *testing.T) {
 		t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 	}
 	s.fail = errors.New("failure")
-	w = tokenRequest(h.Revoke, "token=unknown&client_id=x")
+	w = tokenRequest(h.Revoke, url.Values{"token": {secret.Random(model.OAuthAccessPrefix)}, "client_id": {"x"}}.Encode())
 	if w.Code != 500 {
 		t.Fatalf("revoke error: %d", w.Code)
 	}
 	s.fail = nil
-	w = tokenRequest(h.Revoke, "token=unknown&client_id=x")
+	w = tokenRequest(h.Revoke, url.Values{"token": {secret.Random(model.OAuthAccessPrefix)}, "client_id": {"x"}}.Encode())
 	if w.Code != 200 {
 		t.Fatalf("revoke: %d", w.Code)
 	}
@@ -180,6 +180,7 @@ func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 		name, target, contentType, body string
 	}{
 		{"query", "https://server.test/oauth/token?extra=1", "application/x-www-form-urlencoded", valid},
+		{"empty query", "https://server.test/oauth/token?", "application/x-www-form-urlencoded", valid},
 		{"media type", "https://server.test/oauth/token", "application/json", valid},
 		{"charset", "https://server.test/oauth/token", "application/x-www-form-urlencoded; charset=latin-1", valid},
 		{"malformed encoding", "https://server.test/oauth/token", "application/x-www-form-urlencoded", valid + "&x=%zz"},
@@ -206,6 +207,32 @@ func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 	w := tokenRequest(h.Revoke, "client_id=client")
 	if w.Code != http.StatusBadRequest || s.calls != 0 {
 		t.Fatalf("missing revoke token: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUnsupportedGrantsDoNotIssueTokens(t *testing.T) {
+	for _, grant := range []string{"urn:ietf:params:oauth:grant-type:device_code", "unknown"} {
+		for _, mode := range []string{"valid", "missing client", "wrong resource"} {
+			t.Run(grant+"/"+mode, func(t *testing.T) {
+				d := &tokenRate{counts: map[string]int{}}
+				s := &tokenStub{}
+				h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+				form := url.Values{"grant_type": {grant}, "client_id": {"client"}, "resource": {"https://server.test/mcp"}}
+				want := "unsupported_grant_type"
+				if mode == "missing client" {
+					form.Del("client_id")
+					want = "invalid_request"
+				}
+				if mode == "wrong resource" {
+					form.Set("resource", "https://other.test/mcp")
+					want = "invalid_grant"
+				}
+				w := tokenRequest(h.Token, form.Encode())
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"`+want+`"`) || s.calls != 0 {
+					t.Fatalf("unsupported dispatch: status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
+				}
+			})
+		}
 	}
 }
 
@@ -245,7 +272,7 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 		for _, handler := range []http.HandlerFunc{h.Token, h.Revoke} {
 			body := valid
 			if s.calls > 0 {
-				body = "token=value&client_id=client"
+				body = url.Values{"token": {secret.Random(core.RefreshPrefix)}, "client_id": {"client"}}.Encode()
 			}
 			w := tokenRequest(handler, body)
 			if w.Code != tc.status || !strings.Contains(w.Body.String(), `"`+tc.code+`"`) || strings.Contains(w.Body.String(), "private storage detail") {
@@ -257,5 +284,31 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 	w := tokenRequest(missingStore.Token, valid)
 	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "server_error") {
 		t.Fatalf("admission store failure: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPublicRevocationAdmitsCanonicalOAuthSecrets(t *testing.T) {
+	for _, prefix := range []string{core.APIAccessPrefix, core.APIRefreshPrefix, model.OAuthAccessPrefix, core.RefreshPrefix, "unknown_"} {
+		t.Run(prefix, func(t *testing.T) {
+			stub := &tokenStub{}
+			handler := PublicTokens{Grants: stub}
+			form := url.Values{"token": {secret.Random(prefix)}, "client_id": {"societas-bot"}}
+			response := tokenRequest(handler.Revoke, form.Encode())
+			calls := 0
+			if prefix != "unknown_" {
+				calls = 1
+			}
+			if response.Code != http.StatusOK || response.Body.Len() != 0 || stub.calls != calls || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("revocation status=%d body=%q calls=%d want=%d", response.Code, response.Body.String(), stub.calls, calls)
+			}
+		})
+	}
+	for _, token := range []string{"unknown", model.OAuthAccessPrefix + "malformed", core.RefreshPrefix + "malformed"} {
+		stub := &tokenStub{}
+		handler := PublicTokens{Grants: stub}
+		response := tokenRequest(handler.Revoke, url.Values{"token": {token}, "client_id": {"client"}}.Encode())
+		if response.Code != http.StatusOK || response.Body.Len() != 0 || stub.calls != 0 {
+			t.Fatalf("malformed revocation status=%d calls=%d", response.Code, stub.calls)
+		}
 	}
 }

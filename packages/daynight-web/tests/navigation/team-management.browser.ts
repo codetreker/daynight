@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-assertions';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const personalId = '00000000-0000-4000-8000-000000000011';
@@ -39,6 +40,11 @@ const install = async (page: Page): Promise<State> => {
   });
   return state;
 };
+const expandDelete = async (page: Page) => {
+  const details = page.locator('details.team-delete');
+  await expect(details).toBeVisible();
+  if (await details.getAttribute('open') === null) await details.locator('summary').click();
+};
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
 const openCreate = async (page: Page) => { await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: 'Create Team', exact: true }).click(); };
 const settings = async (page: Page) => { await page.getByRole('link', { name: 'Team settings' }).click(); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); };
@@ -48,7 +54,7 @@ test('copies the displayed Team ID with accessible feedback and responsive layou
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   for (const role of ['admin', 'member'] as const) {
     api.role = role;
-    for (const width of [1280, 320]) {
+    for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto(`/teams/${teamId}/settings`);
       for (const [locale, label] of [['en', 'Copy Team ID'], ['zh-CN', '复制 Team ID']] as const) {
@@ -63,6 +69,7 @@ test('copies the displayed Team ID with accessible feedback and responsive layou
         expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(width);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (Math.abs(textBox.y - buttonBox.y) < 10) expect(Math.abs(textBox.y + textBox.height / 2 - buttonBox.y - buttonBox.height / 2)).toBeLessThanOrEqual(1);
+        await expectCopyButtonSkin(page, button);
         await button.focus(); await expect(button).toBeFocused();
         expect(await button.evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
         await page.keyboard.press(locale === 'en' ? 'Enter' : 'Space');
@@ -90,6 +97,7 @@ test('copy errors and a pending write retain keyboard focus and permit retry', a
   await page.getByRole('button', { name: 'Edit', exact: true }).focus();
   await page.keyboard.press('Tab'); await expect(button).toBeFocused();
   await page.keyboard.press('Enter'); await expect(button).toHaveAttribute('aria-disabled', 'true');
+  await expectDisabledCopyHover(page, button);
   await expect(button).toBeFocused(); await page.keyboard.press('Space');
   expect(await page.evaluate(() => (window as unknown as { copyCalls: number }).copyCalls)).toBe(1);
   await page.evaluate(() => (window as unknown as { finishCopy: () => void }).finishCopy());
@@ -168,13 +176,41 @@ test('long and whitespace-containing Team names remain selectable without overla
   }
 });
 
+test('delete disclosure supports keyboard, locale, reload and narrow layouts without requests', async ({ page }) => {
+  const api = await install(page); api.name = 'A'.repeat(300);
+  let requests = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/v1/')) requests++; });
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/teams/${teamId}/settings`);
+    await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+    const details = page.locator('details.team-delete'), summary = details.locator('summary'), button = details.locator('button');
+    await expect(details).not.toHaveAttribute('open', '');
+    await expect(button).toBeHidden();
+    expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    const before = requests;
+    await summary.focus(); await expect(summary).toBeFocused();
+    expect(await summary.evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Enter'); await expect(details).toHaveAttribute('open', ''); await expect(button).toBeVisible();
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+    await expect(summary).toContainText('删除 Team'); await expect(details).toHaveAttribute('open', '');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await summary.focus(); await page.keyboard.press('Space');
+    await expect(details).not.toHaveAttribute('open', ''); await expect(button).toBeHidden();
+    await page.keyboard.press('Tab'); await expect(button).not.toBeFocused();
+    expect(requests).toBe(before); expect(api.writes).toHaveLength(0);
+    await page.reload(); await expect(page.locator('details.team-delete')).not.toHaveAttribute('open', '');
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  }
+});
+
 test('creates, renames and typed-deletes a Team, preserving raw input and browser preference', async ({ page }) => {
   const api = await install(page); api.exists = false;
   await page.goto('/projects'); await openCreate(page);
   const create = page.getByRole('dialog');
   await create.getByLabel('Team name').fill('  Alpha\nTeam  ');
   await create.getByRole('button', { name: 'Create Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha Team' })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Alpha Team', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(teamId);
   expect(api.writes[0]).toEqual({ method: 'POST', body: { name: '  Alpha\nTeam  ', expectedUserId: userId } });
   await settings(page);
@@ -183,7 +219,7 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   await page.getByRole('dialog').getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
   expect(api.writes[1]).toEqual({ method: 'PATCH', body: { name: '  Renamed\nTeam  ', version: 1, expectedUserId: userId } });
-  await page.getByRole('button', { name: 'Delete Team' }).click();
+  await expandDelete(page); await page.locator('details.team-delete button').click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Enter the Team name to confirm').fill('wrong');
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
@@ -191,7 +227,7 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   expect(api.writes).toHaveLength(2);
   await dialog.getByLabel('Enter the Team name to confirm').fill('  Renamed\nTeam  ');
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.writes[2]).toEqual({ method: 'DELETE', body: { name: '  Renamed\nTeam  ', version: 2, expectedUserId: userId } });
 });
@@ -204,7 +240,7 @@ test('cancel and Escape submit nothing; dialogs retain focus on narrow screens i
   await openCreate(page); await dialog.getByRole('button', { name: 'Cancel' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
   await page.setViewportSize({ width: 375, height: 667 });
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-  const toggle = page.getByRole('button', { name: /展开侧栏/ });
+  const toggle = page.getByRole('button', { name: /打开导航/ });
   await toggle.click(); await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   await expect(dialog.getByLabel('Team 名称')).toBeFocused();
   await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
@@ -237,19 +273,19 @@ test('nonempty refusal and lost response remain distinct, with no automatic repl
   const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   api.refusal = 'team_not_empty';
-  await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
+  await expandDelete(page); await page.locator('details.team-delete button').click(); const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
   await expect(dialog.getByRole('alert')).toContainText('still has projects'); expect(api.writes).toHaveLength(1);
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   api.refusal = null; api.lost = true;
-  await page.getByRole('button', { name: 'Delete Team' }).click();
+  await expandDelete(page); await page.locator('details.team-delete button').click();
   await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
   await expect(dialog.getByRole('alert')).toContainText('result is unknown');
   await dialog.getByRole('button', { name: 'Check current state' }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole('main').getByText('This Team is unavailable or you do not have access.')).toBeVisible();
   await expect(page.getByRole('alert').last()).toContainText('result is unknown');
-  expect(api.writes).toHaveLength(2); await expect(page.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
+  expect(api.writes).toHaveLength(2); await expect(page.locator('details.team-delete button')).toHaveCount(0);
 });
 
 
@@ -258,11 +294,11 @@ test('Personal settings remain read-only, and a version conflict requires a fres
   await page.goto(`/teams/${personalId}/settings`);
   await expect(page.getByRole('main').getByText('Personal', { exact: true }).last()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Delete Team' })).toBeDisabled();
+  await expandDelete(page); await expect(page.locator('details.team-delete button')).toBeDisabled();
   expect(api.writes).toHaveLength(0);
   await page.goto(`/teams/${teamId}/settings`);
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
+  await expandDelete(page); await page.locator('details.team-delete button').click(); const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha');
   api.name = 'New name'; api.version = 2; api.refusal = 'version_conflict';
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
@@ -272,7 +308,7 @@ test('Personal settings remain read-only, and a version conflict requires a fres
   api.refusal = null;
   await dialog.getByLabel('Enter the Team name to confirm').fill('New name');
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   expect(api.writes[1]).toEqual({ method: 'DELETE', body: { name: 'New name', version: 2, expectedUserId: userId } });
 });
 
@@ -282,7 +318,7 @@ test('Escape restores focus after the delete dialog waits for a fresh Team read'
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   api.holdRead = { started: started.resolve, wait: finish.promise };
-  const opener = page.getByRole('button', { name: 'Delete Team' });
+  await expandDelete(page); const opener = page.locator('details.team-delete button');
   await opener.click(); await started.promise;
   await expect(page.getByRole('dialog')).toHaveCount(0);
   finish.resolve();

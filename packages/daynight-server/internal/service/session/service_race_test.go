@@ -433,9 +433,8 @@ func TestProductionCrossInstanceDeletionCancelsPendingContent(t *testing.T) {
 	if _, err = f.service.Poll(ctx, v.ControllerFence); err == nil {
 		t.Fatal("revoked instance served cached controller")
 	}
-	if _, err = f.service.TestSnapshot(ctx, f.owner, v.SessionID); err == nil {
-		t.Fatal("revoked instance served cached snapshot")
-	}
+	snapshot, err := f.service.TestSnapshot(ctx, f.owner, v.SessionID)
+	requireServiceError(t, rejectPublishedSessionResult(t, snapshot, err), "resource_conflict")
 }
 
 func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
@@ -449,7 +448,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	}
 	actor := model.Principal{Kind: model.PATCredential, UserID: f.owner.UserID, CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(actor.CredentialID))
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	command := func() sp.Command {
@@ -470,7 +469,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if err != nil || receipt.State != "rejected" {
 		t.Fatalf("poll rejection: %+v %v", receipt, err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	second := command()
@@ -491,7 +490,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if result, ok := begin["operation"].(sp.Operation); !ok || result.State != "rejected" {
 		t.Fatalf("revoked actor dispatched: %v", begin)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	third := command()

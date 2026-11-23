@@ -9,6 +9,7 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -22,6 +23,38 @@ func identityScopeTest(t *testing.T, s *Store, op func(IdentityScope) error) {
 }
 
 func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
+	user, _, _ := testAuthRecords(t, s)
+	assertFixture := func(t *testing.T, ctx context.Context) {
+		t.Helper()
+		completion, err := s.WriteIdentity(ctx, func(sc IdentityScope) error {
+			pats, err := sc.IdentityDAO().ListPATs(ctx, user.ID, time.Now())
+			if err != nil {
+				return err
+			}
+			if len(pats) != 0 {
+				return errors.New("identity fixture acquired an unexpected PAT")
+			}
+			team, err := sc.PersonalTeamDAO().PersonalTeam(ctx, user.ID)
+			if err != nil {
+				return err
+			}
+			if team.ID != user.PersonalTeam.ID || team.MemberCount != 1 || team.OwnerAdminCount != 1 {
+				return errors.New("identity fixture Personal Team changed")
+			}
+			return nil
+		})
+		if err != nil || completion.Outcome != TransactionCommitted {
+			t.Fatalf("healthy Identity scope: %#v %v", completion, err)
+		}
+		var empty bool
+		err = s.Pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM device_authorizations)`).Scan(&empty)
+		if err != nil || !empty {
+			t.Fatalf("healthy device catalog: empty=%t error=%v", empty, err)
+		}
+	}
+	assertFixture(t, t.Context())
 	for _, test := range []struct {
 		name, table string
 		operation   func(context.Context, IdentityScope, string) error
@@ -38,22 +71,26 @@ func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
 			return sc.IdentityDAO().InsertDevice(ctx, model.DeviceAuthorization{})
 		}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			s := isolatedStore(t)
-			ctx := context.Background()
-			user, _, _ := testAuthRecords(t, s)
-			if _, err := s.Pool.Exec(ctx, "DROP TABLE "+test.table+" CASCADE"); err != nil {
-				t.Fatal(err)
-			}
+		if !t.Run(test.name, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(t.Context(), 15*time.Second)
+			defer stop()
+			restore := testutil.HideRelation(t, ctx, s.Pool, test.table)
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				restore(cleanup)
+				assertFixture(t, cleanup)
+			})
 			completion, err := s.WriteIdentity(ctx, func(sc IdentityScope) error { return test.operation(ctx, sc, user.ID) })
 			var databaseError *pgconn.PgError
 			if err == nil || !errors.As(err, &databaseError) || databaseError.Code != "42P01" || completion.Outcome != TransactionNotCommitted {
 				t.Fatalf("database failure or outcome lost: %#v %v", completion, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
-	s := isolatedStore(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	completion, err := s.WriteIdentity(ctx, func(IdentityScope) error { t.Error("operation ran after cancellation"); return nil })
 	if !errors.Is(err, context.Canceled) || completion.Outcome != TransactionNotCommitted {
@@ -62,6 +99,7 @@ func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
 }
 
 func TestIdentityCleanupFailureRollsBackEarlierDeletes(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)

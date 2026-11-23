@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -28,7 +29,7 @@ func identityTransaction(t *testing.T) (pgx.Tx, store.IdentityScope) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	return tx, identity.NewScope(tx)
+	return tx, identity.NewScope(tx, oauth.NewDAO(tx))
 }
 
 func hash(value string) []byte { sum := sha256.Sum256([]byte(value)); return sum[:] }
@@ -88,7 +89,7 @@ func TestCredentialIssuanceExpiryAndOwnerBoundRevocation(t *testing.T) {
 		t.Fatalf("session principal: %+v", principal)
 	}
 	requireNoError(t, dao.LockSession(ctx, principal, now))
-	requireMissing(t, dao.LockSession(ctx, principal, session.ExpiresAt))
+	requireNoError(t, dao.LockSession(ctx, principal, session.ExpiresAt))
 	requireMissing(t, dao.LockSession(ctx, model.Principal{Kind: model.PATCredential}, now))
 	requireNoError(t, dao.DeleteSession(ctx, model.Principal{CredentialID: session.ID, UserID: uuid.NewString()}))
 	_, err = dao.Authenticate(ctx, model.SessionCredential, session.TokenHash, now)
@@ -99,7 +100,7 @@ func TestCredentialIssuanceExpiryAndOwnerBoundRevocation(t *testing.T) {
 	_, err = dao.Authenticate(ctx, model.OAuthCredential, hash("unknown-kind"), now)
 	requireMissing(t, err)
 
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("pat"), Name: "Automation", CreatedAt: now}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("pat"), Name: "Automation", CreatedAt: now}
 	requireNoError(t, dao.InsertPAT(ctx, pat))
 	patPrincipal, err := dao.Authenticate(ctx, model.PATCredential, pat.TokenHash, now.Add(365*24*time.Hour))
 	requireNoError(t, err)
@@ -274,8 +275,8 @@ func TestCredentialCleanupRetainsActiveAndPermanentTokens(t *testing.T) {
 	old := now.Add(-time.Hour)
 	requireNoError(t, dao.InsertLogin(ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("cleanup-login"), BrowserBindingHash: hash("cleanup-binding"), ScopeHash: hash("scope"), Provider: "github", ReturnPath: "/", ExpiresAt: now}))
 	requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("cleanup-session"), CreatedAt: old, ExpiresAt: now}))
-	requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("expired-pat"), Name: "Expired", CreatedAt: old, ExpiresAt: &expired}))
-	first := model.PersonalAccessToken{ID: "00000000-0000-0000-0000-000000000001", UserID: user.ID, TokenHash: hash("first-pat"), Name: "Permanent", CreatedAt: now}
+	requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("expired-pat"), Name: "Expired", CreatedAt: old, ExpiresAt: &expired}))
+	first := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: "00000000-0000-0000-0000-000000000001", UserID: user.ID, TokenHash: hash("first-pat"), Name: "Permanent", CreatedAt: now}
 	second := first
 	second.ID, second.TokenHash, second.Name = "00000000-0000-0000-0000-000000000002", hash("second-pat"), "Expiring"
 	future := now.Add(time.Hour)
@@ -333,8 +334,8 @@ func TestLoginExpiryUsesDatabaseTimeAcrossApplicationClockSkew(t *testing.T) {
 			user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "skew-owner"}, appNow)
 			requireNoError(t, err)
 			expiry := appNow.Add(time.Hour)
-			requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-session"), CreatedAt: appNow, ExpiresAt: expiry}))
-			requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-pat"), Name: "Skew", CreatedAt: appNow, ExpiresAt: &expiry}))
+			requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-session"), CreatedAt: databaseNow, ExpiresAt: databaseNow.Add(time.Hour)}))
+			requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-pat"), Name: "Skew", CreatedAt: appNow, ExpiresAt: &expiry}))
 			if test.admissionCleanup {
 				requireNoError(t, dao.CleanupLoginCredentials(ctx, databaseNow, appNow))
 			} else {

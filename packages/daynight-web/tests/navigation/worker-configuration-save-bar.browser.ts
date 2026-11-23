@@ -9,7 +9,7 @@ const install = async (page: Page) => {
   const state = { resource: configurationResource('1', { ...configurationValue(), projects: projects.map(project => ({ projectId: project.id, nativeOverrides: {} })) }), mode: 'success', writes: 0, release: () => {} };
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     if (path === '/api/v1/me') return send({ id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: projects, nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });

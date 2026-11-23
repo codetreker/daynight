@@ -21,16 +21,9 @@ type Access struct {
 
 type TaskAccess struct{ task task }
 
-type TerminalAccess struct {
-	tx     *operationTx
-	record *terminalRecord
-	task   task
-	write  bool
-}
-
 type Authority struct {
 	Purpose                                                        BrowserPurpose
-	Test                                                           bool
+	Test, ConnectionLeasePresent                                   bool
 	ProjectID, OwnerID, ParentCredentialID, ConnectionCredentialID string
 }
 
@@ -44,7 +37,7 @@ func (op *Operation) CheckRegistration(t *TaskAccess, p model.Principal, input s
 
 func (a *Access) Authority() Authority {
 	r := a.record
-	return Authority{Test: r.Snapshot.TestExecutionID != "", ProjectID: r.Snapshot.Identity.ProjectID, OwnerID: r.Owner, ParentCredentialID: r.Parent, ConnectionCredentialID: r.ConnectionParent}
+	return Authority{Test: r.Snapshot.TestExecutionID != "", ConnectionLeasePresent: r.ConnectionExpiry != nil, ProjectID: r.Snapshot.Identity.ProjectID, OwnerID: r.Owner, ParentCredentialID: r.Parent, ConnectionCredentialID: r.ConnectionParent}
 }
 
 // LockTask leaves independent Test Sessions without a Task lock.
@@ -67,6 +60,9 @@ func (op *Operation) LockArchiveTask(ctx context.Context, scope store.SessionSco
 }
 
 func (op *Operation) LockCredential(ctx context.Context, scope store.SessionScope, p model.Principal) error {
+	if p.Kind == model.OAuthCredential {
+		return op.lockOAuthCredential(ctx, scope, p, false)
+	}
 	s, tx := op.scoped(scope)
 	return credential(ctx, tx, p, s.now())
 }
@@ -186,29 +182,6 @@ func (op *Operation) BindArchive(a *Access, t *TaskAccess, p model.Principal, pr
 		return denied()
 	}
 	a.task = t.task
-	return nil
-}
-
-func (op *Operation) LoadTerminal(ctx context.Context, scope store.SessionScope, id string) (*TerminalAccess, error) {
-	_, tx := op.scoped(scope)
-	r, err := loadTerminal(ctx, tx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &TerminalAccess{tx: tx, record: r}, nil
-}
-
-func (op *Operation) BindTerminal(a *TerminalAccess, t *TaskAccess, p model.Principal, project, taskID string, deleted bool) error {
-	r := a.record
-	if r.Owner.ProjectID != project || r.Owner.TaskID != taskID {
-		return conflict()
-	}
-	if deleted {
-		if err := terminalOwner(p, r); err != nil {
-			return err
-		}
-	}
-	a.task, a.write = t.task, p.UserID == r.Owner.OwnerUserID
 	return nil
 }
 

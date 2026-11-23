@@ -5,15 +5,18 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskMutationState } from './TaskDetailSession';
 import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 
-const statuses: readonly TaskStatus[] = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'];
-export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect }: {
+const taskStatuses: readonly TaskStatus[] = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'];
+export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect, statuses = taskStatuses, allowCancelledReopen = false, menuLabel }: {
   readonly status: TaskStatus;
   readonly disabled: boolean;
   readonly cancelBlocked: boolean;
   readonly onSelect: (status: TaskStatus) => void;
+  readonly statuses?: readonly TaskStatus[];
+  readonly allowCancelledReopen?: boolean;
+  readonly menuLabel?: string;
 }) => {
   const { messages } = useI18n();
-  const unavailable = disabled || status === "cancelled";
+  const unavailable = disabled || status === 'cancelled' && !allowCancelledReopen;
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const container = useRef<HTMLDivElement>(null);
@@ -44,7 +47,7 @@ export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect }: {
       onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowDown' ? 0 : statuses.length - 1); } }}>
       <i className={`task-detail-dot-${status}`} aria-hidden="true" />{messages.common.status[status]}<svg className="task-status-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg>
     </button>
-    {open && <div className="task-status-menu" ref={menu} id={menuId} role="menu" aria-label={messages.inspection.status.menu} onKeyDownCapture={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); } }} onKeyDown={(event) => {
+    {open && <div className="task-status-menu" ref={menu} id={menuId} role="menu" aria-label={menuLabel ?? messages.inspection.status.menu} onKeyDownCapture={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); } }} onKeyDown={(event) => {
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         event.preventDefault();
         setActive(event.key === 'Home' ? 0 : event.key === 'End' ? statuses.length - 1 : (active + (event.key === 'ArrowDown' ? 1 : -1) + statuses.length) % statuses.length);

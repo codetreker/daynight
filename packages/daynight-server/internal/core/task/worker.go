@@ -11,6 +11,7 @@ import (
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	tagcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
@@ -25,13 +26,56 @@ type WorkerDescriptor struct {
 }
 type ClaimWorker struct {
 	WorkerDescriptor
-	Version int64
+	Version          int64
+	TaskTagFilterKey *string
 }
+
+// ValidateTaskTagFilterKey validates the optional bounded proof supplied by a Worker.
+func ValidateTaskTagFilterKey(key *string) error {
+	if key == nil {
+		return nil
+	}
+	if len(*key) != 64 {
+		return invalidInput("taskTagFilterKey must be a lowercase SHA-256 digest.")
+	}
+	for _, c := range *key {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return invalidInput("taskTagFilterKey must be a lowercase SHA-256 digest.")
+		}
+	}
+	return nil
+}
+
+// ClaimTagAdmission compares the applied proof and the current Task's own tags.
+func ClaimTagAdmission(current model.Task, filter model.TagNameFilter, key *string) error {
+	digest, err := tagcore.NameFilterDigest(filter)
+	if err != nil {
+		return err
+	}
+	if key == nil && len(filter.Names) != 0 {
+		return &model.Fault{Code: "worker_task_tag_filter_unsupported", Message: "Worker must support the configured task tag filter."}
+	}
+	if key != nil && *key != digest {
+		return ClaimConflict()
+	}
+	names := make([]string, len(current.Tags))
+	for i, reference := range current.Tags {
+		names[i] = reference.Name
+	}
+	matched, err := tagcore.MatchNameFilter(filter, names)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return ClaimConflict()
+	}
+	return nil
+}
+
 type UpdateWorker struct {
 	Version         int64
 	ClaimID         string
 	Phase           *model.WorkerPhase
-	Herdr           **model.WorkerHerdr
 	NativeSessionID **string
 	StartupReport   *sp.StartupReport
 }
@@ -44,15 +88,8 @@ type WithdrawWorker struct {
 	Version int64
 	ClaimID string
 }
-type ResumeWorker struct {
-	ClaimWorker
-	PreviousClaimID string
-}
 
 func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error) {
-	if input.AgentControlMode == "" {
-		input.AgentControlMode = model.AgentControlModeHerdr
-	}
 	for _, field := range []*string{&input.ClaimID, &input.WorkerID, &input.Machine.ID, &input.WorktreeID} {
 		value, err := model.CanonicalID(*field)
 		if err != nil {
@@ -60,8 +97,11 @@ func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 		}
 		*field = value
 	}
-	if !input.Platform.Valid() || !input.AgentControlMode.Supports(input.Agent) || !model.ValidWorkerText(input.Machine.Name) {
-		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform, agent/control mode combination and nonempty UTF-8 machine name without NUL.")
+	if !input.AgentControlMode.SupportsNewClaim(input.Agent) {
+		return WorkerDescriptor{}, invalidInput("Worker requires Web execution and a supported agent; Herdr execution is not supported.")
+	}
+	if !input.Platform.Valid() || !model.ValidWorkerText(input.Machine.Name) {
+		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform and nonempty UTF-8 machine name without NUL.")
 	}
 	return input, nil
 }
@@ -103,20 +143,6 @@ func ClaimAdmission(current model.Task, userID string, descriptor WorkerDescript
 	return FreshWorkerExecution(worker, descriptor)
 }
 
-func ReleasedWorker(current model.Task, previousID string) (*model.WorkerClaim, error) {
-	if err := WorkerReady(current); err != nil {
-		return nil, err
-	}
-	worker, err := taskproperty.Worker(current.Properties)
-	if err != nil {
-		return nil, err
-	}
-	if worker == nil || worker.State != model.WorkerReleased || worker.ClaimID != previousID {
-		return nil, ClaimConflict()
-	}
-	return worker, nil
-}
-
 func FreshWorkerExecution(worker *model.WorkerClaim, descriptor WorkerDescriptor) error {
 	if worker == nil {
 		return nil
@@ -144,17 +170,11 @@ func ValidateWorkerUpdate(input UpdateWorker) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if input.Phase == nil && input.Herdr == nil && input.NativeSessionID == nil && input.StartupReport == nil {
+	if input.Phase == nil && input.NativeSessionID == nil && input.StartupReport == nil {
 		return "", invalidInput("At least one worker execution field must be provided.")
 	}
 	if input.Phase != nil && !input.Phase.Valid() {
 		return "", invalidInput("Worker phase is invalid.")
-	}
-	if input.Herdr != nil && *input.Herdr != nil {
-		herdr := *input.Herdr
-		if !model.ValidWorkerText(herdr.Session) || !model.ValidWorkerText(herdr.WorkspaceID) || !model.ValidWorkerText(herdr.PaneID) {
-			return "", invalidInput("Herdr session, workspace and pane must be nonempty UTF-8 text without NUL.")
-		}
 	}
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !model.ValidWorkerText(**input.NativeSessionID) {
 		return "", invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
@@ -175,8 +195,8 @@ func WorkerUpdateAdmission(worker *model.WorkerClaim, userID, claimID string, in
 	if worker.UserID != userID {
 		return &model.Fault{Code: "forbidden", Message: "Only the current execution owner may update worker execution."}
 	}
-	if worker.AgentControlMode == model.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
-		return invalidInput("Web execution cannot bind Herdr resources.")
+	if worker.AgentControlMode != model.AgentControlModeWeb {
+		return invalidInput("Only Web execution can be updated.")
 	}
 	if input.StartupReport != nil && (worker.AgentControlMode != model.AgentControlModeWeb || input.StartupReport.ClaimID != claimID) {
 		return ClaimConflict()
@@ -204,13 +224,10 @@ func WorkerUpdateCandidate(current model.Task, worker *model.WorkerClaim, claimI
 	if input.Phase != nil {
 		next.Phase = *input.Phase
 	}
-	if input.Herdr != nil {
-		next.Herdr = *input.Herdr
-	}
 	if input.NativeSessionID != nil {
 		next.NativeSessionID = *input.NativeSessionID
 	}
-	if !reportChanged && next.Phase == worker.Phase && model.EqualOptional(next.Herdr, worker.Herdr) && model.EqualOptional(next.NativeSessionID, worker.NativeSessionID) {
+	if !reportChanged && next.Phase == worker.Phase && model.EqualOptional(next.NativeSessionID, worker.NativeSessionID) {
 		return store.TaskWrite{}, false, nil
 	}
 	values := CurrentWrite(current)
@@ -247,19 +264,17 @@ func WithdrawableWorker(current model.Task, claimID string) (*model.WorkerClaim,
 	if err != nil {
 		return nil, err
 	}
-	if worker == nil || worker.ClaimID != claimID || (worker.State != model.WorkerActive && worker.State != model.WorkerReleased) {
+	if worker == nil || worker.ClaimID != claimID || worker.State != model.WorkerActive || current.Status != model.TaskInProgress {
 		return nil, ClaimConflict()
 	}
 	return worker, nil
 }
 
-func ReleaseCandidate(current model.Task, worker *model.WorkerClaim) (store.TaskWrite, error) {
-	next := *worker
-	next.State = model.WorkerReleased
+func ReleaseCandidate(current model.Task) (store.TaskWrite, error) {
 	values := CurrentWrite(current)
 	values.Status = model.TaskTodo
 	var err error
-	values.Properties, err = properties.WithWorker(values.Properties, &next)
+	values.Properties, err = properties.WithWorker(values.Properties, nil)
 	return values, PropertyInputError(err)
 }
 
@@ -274,20 +289,16 @@ func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {
 	return values, err
 }
 
-// ClaimParentAdmission rechecks the parent inside the Project write scope.
-// A released execution resumes through its separate continuation path.
+// ClaimParentAdmission rechecks the ancestor Goal inside the Project write scope.
 func ClaimParentAdmission(ctx context.Context, dao store.TaskWriteDAO, current model.Task) error {
 	if current.ParentID == nil {
 		return nil
 	}
-	parent, err := dao.ParentTask(ctx, *current.ParentID)
+	terminal, err := dao.HasTerminalAncestorGoal(ctx, *current.ParentID)
 	if err != nil {
 		return err
 	}
-	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
-		return invalidInput("Parent must identify a visible Goal in this project.")
-	}
-	if parent.Status.IsTerminal() {
+	if terminal {
 		return &model.Fault{Code: "invalid_transition", Message: "A task in a completed or cancelled Goal cannot be claimed automatically."}
 	}
 	return nil

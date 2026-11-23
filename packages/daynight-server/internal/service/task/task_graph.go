@@ -6,12 +6,18 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
+	return s.graph(ctx, principal, projectID, taskID, false)
+}
+func (s *Tasks) GraphTaskOnly(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
+	return s.graph(ctx, principal, projectID, taskID, true)
+}
+func (s *Tasks) graph(ctx context.Context, principal model.Principal, projectID, taskID string, taskOnly bool) (model.TaskGraph, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.TaskGraph{}, err
 	}
@@ -26,14 +32,22 @@ func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID,
 	var graph model.TaskGraph
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.requireRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
 		var err error
-		graph.Project, err = snapshot.ProjectDAO().Project(ctx, projectID)
+		if !taskOnly {
+			if err := requireTaskScope(s.authorization, principal, scopepolicy.ProjectRead); err != nil {
+				return err
+			}
+		}
+		graph.Project = model.Project{ID: projectID}
+		if !taskOnly {
+			graph.Project, err = snapshot.ProjectDAO().Project(ctx, projectID)
+		}
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil

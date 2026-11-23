@@ -138,6 +138,9 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 			// Retain the exact old owner gate through physical deletion and the
 			// final transaction, including an unconfirmed database completion.
 			defer func() { result = errors.Join(result, gate.Close()) }()
+			var cancelGate context.CancelFunc
+			ctx, cancelGate = filestorage.GateContext(ctx, gate)
+			defer cancelGate()
 			err = access(ctx, func(tx *operationTx, _ *record) error {
 				dao, e := resourceDAO(tx)
 				if e != nil {
@@ -155,8 +158,10 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 		return err
 	}
 	defer func() { result = errors.Join(result, payloadGate.Close()) }()
-	// All earlier read-response publishers exited before this sweep. Their exact
-	// shared chunk paths consume the same reservation as ordinary upload chunks.
+	ctx, cancelPayload := filestorage.GateContext(ctx, payloadGate)
+	defer cancelPayload()
+	// The payload gate excludes other publishers during this sweep. Their shared
+	// chunk paths consume the same reservation as ordinary upload chunks.
 	if err = access(ctx, func(tx *operationTx, _ *record) error { return settleUploadMedia(ctx, tx, id, uploadID, upload.BlobID) }); err != nil {
 		return err
 	}
@@ -203,12 +208,14 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 }
 
 // SettleExpiredUploads is called by stopped archive preparation and sealing.
-// The original upload gate proves its writer exited before expiry and cleanup;
-// durable reservations and resource rows remain until physical cleanup commits.
+// Settlement acquires the original upload gate before expiry and cleanup.
+// Durable reservations and resource rows remain until physical cleanup commits.
 func (op *ArchiveOperation) SettleExpiredUploads(ctx context.Context) (result error) {
 	if err := op.check(ArchiveV1Upload); err != nil {
 		return err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	ctx, finish, err := op.execution.beginImageIO(ctx, op.id, uuid.NewString())
 	if err != nil {
 		return err
@@ -220,6 +227,9 @@ func (op *ArchiveOperation) SettleExpiredUploads(ctx context.Context) (result er
 				return conflict()
 			}
 			if e := archiveStopped(r, t); e != nil {
+				return e
+			}
+			if e := op.execution.authorizeProducer(ctx, tx, op.principal, r); e != nil {
 				return e
 			}
 			return work(tx, r)
@@ -250,6 +260,8 @@ func (op *ArchiveOperation) settleExpiredUpload(ctx context.Context, upload stor
 		return err
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	if err = access(ctx, func(tx *operationTx, r *record) error {
 		dao, e := resourceDAO(tx)
 		if e != nil {
@@ -293,4 +305,84 @@ func (op *ArchiveOperation) archivedControllerRelease(ctx context.Context, uploa
 		}
 		return nil
 	})
+}
+
+// ReleasedArchiveUploadRunner executes a maintenance transaction with a fresh
+// operation and the original archive identity locked by the storage scope.
+type ReleasedArchiveUploadRunner func(context.Context, func(*Operation, store.ArchiveCleanupScope) error) error
+
+// RecoverReleasedArchiveUploads resumes only committed ready-archive upload
+// releases. It never uses a user credential or admits a new publication.
+func (s *Execution) RecoverReleasedArchiveUploads(ctx context.Context, target store.ArchiveCleanupTarget, run ReleasedArchiveUploadRunner) (result error) {
+	ctx, finish, err := s.beginImageIO(ctx, target.SessionID, uuid.NewString())
+	if err != nil {
+		return err
+	}
+	defer func() { result = joinImageCleanup(result, finish) }()
+	access := func(ctx context.Context, upload *store.SessionUploadRecord, work func(*operationTx, *record) error) error {
+		return run(ctx, func(op *Operation, scope store.ArchiveCleanupScope) error {
+			observed := scope.Target()
+			if observed.ProjectID != target.ProjectID || observed.TaskID != target.TaskID || observed.SessionID != target.SessionID || observed.OwnerID != target.OwnerID || observed.ExpiredAt != nil || observed.CleanedAt != nil {
+				return conflict()
+			}
+			tx := &operationTx{dao: scope.SessionDAO(), op: op}
+			r, e := loadWithBot(ctx, tx, target.SessionID, nil)
+			if e != nil {
+				return e
+			}
+			if r.Owner != target.OwnerID {
+				return conflict()
+			}
+			status, _, e := tx.dao.SessionArchive(ctx, target.SessionID)
+			if e != nil {
+				return e
+			}
+			if status.State != "ready" || status.SchemaVersion != 3 {
+				if upload == nil {
+					return nil
+				}
+				return conflict()
+			}
+			if upload != nil {
+				dao, e := resourceDAO(tx)
+				if e != nil {
+					return e
+				}
+				current, e := dao.SessionUpload(ctx, target.SessionID, upload.Spec.UploadID)
+				if e != nil {
+					return e
+				}
+				if current.Receipt.State != "released" || current.BlobID != upload.BlobID {
+					return conflict()
+				}
+			}
+			return work(tx, r)
+		})
+	}
+	var uploads []store.SessionUploadRecord
+	err = access(ctx, nil, func(tx *operationTx, _ *record) error {
+		dao, ok := tx.dao.(store.SessionResourceSettlementDAO)
+		if !ok {
+			return fault("component_unsupported", "Upload settlement requires a server upgrade.")
+		}
+		var e error
+		uploads, e = dao.ListSessionUploadsForSettlement(ctx, target.SessionID, s.now())
+		return e
+	})
+	if err != nil {
+		return err
+	}
+	op := &ArchiveOperation{execution: s, project: target.ProjectID, task: target.TaskID, id: target.SessionID, owner: target.OwnerID, mode: ArchiveV1Upload}
+	for _, upload := range uploads {
+		if upload.Receipt.State != "released" {
+			continue
+		}
+		scoped := func(ctx context.Context, work func(*operationTx, *record) error) error {
+			return access(ctx, &upload, work)
+		}
+		if e := op.settleExpiredUpload(ctx, upload, scoped); e != nil {
+			result = errors.Join(result, e)
+		}
+	}
+	return result
 }

@@ -1,13 +1,15 @@
 import { appendFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { createServer, connect, type Socket } from 'node:net';
+import { createServer as createTLSServer } from 'node:tls';
 import path from 'node:path';
 import { runCommand, startCommand, type ManagedCommand } from './command.ts';
 import { createLifecycle } from './lifecycle.ts';
 import { providerClientId, providerClientSecret, startProvider } from './provider.ts';
+import { providerDiagnosticSink, writeProviderDiagnostics } from './provider-diagnostics.ts';
 import { writeServerConfig } from './server-config.ts';
 
-type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string };
+type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string; redisURL: string };
 type ServerConfiguration = { appId: string; appSecret: string };
 const runDirectory = '/run';
 const artifacts = '/opt/e2e';
@@ -35,9 +37,9 @@ const wait = async (milliseconds: number): Promise<void> => {
   });
 };
 
-const forward = async (publicPort: number, targetPort: number): Promise<void> => {
+const forward = async (publicPort: number, targetPort: number, tls = false): Promise<void> => {
   const sockets = new Set<Socket>();
-  const listener = createServer((incoming) => {
+  const onConnection = (incoming: Socket): void => {
     const target = connect({ host: '127.0.0.1', port: targetPort });
     for (const socket of [incoming, target]) {
       sockets.add(socket);
@@ -46,7 +48,10 @@ const forward = async (publicPort: number, targetPort: number): Promise<void> =>
     }
     incoming.pipe(target).pipe(incoming);
     incoming.once('close', () => { target.destroy(); });
-  });
+  };
+  const listener = tls
+    ? createTLSServer({ cert: await readFile(path.join(artifacts, 'daynight-ca.pem')), key: await readFile(path.join(artifacts, 'daynight-key.pem')) }, onConnection)
+    : createServer(onConnection);
   await new Promise<void>((resolve, reject) => {
     listener.once('error', reject);
     listener.listen(publicPort, '0.0.0.0', () => { listener.off('error', reject); resolve(); });
@@ -129,28 +134,44 @@ const main = async (): Promise<void> => {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Runtime public ports are invalid.');
   }
   if (typeof configuration.databaseURL !== 'string' || configuration.databaseURL === '') throw new Error('Runtime database connection is missing.');
+  if (typeof configuration.redisURL !== 'string' || configuration.redisURL === '') throw new Error('Runtime Redis connection is missing.');
   await removeDefaultRoutes();
   await mkdir(path.join(runDirectory, 'logs'), { recursive: true });
   await mkdir(path.join(runDirectory, 'private', 'storage'), { recursive: true, mode: 0o700 });
   const daynightRoot = path.join(runDirectory, 'private', 'daynight');
   await mkdir(daynightRoot, { recursive: true, mode: 0o700 });
+  const providerLog = path.join(runDirectory, 'logs', 'provider-diagnostics.json');
+  writeProviderDiagnostics(providerLog, { events: [], complete: false, truncated: false });
+  const recordProvider = providerDiagnosticSink(providerLog, error => {
+    failure = failure === undefined ? error : new AggregateError([failure, error], 'Runtime and provider diagnostic write failed.', { cause: failure });
+    signalController.abort(failure);
+    wake();
+  });
   const provider = await startProvider({
     port: configuration.proxyPort,
     certificatePath: path.join(artifacts, 'provider-ca.pem'),
     keyPath: path.join(artifacts, 'provider-key.pem'),
+    onDiagnostics: recordProvider,
   });
-  lifecycle.defer(provider.close);
+  lifecycle.defer(async () => {
+    const failures: unknown[] = [];
+    try { await provider.close(); } catch (error) { failures.push(error); }
+    try { writeProviderDiagnostics(providerLog, provider.diagnostics()); }
+    catch (error) { failures.push(error); }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Provider shutdown and diagnostic write failed.', { cause: failures[0] });
+  });
   const publicPorts = new Set([configuration.serverPort, configuration.authPort, configuration.proxyPort]);
   const authInternalPort = await reservePort(publicPorts);
   await forward(configuration.authPort, authInternalPort);
   const authURL = `http://127.0.0.1:${configuration.authPort}`;
-  const baseURL = `http://127.0.0.1:${configuration.serverPort}`;
+  const baseURL = `https://app.daynight.localhost:${configuration.serverPort}`;
   const proxyURL = `http://127.0.0.1:${configuration.proxyPort}`;
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HTTPS_PROXY: proxyURL,
     HTTP_PROXY: proxyURL,
-    NO_PROXY: '127.0.0.1,localhost,postgres',
+    NO_PROXY: '127.0.0.1,localhost,postgres,redis',
     SSL_CERT_FILE: path.join(artifacts, 'provider-ca.pem'),
   };
   launch('uniauth', path.join(artifacts, 'uniauth'), {
@@ -165,13 +186,23 @@ const main = async (): Promise<void> => {
   });
   const credentials = await awaitServerConfiguration();
   const serverInternalPort = await reservePort(publicPorts);
-  await forward(configuration.serverPort, serverInternalPort);
+  await forward(configuration.serverPort, serverInternalPort, true);
   await writeServerConfig(daynightRoot, {
     listenAddress: `127.0.0.1:${serverInternalPort}`, publicOrigin: baseURL,
+    previewOrigin: `https://preview.daynight.localhost:${configuration.serverPort}`,
     databaseURL: configuration.databaseURL, storageRoot: path.join(runDirectory, 'private', 'storage'),
     authURL, appId: credentials.appId, appSecret: credentials.appSecret, callbackURL: `${baseURL}/auth/callback`,
   });
-  launch('daynight', path.join(artifacts, 'daynight-server'), environment, ['--root', daynightRoot]);
+  const imageTemporaryDirectory = path.join(runDirectory, 'private', 'image-validation');
+  await mkdir(imageTemporaryDirectory, { recursive: true, mode: 0o700 });
+  launch('daynight', path.join(artifacts, 'daynight-server'), {
+    ...environment,
+    DAYNIGHT_REDIS_URL: configuration.redisURL,
+    DAYNIGHT_IMAGE_NODE_PATH: process.execPath,
+    DAYNIGHT_IMAGE_HELPER_PATH: path.join(artifacts, 'image-validator', 'image-validation-helper.js'),
+    DAYNIGHT_IMAGE_MANIFEST_PATH: path.join(artifacts, 'image-validator', 'image-validation-manifest.json'),
+    DAYNIGHT_IMAGE_TEMP_DIRECTORY: imageTemporaryDirectory,
+  }, ['--root', daynightRoot]);
   await ended;
   if (failure !== undefined) throw failure;
 };

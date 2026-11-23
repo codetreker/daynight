@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react';
 import { authRequestsPaused } from '../../api/client';
 import { useCurrentAccount } from '../../app/CurrentAccountContext';
+import { browserNavigation } from '../../app/navigation';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { createThreadController } from './controller';
@@ -16,19 +17,35 @@ const DiscussionDraft = ({ controller }: { readonly controller: ThreadController
   return null;
 };
 
-export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpenChange, parentUnavailable = false, trackDraft = false }: { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly owner: RefObject<HTMLElement | null>; readonly onDetailsOpenChange: (open: boolean) => void; readonly parentUnavailable?: boolean; readonly trackDraft?: boolean }) => {
+export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpenChange, parentUnavailable = false, trackDraft = false, preserveHistoryDraft = false, historyAdmitted = true, historyRevision = 0 }: { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly owner: RefObject<HTMLElement | null>; readonly onDetailsOpenChange: (open: boolean) => void; readonly parentUnavailable?: boolean; readonly trackDraft?: boolean; readonly preserveHistoryDraft?: boolean; readonly historyAdmitted?: boolean; readonly historyRevision?: number }) => {
   const account = useCurrentAccount(), cacheScope = useTaskCacheScope();
   const { messages: { inspection: { discussion: messages } } } = useI18n();
-  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch }), [account.user.id, projectId, taskId, cacheScope]);
+  const activeContext = useRef({ active, revision: 0 });
+  if (activeContext.current.active !== active) activeContext.current = { active, revision: activeContext.current.revision + 1 };
+  const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch, captureNavigation: () => {
+    const navigation = browserNavigation(), location = navigation.snapshot(), decision = navigation.decision(), revision = activeContext.current.revision;
+    return () => activeContext.current.revision === revision && navigation.snapshot() === location && navigation.decision() === decision;
+  } }), [account.user.id, projectId, taskId, cacheScope]);
   const view = useSyncExternalStore(controller.subscribe, controller.snapshot);
+  const pendingHistory = useRef<number | null>(null);
+  const preserveHistory = useRef(preserveHistoryDraft); preserveHistory.current = preserveHistoryDraft;
   const timeline = useRef<HTMLDivElement>(null), input = useRef<HTMLTextAreaElement>(null);
   const current = useRef({ active, account, view }); current.current = { active, account, view };
   useLayoutEffect(() => { if (parentUnavailable) { controller.retire(); return; } controller.setAdmissionBlocked(account.admissionBlocked || authRequestsPaused()); controller.setDocumentVisible(document.visibilityState === 'visible'); controller.setActive(active); }, [controller, active, account.admissionBlocked, parentUnavailable]);
+  useLayoutEffect(() => {
+    if (pendingHistory.current !== null && historyAdmitted && historyRevision >= pendingHistory.current) {
+      pendingHistory.current = null; controller.admitHistory();
+    }
+  }, [controller, historyAdmitted, historyRevision]);
   useEffect(() => {
     const synchronize = () => { controller.setDocumentVisible(document.visibilityState === 'visible'); controller.setAdmissionBlocked(current.current.account.admissionBlocked || authRequestsPaused()); };
     const afterIdentityEvent = () => { synchronize(); queueMicrotask(synchronize); };
     document.addEventListener('visibilitychange', afterIdentityEvent); window.addEventListener('focus', afterIdentityEvent); window.addEventListener('blur', afterIdentityEvent);
-    const unsubscribe = cacheScope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) controller.retire(); });
+    const unsubscribe = cacheScope.subscribe((event) => {
+      if (event.projectId !== projectId) return;
+      if (event.accessRevoked) controller.retire();
+      else if (event.historyChanged && preserveHistory.current) { pendingHistory.current = cacheScope.getProjectRevision(projectId); controller.resetHistory(); }
+    });
     return () => { unsubscribe(); controller.retire(); document.removeEventListener('visibilitychange', afterIdentityEvent); window.removeEventListener('focus', afterIdentityEvent); window.removeEventListener('blur', afterIdentityEvent); };
   }, [controller, cacheScope, projectId]);
   return <section className="task-discussion" aria-label={messages.title}>

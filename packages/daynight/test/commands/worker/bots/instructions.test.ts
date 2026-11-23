@@ -12,17 +12,18 @@ describe("Bot role preparation", () => {
     expect(role.instructions.trim().length).toBeGreaterThan(0);
     expect(role.instructions.isWellFormed()).toBe(true);
     expect(Buffer.byteLength(role.instructions)).toBeLessThanOrEqual(65_536);
-    expect(role.revision.trim().length).toBeGreaterThan(0);
+    expect(role.revision).toBe("daynight-assistant/4");
+    expect(role.instructions).toContain("Keep each Task and Goal description brief: summarize the work, expected outcome and necessary scope, with references to its detailed material. Put full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence in the owning attachments; do not copy them into the description. A simple task fully explained in a few sentences needs no attachment. Do not impose a fixed length limit. Keep durable participant discussion in Thread, and execution steps and recovery context in Session. Read back required material before asking for review or declaring delivery complete.");
     expect(role.digest).toBe(createHash("sha256").update(role.instructions).digest("hex"));
   });
 
-  it("recovers the exact server role when local preparation is lost", () => {
-    const serverRole = frozen();
+  it.each(["daynight-assistant/1", "daynight-assistant/2", "daynight-assistant/3", "older-worker/1"])("recovers the exact frozen %s server role when local preparation is lost", revision => {
+    const serverRole = frozen(undefined, revision);
     expect(selectBotRole({ serverRole, preparedRole: null })).toEqual(serverRole);
   });
 
-  it("retains the original preparation after an unconfirmed registration", () => {
-    const preparedRole = frozen();
+  it.each(["daynight-assistant/1", "daynight-assistant/2", "daynight-assistant/3", "older-worker/1"])("retains the original %s preparation after an unconfirmed registration", revision => {
+    const preparedRole = frozen(undefined, revision);
     expect(selectBotRole({ serverRole: null, preparedRole })).toEqual(preparedRole);
     expect(selectBotRole({ serverRole: { ...preparedRole }, preparedRole })).toEqual(preparedRole);
   });

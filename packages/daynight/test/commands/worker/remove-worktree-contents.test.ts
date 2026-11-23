@@ -1,15 +1,15 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { removeWorktreeContents } from "../../../src/commands/worker/remove-worktree-contents.js";
+import { removeWorktreeContents, retryWhileBusy } from "../../../src/commands/worker/remove-worktree-contents.js";
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, open: vi.fn(actual.open), rmdir: vi.fn(actual.rmdir) };
 });
 
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -46,9 +46,13 @@ const deferred = () => {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 };
+const busy = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+// One initial call plus the module's five retry delays.
+const busyAttempts = 6;
 
 afterEach(async () => {
   vi.mocked(open).mockImplementation(actualFs.open);
+  vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
   try { operations.splice(0).forEach(entry => entry.dispose()); }
   finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   for (const target of restoreModes.splice(0)) {
@@ -64,7 +68,7 @@ describe("owned worktree content removal", () => {
     const nested = path.join(f.target, "nested"); await mkdir(nested);
     await writeFile(path.join(nested, ".git"), "nested content");
     await writeFile(path.join(nested, "file"), "remove");
-    await removeWorktreeContents(f.target, f.identity, operation(), async () => {});
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() });
     expect(await readdir(f.target)).toEqual([".git"]);
     expect(await identity(f.target)).toBe(f.identity);
     expect(await readFile(path.join(f.target, ".git"), "utf8")).toBe("gitdir: retained\n");
@@ -77,7 +81,7 @@ describe("owned worktree content removal", () => {
     await chmod(nested, 0o555); restoreModes.push(nested);
     await chmod(f.target, 0o555); restoreModes.push(f.target);
     let observedMode = 0;
-    await removeWorktreeContents(f.target, f.identity, operation(), async () => {}, async (target, options) => {
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async (target, options) => {
       if (String(target) === file) observedMode = (await lstat(nested)).mode & 0o777;
       await rm(target, options);
     });
@@ -89,26 +93,26 @@ describe("owned worktree content removal", () => {
   it("keeps all content when ownership verification fails", async () => {
     const f = await fixture(); const failure = new Error("changed claim");
     await writeFile(path.join(f.target, "keep"), "retained");
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => { throw failure; })).rejects.toBe(failure);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation(), beforeMutation: async () => { throw failure; } })).rejects.toBe(failure);
     expect(await readFile(path.join(f.target, "keep"), "utf8")).toBe("retained");
   });
 
   it("retains a root whose identity differs from the original ownership", async () => {
     const f = await fixture();
     await writeFile(path.join(f.target, "keep"), "retained");
-    await expect(removeWorktreeContents(f.target, "0:0", operation(), async () => {})).rejects.toThrow(/identity|changed/);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: "0:0", operation: operation() })).rejects.toThrow(/identity|changed/);
     expect(await readFile(path.join(f.target, "keep"), "utf8")).toBe("retained");
   });
 
   it("retains partial failure evidence and continues from actual contents on retry", async () => {
     const f = await fixture(); const failure = new Error("controlled I/O failure");
     await writeFile(path.join(f.target, "one"), "one"); await writeFile(path.join(f.target, "two"), "two");
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {}, async (target, options) => {
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async (target, options) => {
       await rm(target, options); throw failure;
     })).rejects.toBe(failure);
     expect((await readdir(f.target)).length).toBe(2);
     expect(await readFile(path.join(f.target, ".git"), "utf8")).toBe("gitdir: retained\n");
-    await removeWorktreeContents(f.target, f.identity, operation(), async () => {});
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() });
     expect(await readdir(f.target)).toEqual([".git"]);
   });
 
@@ -129,7 +133,7 @@ describe("owned worktree content removal", () => {
         return handle;
       } catch (error) { await handle.close(); throw error; }
     });
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {})).rejects.toThrow(/identity|changed/);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() })).rejects.toThrow(/identity|changed/);
     expect((await lstat(moved)).mode & 0o777).toBe(0o555);
     expect((await lstat(outside)).mode & 0o777).toBe(0o555);
     expect(await readFile(path.join(moved, "owned"), "utf8")).toBe("keep original");
@@ -156,7 +160,7 @@ describe("owned worktree content removal", () => {
       }
       return handle;
     });
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {})).rejects.toThrow(/identity|changed/);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() })).rejects.toThrow(/identity|changed/);
     expect((await lstat(moved)).mode & 0o777).toBe(0o755);
     expect((await lstat(outside)).mode & 0o777).toBe(0o555);
     expect(await readFile(path.join(outside, "foreign"), "utf8")).toBe("retained");
@@ -171,7 +175,7 @@ describe("owned worktree content removal", () => {
       if (String(filename) === f.target) await handle.chmod(0o500);
       return handle;
     });
-    await removeWorktreeContents(f.target, f.identity, operation(), async () => {});
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() });
     expect((await lstat(f.target)).mode & 0o777).toBe(0o700);
   });
 
@@ -191,7 +195,7 @@ describe("owned worktree content removal", () => {
       }
       return handle;
     });
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {})).rejects.toThrow(/identity|owner|device/);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() })).rejects.toThrow(/identity|owner|device/);
     expect((await lstat(nested)).mode & 0o777).toBe(0o555);
     expect(await readFile(path.join(nested, "keep"), "utf8")).toBe("retained");
   });
@@ -200,7 +204,7 @@ describe("owned worktree content removal", () => {
     const f = await fixture(); const nested = path.join(f.target, "cache");
     await mkdir(nested); await writeFile(path.join(nested, "keep"), "retained");
     await chmod(nested, mode); restoreModes.push(nested);
-    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {})).rejects.toThrow(/permission|read|search|EACCES/);
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() })).rejects.toThrow(/permission|read|search|EACCES/);
     expect((await lstat(nested)).mode & 0o777).toBe(mode);
     await chmod(nested, 0o700);
     expect(await readFile(path.join(nested, "keep"), "utf8")).toBe("retained");
@@ -218,7 +222,7 @@ describe("owned worktree content removal", () => {
     const op = stop === "cancellation" ? operation(controller.signal) : createOperation({ limits: { totalMs: 30 } });
     if (stop === "deadline") operations.push(op);
     let settled = false;
-    const result = removeWorktreeContents(f.target, f.identity, op, async () => {}, async (target, options) => {
+    const result = removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: op }, async (target, options) => {
       entered.resolve(); await release.promise; await rm(target, options);
     }).then(() => { settled = true; return null; }, error => { settled = true; return error; });
     await Promise.race([entered.promise, result.then(error => { throw error ?? new Error("Removal never entered the controlled filesystem operation."); })]);
@@ -235,5 +239,154 @@ describe("owned worktree content removal", () => {
     expect(await result).toBe(op.signal.reason);
     expect((await readdir(f.target)).length).toBe(2);
     expect(await readFile(path.join(f.target, ".git"), "utf8")).toBe("gitdir: retained\n");
+  });
+
+  it.skipIf(process.platform === "win32")("waits for the directory handle to close after cancellation", async () => {
+    const f = await fixture(); await writeFile(path.join(f.target, "one"), "one");
+    const entered = deferred(), release = deferred(), closing = deferred(), finishClose = deferred();
+    const controller = new AbortController(); let closed = false, settled = false;
+    vi.mocked(open).mockImplementation(async (filename, flags, mode) => {
+      const handle = await actualFs.open(filename, flags, mode);
+      const close = handle.close.bind(handle);
+      handle.close = async () => { closing.resolve(); await finishClose.promise; await close(); closed = true; };
+      return handle;
+    });
+    const op = operation(controller.signal);
+    const result = removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: op }, async (target, options) => {
+      entered.resolve(); await release.promise; await rm(target, options);
+    }).then(() => { settled = true; return null; }, error => { settled = true; return error; });
+    await Promise.race([entered.promise, result.then(error => { throw error ?? new Error("Removal did not start."); })]);
+    controller.abort(new Error("stop")); release.resolve();
+    await closing.promise;
+    expect(settled).toBe(false); expect(closed).toBe(false);
+    finishClose.resolve();
+    expect(await result).toBe(op.signal.reason);
+    expect(closed).toBe(true);
+  });
+
+  it("completes an entry removal once a transient holder releases it", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "remove");
+    let attempts = 0;
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async (target, options) => {
+      if (String(target) === held && ++attempts < 3) throw busy();
+      await rm(target, options);
+    });
+    expect(attempts).toBe(3);
+    expect(await readdir(f.target)).toEqual([".git"]);
+  });
+
+  it("completes a directory removal once a transient holder releases it", async () => {
+    const f = await fixture();
+    const nested = path.join(f.target, "nested");
+    await mkdir(nested);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (String(target) === nested && ++attempts < 3) throw busy();
+      return actualFs.rmdir(target, options);
+    });
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() });
+    expect(attempts).toBe(3);
+    expect(await readdir(f.target)).toEqual([".git"]);
+  });
+
+  it("surfaces the original busy failure after exhausting retries and retains the entry", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    const failure = busy();
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async target => {
+      if (String(target) !== held) throw new Error(`Unexpected removal target: ${String(target)}`);
+      attempts++;
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(attempts).toBe(busyAttempts);
+    expect(await readFile(held, "utf8")).toBe("retained");
+  });
+
+  it("does not retry a failure that is not transient", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async () => {
+      attempts++;
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    })).rejects.toThrow(/permission/i);
+    expect(attempts).toBe(1);
+    expect(await readFile(held, "utf8")).toBe("retained");
+  });
+
+  it("rejects an entry replaced during the busy backoff instead of removing its replacement", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "original");
+    // Prepared outside the walked tree so it holds its own inode. Recreating the
+    // name in place is not enough: Linux reuses the inode it just freed, leaving
+    // the entry's identity unchanged.
+    const replacement = path.join(f.root, "replacement");
+    await writeFile(replacement, "replacement");
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async target => {
+      if (String(target) !== held) throw new Error(`Unexpected removal target: ${String(target)}`);
+      attempts++;
+      await actualFs.rm(held);
+      await actualFs.rename(replacement, held);
+      throw busy();
+    })).rejects.toThrow(/identity changed/);
+    expect(attempts).toBe(1);
+    expect(await readFile(held, "utf8")).toBe("replacement");
+  });
+
+  it("re-admits the mutation before each busy retry", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.target, "held"), "remove");
+    let admitted = 0;
+    let attempts = 0;
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation(), beforeMutation: async () => { admitted++; } }, async (target, options) => {
+      if (++attempts < 3) throw busy();
+      await rm(target, options);
+    });
+    expect(attempts).toBe(3);
+    expect(admitted).toBe(3);
+  });
+
+  it.each(["cancellation", "deadline"] as const)("starts no further attempt when %s arrives while revalidation awaits", async stop => {
+    const controller = new AbortController();
+    const op = stop === "cancellation" ? operation(controller.signal) : createOperation({ limits: { totalMs: 40 } });
+    if (stop === "deadline") operations.push(op);
+    let attempts = 0;
+    // A verifier that performs asynchronous work and does not check the
+    // operation itself: the retry boundary is what must stop the next attempt.
+    const result = await retryWhileBusy(op, async () => {
+      if (stop === "cancellation") controller.abort(new Error("stop"));
+      await new Promise<void>(resolve => setTimeout(resolve, 60));
+    }, async () => {
+      attempts++;
+      throw busy();
+    }).then(() => null, (error: unknown) => error);
+    expect(result).toBe(op.signal.reason);
+    expect(attempts).toBe(1);
+  });
+
+  it("stops retrying a busy removal after cancellation and starts no further mutations", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    const controller = new AbortController();
+    const entered = deferred();
+    let attempts = 0;
+    const op = operation(controller.signal);
+    const result = removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: op }, async () => {
+      if (++attempts === 1) entered.resolve();
+      throw busy();
+    }).then(() => null, error => error);
+    await entered.promise;
+    controller.abort(new Error("stop"));
+    expect(await result).toBe(op.signal.reason);
+    expect(attempts).toBeLessThan(busyAttempts);
+    expect(await readFile(held, "utf8")).toBe("retained");
   });
 });

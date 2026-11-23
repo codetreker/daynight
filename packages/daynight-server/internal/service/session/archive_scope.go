@@ -21,6 +21,10 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if project != "" {
 			if err = op.LockCredential(ctx, scope, principal); err != nil {
 				return err
@@ -29,7 +33,11 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 				return err
 			}
 		}
-		access, err := loadSession(ctx, op, scope, id)
+		load := loadSession
+		if project != "" {
+			load = loadTaskReadSession
+		}
+		access, err := load(ctx, op, scope, id)
 		if err != nil {
 			return err
 		}
@@ -41,18 +49,28 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 				return err
 			}
 		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
+			return err
+		}
 		return work(access)
 	})
 }
 
-func (s *Service) terminal(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*sessioncore.TerminalAccess) error) error {
+func (s *Service) terminalHistory(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*sessioncore.TerminalHistoryAccess) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return err
 	}
 	defer op.Close()
 	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
+		_, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
+		if err != nil {
+			return err
+		}
+		check, err := readCheck(ctx, scope, principal)
 		if err != nil {
 			return err
 		}
@@ -62,13 +80,77 @@ func (s *Service) terminal(ctx context.Context, principal model.Principal, proje
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
-		access, err := op.LoadTerminal(ctx, scope, id)
+		access, err := op.LoadTerminalHistory(ctx, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
+		if err = op.BindTerminalHistory(access, principal, project, taskID, deleted); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
 			return err
 		}
 		return work(access)
+	})
+}
+
+// terminalDirectory applies the same Task and principal scope without loading
+// live Session state; the current claim is used only for the binding projection.
+func (s *Service) terminalDirectory(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess) error) error {
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return err
+	}
+	defer op.Close()
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
+		task, err := op.LockTask(ctx, scope, project, taskID)
+		if err != nil {
+			return err
+		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
+		if err = op.LockCredential(ctx, scope, principal); err != nil {
+			return err
+		}
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
+			return err
+		}
+		return work(op, scope, task)
+	})
+}
+
+func (s *Service) taskTerminalDirectory(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess) error) error {
+	if project == "" || taskID == "" {
+		return &model.Fault{Code: "forbidden", Message: "Task history requires a Task scope."}
+	}
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return err
+	}
+	defer op.Close()
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
+		task, err := s.historyOps.lockTask(op, ctx, scope, project, taskID)
+		if err != nil {
+			return err
+		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
+		if err = s.historyOps.credential(op, ctx, scope, principal); err != nil {
+			return err
+		}
+		if err = s.historyOps.project(op, ctx, scope, principal, project); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
+			return err
+		}
+		return work(op, scope, task)
 	})
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -58,7 +59,7 @@ func testEnvironmentAt(t *testing.T, address string) map[string]string {
 	origin := "http://" + address
 	return map[string]string{
 		"DAYNIGHT_DATABASE_URL": url, "DAYNIGHT_STORAGE_ROOT": testStorageRoot(t), "DAYNIGHT_LISTEN_ADDR": address,
-		"DAYNIGHT_PUBLIC_ORIGIN": origin, "DAYNIGHT_UNIAUTH_URL": "https://identity.example",
+		"DAYNIGHT_PUBLIC_ORIGIN": origin, "DAYNIGHT_PREVIEW_ORIGIN": testauth.PreviewOrigin(origin), "DAYNIGHT_UNIAUTH_URL": "https://identity.example",
 		"DAYNIGHT_UNIAUTH_APP_ID": rand.Text(), "DAYNIGHT_UNIAUTH_APP_SECRET": rand.Text(),
 		"DAYNIGHT_UNIAUTH_CALLBACK_URL":   origin + "/api/v1/auth/callback",
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
@@ -180,15 +181,15 @@ func TestCommandRootSelection(t *testing.T) {
 		{name: "unknown flag", args: []string{"--secret=value"}, invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command, root, err := parseCommand(tc.args, lookupTestEnvironment(tc.env))
+			options, err := parseCommand(tc.args, lookupTestEnvironment(tc.env))
 			if tc.invalid {
 				if err == nil {
 					t.Fatal("invalid arguments accepted")
 				}
 				return
 			}
-			if err != nil || command != tc.command || root != tc.root {
-				t.Fatalf("command=%q root=%q error=%v", command, root, err)
+			if err != nil || options.command != tc.command || options.root != tc.root {
+				t.Fatalf("options=%+v error=%v", options, err)
 			}
 		})
 	}
@@ -337,7 +338,7 @@ func TestRunStopsAfterStartup(t *testing.T) {
 	values := testEnvironment(t)
 	root := testStorageRoot(t)
 	writeTestConfig(t, root, map[string]any{
-		"server":   map[string]any{"listen_address": values["DAYNIGHT_LISTEN_ADDR"], "public_origin": values["DAYNIGHT_PUBLIC_ORIGIN"], "allow_http_test_origin": true},
+		"server":   map[string]any{"listen_address": values["DAYNIGHT_LISTEN_ADDR"], "public_origin": values["DAYNIGHT_PUBLIC_ORIGIN"], "preview_origin": values["DAYNIGHT_PREVIEW_ORIGIN"], "allow_http_test_origin": true},
 		"database": map[string]any{"url": values["DAYNIGHT_DATABASE_URL"]},
 		"storage":  map[string]any{"root": values["DAYNIGHT_STORAGE_ROOT"]},
 		"uniauth":  map[string]any{"url": values["DAYNIGHT_UNIAUTH_URL"], "app_id": values["DAYNIGHT_UNIAUTH_APP_ID"], "app_secret": values["DAYNIGHT_UNIAUTH_APP_SECRET"], "callback_url": values["DAYNIGHT_UNIAUTH_CALLBACK_URL"], "allow_loopback_http": true},

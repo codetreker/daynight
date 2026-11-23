@@ -40,18 +40,18 @@ func authorizationReceiverAwaitBlock(t *testing.T, ctx context.Context, database
 	}
 }
 
-func authorizationReceiverDrain(t *testing.T, cancel context.CancelFunc, holder pgx.Tx, done <-chan struct{}) {
+func releaseRowLockAndDrain(t *testing.T, cancel context.CancelFunc, holder pgx.Tx, done <-chan struct{}) {
 	t.Helper()
 	cancel()
 	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	if err := holder.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-		t.Errorf("release authorization scope blocker: %v", err)
+		t.Errorf("release row lock holder: %v", err)
 	}
 	select {
 	case <-done:
 	case <-ctx.Done():
-		t.Error("authorization scope worker did not stop after cancellation and blocker release")
+		t.Error("worker did not stop after cancellation and row lock release")
 	}
 }
 
@@ -68,6 +68,11 @@ func TestAuthorizationScopeSessionChangesAcrossLockWait(t *testing.T) {
 				return scope.IdentityDAO().InsertSession(ctx, session)
 			})
 			authorizationReceiverCommitted(t, completion, err)
+			if name == "expired after request wait" {
+				if err := f.database.Pool.QueryRow(ctx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at`, session.ID).Scan(&session.ExpiresAt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			before := authorizationReceiverRow(t, ctx, f.database, "oauth_authorizations", "id", f.authorization.ID)
 			holder, err := f.database.Pool.Begin(ctx)
 			if err != nil {
@@ -121,9 +126,12 @@ func TestAuthorizationScopeSessionChangesAcrossLockWait(t *testing.T) {
 				})
 				result <- authorizationReceiverResult{completion: completion, err: err}
 			}()
-			defer authorizationReceiverDrain(t, cancel, holder, done)
+			defer releaseRowLockAndDrain(t, cancel, holder, done)
 			authorizationReceiverAwaitBlock(t, ctx, f.database, holder.Conn().PgConn().PID(), result)
 			if name == "expired after request wait" {
+				if _, err := f.database.Pool.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())))`, session.ExpiresAt); err != nil {
+					t.Fatal(err)
+				}
 				advanced <- f.now.Add(2 * time.Hour)
 			}
 			if err := holder.Commit(ctx); err != nil {

@@ -20,6 +20,8 @@ This narrows the modal selector policy in the [authenticated workspace decision]
 the [foreground identity decision](../../archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records the rationale for the existing recovery and request-admission rules.
 
+The later [document account synchronization decision](../architecture/2026-11-11-document-account-sync.md) replaces foreground identity revalidation and its blocking recovery overlay; the earlier rationale below is retained as decision history.
+
 ## Alternatives
 
 **Keep a selector in the recovery overlay.** It allowed language changes while

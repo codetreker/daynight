@@ -29,7 +29,7 @@ func TestTaskHTTPStatusCommittedResponseFailureAndReadback(t *testing.T) {
 					result.CancelledAt = &stamp
 				}
 				h.Tasks.SetStatusFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.SetTaskStatus) (model.Task, error) {
-					if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 1 || input.Status != status {
+					if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 1 || input.Status != status || input.CancelDescendants != (status == model.TaskCancelled) || input.CancelDescendantsPresent != (status == model.TaskCancelled) {
 						t.Fatalf("status mutation input: %+v", input)
 					}
 					return result, nil
@@ -41,7 +41,12 @@ func TestTaskHTTPStatusCommittedResponseFailureAndReadback(t *testing.T) {
 					return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 				}
 				path := taskCollection(testProjectID) + "/" + testTaskID
-				request := httptest.NewRequest(http.MethodPut, path+"/status", strings.NewReader(jsonBody(t, api.TaskStatusUpdateRequest{Version: 1, Status: string(status)})))
+				body := api.TaskStatusUpdateRequest{Version: 1, Status: string(status)}
+				if status == model.TaskCancelled {
+					confirmed := true
+					body.CancelDescendants = &confirmed
+				}
+				request := httptest.NewRequest(http.MethodPut, path+"/status", strings.NewReader(jsonBody(t, body)))
 				authorizeResourceRequest(h, request)
 				request.Header.Set("Content-Type", "application/json")
 				request.Header.Set("X-Request-ID", "task-status-lost")

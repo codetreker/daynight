@@ -41,7 +41,8 @@ func TestParentDeletionPreservesWebArchiveAndUnknownCompletion(t *testing.T) {
 				t.Fatalf("goal current: %v %v", current, err)
 			}
 			v := f.registerWeb(t)
-			if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, goal); err != nil {
+			if _, err = f.db.Pool.Exec(ctx, `WITH deleted AS (UPDATE tasks SET deleted_at=now() WHERE id=$1 RETURNING deleted_at)
+				UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = f.service.Current(ctx, f.owner, f.project, f.task); err == nil {
@@ -91,8 +92,16 @@ func (w *heldRegistrationWriter) WriteSession(ctx context.Context, work func(sto
 		if err := work(scope); err != nil {
 			return err
 		}
-		w.once.Do(func() { close(w.entered); <-w.release })
-		return nil
+		var heldError error
+		w.once.Do(func() {
+			close(w.entered)
+			select {
+			case <-w.release:
+			case <-ctx.Done():
+				heldError = ctx.Err()
+			}
+		})
+		return heldError
 	})
 }
 
@@ -110,9 +119,15 @@ func TestTwoRealSessionRegistrationsSerialize(t *testing.T) {
 	writer := &heldRegistrationWriter{SessionWriter: f.db, entered: make(chan struct{}), release: make(chan struct{})}
 	var release sync.Once
 	releaseFirst := func() { release.Do(func() { close(writer.release) }) }
-	t.Cleanup(releaseFirst)
 	engine := sessioncore.NewEngine(nil)
-	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	t.Cleanup(func() {
+		releaseFirst()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Errorf("stop registration engine: %v", err)
+		}
+	})
 	service := New(writer, engine)
 	type result struct {
 		snapshot sp.Snapshot
@@ -134,7 +149,7 @@ func TestTwoRealSessionRegistrationsSerialize(t *testing.T) {
 		v, err := service.Register(ctx, f.owner, f.project, f.task, f.registration)
 		second <- result{v, err}
 	}()
-	if err := waitArchiveLock(ctx, f.db, "SELECT id::text FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE"); err != nil {
+	if err := waitArchiveLock(ctx, f.db, "SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE"); err != nil {
 		t.Fatal(err)
 	}
 	releaseFirst()
@@ -145,46 +160,5 @@ func TestTwoRealSessionRegistrationsSerialize(t *testing.T) {
 	var count int
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE task_id=$1`, f.task).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("persisted registrations=%d %v", count, err)
-	}
-}
-
-func TestParentDeletionPreservesTerminalArchiveAndUnknownCompletion(t *testing.T) {
-	for _, mode := range []string{"unknown", "unknown_committed"} {
-		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-			defer cancel()
-			f := newServiceFixture(t)
-			files, err := local.New(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = files.Close() })
-			engine := sessioncore.NewEngine(files)
-			t.Cleanup(func() { _ = engine.Stop(context.Background()) })
-			writer := &completionWriter{SessionWriter: f.db}
-			f.service = New(writer, engine)
-			goal := uuid.NewString()
-			if _, err = f.db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title,status,type) VALUES($1,$2,'parent','in_progress','goal')`, goal, f.project); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, goal, f.task); err != nil {
-				t.Fatal(err)
-			}
-			id, data := readyTerminalArchiveWithDeletion(t, f, func(id string) {
-				if _, err := f.db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, goal); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.TerminalState(ctx, f.owner, f.project, f.task, id); err == nil {
-					t.Fatal("hidden terminal state was readable")
-				}
-			}, writer, mode)
-			if _, err = f.service.PutTerminalArchive(ctx, f.owner, f.project, f.task, id, data); err != nil {
-				t.Fatalf("owner terminal archive: %v", err)
-			}
-			var state, taskStatus string
-			if err = f.db.Pool.QueryRow(ctx, `SELECT a.state,t.status FROM session_archives a JOIN task_sessions s ON s.id=a.session_id JOIN tasks t ON t.id=s.task_id WHERE a.session_id=$1`, id).Scan(&state, &taskStatus); err != nil || state != "ready" || taskStatus != "in_progress" {
-				t.Fatalf("archive=%q task=%q err=%v", state, taskStatus, err)
-			}
-		})
 	}
 }

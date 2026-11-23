@@ -1,6 +1,6 @@
 import mermaid from 'mermaid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { identifyMermaidType, inspectMermaidDiagram, matchesMermaidType, preflightBlock, type StableMermaidType } from '../src/features/task-detail/MermaidPolicy';
+import { identifyMermaidType, inspectMermaidDiagram, matchesMermaidType, preflightBlock, type StableMermaidType } from '../src/ui/markdown/mermaid/MermaidPolicy';
 
 const samples: ReadonlyArray<[StableMermaidType, string]> = [
   ['flowchart', 'flowchart TD\nA[开始] --> B[完成]'],

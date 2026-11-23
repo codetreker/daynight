@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { createConnection, Socket } from "node:net";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
-const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn(), waitForTurn: vi.fn() }));
+const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn(), waitForTurn: vi.fn(), opened: vi.fn(), socketCreated: vi.fn<(socket: Socket) => void>() }));
 vi.mock("node:net", async importOriginal => {
   const net = await importOriginal<typeof import("node:net")>();
   const { relative } = await import("node:path");
@@ -17,7 +18,11 @@ vi.mock("node:net", async importOriginal => {
       server.listen = ((value: string, callback: () => void) => listen.call(server, endpoint(value), callback)) as typeof server.listen;
       return server;
     },
-    createConnection: (value: string) => net.createConnection(endpoint(value)),
+    createConnection: (value: string) => {
+      const socket = net.createConnection(endpoint(value));
+      f.socketCreated(socket);
+      return socket;
+    },
   };
 });
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: async () => ({ pid: 1, parentPid: 0, processGroupId: 1, startedAt: "test", commandHash: "test" }) }));
@@ -26,12 +31,14 @@ vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRe
   return { flush: async () => {}, close: () => {}, connected: () => true };
 } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: async (options: ProviderOptions) => {
+  f.opened(options);
   options.onState({ nativeSessionId: "native-test", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: true, respond: true } });
   return { nativeSessionId: "native-test", send: f.send, close: f.close, cancel: async () => {}, waitForTurn: f.waitForTurn };
 } }));
 import { runController } from "../../../src/commands/controller/runtime.js";
-import { requestController } from "../../../src/commands/controller/local-client.js";
+import { requestController, type ControllerLocalAction } from "../../../src/commands/controller/local-client.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { CodexRpc } from "../../../src/commands/controller/providers/codex-rpc.js";
 const roots: string[] = [];
 afterEach(async () => { vi.useRealTimers(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const setup = async () => {
@@ -44,6 +51,31 @@ const setup = async () => {
   await vi.waitFor(async () => expect((await requestController(ticket, { kind: "observe" })).snapshot.lifecycle).toBe("ready"));
   return { ticket, running, stop: async () => { await requestController(ticket, { kind: "stop", deadline: Date.now() + 2000 }); await running; } };
 };
+
+test("authenticated runtime observation responds while Codex output still has ordered frames to consume", async () => {
+  const v = await setup(), provider = f.opened.mock.calls[0]![0] as ProviderOptions;
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
+  const complete = Promise.withResolvers<void>(), observing = Promise.withResolvers<Awaited<ReturnType<typeof requestController>>>();
+  const count = 40, received: number[] = [];
+  let observedAt = 0;
+  const rpc = new CodexRpc(child, message => {
+    const index = (message.params as { index: number }).index;
+    received.push(index);
+    provider.onState({ nativeSessionId: "native-test", activity: "working", currentTurnId: `turn-${index}`, capabilities: { send: true, steer: true, cancel: true, respond: true } });
+    if (received.length === 1) void requestController(v.ticket, { kind: "observe" }, { timeoutMs: 2000 }).then(response => {
+      observedAt = received.length; observing.resolve(response);
+    }, observing.reject);
+    if (received.length === count) complete.resolve();
+  }, { createSpool: () => { throw new Error("Ordinary notifications must not create media."); } });
+  try {
+    child.stdout.write(Array.from({ length: count }, (_, index) => JSON.stringify({ method: "notice", params: { index } }) + "\n").join(""));
+    const response = await observing.promise;
+    expect(observedAt).toBeGreaterThan(0); expect(observedAt).toBeLessThan(count);
+    expect(response.snapshot).toMatchObject({ sessionId: v.ticket.sessionId, testExecutionId: v.ticket.testExecutionId, executionId: v.ticket.executionId, controllerInstanceId: v.ticket.controllerInstanceId, executionGeneration: v.ticket.executionGeneration, nativeSessionId: "native-test", lifecycle: "working" });
+    expect(Number(response.snapshot.currentTurnId!.slice("turn-".length))).toBeLessThan(count - 1);
+    await complete.promise; expect(received).toEqual(Array.from({ length: count }, (_, index) => index));
+  } finally { rpc.dispose(); await rpc.stopped; await v.stop(); }
+});
 
 test("authenticated input clears its admission deadline while incomplete frames still expire", async () => {
   const nativeInput = Promise.withResolvers<{ disposition: "started"; turnId: string }>();
@@ -140,22 +172,87 @@ test("the authenticated response deadline releases its socket while native work 
   } finally { vi.useRealTimers(); accepted?.(); await v.stop(); }
 });
 
-test("duplicate authenticated waiters are bounded without blocking observe or explicit stop", async () => {
-  let accepted!: () => void;
-  f.send.mockImplementation(() => new Promise(resolve => { accepted = () => resolve({ disposition: "started", turnId: "same-turn" }); }));
-  f.close.mockImplementation(async () => { accepted(); await new Promise(resolve => setImmediate(resolve)); });
+const observeAuthenticatedWaiters = () => {
+  const peers = new Set<Socket>(), authenticated = new WeakSet<Socket>(), registered = new Set<Socket>();
+  const nativeSetTimeout = Socket.prototype.setTimeout, nativeOnce = EventEmitter.prototype.once;
+  const timeoutPolicy = vi.spyOn(Socket.prototype, "setTimeout").mockImplementation(function (this: Socket, milliseconds, callback) {
+    if (milliseconds === 30_000) peers.add(this);
+    if (milliseconds === 0 && peers.has(this)) authenticated.add(this);
+    return nativeSetTimeout.call(this, milliseconds, callback);
+  });
+  const closeRegistration = vi.spyOn(Socket.prototype, "once").mockImplementation(function (this: Socket, event: string | symbol, listener: (...args: unknown[]) => void) {
+    if (event === "close" && authenticated.has(this)) {
+      // The runtime registers its removable waiter after authenticating the frame.
+      registered.add(this);
+      const socket = this;
+      nativeOnce.call(this, "close", () => registered.delete(socket));
+    }
+    nativeOnce.call(this, event, listener);
+    return this;
+  });
+  return {
+    peers,
+    waitForCount: (count: number) => vi.waitFor(() => expect(registered.size).toBe(count)),
+    restore: () => { closeRegistration.mockRestore(); timeoutPolicy.mockRestore(); },
+  };
+};
+
+test.each(["concurrent frames", "delayed duplicate frames"])("duplicate authenticated waiters are bounded without blocking observe or explicit stop (%s)", async schedule => {
+  const nativeInput = Promise.withResolvers<{ disposition: "started"; turnId: string }>();
+  f.send.mockReturnValue(nativeInput.promise);
+  f.close.mockImplementation(async () => { nativeInput.resolve({ disposition: "started", turnId: "same-turn" }); await new Promise(resolve => setImmediate(resolve)); });
   const v = await setup();
-  const waiting = Array.from({ length: 32 }, () => requestController(v.ticket, { kind: "submit_initial", operationId: v.ticket.initialOperationId }));
-  const outcomes = Promise.allSettled(waiting);
+  const waiters = observeAuthenticatedWaiters();
+  const clients: Socket[] = [], held: Socket[] = [], heldConnected = new Set<Socket>(), requests: ReturnType<typeof requestController>[] = [];
+  const cancelled = new AbortController();
+  f.socketCreated.mockImplementation(socket => {
+    clients.push(socket);
+    if (schedule === "delayed duplicate frames" && clients.length > 1 && clients.length <= 32) {
+      held.push(socket);
+      socket.prependOnceListener("connect", () => { socket.cork(); heldConnected.add(socket); });
+    }
+  });
+  const request = (action: ControllerLocalAction, signal = cancelled.signal, timeoutMs?: number) => {
+    const waiting = requestController(v.ticket, action, { signal, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+    requests.push(waiting);
+    void waiting.catch(() => {});
+    return waiting;
+  };
+  const initial = { kind: "submit_initial", operationId: v.ticket.initialOperationId } as const;
   try {
+    const waiting = Array.from({ length: 32 }, () => request(initial));
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce());
-    // A request on a later accepted socket is processed after the 32 waiters.
-    await expect(requestController(v.ticket, { kind: "submit_initial", operationId: v.ticket.initialOperationId })).rejects.toThrow("capacity");
-    expect((await requestController(v.ticket, { kind: "observe" })).snapshot.initialInputState).toBe("dispatching");
+    if (schedule === "delayed duplicate frames") {
+      await vi.waitFor(() => expect(heldConnected.size).toBe(31));
+      await waiters.waitForCount(1);
+      const earlyProbe = new AbortController();
+      const probe = request(initial, AbortSignal.any([cancelled.signal, earlyProbe.signal]));
+      await waiters.waitForCount(2);
+      // First dispatch does not imply capacity: a later socket can still join it.
+      expect(f.send).toHaveBeenCalledOnce();
+      earlyProbe.abort(new Error("The controlled early probe was admitted."));
+      await expect(probe).rejects.toThrow("controlled early probe");
+      await waiters.waitForCount(1);
+      for (const socket of held) socket.uncork();
+    }
+    await waiters.waitForCount(32);
+    await expect(request(initial, cancelled.signal, 2000)).rejects.toThrow("capacity");
+    expect((await request({ kind: "observe" }, cancelled.signal, 2000)).snapshot.initialInputState).toBe("dispatching");
     expect(f.send).toHaveBeenCalledOnce(); expect(f.close).not.toHaveBeenCalled();
     await v.stop(); expect(f.close).toHaveBeenCalledOnce();
-    await outcomes;
-  } finally { accepted?.(); if (!f.close.mock.calls.length) await v.stop(); await outcomes; }
+    await Promise.allSettled(waiting);
+    await waiters.waitForCount(0);
+    expect([...waiters.peers].every(socket => socket.destroyed)).toBe(true);
+  } finally {
+    nativeInput.resolve({ disposition: "started", turnId: "same-turn" });
+    cancelled.abort(new Error("The IPC capacity fixture is closing."));
+    for (const socket of clients) socket.destroy();
+    try { if (!f.close.mock.calls.length) await v.stop(); }
+    finally {
+      try { await Promise.allSettled(requests); await v.running; }
+      finally { f.socketCreated.mockReset(); waiters.restore(); }
+    }
+  }
 });
 
 test("a lost initial response exposes a later definitive native rejection through the original journal", async () => {

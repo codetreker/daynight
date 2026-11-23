@@ -10,7 +10,8 @@ import (
 
 func TestCallbackRouteReservations(t *testing.T) {
 	for _, path := range []string{
-		"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests",
+		"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests", "/api/v2/oauth", "/api/v2/oauth/grants",
+		"/api/v2/me/tokens", "/api/v2/me/tokens/one/description", "/api/v3/oauth/grants", "/api/v3/oauth/grants/one/description",
 		"/api/v1/webhook-event-types", "/api/v1/webhook-event-types/callback", "/api/v1/me/webhooks", "/api/v1/teams/x/webhooks",
 		"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback",
 		"/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback",
@@ -29,7 +30,7 @@ func TestCallbackRouteReservations(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback", "/workers-callback", "/workerscallback", "/auth/workers/callback", "/bots-callback", "/botscallback", "/auth/bots/callback"} {
+	for _, path := range []string{"/api/v2/me/tokens-other", "/api/v2/me/tokens/one", "/api/v2/me/tokens/one/description/next", "/api/v2/me/tokens/two/three/description", "/api/v3/oauth/grants-other", "/api/v3/oauth/grants/one", "/api/v3/oauth/grants/one/description/next", "/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback", "/workers-callback", "/workerscallback", "/auth/workers/callback", "/bots-callback", "/botscallback", "/auth/bots/callback"} {
 		t.Run(path, func(t *testing.T) {
 			c, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example" + path}))
 			if err != nil {

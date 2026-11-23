@@ -24,8 +24,12 @@ describe("device authorization API", () => {
     await expect(inspectDeviceAuthorization(code, userId, controller.signal, mismatch)).resolves.toEqual({ userCode: code, expiresAt, status });
     expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/auth/device/inspect", {
       method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ userCode: code }),
-      signal: controller.signal, cache: "no-store", credentials: "same-origin", redirect: "error",
+      signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error",
     });
+    const networkSignal = fetcher.mock.calls[0]![1].signal as AbortSignal;
+    const reason = new Error("device view closed");
+    controller.abort(reason);
+    expect(networkSignal.reason).toBe(reason);
   });
 
   it.each(["approve", "deny"] as const)("sends one explicit %s decision without parsing a 204 body", async (decision) => {

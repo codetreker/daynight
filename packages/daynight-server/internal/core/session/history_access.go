@@ -49,6 +49,7 @@ func (s *Execution) taskReader() (*Execution, error) {
 	}
 	copy := *s
 	copy.browserRun, copy.taskRun, copy.archiveRun = s.taskContentReadRun, s.taskReadRun, s.taskArchiveReadRun
+	copy.terminalDirectoryRun = s.taskTerminalDirectoryRun
 	return &copy, nil
 }
 
@@ -60,6 +61,9 @@ func (op *Operation) LockTaskReadCredential(ctx context.Context, scope store.Ses
 	}
 	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return denied()
+	}
+	if p.Kind == model.OAuthCredential {
+		return op.lockOAuthCredential(ctx, scope, p, true)
 	}
 	if err := scope.SessionDAO().LockCredential(ctx, p, op.engine.now()); err != nil {
 		if errors.Is(err, model.ErrNotFound) {

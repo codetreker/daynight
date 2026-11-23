@@ -126,6 +126,9 @@ func (s *Execution) UpdateArchive(ctx context.Context, p model.Principal, projec
 		if err != nil || out.State == "ready" {
 			return err
 		}
+		if err = s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
+		}
 		err = tx.dao.SetSessionArchiveState(ctx, id, in.State, in.ErrorCode)
 		out = sp.ArchiveStatus{State: in.State, ErrorCode: in.ErrorCode}
 		return err
@@ -182,6 +185,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 			}
 			return nil
 		}
+		if err = s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
+		}
 		if s.files == nil {
 			return fault("controller_offline", "Archive file storage is unavailable.")
 		}
@@ -198,6 +204,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 		}
 		err = tx.dao.SetSessionArchiveReady(ctx, id, digest, len(data), path)
 		if err != nil {
+			return err
+		}
+		if err = s.recordArchiveSuccess(ctx, tx, id); err != nil {
 			return err
 		}
 		// A disconnected controller may have created the native session after its
@@ -237,6 +246,8 @@ func (s *Execution) ArchiveContentReserved(ctx context.Context, p model.Principa
 }
 
 func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
 	legacyPath := ""

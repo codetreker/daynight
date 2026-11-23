@@ -6,12 +6,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, projectID, id, name, valueText string, version int64) (model.Task, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
+	name = properties.CanonicalName(name)
+	ctx = withTaskWriteOperations(ctx, taskcore.PropertyOperation(name))
+	ctx = withTaskWriteTarget(ctx, id, false)
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
 		if err := taskcore.CheckPropertyForType(current.Type, name); err != nil {
 			return taskcore.Mutation{}, err
@@ -29,6 +33,9 @@ func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, p
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
+	name = properties.CanonicalName(name)
+	ctx = withTaskWriteOperations(ctx, taskcore.PropertyOperation(name))
+	ctx = withTaskWriteTarget(ctx, id, false)
 	if err := taskcore.CheckPropertyWritable(name); err != nil {
 		return model.Task{}, err
 	}

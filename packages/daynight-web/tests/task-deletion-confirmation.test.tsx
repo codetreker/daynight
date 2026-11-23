@@ -54,7 +54,7 @@ describe('reviewed task-deletion confirmation', () => {
   it('submits the reviewed version once, shares the operation lock and renders the terminal state', async () => {
     const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); const { dialog } = await open(); const confirmation = review(dialog); const submit = within(confirmation).getByRole('button', { name: 'Delete and remove dependencies' });
     fireEvent.click(submit); fireEvent.click(submit);
-    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function), onWriteRejected: expect.any(Function) }));
     expect(screen.queryByRole('alertdialog')).toBeNull(); expect(deletionAction(dialog)).toBeDisabled(); expect(within(dialog).getByRole('button', { name: 'To do' })).toBeDisabled();
     await act(async () => pending.resolve()); await screen.findByRole('heading', { name: 'Task deleted' });
     expect(within(dialog).queryByText('Original task materials')).toBeNull(); expect(within(dialog).queryByRole('menuitem', { name: 'Delete task' })).toBeNull(); expect(within(dialog).queryByRole('button', { name: 'Retry details' })).toBeNull();

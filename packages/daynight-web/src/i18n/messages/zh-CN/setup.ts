@@ -36,7 +36,7 @@ export const setup: SetupMessages = {
     verifySuccess: "只读 team_list 调用成功，返回当前账户可访问的团队；空列表也是有效结果。",
     manual: "MCP 安装手册",
     tokens: "管理令牌与应用授权",
-    accountNote: "进入账户页面后选择 Tokens，管理令牌与已授权应用。",
+    accountNote: "在账户页面管理令牌与已授权应用。",
     pat: "不支持 OAuth 但支持 HTTP header 的客户端，可在其 secret 或 environment 设置中使用已有 PAT：Authorization: Bearer <PAT>。",
   },
   stepsLabel: "使用步骤",

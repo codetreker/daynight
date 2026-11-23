@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -31,12 +32,20 @@ type sourceCapture struct {
 	trace *[]string
 	facts []protocol.Fact
 	cause error
+	actor *wm.Actor
 }
 
-func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if ctx.Value(sourceContextKey{}) != c || dao != c.dao {
 		c.t.Fatal("source capture escaped its context or transaction DAO")
+	}
+	want := wm.UserActor(sourceUserID)
+	if c.actor != nil {
+		want = *c.actor
+	}
+	if actor != want {
+		c.t.Fatalf("source capture actor = %+v, want %+v", actor, want)
 	}
 	c.calls = append(c.calls, "capture")
 	*c.trace = append(*c.trace, "capture")
@@ -107,11 +116,6 @@ type sourceTaskDAO struct {
 	lookups     int
 	allowLookup bool
 	writes      []store.TaskWrite
-	headerCalls int
-	headers     []model.TaskHeader
-	steps       []model.TaskStep
-	stepWrites  []model.TaskStep
-	stepAction  string
 	tombstone   *model.TaskTombstone
 	create      bool
 }
@@ -131,6 +135,14 @@ func (d *sourceTaskDAO) ActiveDependentIDs(_ context.Context, id string) ([]stri
 		d.t.Fatal("unexpected active dependent read")
 	}
 	return []string{}, nil
+}
+
+func (d *sourceTaskDAO) UnfinishedChildIDs(_ context.Context, id string) ([]string, error) {
+	d.t.Helper()
+	if id != sourceTaskID {
+		d.t.Fatalf("unexpected child lookup: %s", id)
+	}
+	return nil, nil
 }
 
 func (d *sourceTaskDAO) TasksByID(_ context.Context, ids []string) ([]model.Task, error) {
@@ -154,7 +166,7 @@ func (d *sourceTaskDAO) UpdateTask(_ context.Context, id string, values store.Ta
 
 func (d *sourceTaskDAO) CreateTask(_ context.Context, id string, values store.TaskWrite) (model.Task, error) {
 	d.t.Helper()
-	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["paused"]) != "true" {
+	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["blocked"]) != "true" {
 		d.t.Fatalf("unexpected source creation: %#v", values)
 	}
 	d.writes = append(d.writes, values)
@@ -182,87 +194,37 @@ func (d *sourceTaskDAO) DeleteTask(_ context.Context, id string, removeDepends b
 	return *d.tombstone, nil
 }
 
-func (d *sourceTaskDAO) TaskHeader(_ context.Context, id string) (model.TaskHeader, error) {
-	d.t.Helper()
-	if id != sourceTaskID || d.stepAction == "" {
-		d.t.Fatal("unexpected Step parent read")
-	}
-	d.headerCalls++
-	if d.headerCalls > len(d.headers) {
-		d.t.Fatal("extra Step parent read")
-	}
-	return d.headers[d.headerCalls-1], nil
-}
-
-func (d *sourceTaskDAO) TaskSteps(_ context.Context, id string) ([]model.TaskStep, error) {
-	d.t.Helper()
-	if id != sourceTaskID || d.stepAction == "" || d.steps == nil {
-		d.t.Fatal("unexpected Step collection read")
-	}
-	result := make([]model.TaskStep, len(d.steps))
-	copy(result, d.steps)
-	return result, nil
-}
-
-func (d *sourceTaskDAO) InsertTaskStep(_ context.Context, id string, step model.TaskStep) error {
-	d.t.Helper()
-	if d.stepAction != "created" || id != sourceTaskID || step.ID != "87654321" {
-		d.t.Fatalf("unexpected Step insert: %s %#v", id, step)
-	}
-	*d.calls = append(*d.calls, "step")
-	d.stepWrites = append(d.stepWrites, step)
-	return nil
-}
-
-func (d *sourceTaskDAO) UpdateTaskStep(_ context.Context, id string, step model.TaskStep) error {
-	d.t.Helper()
-	if (d.stepAction != "updated" && d.stepAction != "status_changed") || id != sourceTaskID || step.ID != "abcdef01" {
-		d.t.Fatalf("unexpected Step update: %s %#v", id, step)
-	}
-	*d.calls = append(*d.calls, "step")
-	d.stepWrites = append(d.stepWrites, step)
-	return nil
-}
-
-func (d *sourceTaskDAO) MoveTaskStep(_ context.Context, id, stepID string, from, to int64) error {
-	d.t.Helper()
-	if d.stepAction != "moved" || id != sourceTaskID || stepID != "12345678" || from != 1 || to != 0 {
-		d.t.Fatalf("unexpected Step move: %s %s %d %d", id, stepID, from, to)
-	}
-	*d.calls = append(*d.calls, "step")
-	return nil
-}
-
-func (d *sourceTaskDAO) DeleteTaskStep(_ context.Context, id, stepID string, from, remaining int64) error {
-	d.t.Helper()
-	if d.stepAction != "deleted" || id != sourceTaskID || stepID != "abcdef01" || from != 0 || remaining != 1 {
-		d.t.Fatalf("unexpected Step deletion: %s %s %d %d", id, stepID, from, remaining)
-	}
-	*d.calls = append(*d.calls, "step")
-	return nil
-}
-
-func (d *sourceTaskDAO) TouchTask(_ context.Context, id string, observed time.Time) error {
-	d.t.Helper()
-	if d.stepAction == "" || id != sourceTaskID || !observed.Equal(d.clock) {
-		d.t.Fatal("unexpected Step revision update")
-	}
-	*d.calls = append(*d.calls, "touch")
-	return nil
-}
-
 type sourceWriteScope struct {
 	store.ProjectWriteScope
 	tasks    *sourceTaskDAO
 	projects sourceProjectDAO
 	sessions sourceSessionDAO
 	capture  store.WebhookCaptureDAO
+	bots     store.BotBarrierDAO
 }
 
 func (s sourceWriteScope) TaskDAO() store.TaskWriteDAO         { return s.tasks }
 func (s sourceWriteScope) ProjectDAO() store.ProjectWriteDAO   { return s.projects }
 func (s sourceWriteScope) SessionDAO() store.ProjectSessionDAO { return s.sessions }
 func (s sourceWriteScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
+func (s sourceWriteScope) BotBarrierDAO() store.BotBarrierDAO {
+	if s.bots == nil {
+		s.tasks.t.Fatal("unexpected Bot barrier")
+	}
+	return s.bots
+}
+func (s sourceWriteScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	if !s.tasks.allowClock {
+		s.tasks.t.Fatal("unexpected claim admission")
+	}
+	return sourceClaimAdmission{}
+}
+
+type sourceClaimAdmission struct{}
+
+func (sourceClaimAdmission) ClaimWorkerConfiguration(context.Context, string, string) (*model.WorkerDesiredConfiguration, error) {
+	return nil, nil
+}
 
 type sourceWriteStore struct {
 	t     *testing.T
@@ -271,10 +233,46 @@ type sourceWriteStore struct {
 	calls int
 }
 
-func (d *sourceWriteStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	d.t.Helper()
-	d.t.Error("source write unexpectedly entered a separate snapshot")
-	panic("unexpected source snapshot")
+func (d *sourceWriteStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if ctx.Value(sourceContextKey{}) != d.ctx.Value(sourceContextKey{}) || run == nil {
+		d.t.Fatal("lifecycle preflight lost context")
+	}
+	if ctx != d.ctx {
+		d.t.Fatal("lifecycle preflight changed caller context")
+	}
+	return run(sourceSnapshot{t: d.t})
+}
+
+type sourceSnapshot struct {
+	store.SnapshotScope
+	t *testing.T
+}
+
+func (s sourceSnapshot) ProjectDAO() store.ProjectReader { return sourceProjectReader{t: s.t} }
+func (s sourceSnapshot) TaskDAO() store.TaskReader       { return sourceTaskReader{t: s.t} }
+
+type sourceProjectReader struct {
+	store.ProjectReader
+	t *testing.T
+}
+
+func (d sourceProjectReader) ProjectAccess(_ context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+	if p.UserID != sourceUserID || project != sourceProjectID {
+		d.t.Fatal("preflight changed principal or project")
+	}
+	return model.ProjectAccess{ProjectID: project, UserID: p.UserID, Role: model.ProjectAdmin}, nil
+}
+
+type sourceTaskReader struct {
+	store.TaskReader
+	t *testing.T
+}
+
+func (d sourceTaskReader) TaskHeader(_ context.Context, project, id string) (model.TaskHeader, error) {
+	if project != sourceProjectID || id != sourceTaskID {
+		d.t.Fatal("preflight changed task")
+	}
+	return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
 }
 
 func (d *sourceWriteStore) WriteProject(ctx context.Context, project string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
@@ -343,10 +341,10 @@ func TestTaskStatusSourcesUseAuthoritativeRows(t *testing.T) {
 func TestTaskCreationCapturesCreatedPausedFactInSourceScope(t *testing.T) {
 	created := sourceTask(model.TaskProposed)
 	created.Version = 1
-	created.Properties = model.TaskProperties{"paused": []byte(`true`)}
+	created.Properties = model.TaskProperties{"blocked": []byte(`true`)}
 	db, record, ctx, calls := newSourceWrite(t, model.Task{}, created)
 	db.scope.tasks.create, db.scope.tasks.allowLookup = true, true
-	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"paused": []byte(`true`)}})
+	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"blocked": []byte(`true`)}})
 	if err != nil || len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"create", "capture"}) {
 		t.Fatalf("creation capture: %#v %v, %v", record.facts, err, *calls)
 	}
@@ -399,7 +397,7 @@ func TestTaskSourceRefusalsAndNoopsDoNotInvokeCapture(t *testing.T) {
 
 func sourceWorker(t *testing.T, state model.WorkerState, claimID, worktreeID string, phase model.WorkerPhase, claimedAt time.Time) model.TaskProperties {
 	t.Helper()
-	p, err := taskproperties.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: claimID, State: state, UserID: sourceUserID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: worktreeID, Phase: phase, ClaimedAt: claimedAt})
+	p, err := taskproperties.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: claimID, State: state, UserID: sourceUserID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: worktreeID, Phase: phase, ClaimedAt: claimedAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,28 +405,28 @@ func sourceWorker(t *testing.T, state model.WorkerState, claimID, worktreeID str
 }
 
 func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
-	for _, mode := range []string{"claim", "release", "resume", "withdraw", "phase", "complete", "wrong completion"} {
+	for _, mode := range []string{"claim", "reclaim", "release", "withdraw", "phase", "complete", "wrong completion"} {
 		t.Run(mode, func(t *testing.T) {
 			current := sourceTask(model.TaskInProgress)
 			current.AssignedTo, current.AllowAgents = sourcePointer(sourceUserID), true
 			current.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
 			updated := current
 			updated.Version, updated.UpdatedAt = 8, current.UpdatedAt.Add(time.Second)
-			descriptor := taskcore.WorkerDescriptor{ClaimID: sourceClaimID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "99999999-9999-4999-8999-999999999999"}
+			descriptor := taskcore.WorkerDescriptor{ClaimID: sourceClaimID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "99999999-9999-4999-8999-999999999999"}
 			switch mode {
 			case "claim":
 				current.Status, current.Properties = model.TaskTodo, model.TaskProperties{}
 				updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
-			case "release":
-				updated.Status = model.TaskTodo
-				updated.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
-			case "withdraw":
-				updated.Status, updated.AllowAgents, updated.Properties = model.TaskTodo, false, model.TaskProperties{}
-			case "resume":
+			case "reclaim":
 				current.Status = model.TaskTodo
-				current.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
+				current.Properties = model.TaskProperties{}
 				descriptor.ClaimID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 				updated.Properties = sourceWorker(t, model.WorkerActive, descriptor.ClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
+			case "release":
+				updated.Status = model.TaskTodo
+				updated.Properties = model.TaskProperties{}
+			case "withdraw":
+				updated.Status, updated.AllowAgents, updated.Properties = model.TaskTodo, false, model.TaskProperties{}
 			case "phase":
 				updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerExecuting, current.CreatedAt)
 			case "complete", "wrong completion":
@@ -436,16 +434,14 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 				updated.Properties = sourceWorker(t, model.WorkerCompleted, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
 			}
 			db, record, ctx, _ := newSourceWrite(t, current, updated)
-			db.scope.tasks.allowClock = mode == "claim" || mode == "resume"
+			db.scope.tasks.allowClock = mode == "claim" || mode == "reclaim"
 			s := NewTasks(db, record)
 			var err error
 			switch mode {
-			case "claim":
+			case "claim", "reclaim":
 				_, err = s.ClaimWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ClaimWorker{Version: 7, WorkerDescriptor: descriptor})
 			case "release":
 				_, err = s.ReleaseWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ReleaseWorker{Version: 7, ClaimID: sourceClaimID, StoppedConfirmed: true})
-			case "resume":
-				_, err = s.ResumeWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: 7, WorkerDescriptor: descriptor}, PreviousClaimID: sourceClaimID})
 			case "withdraw":
 				_, err = s.WithdrawWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.WithdrawWorker{Version: 7, ClaimID: sourceClaimID})
 			case "phase":
@@ -519,132 +515,33 @@ func TestTaskDeletionCapturesAuthoritativeTombstone(t *testing.T) {
 
 func sourcePointer[T any](v T) *T { return &v }
 
-func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
-	for _, mode := range []string{"created", "updated", "in_progress", "done", "skipped", "todo", "moved", "deleted", "same title", "same status", "same position", "duplicate", "missing"} {
-		t.Run(mode, func(t *testing.T) {
-			current := sourceTask(model.TaskTodo)
-			db, record, ctx, calls := newSourceWrite(t, current, model.Task{})
-			dao := db.scope.tasks
-			dao.allowClock = true
-			dao.headers = []model.TaskHeader{{ProjectID: sourceProjectID, ID: sourceTaskID, Version: 7}, {ProjectID: sourceProjectID, ID: sourceTaskID, Version: 8}}
-			dao.steps = []model.TaskStep{{ID: "abcdef01", Position: 0, Title: "First", Status: model.TaskStepTodo, CreatedAt: current.CreatedAt, UpdatedAt: current.UpdatedAt}, {ID: "12345678", Position: 1, Title: "Second", Status: model.TaskStepTodo, CreatedAt: current.CreatedAt, UpdatedAt: current.UpdatedAt}}
-			dao.stepAction = mode
-			s := NewTaskSteps(db, record)
-			var result StepsWriteResult
-			var err error
-			wantAction, wantStep := mode, "abcdef01"
-			switch mode {
-			case "created", "duplicate":
-				id := "87654321"
-				if mode == "duplicate" {
-					id = "abcdef01"
-				}
-				result, err = s.Add(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, AddTaskStep{Version: 7, ID: id, Title: "Added"})
-				wantStep = id
-			case "updated", "same title":
-				title := "Changed"
-				if mode == "same title" {
-					title = "First"
-				}
-				result, err = s.Update(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, "abcdef01", UpdateTaskStep{Version: 7, Title: &title})
-			case "moved", "same position":
-				position := "first"
-				id := "12345678"
-				if mode == "same position" {
-					id = "abcdef01"
-				}
-				result, err = s.Move(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, id, MoveTaskStep{Version: 7, Position: &position})
-				wantStep = id
-			case "deleted", "missing":
-				id := "abcdef01"
-				if mode == "missing" {
-					id = "ffffffff"
-				}
-				result, err = s.Delete(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, id, DeleteTaskStep{Version: 7})
-			default:
-				status := model.TaskStepStatus(mode)
-				if mode == "same status" {
-					status = model.TaskStepTodo
-				} else {
-					dao.steps[0].Status = model.TaskStepSkipped
-					if status == model.TaskStepSkipped {
-						dao.steps[0].Status = model.TaskStepDone
-					}
-				}
-				dao.stepAction, wantAction = "status_changed", "status_changed"
-				result, err = s.SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, "abcdef01", SetTaskStepStatus{Version: 7, Status: status})
-			}
-			if mode == "duplicate" || mode == "missing" {
-				want := "not_found"
-				if mode == "duplicate" {
-					want = "step_id_conflict"
-				}
-				var fault *model.Fault
-				if !errors.As(err, &fault) || fault.Code != want || len(record.calls) != 0 || len(*calls) != 0 {
-					t.Fatalf("refused Step source captured or wrote: %#v %v", record.facts, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if mode == "same title" || mode == "same status" || mode == "same position" {
-				if result.Changed || result.Resource.Version != 7 || len(record.calls) != 0 || len(*calls) != 0 || dao.headerCalls != 1 || dao.clockCalls != 0 {
-					t.Fatalf("no-op Step source captured: %#v %v", record.facts, *calls)
-				}
-				return
-			}
-			if len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"step", "touch", "capture"}) || dao.headerCalls != 2 || dao.clockCalls != 1 {
-				t.Fatalf("Step source calls: %#v %v", record.facts, *calls)
-			}
-			f := record.facts[0]
-			if f.Type != protocol.StepUpdated || f.Action != wantAction || f.StepID != wantStep || f.TaskVersion != 8 || f.ProjectID != sourceProjectID || f.TaskID != sourceTaskID || !f.OccurredAt.Equal(dao.clock) {
-				t.Fatalf("Step source fact: %#v", f)
-			}
-			if mode == "moved" && (f.FromPosition == nil || *f.FromPosition != 1 || f.ToPosition == nil || *f.ToPosition != 0) {
-				t.Fatalf("Step move source positions: %#v", f)
-			}
-			if mode == "updated" && !reflect.DeepEqual(f.ChangedFields, []string{"title"}) {
-				t.Fatalf("Step update source fields: %#v", f)
-			}
-			if mode == "created" && (len(dao.stepWrites) != 1 || dao.stepWrites[0].Title != "Added") {
-				t.Fatalf("Step creation write: %#v", dao.stepWrites)
-			}
-			if mode == "updated" && (len(dao.stepWrites) != 1 || dao.stepWrites[0].Title != "Changed") {
-				t.Fatalf("Step update write: %#v", dao.stepWrites)
-			}
-			if wantAction == "status_changed" && (f.PreviousStatus != string(dao.steps[0].Status) || f.Status != mode) {
-				t.Fatalf("Step status source: %#v", f)
-			}
-			if wantAction == "status_changed" && (len(dao.stepWrites) != 1 || string(dao.stepWrites[0].Status) != mode) {
-				t.Fatalf("Step status write: %#v", dao.stepWrites)
-			}
-		})
+func TestSourceCaptureFailurePropagatesFromTaskWrites(t *testing.T) {
+	current := sourceTask(model.TaskTodo)
+	updated := current
+	updated.Status, updated.Version, updated.UpdatedAt = model.TaskInProgress, 8, current.UpdatedAt.Add(time.Second)
+	db, record, ctx, _ := newSourceWrite(t, current, updated)
+	cause := errors.New("capture refused prepared responsibility")
+	record.cause = cause
+	_, err := NewTasks(db, record).SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.SetTaskStatus{Version: 7, Status: model.TaskInProgress})
+	if !errors.Is(err, cause) || len(record.facts) != 1 {
+		t.Fatalf("source capture failure lost: %#v %v", record.facts, err)
 	}
 }
 
-func TestSourceCaptureFailurePropagatesFromTaskAndStepWrites(t *testing.T) {
-	for _, mode := range []string{"task", "step"} {
-		t.Run(mode, func(t *testing.T) {
-			current := sourceTask(model.TaskTodo)
-			updated := current
-			updated.Status, updated.Version, updated.UpdatedAt = model.TaskInProgress, 8, current.UpdatedAt.Add(time.Second)
-			db, record, ctx, _ := newSourceWrite(t, current, updated)
-			cause := errors.New("capture refused prepared responsibility")
-			record.cause = cause
-			var err error
-			if mode == "task" {
-				_, err = NewTasks(db, record).SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.SetTaskStatus{Version: 7, Status: model.TaskInProgress})
-			} else {
-				db.scope.tasks.allowClock = true
-				db.scope.tasks.stepAction = "created"
-				db.scope.tasks.headers = []model.TaskHeader{{ProjectID: sourceProjectID, ID: sourceTaskID, Version: 7}, {ProjectID: sourceProjectID, ID: sourceTaskID, Version: 8}}
-				db.scope.tasks.steps = []model.TaskStep{}
-				_, err = NewTaskSteps(db, record).Add(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, AddTaskStep{Version: 7, ID: "87654321", Title: "Source"})
-			}
-			if !errors.Is(err, cause) || len(record.facts) != 1 {
-				t.Fatalf("source capture failure lost: %#v %v", record.facts, err)
-			}
-		})
-	}
+func (sourceClaimAdmission) CheckWorkerExecution(context.Context, string, string) error { return nil }
+
+func (m sourceClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	return nil, m.CheckWorkerExecution(ctx, user, worker)
+}
+
+func (d *sourceTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *sourceTaskDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *sourceTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

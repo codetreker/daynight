@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -53,6 +54,29 @@ func authLookupError(err error) error {
 	return err
 }
 
+// browserReturnPath resolves URL dot segments before decoding escaped slashes.
+func browserReturnPath(escaped string) string {
+	segments := []string{}
+	escaped = strings.TrimPrefix(escaped, "/")
+	for _, segment := range strings.Split(escaped, "/") {
+		switch strings.ToLower(segment) {
+		case ".", "%2e":
+		case "..", ".%2e", "%2e.", "%2e%2e":
+			if len(segments) > 0 {
+				segments = segments[:len(segments)-1]
+			}
+		default:
+			segments = append(segments, segment)
+		}
+	}
+	return "/" + strings.Join(segments, "/")
+}
+
+func isLoginCompletionPath(value string) bool {
+	target := path.Clean(value)
+	return target == "/auth/complete" || strings.HasPrefix(target, "/auth/complete/")
+}
+
 func (s *Identity) validReturnPath(value string) bool {
 	if !utf8.ValidString(value) || strings.ContainsAny(value, "\\\r\n\x00") {
 		return false
@@ -67,6 +91,35 @@ func (s *Identity) validReturnPath(value string) bool {
 	}
 	callback, err := url.Parse(s.callbackURL)
 	if err != nil {
+		return false
+	}
+	// The original HTTP redirect cleans the raw target relative to the callback
+	// directory before a browser resolves escaped dot segments. Check that final
+	// path too, so no alias can navigate back into the completion page.
+	redirect := value
+	if !strings.HasPrefix(redirect, "/") {
+		dir, _ := path.Split(callback.EscapedPath())
+		redirect = dir + redirect
+	}
+	redirectPath, query, hasQuery := strings.Cut(redirect, "?")
+	trailing := strings.HasSuffix(redirectPath, "/")
+	redirectPath = path.Clean(redirectPath)
+	if trailing && !strings.HasSuffix(redirectPath, "/") {
+		redirectPath += "/"
+	}
+	if hasQuery {
+		redirectPath += "?" + query
+	}
+	redirectURL, err := url.Parse(redirectPath)
+	if err != nil {
+		return false
+	}
+	browserPath, err := url.PathUnescape(browserReturnPath(redirectURL.EscapedPath()))
+	if err != nil {
+		return false
+	}
+	browserDecoded, err := url.PathUnescape(browserPath)
+	if err != nil || isLoginCompletionPath(u.Path) || isLoginCompletionPath(decoded) || isLoginCompletionPath(browserPath) || isLoginCompletionPath(browserDecoded) {
 		return false
 	}
 	target := path.Clean(decoded)
@@ -158,6 +211,9 @@ func (s *Identity) NewSession(now time.Time) (model.Session, string) {
 	return model.Session{ID: uuid.NewString(), TokenHash: secret.Hash(value), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}, value
 }
 func (s *Identity) CreateSession(ctx context.Context, dao store.IdentityDAO, session model.Session) error {
+	if err := validateSessionProjection(session); err != nil {
+		return err
+	}
 	return dao.InsertSession(ctx, session)
 }
 func ValidateCredential(kind model.CredentialKind, value string) error {
@@ -207,13 +263,19 @@ func ValidateCreatePAT(p model.Principal, input CreatePAT, now time.Time) (*time
 	return validatedTokenExpiry(input.ExpiresAt, now.Truncate(time.Microsecond))
 }
 func (s *Identity) CreatePAT(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, now time.Time) (MintedPAT, error) {
+	return s.createPAT(ctx, dao, p, input, nil, now)
+}
+func (s *Identity) createPAT(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, description *string, now time.Time) (MintedPAT, error) {
+	return s.createPATWithPolicy(ctx, dao, p, input, description, nil, now)
+}
+func (s *Identity) createPATWithPolicy(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, description *string, policy *scopepolicy.Policy, now time.Time) (MintedPAT, error) {
 	now = now.Truncate(time.Microsecond)
 	expiry, err := ValidateCreatePAT(p, input, now)
 	if err != nil {
 		return MintedPAT{}, err
 	}
 	result := MintedPAT{Secret: secret.Random("dnpat_")}
-	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry}
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry, Description: description, ScopePolicy: policy}
 	if err = s.StorePAT(ctx, dao, p, result.Credential); err != nil {
 		return MintedPAT{}, err
 	}

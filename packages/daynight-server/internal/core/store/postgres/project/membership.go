@@ -68,8 +68,8 @@ func (tx *creator) CreationTeamMember(ctx context.Context, teamID string) (bool,
 	return err == nil, pg.AuthQueryError("read creation Team membership", err)
 }
 
-func (tx *creator) InsertProject(ctx context.Context, id, name, repoURL, teamID string) (model.Project, model.ProjectAccess, error) {
-	if _, err := tx.tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL); err != nil {
+func (tx *creator) InsertProject(ctx context.Context, id, name, repoURL, identity, teamID string) (model.Project, model.ProjectAccess, error) {
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url,repository_identity) VALUES ($1,$2,$3,$4)`, id, name, repoURL, identity); err != nil {
 		return model.Project{}, model.ProjectAccess{}, pg.QueryError("insert project", err)
 	}
 	if _, err := tx.tx.Exec(ctx, `INSERT INTO project_ownership (project_id,team_id) VALUES ($1,$2)`, id, teamID); err != nil {
@@ -86,45 +86,65 @@ func (tx *creator) InsertProject(ctx context.Context, id, name, repoURL, teamID 
 	return project, access, err
 }
 
-func (s *reader) ProjectParticipants(ctx context.Context, projectID string) ([]model.ProjectParticipant, error) {
-	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,tm.role,t.id::text,t.name,t.personal_user_id::text,
-        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+pg.ProjectAccessRelation+`) a
+const participantProjection = `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,tm.role,t.id::text,t.name,t.personal_user_id::text,
+        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (` + pg.ProjectAccessRelation + `) a
         JOIN project_ownership o ON o.project_id=a.project_id
         JOIN teams t ON t.id=o.team_id
         LEFT JOIN team_members tm ON tm.team_id=o.team_id AND tm.user_id=a.user_id
         LEFT JOIN project_grants g ON g.project_id=a.project_id AND g.user_id=a.user_id
-        LEFT JOIN users u ON u.id=a.user_id
-        WHERE a.project_id=$1 ORDER BY a.joined_at,a.user_id`, projectID)
+        LEFT JOIN users u ON u.id=a.user_id`
+
+func scanParticipant(row pgx.Row) (model.ProjectParticipant, error) {
+	var participant model.ProjectParticipant
+	var profileID *string
+	var grant pg.NullableProjectGrant
+	var teamRole *model.ProjectRole
+	var team model.TeamRef
+	var personalUserID *string
+	destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole, &teamRole, &team.ID, &team.Name, &personalUserID}
+	if err := row.Scan(append(destinations, grant.Destinations()...)...); err != nil {
+		return model.ProjectParticipant{}, err
+	}
+	if profileID == nil || *profileID != participant.UserID {
+		return model.ProjectParticipant{}, fmt.Errorf("project participant profile is missing or inconsistent")
+	}
+	participant.DirectGrant = grant.Value()
+	if teamRole != nil {
+		team.Kind = "ordinary"
+		if personalUserID != nil {
+			team.Kind = "personal"
+		}
+		participant.InheritedFrom = &model.ProjectInheritance{Team: team, Role: *teamRole}
+	}
+	return participant, nil
+}
+
+func (s *reader) ProjectParticipants(ctx context.Context, projectID string) ([]model.ProjectParticipant, error) {
+	rows, err := s.tx.Query(ctx, participantProjection+` WHERE a.project_id=$1 ORDER BY a.joined_at,a.user_id`, projectID)
 	if err != nil {
 		return nil, pg.QueryError("list project participants", err)
 	}
 	defer rows.Close()
 	participants := []model.ProjectParticipant{}
 	for rows.Next() {
-		var participant model.ProjectParticipant
-		var profileID *string
-		var grant pg.NullableProjectGrant
-		var teamRole *model.ProjectRole
-		var team model.TeamRef
-		var personalUserID *string
-		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole, &teamRole, &team.ID, &team.Name, &personalUserID}
-		if err := rows.Scan(append(destinations, grant.Destinations()...)...); err != nil {
+		participant, err := scanParticipant(rows)
+		if err != nil {
 			return nil, pg.QueryError("list project participants", err)
-		}
-		if profileID == nil || *profileID != participant.UserID {
-			return nil, pg.QueryError("list project participants", fmt.Errorf("project participant profile is missing or inconsistent"))
-		}
-		participant.DirectGrant = grant.Value()
-		if teamRole != nil {
-			team.Kind = "ordinary"
-			if personalUserID != nil {
-				team.Kind = "personal"
-			}
-			participant.InheritedFrom = &model.ProjectInheritance{Team: team, Role: *teamRole}
 		}
 		participants = append(participants, participant)
 	}
 	return participants, pg.AuthQueryError("list project participants", rows.Err())
+}
+
+func (tx *writer) Participant(ctx context.Context, userID string) (model.ProjectParticipant, error) {
+	participant, err := scanParticipant(tx.tx.QueryRow(ctx, participantProjection+` WHERE a.project_id=$1 AND a.user_id=$2`, tx.projectID, userID))
+	return participant, pg.AuthQueryError("read project participant", err)
+}
+
+func (tx *writer) LockUser(ctx context.Context, userID string) error {
+	var id string
+	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, userID).Scan(&id)
+	return pg.AuthQueryError("lock target user", err)
 }
 
 func (tx *writer) SetMemberRole(ctx context.Context, userID string, role model.ProjectRole) (model.ProjectMember, error) {

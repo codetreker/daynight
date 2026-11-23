@@ -21,6 +21,7 @@ func authorizationFailureRecord(now time.Time) store.OAuthAuthorization {
 }
 
 func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	t.Run("constraint failure rolls back insertion", func(t *testing.T) {
@@ -100,7 +101,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 			defer cancel()
 			mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issue.AccessID, issue.AccessExpiresAt)
 			_, err := db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
-				_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, time.Now())
+				_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, time.Now())
 				return err
 			})
 			if err != nil {
@@ -111,7 +112,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 				t.Fatal(err)
 			}
 			defer holder.Rollback(context.Background())
-			id, table, prefix := taskID, "tasks", "SELECT id::text FROM tasks WHERE project_id="
+			id, table, prefix := taskID, "tasks", "SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks WHERE project_id="
 			if target == "bot" {
 				id, table, prefix = bot.ID, "bots", "SELECT id::text FROM bots WHERE id="
 			}
@@ -183,6 +184,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 }
 
 func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -229,7 +231,7 @@ func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
 	}
 	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 		dao := scope.CredentialFamilyDAO()
-		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), issue.Grant.Resource, issue.Grant.Scope, now); err != nil {
+		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now); err != nil {
 			t.Fatal(err)
 		}
 		changed, err := dao.RevokeFamily(ctx, issue.Grant.ID, now)
@@ -240,7 +242,7 @@ func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
 		if err != nil || changed {
 			t.Fatalf("repeat revoke: %v %v", changed, err)
 		}
-		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), issue.Grant.Resource, issue.Grant.Scope, now); !errors.Is(err, model.ErrNotFound) {
+		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("revoked admitted: %v", err)
 		}
 		active, err := dao.ActiveClientReferences(ctx, "client", now)
@@ -263,6 +265,7 @@ func lifecycleIssue(t *testing.T, db *Store, user string, now time.Time) (store.
 func addLifecycleUser(t *testing.T, db *Store) string { return testutil.AddOAuthUser(t, db.Pool) }
 
 func TestGrantLifecycleAdmissionDoesNotExhaustPool(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

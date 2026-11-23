@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openWorkerStore, type WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ClaimIdentity, WorkerProject } from "../../../src/commands/worker/types.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 
 const stores = new Set<WorkerStore>();
 const connections = new Set<Database.Database>();
@@ -22,7 +23,7 @@ const identityFixture = () => {
 };
 const fixture = () => {
   const { directory, project } = identityFixture(), database = memory(), store = open(database);
-  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex" }); };
+  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }); };
   return { directory, database, store, project, register };
 };
 
@@ -57,7 +58,7 @@ describe("minimal worker SQLite schema", () => {
 describe("worker project mappings", () => {
   it("requires an actual project mapping before materializing its claim", () => {
     const { store, register, project } = fixture();
-    expect(() => store.registerPending({ ...claim, agent: "codex" })).toThrow("project repository binding");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" })).toThrow("project repository binding");
     register();
     expect(store.getProject(claim)).toEqual(project);
     expect(store.listProjects()).toEqual([project]);
@@ -105,18 +106,18 @@ describe("worker claim and native session index", () => {
 
   it("materializes a pending claim without a session and preserves repeated registration", () => {
     const { store, register } = fixture();
-    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "herdr" as const, sessionId: null });
+    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "web" as const, sessionId: null });
     store.activateTask(claim);
     store.setSessionId(claim, uuid(8));
-    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
-    expect(() => store.registerPending({ ...claim, agent: "copilot" })).toThrow("different agent");
+    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" as const, sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "web" as const, sessionId: uuid(8) });
+    expect(() => store.registerPending({ ...claim, agent: "copilot", agentControlMode: "web" })).toThrow("different agent");
   });
 
   it("isolates active slots by project and task", () => {
     const { store, project, register } = fixture();
     register();
-    const anotherTask = { ...claim, taskId: uuid(10), agent: "codex" as const };
-    const anotherProject = { ...claim, projectId: uuid(11), agent: "copilot" as const };
+    const anotherTask = { ...claim, taskId: uuid(10), agent: "codex" as const, agentControlMode: "web" as const };
+    const anotherProject = { ...claim, projectId: uuid(11), agent: "copilot" as const, agentControlMode: "web" as const };
     store.registerProject({ ...project, projectId: anotherProject.projectId });
     store.registerPending(anotherTask);
     store.registerPending(anotherProject);
@@ -129,7 +130,7 @@ describe("worker claim and native session index", () => {
     register();
     expect(store.completeTask(claim).status).toBe("done");
     expect(store.completeTask(claim).status).toBe("done");
-    expect(store.registerPending({ ...claim, agent: "codex" }).status).toBe("done");
+    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }).status).toBe("done");
     expect(() => store.activateTask(claim)).toThrow("already done");
     expect(() => store.setSessionId(claim, uuid(8))).toThrow("already done");
     expect(store.listUnfinishedTasks()).toEqual([]);
@@ -144,8 +145,8 @@ describe("worker claim and native session index", () => {
     expect(() => store.setSessionId(claim, uuid(8))).toThrow("not registered");
     register();
     expect(() => store.getTask({ ...claim, taskId: "bad" })).toThrow("UUID");
-    expect(() => store.registerPending({ ...claim, claimId: "bad", agent: "codex" })).toThrow("UUID");
-    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: "bad" })).toThrow("UUID");
+    expect(() => store.registerPending({ ...claim, claimId: "bad", agent: "codex", agentControlMode: "web" })).toThrow("UUID");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" as const, sessionId: "bad" })).toThrow("UUID");
   });
 });
 
@@ -166,6 +167,23 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
+});
+
+it("upgrades version 15 without inventing claim reservations or changing frozen recipes", () => {
+  const db = memory(), steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+  for (const step of steps.filter(step => step.version <= 15)) db.exec(step.sql);
+  db.pragma("user_version = 15");
+  const { project } = identityFixture(), tools = recordedHerdrTools();
+  const configuration = JSON.stringify({ agent: "codex", model: "original", args: ["--original"], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation });
+  db.prepare("INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)").run(project);
+  db.prepare("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode) VALUES (@projectId, @taskId, @claimId, 'active', 'codex', NULL, 'herdr')").run(claim);
+  db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claim, configuration });
+  const upgraded = open(db);
+  expect(upgraded.listClaimToolReservations()).toEqual([]);
+  expect(upgraded.getTask(claim)).toBeNull();
+  expect(upgraded.getNativeConfiguration(claim)).toBeNull();
+  expect(db.prepare("SELECT configuration FROM claim_native_configurations").get()).toEqual({ configuration });
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 
@@ -196,6 +214,7 @@ describe("worker cleanup schedules", () => {
     const f = fixture(); f.register(); f.store.completeTask(claim);
     f.store.saveCleanupSchedule(owner, schedule);
     expect(() => f.store.registerProject({ ...f.project, localPath: path.join(f.directory, "replacement") })).toThrow("cleanup");
+    expect(() => f.store.registerProject({ ...f.project, localPath: path.join(f.directory, "replacement") }, [])).toThrow("cleanup");
     f.store.deleteCleanupSchedule(owner);
     expect(f.store.registerProject({ ...f.project, localPath: path.join(f.directory, "replacement") }).localPath).toContain("replacement");
   });
@@ -218,8 +237,9 @@ describe("worker cleanup schedules", () => {
     db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
     db.prepare("INSERT INTO cleanup_schedules VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)").run(owner.projectId, owner.taskId, owner.claimId, owner.worktreeId, schedule.deadline, schedule.failures, schedule.nextAttemptAt, schedule.stage, schedule.lastError);
     const recovered = open(db);
-    expect(recovered.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule });
-    expect(recovered.getTask(claim)).toMatchObject({ status: "active", sessionId: uuid(75) });
+    expect(recovered.getCleanupSchedule(owner)).toBeNull();
+    expect(recovered.getTask(claim)).toBeNull();
+    expect(db.prepare("SELECT worktree_id FROM cleanup_schedules").get()).toEqual({ worktree_id: owner.worktreeId });
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("submitted");
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("notified");
     expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
@@ -233,9 +253,67 @@ describe("worker cleanup schedules", () => {
     db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
     const recovered = open(db);
     expect(recovered.getProject(claim)).toEqual(f.project);
-    expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });
+    expect(recovered.getTask(claim)).toBeNull();
     expect(recovered.listCleanupSchedules()).toEqual([]);
-    recovered.saveCleanupSchedule(owner, schedule);
+    expect(() => recovered.saveCleanupSchedule(owner, schedule)).toThrow("Web execution");
+    expect(db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "active" });
     expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   });
+});
+
+describe("Web-only worker responsibility", () => {
+  it("leaves historical Herdr task and cleanup records untouched and excludes them from project rebinding", () => {
+    const { database, store, project, directory } = fixture();
+    store.registerProject(project);
+    const owner = { ...claim, worktreeId: uuid(70) };
+    const state = { deadline: 100, failures: 1, nextAttemptAt: 200, stage: "observation", lastError: "retained" };
+    database.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', NULL, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId);
+    database.prepare("INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(owner.projectId, owner.taskId, owner.claimId, owner.worktreeId, state.deadline, state.failures, state.nextAttemptAt, state.stage, state.lastError);
+    const originalTask = database.prepare("SELECT * FROM tasks").get();
+    const originalSchedule = database.prepare("SELECT * FROM cleanup_schedules").get();
+    expect(store.getTask(claim)).toBeNull();
+    expect(store.listTasks()).toEqual([]);
+    expect(store.listUnfinishedTasks()).toEqual([]);
+    expect(store.getCleanupSchedule(owner)).toBeNull();
+    expect(store.listCleanupSchedules()).toEqual([]);
+    store.deleteCleanupSchedule(owner);
+    expect(() => store.saveCleanupSchedule(owner, state)).toThrow("Web execution");
+    expect(store.registerProject({ ...project, localPath: path.join(directory, "replacement") }).localPath).toContain("replacement");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" })).toThrow("UNIQUE constraint failed");
+    expect(database.prepare("SELECT * FROM tasks").get()).toEqual(originalTask);
+    expect(database.prepare("SELECT * FROM cleanup_schedules").get()).toEqual(originalSchedule);
+  });
+
+  it("requires explicit Web mode on new claims and preserves active identity conflicts", () => {
+    const { database, store, project } = fixture();
+    store.registerProject(project);
+    expect(() => store.registerPending({ ...claim, agent: "codex" })).toThrow("explicit Web");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" })).toThrow("explicit Web");
+    database.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', NULL, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId);
+    const successor = { ...claim, claimId: uuid(99) };
+    store.registerPending({ ...successor, agent: "codex", agentControlMode: "web" });
+    expect(() => store.activateTask(successor)).toThrow("UNIQUE constraint failed");
+    expect(store.getTask(successor)?.status).toBe("pending");
+    expect(database.prepare("SELECT status FROM tasks WHERE claim_id = ?").get(claim.claimId)).toEqual({ status: "active" });
+  });
+});
+
+it("uses a matching Web journal owner to preserve cleanup without a task index", () => {
+  const { database, store, project } = fixture();
+  store.registerProject(project);
+  const owner = { ...claim, worktreeId: uuid(70) };
+  const schedule = { deadline: 100, failures: 1, nextAttemptAt: 200, stage: "observation", lastError: "retained" };
+  database.prepare("INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(owner.projectId, owner.taskId, owner.claimId, owner.worktreeId, schedule.deadline, schedule.failures, schedule.nextAttemptAt, schedule.stage, schedule.lastError);
+  expect(store.getCleanupSchedule(owner)).toBeNull();
+  expect(store.listCleanupSchedules()).toEqual([]);
+  expect(store.getCleanupSchedule(owner, owner)).toEqual({ ...owner, ...schedule });
+  expect(() => store.getCleanupSchedule(owner, { ...owner, worktreeId: uuid(71) })).toThrow("different worktree");
+  expect(() => store.saveCleanupSchedule(owner, schedule, { ...owner, claimId: uuid(72) })).toThrow("another cleanup claim");
+  expect(() => store.deleteCleanupSchedule(owner, { ...owner, worktreeId: uuid(71) })).toThrow("different worktree");
+  expect(store.saveCleanupSchedule(owner, { ...schedule, failures: 2 }, owner).failures).toBe(2);
+  store.deleteCleanupSchedule(owner, owner);
+  expect(database.prepare("SELECT count(*) AS count FROM cleanup_schedules").get()).toEqual({ count: 0 });
+  expect(store.listTasks()).toEqual([]);
 });

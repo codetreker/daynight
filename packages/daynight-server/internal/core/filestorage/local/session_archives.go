@@ -21,11 +21,87 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 		return fmt.Errorf("%w: %w", filestorage.ErrInvalidAddress, err)
 	}
 	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
-	return s.deleteNamespace(ctx, components)
+	rootLock, err := s.root.Open(".")
+	if err != nil {
+		return err
+	}
+	if err = lockArchiveDirectory(rootLock); err != nil {
+		return errors.Join(err, rootLock.Close())
+	}
+	defer func() { result = errors.Join(result, unlockArchiveDirectory(rootLock), rootLock.Close()) }()
+	return s.deleteNamespaceLocked(ctx, components, true)
+}
+
+// Whole resource cleanup shares the staging namespace lock. Holding the root
+// lock when the archive Session is absent prevents a concurrent initializer
+// from creating that namespace until cleanup finishes.
+func (s *Storage) withArchiveSessionProtection(ctx context.Context, namespace sessionarchive.Namespace, action func() error) (result error) {
+	if err := namespace.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", filestorage.ErrInvalidAddress, err)
+	}
+	if err := filestorage.GateError(ctx); err != nil {
+		return err
+	}
+	rootLock, err := s.root.Open(".")
+	if err != nil {
+		return err
+	}
+	if err = lockArchiveDirectory(rootLock); err != nil {
+		return errors.Join(err, rootLock.Close())
+	}
+	defer func() { result = errors.Join(result, unlockArchiveDirectory(rootLock), rootLock.Close()) }()
+	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
+	parent := s.root
+	var roots []*os.Root
+	defer func() {
+		for i := len(roots) - 1; i >= 0; i-- {
+			result = errors.Join(result, roots[i].Close())
+		}
+	}()
+	var info fs.FileInfo
+	var sessionParent *os.Root
+	for _, component := range components {
+		if err = filestorage.GateError(ctx); err != nil {
+			return err
+		}
+		dir, found, e := openArchiveDirectory(parent, component)
+		if errors.Is(e, fs.ErrNotExist) {
+			return action()
+		}
+		if e != nil {
+			return e
+		}
+		sessionParent, info = parent, found
+		roots = append(roots, dir)
+		parent = dir
+	}
+	fd, err := parent.Open(".")
+	if err != nil {
+		return err
+	}
+	if err = lockArchiveDirectory(fd); err != nil {
+		return errors.Join(err, fd.Close())
+	}
+	defer func() { result = errors.Join(result, unlockArchiveDirectory(fd), fd.Close()) }()
+	current, err := sessionParent.Lstat(components[len(components)-1])
+	if err == nil && !os.SameFile(info, current) {
+		err = filestorage.ErrPathConflict
+	}
+	if err != nil {
+		return err
+	}
+	if err = filestorage.GateError(ctx); err != nil {
+		return err
+	}
+	return action()
 }
 
 func (s *Storage) deleteNamespace(ctx context.Context, components []string) (result error) {
-	if err := ctx.Err(); err != nil {
+	return s.deleteNamespaceLocked(ctx, components, false)
+}
+
+func (s *Storage) deleteNamespaceLocked(ctx context.Context, components []string, archive bool) (result error) {
+	if err := filestorage.GateError(ctx); err != nil {
 		return err
 	}
 	s.namespace.Lock()
@@ -38,12 +114,15 @@ func (s *Storage) deleteNamespace(ctx context.Context, components []string) (res
 		}
 	}()
 	for i, component := range components {
+		if err := filestorage.GateError(ctx); err != nil {
+			return err
+		}
 		if err := s.checkSpelling(strings.Join(components[:i+1], "/")); err != nil {
 			return err
 		}
 		directory, info, err := openArchiveDirectory(directories[i], component)
 		if errors.Is(err, fs.ErrNotExist) {
-			return s.syncArchiveDirectory(directories[i])
+			return errors.Join(s.syncArchiveDirectory(directories[i]), filestorage.GateError(ctx))
 		}
 		if err != nil {
 			return err
@@ -52,6 +131,16 @@ func (s *Storage) deleteNamespace(ctx context.Context, components []string) (res
 		sessionInfo = info
 	}
 	last := len(directories) - 1
+	if archive {
+		fd, err := directories[last].Open(".")
+		if err != nil {
+			return err
+		}
+		if err = lockArchiveDirectory(fd); err != nil {
+			return errors.Join(err, fd.Close())
+		}
+		defer func() { result = errors.Join(result, unlockArchiveDirectory(fd), fd.Close()) }()
+	}
 	if err := removeArchiveContents(ctx, directories[last]); err != nil {
 		return err
 	}
@@ -59,7 +148,7 @@ func (s *Storage) deleteNamespace(ctx context.Context, components []string) (res
 		return err
 	}
 	// A retry repeats this barrier even after the Session directory disappeared.
-	return s.syncArchiveDirectory(directories[last-1])
+	return errors.Join(s.syncArchiveDirectory(directories[last-1]), filestorage.GateError(ctx))
 }
 
 func openArchiveDirectory(parent *os.Root, name string) (*os.Root, fs.FileInfo, error) {
@@ -91,7 +180,7 @@ func removeArchiveContents(ctx context.Context, directory *os.Root) (result erro
 	}
 	defer func() { result = errors.Join(result, file.Close()) }()
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := filestorage.GateError(ctx); err != nil {
 			return err
 		}
 		entries, err := file.ReadDir(128)
@@ -133,7 +222,7 @@ func removeArchiveChild(ctx context.Context, directory *os.Root, name string) er
 }
 
 func removeArchiveEntry(ctx context.Context, directory *os.Root, name string, expected fs.FileInfo) error {
-	if err := ctx.Err(); err != nil {
+	if err := filestorage.GateError(ctx); err != nil {
 		return err
 	}
 	current, err := directory.Lstat(name)
@@ -145,6 +234,9 @@ func removeArchiveEntry(ctx context.Context, directory *os.Root, name string, ex
 	}
 	if !os.SameFile(expected, current) {
 		return fmt.Errorf("%w: %s changed before removal", filestorage.ErrPathConflict, name)
+	}
+	if err := verifyMutation(ctx); err != nil {
+		return err
 	}
 	return directory.Remove(name)
 }

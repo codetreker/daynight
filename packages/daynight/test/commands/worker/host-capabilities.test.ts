@@ -5,15 +5,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
-import { HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
-import type { HerdrCommand, HerdrCommandResult } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../../../src/commands/worker/owned-command.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 
 let root: string;
 beforeEach(async () => { const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(scratch, { recursive: true }); root = await mkdtemp(path.join(scratch, "host-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
-const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "herdr", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
-const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
+const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "web", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
+const output = async (command: OwnedCommand): Promise<OwnedCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
   ? command.file === "codex" ? "codex-cli 0.1.0" : command.file === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
   : command.file === "codex" ? "Usage: codex app-server --stdio" : command.file === "claude" ? "--input-format --output-format --permission-prompt-tool --include-partial-messages" : "--headless --no-auto-update" });
 const collect = async (overrides: Partial<Parameters<typeof createAssistantHostCollector>[0]> = {}) => {
@@ -24,7 +24,7 @@ const collect = async (overrides: Partial<Parameters<typeof createAssistantHostC
 
 describe("assistant host observations", () => {
   it("probes the bundled Copilot version without forwarding to an automatic update", async () => {
-    const commands: HerdrCommand[] = [];
+    const commands: OwnedCommand[] = [];
     const { assistantHost } = await collect({ runCommand: async command => {
       commands.push(command);
       return output(command);
@@ -38,7 +38,7 @@ describe("assistant host observations", () => {
     expect(commands.find(command => command.file === "claude")!.args).toEqual(["--version"]);
   });
 
-  it("reports the global default independently of task mode and isolates other provider settings", async () => {
+  it("reports the global default and isolates other provider settings", async () => {
     const { assistantHost } = await collect();
     expect(assistantHost.defaultProvider).toBe("copilot");
     expect(assistantHost.creationConfigurationVersion).toBe(1);
@@ -50,7 +50,7 @@ describe("assistant host observations", () => {
     ]);
   });
 
-  it("rejects Herdr-only or secret arguments without including their text in the report", async () => {
+  it("rejects unsupported arguments without including their text in the report", async () => {
     const { assistantHost } = await collect({ configuration: { ...configuration, args: ["--token", "private-token"] } });
     expect(assistantHost.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unsupported_arguments", model: null, args: [] });
     expect(JSON.stringify(assistantHost)).not.toContain("private-token");
@@ -94,7 +94,7 @@ describe("assistant host observations", () => {
   });
 
   it("keeps command output and causes private while exposing stable failure reasons", async () => {
-    const failure = new HerdrCommandError("private-token", 1, null, "private-token");
+    const failure = new OwnedCommandError("private-token", 1, null, "private-token");
     const { assistantHost, issues } = await collect({ runCommand: async () => { throw failure; } });
     expect(assistantHost.providers.every(entry => !entry.available && entry.reason === "command_failed")).toBe(true);
     expect(JSON.stringify(assistantHost)).not.toContain("private-token");
@@ -108,7 +108,7 @@ describe("assistant host observations", () => {
 
   it("retains uncertain cleanup and never starts replacement probes", async () => {
     let attempts = 0;
-    const failure = new HerdrCommandCleanupError([new Error("still-running")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("still-running")], undefined);
     const collector = createAssistantHostCollector({ workingDirectory: root, configuration, environment: {}, resolveExecutable: provider => provider, runCommand: async () => { attempts++; throw failure; } });
     const operation = createOperation();
     try {
@@ -158,10 +158,10 @@ describe("assistant host cleanup recovery", () => {
     if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Cannot terminate the owned process"); } });
     const operation = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
     try {
-      const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, operation, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, operation, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(110);
       const failure = await result;
-      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      expect(failure).toBeInstanceOf(OwnedCommandCleanupError);
       return { child, failure };
     } finally { operation.dispose(); }
   };
@@ -249,7 +249,7 @@ describe("assistant host cleanup recovery", () => {
 
   it.each(["termination failure", "legacy cleanup"])("does not recover %s from a later close", async mode => {
     const original = await timedOutProbe(mode === "termination failure");
-    const failure = mode === "legacy cleanup" ? new HerdrCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
+    const failure = mode === "legacy cleanup" ? new OwnedCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
     let attempts = 0;
     const collector = instance(async command => {
       if (command.file === "codex") { attempts++; throw failure; }
@@ -266,7 +266,7 @@ describe("assistant host cleanup recovery", () => {
 
   it("reports the retry's actual failure and does not probe after parent cancellation", async () => {
     const original = await timedOutProbe();
-    const currentFailure = new HerdrCommandError("Native executable failed", 2, null, "private diagnostic");
+    const currentFailure = new OwnedCommandError("Native executable failed", 2, null, "private diagnostic");
     let attempts = 0;
     const collector = instance(async command => {
       if (command.file === "codex") { attempts++; throw attempts === 1 ? original.failure : currentFailure; }
@@ -284,4 +284,89 @@ describe("assistant host cleanup recovery", () => {
     expect(attempts).toBe(2);
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it("uses the shared frozen inspector for Worker tools and leaves its borrowed cleanup owner with the Worker", async () => {
+  const launches = new Map(["codex", "copilot"].map(tool => [tool, { tool, context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch]));
+  const check = vi.fn(async (_launch: import("../../../src/platform/tool-executables.js").ResolvedToolLaunch) => ({ version: "1.0.105", checkedAt: new Date().toISOString() })), close = vi.fn(async () => {});
+  const inspector = { check, close, reconcile: vi.fn(async () => 1), admit() {}, assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
+  const runCommand = vi.fn(output), operation = createOperation();
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration, environment: {}, resolveExecutable: provider => provider, runCommand,
+    selectToolLaunch: async provider => launches.get(provider), toolInspector: inspector });
+  try {
+    const sample = await collector.collect(operation);
+    expect(sample.assistantHost.providers.every(provider => provider.available)).toBe(true);
+    expect(check.mock.calls.map(([launch]) => launch)).toEqual([launches.get("codex"), launches.get("copilot")]);
+    expect(runCommand.mock.calls.every(([command]) => command.file === "claude")).toBe(true);
+  } finally { await collector.close(); operation.dispose(); }
+  expect(close).not.toHaveBeenCalled();
+});
+
+it("does not fall back to another executable when a configured Worker selection is unavailable", async () => {
+  const runCommand = vi.fn(output);
+  const sample = await collect({ selectToolLaunch: async () => undefined, runCommand });
+  expect(sample.assistantHost.providers.filter(provider => provider.provider !== "claude").every(provider => !provider.available)).toBe(true);
+  expect(runCommand.mock.calls.every(([command]) => command.file === "claude")).toBe(true);
+});
+
+it("does not inspect unused Copilot across collections, even when the startup directory is invalid", async () => {
+  const resolveExecutable = vi.fn((provider: string) => { if (provider === "copilot") throw new Error("unexpected Copilot resolution"); return provider; });
+  const runCommand = vi.fn(output);
+  const selectToolLaunch = vi.fn(async (provider: string) => { if (provider === "copilot") throw new Error("unexpected Copilot selection"); return undefined; });
+  const operation = createOperation();
+  const collector = createAssistantHostCollector({ workingDirectory: path.join(root, "missing"), configuration: { ...configuration, agent: "codex" },
+    environment: {}, copilotRequired: () => false, resolveExecutable, runCommand, selectToolLaunch });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const sample = await collector.collect(operation);
+      expect(sample.assistantHost.providers).toHaveLength(3);
+      expect(sample.assistantHost.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unavailable", model: null, args: [] });
+      expect(sample.issues.some(issue => issue.provider === "copilot")).toBe(false);
+    }
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(selectToolLaunch).not.toHaveBeenCalled();
+  } finally { await collector.close(); operation.dispose(); }
+});
+
+it("resumes real Copilot failure reporting when required and stops again when unused", async () => {
+  let required = false;
+  const failure = Object.assign(new Error("inaccessible"), { code: "EACCES" });
+  const resolveExecutable = vi.fn((provider: string) => { if (provider === "copilot") throw failure; return provider; });
+  const runCommand = vi.fn(output);
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { ...configuration, agent: "codex", model: null, args: [] },
+    environment: {}, copilotRequired: () => required, resolveExecutable, runCommand });
+  const operation = createOperation();
+  try {
+    expect((await collector.collect(operation)).issues.some(issue => issue.provider === "copilot")).toBe(false);
+    required = true;
+    const active = await collector.collect(operation);
+    expect(active.assistantHost.providers[2]).toMatchObject({ available: false, reason: "permission_denied" });
+    expect(active.issues.find(issue => issue.provider === "copilot")?.error).toBe(failure);
+    required = false;
+    const inactive = await collector.collect(operation);
+    expect(inactive.assistantHost.providers[2]).toMatchObject({ available: false, reason: "unavailable" });
+    expect(inactive.issues.some(issue => issue.provider === "copilot")).toBe(false);
+    expect(resolveExecutable.mock.calls.filter(([provider]) => provider === "copilot")).toHaveLength(1);
+    expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+  } finally { await collector.close(); operation.dispose(); }
+});
+
+it("reads an existing Copilot selection proof when background demand is absent", async () => {
+  const launches = new Map(["codex", "copilot"].map(tool => [tool, { tool, context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch]));
+  const check = vi.fn(async () => ({ version: "1.0.105", checkedAt: new Date().toISOString() }));
+  const inspector = { check, close: vi.fn(async () => {}), reconcile: vi.fn(async () => 1), admit() {}, assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
+  const runCommand = vi.fn(output), resolveExecutable = vi.fn((provider: string) => provider);
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { ...configuration, agent: "codex", model: null, args: [] },
+    environment: {}, copilotRequired: () => false, hasCopilotProof: () => true,
+    selectToolLaunch: async provider => launches.get(provider), toolInspector: inspector, resolveExecutable, runCommand });
+  const operation = createOperation();
+  try {
+    const sample = await collector.collect(operation);
+    expect(sample.assistantHost.providers[2]).toEqual({ provider: "copilot", available: true, reason: null, model: null, args: [] });
+    expect(sample.issues).toEqual([]);
+    expect(check.mock.calls).toHaveLength(1);
+    expect(resolveExecutable.mock.calls.some(([provider]) => provider === "copilot")).toBe(false);
+    expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+  } finally { await collector.close(); operation.dispose(); }
 });

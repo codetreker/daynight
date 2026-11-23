@@ -1,23 +1,33 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { nativeEntryId } from "../../../src/commands/controller/native-identity.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
+import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 import type { NativeImageProjectionState, NativeInputPublicationRequest } from "../../../src/commands/controller/media/native-publication-types.js";
-import { canonicalImageJson } from "../../../src/session/image-values.js";
+import { nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
+import { canonicalImageJson, type DirectCaptureSubmission } from "../../../src/session/image-values.js";
 import { createMarkdownTimelinePipeline } from "../../../src/commands/controller/markdown/pipeline.js";
 import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../src/commands/controller/markdown/projection.js";
 import type { ImageOccurrence } from "../../../src/session/image-values.js";
 import type { SessionCommand, SessionResource } from "../../../src/session/protocol.js";
 
+const timelineRows = (db: Database.Database): unknown[] => db.prepare("SELECT id,CAST(entry_seq AS TEXT) AS entry_seq,CAST(revision AS TEXT) AS revision,kind,value,content_hash,byte_length FROM timeline_entries ORDER BY timeline_entries.entry_seq").all();
+const timelineTotals = (db: Database.Database): unknown[] => db.prepare("SELECT id,entry_count,byte_length FROM timeline_totals ORDER BY id").all();
+const candidateFiles = async (file: string): Promise<string[]> => {
+  const directory = `${file}.pending-content/entries`;
+  return existsSync(directory) ? readdir(directory) : [];
+};
+
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
-const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question") => {
+const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question", origin?: "user" | "daynight") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/native-publication-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: root, nativeHome: path.join(root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -29,7 +39,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
   const resource: SessionResource = { resourceId, revision: "1", status: "available", name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256, width: 1, height: 1, frameCount: 1, error: null, ...resourceMetadata };
   journal.saveResource(resource, bytes);
   const images = Array.from({ length: imageCount }, (_, index) => ({ type: "image" as const, imageId: index === 0 ? imageId : randomUUID(), uploadId: randomUUID(), resourceId, byteLength: String(bytes.length), sha256 }));
-  const payload = { content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
+  const payload = { ...(origin ? { origin } : {}), content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
   const command: SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId, sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1", kind: "send_message", payload };
   journal.prepareOperation({ operationId, kind: "send_message", payload, intent: command }); journal.markDispatching(operationId);
   const entryId = nativeEntryId(nativeSessionId, `:user:${nativeMessageId}`);
@@ -37,7 +47,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
     const index = ordinal + 1, nativeSource = { provider: "copilot" as const, nativeSessionId, nativeMessageId, nativePartId: `attachment-${ordinal}` };
     const sourceKey = canonicalImageJson([1, nativeSource, entryId, "content", null, index]), nativeImageId = nativeEntryId(nativeSessionId, `image:${sourceKey}`), key = `image-slot:${nativeEntryId(nativeSessionId, sourceKey)}`;
     const pending = { type: "image_unavailable" as const, imageId: nativeImageId, label: "Native image", error: { code: "capture_pending", message: "The original image is being saved." } };
-    const state: NativeImageProjectionState = { request: { captureId: nativeEntryId(nativeImageId, "capture"), attemptId: nativeEntryId(nativeImageId, "attempt"), occurrence: { imageId: nativeImageId, entryId, container: "content", partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey }, nativeSource, locator: { kind: "native", ...nativeSource } }, index, waitingForSource: false, phase: "new", unknownAction: null, part: pending, validated: null };
+    const state: NativeImageProjectionState = { request: { captureId: nativeEntryId(nativeImageId, "capture"), attemptId: nativeEntryId(nativeImageId, "attempt"), occurrence: { imageId: nativeImageId, entryId, container: "content", partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey }, nativeSource, locator: { kind: "native", ...nativeSource } }, attemptId: nativeEntryId(nativeImageId, "attempt"), index, waitingForSource: false, phase: "new", part: pending, submission: null };
     return { index, nativeSource, nativeImageId, key, pending, state };
   });
   const { nativeImageId, key, state } = nativeStates[0]!;
@@ -51,7 +61,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
 };
 
 test.each([false, true])("Markdown preserves atomic native publication positions and recovers a later committed patch (parse failure=%s)", async failParse => {
-  const f = await fixture({}, 1, "![a](one.png)"), errors: Error[] = [], sources = new Map<string, ImageOccurrence>();
+  const f = await fixture({}, 1, "![a](one.png)", "daynight"), errors: Error[] = [], sources = new Map<string, ImageOccurrence>();
   const captures = { contextKey: () => "trusted", contextFor: () => ({}), get: (id: string) => sources.get(id), enqueue: (occurrence: ImageOccurrence) => { sources.set(occurrence.imageId, occurrence); } };
   const projector = failParse ? createMarkdownImageProjector({ parse: async () => { throw new Error("Controlled parse failure"); } }) : createMarkdownImageProjector();
   let journal = f.journal;
@@ -76,6 +86,7 @@ test.each([false, true])("Markdown preserves atomic native publication positions
     const current = journal.queryNativeInputAssociation(f.request.identity);
     expect(current.state).toBe("committed"); if (current.state !== "committed") return;
     expect(current.receipt).toEqual(published.receipt); expect(current.view.entry.content[1]).toEqual(saved);
+    expect(current.view.entry).toMatchObject({ origin: "daynight" });
     expect(current.view.entry.content[published.receipt.originalSlots[0]!.index]).toMatchObject({ imageId: f.imageId, resourceId: f.resourceId });
     const sequence = journal.getLastSourceSequence(); expect(journal.publishNativeInputAssociation(f.request)).toEqual(current); expect(journal.getLastSourceSequence()).toBe(sequence);
     expect(errors).toEqual([]);
@@ -90,9 +101,9 @@ test.each(["analysis", "receipt"])("a failed Markdown %s publication rolls its s
     f.publishNative(); const pipeline = createMarkdownTimelinePipeline({ journal, captures, onError: error => { errors.push(error); } });
     pipeline.accept({ ...f.request.seed.entry, revision: "1", imageProjectionError: null }, { complete: true, format: "markdown", truncated: false });
     if (phase === "receipt") await pipeline.drain();
-    const before = journal.getTimelineEntry(f.request.identity.entryId), state = journal.markdownStore.get<MarkdownProjectionState>("projection", f.request.identity.entryId), events = journal.pendingEvents();
+    const before = journal.getTimelineEntry(f.request.identity.entryId), state = journal.markdownStore.get<MarkdownProjectionState>("projection", f.request.identity.entryId), events = journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
     const prepare = f.db.prepare.bind(f.db), fault = vi.spyOn(f.db, "prepare").mockImplementation(sql => {
-      if (sql.startsWith("INSERT INTO outbox(")) throw new Error("Controlled Markdown outbox failure after candidate staging");
+      if (sql.startsWith("INSERT INTO outbox(")) throw new Error("Controlled Markdown outbox failure after SQL body update");
       return prepare(sql);
     });
     try {
@@ -105,6 +116,7 @@ test.each(["analysis", "receipt"])("a failed Markdown %s publication rolls its s
     expect(errors).toHaveLength(1);
     expect(journal.markdownStore.get("projection", f.request.identity.entryId)).toEqual(state);
     expect(journal.getTimelineEntry(f.request.identity.entryId)).toEqual(before); expect(journal.pendingEvents()).toEqual(events);
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
     journal.close(); sources.clear(); journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true });
     const recovered = createMarkdownTimelinePipeline({ journal, captures, onError: error => { errors.push(error); } }); await recovered.drain(); await recovered.stop();
     expect(sources.size).toBe(1); expect(errors).toHaveLength(1);
@@ -130,7 +142,7 @@ test("a lost Markdown publication acknowledgement defers source work until the c
     expect(committed.parts[0]!.status).toBe("complete");
     const observer = new Database(f.file, { readonly: true });
     try {
-      const visible = openPendingContent(f.file, f.ticket.sessionId, observer).getEntry(f.request.identity.entryId);
+      const visible = openTimelineStore(observer, { assertWrite: () => { throw new Error("Observer timeline is read-only."); } }).get(f.request.identity.entryId);
       expect(visible).toMatchObject({ content: [{ bindings: [{ imageId: original.imageId }] }, { imageId: f.nativeImageId }] });
       const row = observer.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`markdown:projection:${f.request.identity.entryId}`) as { value: string };
       expect(JSON.parse(row.value)).toEqual(committed);
@@ -141,6 +153,17 @@ test("a lost Markdown publication acknowledgement defers source work until the c
     const recovered = createMarkdownTimelinePipeline({ journal, captures, onError: error => { errors.push(error); } }); await recovered.drain(); await recovered.stop();
     expect([...sources.keys()]).toEqual([original.imageId]); expect(journal.getTimelineEntry(f.request.identity.entryId)).toMatchObject({ content: [{ bindings: [{ imageId: original.imageId }] }, saved] }); expect(errors).toHaveLength(1);
   } finally { journal.close(); }
+});
+
+test("image publication cannot replace an operation's original message owner", async () => {
+  const f = await fixture({}, 1, "question", "daynight");
+  try {
+    const { operationId, nativeSessionId, entryId } = f.request.identity;
+    f.journal.associateInputMessage(operationId, nativeSessionId, randomUUID());
+    expect(f.journal.publishNativeInputAssociation(f.request)).toMatchObject({ state: "not_committed", error: { code: "publication_conflict" } });
+    expect(f.journal.getTimelineEntry(entryId)).toBeUndefined();
+    expect(f.journal.queryNativeInputAssociation(f.request.identity).state).toBe("absent");
+  } finally { f.journal.close(); }
 });
 
 test("a late input association commits its original reference, occurrence and real revision without replacing the native slot", async () => {
@@ -184,8 +207,11 @@ test("reopened publication references retain the original even after every visib
     try {
       const query = reopened.queryNativeInputAssociation(f.request.identity);
       expect(query).toMatchObject({ state: "committed", receipt: result.receipt, view: { entry: { revision: "2", content: [result.view.entry.content[0], part] } } });
-      const content = openPendingContent(f.file, f.ticket.sessionId, db);
-      expect(() => content.releaseResource(f.resourceId)).toThrow("Resource is referenced by session history");
+      const content = openSessionContent(f.file, f.ticket.sessionId, db, {
+        read: action => db.transaction(action).deferred(),
+        assertWrite: () => { throw new Error("Reference verification is read-only."); },
+      });
+      expect(() => content.resourceFiles.releaseResource(f.resourceId)).toThrow("Resource is referenced by session history");
       expect(reopened.readResource(f.resourceId, "0", 100).resource).toEqual(f.resource);
     } finally { reopened.close(); }
   } finally { f.journal.close(); }
@@ -217,21 +243,58 @@ test("publication queries preserve the original commit revision while returning 
   } finally { f.journal.close(); }
 });
 
-test("a SQL failure after entry staging rolls back aliases, the visible pointer, occurrences and outbox together", async () => {
+test("a SQL failure after updating a body rolls back aliases, current rows, totals, occurrences and outbox together", async () => {
   const f = await fixture();
   try {
-    f.publishNative(); const before = f.timeline(), events = f.journal.pendingEvents();
-    const directory = `${f.file}.pending-content/entries`, candidates = await readdir(directory);
+    f.publishNative(); const before = f.timeline(), events = f.journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
+    const aliases = f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all();
+    expect(await candidateFiles(f.file)).toEqual([]);
     const prepare = f.db.prepare.bind(f.db), injected = vi.spyOn(f.db, "prepare").mockImplementation(sql => {
-      if (sql.startsWith("INSERT INTO native_input_publications ")) throw new Error("Controlled publication failure after entry staging");
+      if (sql.startsWith("INSERT INTO native_input_publications ")) throw new Error("Controlled publication failure after SQL body update");
       return prepare(sql);
     });
     const result = f.journal.publishNativeInputAssociation(f.request); injected.mockRestore();
-    expect(result).toMatchObject({ state: "not_committed", error: { message: "Controlled publication failure after entry staging" } });
-    expect((await readdir(directory)).length).toBe(candidates.length + 1);
+    expect(result).toMatchObject({ state: "not_committed", error: { message: "Controlled publication failure after SQL body update" } });
+    expect(await candidateFiles(f.file)).toEqual([]);
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
+    expect(f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all()).toEqual(aliases);
     expect(f.timeline()).toEqual(before); expect(f.journal.pendingEvents()).toEqual(events);
     expect(f.db.prepare("SELECT 1 FROM image_occurrences WHERE image_id=?").get(f.imageId)).toBeUndefined();
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
+  } finally { f.journal.close(); }
+});
+
+test("an outbox invariant failure retains its rolled-back error outside the unchanged publication receipt", async () => {
+  const f = await fixture();
+  try {
+    f.publishNative();
+    const before = f.timeline(), events = f.journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
+    f.db.exec("DELETE FROM outbox_totals");
+    const result = f.journal.publishNativeInputAssociation(f.request);
+    expect(result).toMatchObject({ state: "not_committed", error: { code: "publication_unavailable" } });
+    expect(Object.keys(result).sort()).toEqual(["error", "state"]);
+    expect(nativeInputPublicationFailure(result)).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
+    expect(f.timeline()).toEqual(before); expect(f.journal.pendingEvents()).toEqual(events);
+    expect(f.db.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
+    expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
+  } finally { f.journal.close(); }
+});
+
+test("a failed publication rollback retains the original accounting error with unknown outcome", async () => {
+  const f = await fixture();
+  try {
+    f.publishNative(); f.db.exec("DELETE FROM outbox_totals");
+    const exec = f.db.exec.bind(f.db), rollbackFailure = new Error("Controlled publication rollback failure");
+    const injected = vi.spyOn(f.db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw rollbackFailure; return exec(sql); });
+    let result;
+    try { result = f.journal.publishNativeInputAssociation(f.request); } finally { injected.mockRestore(); }
+    expect(result).toMatchObject({ state: "unknown", error: { code: "publication_unknown" } });
+    const failure = nativeInputPublicationFailure(result);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "unknown" });
+    expect((failure as AggregateError).errors[1]).toBe(rollbackFailure);
+    expect(() => f.journal.assertUsable()).toThrow("unresolved transaction");
   } finally { f.journal.close(); }
 });
 
@@ -285,6 +348,20 @@ test("querying a committed association reports a later settled capture without w
   } finally { f.journal.close(); }
 });
 
+test.each(["validated", "failed"] as const)("publication query retains a durable %s submission", async kind => {
+  const f = await fixture();
+  try {
+    f.publishNative(); const result = f.journal.publishNativeInputAssociation(f.request);
+    expect(result.state).toBe("committed"); if (result.state !== "committed") return;
+    const outcome: DirectCaptureSubmission["outcome"] = kind === "validated"
+      ? { kind, validated: { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 } }
+      : { kind, error: { code: "source_missing", message: "Original is missing." } };
+    const state: NativeImageProjectionState = { ...f.state, phase: "submit", submission: { request: f.state.request, attemptId: f.state.attemptId, outcome } };
+    f.journal.writeNativeImageState(f.key, state);
+    const query = f.journal.queryNativeInputAssociation(f.request.identity);
+    expect(query.state).toBe("committed"); if (query.state === "committed") expect(query.view.slots[0]!.state).toEqual(state);
+  } finally { f.journal.close(); }
+});
 test("a lost SQL commit confirmation is unknown until querying the unchanged identity observes the original committed receipt", async () => {
   const f = await fixture();
   try {
@@ -337,7 +414,7 @@ test("a publication without its exact durable acceptance observation does not cr
     f.db.prepare("DELETE FROM input_observations WHERE operation_id=?").run(f.request.identity.operationId);
     expect(f.journal.publishNativeInputAssociation(f.request)).toMatchObject({ state: "not_committed", error: { code: "publication_conflict" } });
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
-    expect(f.db.prepare("SELECT 1 FROM content_index WHERE id=?").get(f.request.identity.entryId)).toBeUndefined();
+    expect(f.db.prepare("SELECT 1 FROM timeline_entries WHERE id=?").get(f.request.identity.entryId)).toBeUndefined();
   } finally { f.journal.close(); }
 });
 
@@ -358,7 +435,8 @@ test("an unresolved commit and rollback failure never exposes the connection's u
   const f = await fixture();
   const observer = new Database(f.file, { readonly: true });
   try {
-    f.publishNative(); const before = f.timeline();
+    f.publishNative(); const before = f.timeline(), rows = timelineRows(observer), totals = timelineTotals(observer);
+    const raw = observer.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.request.identity.entryId) as { value: string };
     const exec = f.db.exec.bind(f.db), injected = vi.spyOn(f.db, "exec").mockImplementation(sql => {
       if (sql === "COMMIT" || sql === "ROLLBACK") throw new Error(`Controlled ${sql} failure before execution`);
       return exec(sql);
@@ -367,7 +445,8 @@ test("an unresolved commit and rollback failure never exposes the connection's u
     try { result = f.journal.publishNativeInputAssociation(f.request); } finally { injected.mockRestore(); }
     expect(result.state).toBe("unknown");
     expect(observer.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
-    expect(observer.prepare("SELECT revision FROM content_index WHERE id=?").get(f.request.identity.entryId)).toEqual({ revision: before.revision });
+    expect(observer.prepare("SELECT CAST(revision AS TEXT) AS revision FROM timeline_entries WHERE id=?").get(f.request.identity.entryId)).toEqual({ revision: before.revision });
+    expect(timelineRows(observer)).toEqual(rows); expect(timelineTotals(observer)).toEqual(totals);
     expect(f.journal.queryNativeInputAssociation(f.request.identity).state).toBe("unknown");
     expect(() => f.timeline()).toThrow();
     expect(() => f.journal.readNativeImageState(f.key)).toThrow();
@@ -377,8 +456,10 @@ test("an unresolved commit and rollback failure never exposes the connection's u
     f.journal.close();
     expect(observer.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
     expect(observer.prepare("SELECT owner_pid FROM execution WHERE id=1").get()).toEqual({ owner_pid: process.pid });
-    const pointer = observer.prepare("SELECT content_file FROM content_index WHERE id=?").get(f.request.identity.entryId) as { content_file: string };
-    expect(JSON.parse(await readFile(path.join(`${f.file}.pending-content/entries`, pointer.content_file), "utf8"))).toEqual(before);
+    const current = observer.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.request.identity.entryId) as { value: string };
+    expect(current.value).toBe(raw.value); expect(JSON.parse(current.value)).toEqual(before);
+    expect(timelineRows(observer)).toEqual(rows); expect(timelineTotals(observer)).toEqual(totals);
+    expect(await candidateFiles(f.file)).toEqual([]);
   } finally {
     observer.close();
     if (f.db.open && f.db.inTransaction) f.db.exec("ROLLBACK");
@@ -395,6 +476,7 @@ test("a capture patches its own slot in the latest committed entry while an olde
     const part = { type: "image" as const, imageId: f.nativeImageId, resourceId: f.resourceId, label: "Native image" };
     f.journal.writeNativeImageState(f.key, { ...f.state, phase: "settled", part });
     expect(() => f.journal.projectTimeline({ ...before, content: [before.content[0]!, part] })).toThrow("Timeline update cannot move or replace a committed original image association");
+    expect(() => f.journal.saveTimelineHistory({ ...before, revision: "3", content: [before.content[0]!, part] }, "task_body")).toThrow("Timeline update cannot move or replace a committed original image association");
     expect(f.timeline()).toEqual(result.view.entry);
     const sequence = f.journal.getLastSourceSequence(), query = f.journal.queryNativeInputAssociation(f.request.identity);
     expect(query).toMatchObject({ state: "committed", receipt: result.receipt, view: { entry: result.view.entry } });

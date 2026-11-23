@@ -28,32 +28,6 @@ func workFixture() taskwork.Page {
 	return taskwork.Page{Groups: []taskwork.Group{{GroupID: testTargetID, Kind: "chain", DisplayTaskID: testTargetID, TitlePreview: "Work", AssignedTo: testUserID, AggregationScope: "accessible_in_progress_members", MemberCount: 2, MatchedCount: 1, InProgressCount: 1, RootCount: 1, Roots: []taskwork.Root{{TaskID: testTargetID, TitlePreview: "Root"}}, Summary: taskwork.Aggregation{UnknownCount: 1, ObservedAt: stamp}, Targets: []taskwork.Target{{TaskID: testTargetID, Reason: "observation_failed", Send: observationFixture().Send}}, ObservedAt: stamp}}, ObservedAt: stamp, Partial: true}
 }
 
-func validateDiscoveredResult(t *testing.T, client *sdk.ClientSession, name string, result *sdk.CallToolResult) {
-	t.Helper()
-	listed, err := client.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range listed.Tools {
-		if tool.Name != name {
-			continue
-		}
-		schema, err := resolveSchema(tool.OutputSchema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := json.Marshal(structured(t, result))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := validateJSON(schema, raw); err != nil {
-			t.Fatalf("%s protocol result violates advertised schema: %v\n%s", name, err, raw)
-		}
-		return
-	}
-	t.Fatalf("tool %s was not discovered", name)
-}
-
 func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 	f := newEntryFixture(t)
 	calls := 0
@@ -69,15 +43,37 @@ func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
+	assertNoDiscoveredOutputSchemas(t, client, "task_work_list")
 	args := map[string]any{"projectId": testProjectID, "assignedTo": assigned, "groupId": group, "targetsCursor": cursor, "limit": 7}
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_work_list", Arguments: args})
 	if err != nil || result.IsError || calls != 1 {
 		t.Fatalf("work=%+v %v calls=%d", result, err, calls)
 	}
-	validateDiscoveredResult(t, client, "task_work_list", result)
 	env := structured(t, result)
-	if object(t, env["meta"])["partial"] != true || len(object(t, env["data"])["groups"].([]any)) != 1 {
+	meta, data := object(t, env["meta"]), object(t, env["data"])
+	groups, ok := data["groups"].([]any)
+	if !ok || len(groups) != 1 || meta["partial"] != true || meta["observedAt"] != "2026-11-10T01:02:03.123456789Z" || data["observedAt"] != meta["observedAt"] || data["partial"] != true {
 		t.Fatalf("partial work lost: %#v", env)
+	}
+	if value, present := data["nextCursor"]; !present || value != nil {
+		t.Fatalf("nextCursor must be explicit null: %#v", data)
+	}
+	groupResult := object(t, groups[0])
+	if groupResult["groupId"] != group || groupResult["displayTaskId"] != group || groupResult["kind"] != "chain" || groupResult["titlePreview"] != "Work" || groupResult["assignedTo"] != assigned || groupResult["aggregationScope"] != "accessible_in_progress_members" || groupResult["memberCount"] != float64(2) || groupResult["matchedCount"] != float64(1) || groupResult["inProgressCount"] != float64(1) || groupResult["rootCount"] != float64(1) {
+		t.Fatalf("work group: %#v", groupResult)
+	}
+	roots, rootsOK := groupResult["roots"].([]any)
+	targets, targetsOK := groupResult["targets"].([]any)
+	if !rootsOK || len(roots) != 1 || object(t, roots[0])["taskId"] != group || object(t, roots[0])["titlePreview"] != "Root" || !targetsOK || len(targets) != 1 || object(t, targets[0])["taskId"] != group || object(t, targets[0])["reason"] != "observation_failed" || object(t, groupResult["summary"])["unknownCount"] != float64(1) {
+		t.Fatalf("work roots, targets or summary: %#v", groupResult)
+	}
+	for _, key := range []string{"assignedTo", "sessionId", "indicator"} {
+		if value, present := object(t, targets[0])[key]; !present || value != nil {
+			t.Fatalf("target %s must be explicit null: %#v", key, targets[0])
+		}
+	}
+	if value, present := groupResult["contributorCursor"]; !present || value != nil {
+		t.Fatalf("contributorCursor must be explicit null: %#v", groupResult)
 	}
 	for _, invalid := range []map[string]any{{"groupId": group}, {"targetsCursor": cursor}, {"groupId": group, "targetsCursor": cursor, "cursor": "group-cursor"}, {"limit": 51}, {"responseOverhead": 0}, {"assignedTo": "unassigned"}} {
 		invalid["projectId"] = testProjectID
@@ -85,7 +81,10 @@ func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 		if err != nil || !result.IsError || calls != 1 {
 			t.Fatalf("invalid input reached work use case: %+v %v calls=%d", result, err, calls)
 		}
-		validateDiscoveredResult(t, client, "task_work_list", result)
+		failure := object(t, structured(t, result)["error"])
+		if failure["code"] != "invalid_input" {
+			t.Fatalf("invalid input error: %#v", failure)
+		}
 	}
 }
 

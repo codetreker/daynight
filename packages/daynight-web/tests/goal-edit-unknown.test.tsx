@@ -7,12 +7,14 @@ import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider'
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import { GoalCreate } from '../src/features/goal-detail/GoalCreate';
+import type { TaskDetail, TaskStatus } from '../src/api/types';
 import { ApiError, createTask, pauseAuthRequests } from '../src/api/client';
 import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => null }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
@@ -22,6 +24,7 @@ vi.mock('../src/features/projects/ProjectAccess', async original => ({ ...await 
 vi.mock('../src/features/task-assignment/TaskAssigneeSelect', () => ({ TaskAssigneeSelect: () => null }));
 vi.mock('../src/features/task-assignment/TaskAssigneeIdentity', () => ({ TaskAssigneeIdentity: () => null }));
 vi.mock('../src/features/task-assignment/AssigneePicker', () => ({ AssigneePicker: () => null }));
+vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange, canWrite }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void; canWrite: boolean }) => <div><output aria-label="Selected tags">{value.map(tag => tag.name).join(',')}</output><button type="button" disabled={!canWrite} onClick={() => onChange([{ id: 'tag-a', name: 'Alpha' }])}>Select Alpha</button></div> }));
 
 const projectId = '10000000-0000-4000-8000-000000000001';
 const goalId = '20000000-0000-4000-8000-000000000001';
@@ -190,6 +193,93 @@ it.each(['status', 'assignedTo', 'delete'] as const)('reports an unknown %s outc
   expect(check).toHaveBeenCalledTimes(1); expect(write).not.toHaveBeenCalled();
 });
 
+const goalStatuses = ['todo', 'in_progress', 'done', 'cancelled'] as const;
+const statusLabels = {
+  en: ['To do', 'In progress', 'Done', 'Cancelled'],
+  'zh-CN': ['待处理', '进行中', '已完成', '已取消'],
+} as const;
+const statusSurface = (current: TaskDetail, setStatus: (status: TaskStatus, version: bigint) => void, canSetStatus = true) => {
+  const task = { detail: current, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null },
+    historyGeneration: 1, canEditGoal: true, canDisplayStatus: true, canSetStatus, canDisplayAssignee: true, canSetAssignedTo: true,
+    canDisplayDelete: true, canDelete: true, assignmentUncertain: false, setStatus, reconcile: check,
+  } as unknown as ReturnType<typeof useTaskDetail>;
+  return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={current} resourceState={task} snapshot={null} presentation="dialog"
+    fullscreen={{ active: false, onChange: () => {} }} onSelectTask={() => {}} onClose={() => {}} onRefreshGraph={() => {}} />;
+};
+
+it.each((['en', 'zh-CN'] as const).flatMap(locale => goalStatuses.map((status, index) => ({ locale, status, index }))))('presents the four Goal statuses in $locale with $status selected', ({ locale, status, index }) => {
+  const current = { ...detail, status };
+  renderWithLocale(statusSurface(current, write), { locale, taskCache: true, container: root });
+  const trigger = screen.getByRole('button', { name: statusLabels[locale][index]! });
+  expect(trigger).toBeEnabled();
+  expect(trigger.querySelector(`.task-detail-dot-${status}`)).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: /goal status|goal 状态/i })).toBeNull();
+  fireEvent.click(trigger);
+  const menu = screen.getByRole('menu', { name: locale === 'zh-CN' ? 'Goal 状态' : 'Goal status' });
+  const options = within(menu).getAllByRole('menuitemradio');
+  expect(options.map(option => option.textContent?.replace('✓', ''))).toEqual(statusLabels[locale]);
+  expect(options[index]).toHaveAttribute('aria-checked', 'true');
+  expect(options[index]).toHaveFocus();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('supports keyboard navigation and Escape without changing Goal status', () => {
+  const current = { ...detail, status: 'in_progress' as const };
+  renderWithLocale(statusSurface(current, write), { locale: 'en', taskCache: true, container: root });
+  const trigger = screen.getByRole('button', { name: 'In progress' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const menu = screen.getByRole('menu');
+  const options = within(menu).getAllByRole('menuitemradio');
+  expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'End' }); expect(options[3]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(options[3]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'Home' }); expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(trigger).toHaveFocus();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it.each(goalStatuses.flatMap(from => goalStatuses.filter(to => to !== from).map(to => ({ from, to }))))('routes Goal $from → $to with the reviewed exact version', ({ from, to }) => {
+  const current = { ...detail, status: from, version: 9007199254740993n };
+  renderWithLocale(statusSurface(current, write), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: statusLabels.en[goalStatuses.indexOf(from)]! }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: statusLabels.en[goalStatuses.indexOf(to)]! }));
+  if (to === 'done' || to === 'cancelled') {
+    const confirmation = screen.getByRole('alertdialog', { name: to === 'done' ? 'Complete this Goal?' : 'Cancel this Goal?' });
+    expect(write).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm' }));
+  }
+  expect(write).toHaveBeenCalledExactlyOnceWith(to, current.version);
+});
+
+it.each(['done', 'cancelled'] as const)('dismisses the %s confirmation via Back and Escape without a write', target => {
+  renderWithLocale(statusSurface(detail, write), { locale: 'en', taskCache: true, container: root });
+  const choose = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'To do' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: statusLabels.en[goalStatuses.indexOf(target)]! }));
+    return screen.getByRole('alertdialog', { name: target === 'done' ? 'Complete this Goal?' : 'Cancel this Goal?' });
+  };
+  fireEvent.click(within(choose()).getByRole('button', { name: 'Back' }));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  choose(); fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('does not confirm a terminal Goal status against a changed reviewed version', () => {
+  const view = renderWithLocale(statusSurface(detail, write), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: 'To do' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Done' }));
+  view.rerender(statusSurface({ ...detail, version: detail.version + 1n }, write));
+  const confirm = within(screen.getByRole('alertdialog', { name: 'Complete this Goal?' })).getByRole('button', { name: 'Confirm' });
+  expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  fireEvent.click(confirm);
+  expect(write).not.toHaveBeenCalled();
+});
+
 it.each(['api', 'confirmed-api', 'non-api'] as const)('reports an unknown Goal creation after a %s error without claiming failure', async kind => {
   vi.mocked(createTask).mockImplementation(async (_project, _input, _signal, admission) => {
     if (kind === 'api') throw new ApiError('server', 503, 'invalid_input', 'request-2');
@@ -198,11 +288,59 @@ it.each(['api', 'confirmed-api', 'non-api'] as const)('reports an unknown Goal c
   });
   renderWithLocale(<GoalCreate projectId={projectId} onClose={() => {}} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
   fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Draft title' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
   fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
   expect(await screen.findByText(/The creation outcome is unknown\. Check the Goal list/)).toBeVisible();
   expect(screen.queryByText('Creation failed')).toBeNull();
   expect(screen.queryByText(/Goal information is invalid/i)).toBeNull();
   expect(screen.getByRole('button', { name: /^Create$/ })).toBeDisabled();
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', tagIds: ['tag-a'] });
   if (kind !== 'non-api') expect(screen.getByText('request-2').closest('p')).toHaveTextContent('(invalid_input)');
   expect(createTask).toHaveBeenCalledTimes(1);
+});
+
+it('submits Goal tags as a frozen selection and clears them after a confirmed create', async () => {
+  const pending = Promise.withResolvers<never>();
+  vi.mocked(createTask).mockReturnValue(pending.promise);
+  const close = vi.fn();
+  renderWithLocale(<GoalCreate projectId={projectId} onClose={close} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Tagged goal' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', title: 'Tagged goal', tagIds: ['tag-a'] });
+  expect(screen.getByRole('button', { name: 'Select Alpha' })).toBeDisabled();
+  await act(async () => pending.resolve({} as never));
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('');
+});
+
+it('retains the Goal draft and tags after a definite create rejection', async () => {
+  vi.mocked(createTask).mockRejectedValueOnce(new ApiError('server', 400, 'tag_not_found', 'request'));
+  const CreateHarness = () => {
+    const [open, setOpen] = useState(true);
+    return open ? <GoalCreate projectId={projectId} onClose={() => setOpen(false)} onRefreshGraph={() => {}} /> : <button onClick={() => setOpen(true)}>Reopen Goal</button>;
+  };
+  renderWithLocale(<CreateHarness />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Draft goal' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Create$/ })).toBeEnabled());
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Draft goal');
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Reopen Goal' }));
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Draft goal');
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+});
+
+it('creates an untagged Goal with an empty tag set', async () => {
+  vi.mocked(createTask).mockResolvedValueOnce({} as never);
+  renderWithLocale(<GoalCreate projectId={projectId} onClose={() => {}} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Untagged goal' } });
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', title: 'Untagged goal', tagIds: [] });
 });

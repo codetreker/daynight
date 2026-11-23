@@ -1,11 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
 import type { AttachmentPreviewState } from './AttachmentPreview';
 import { AttachmentActionMenu, AttachmentDeleteDialog, type AttachmentActionTarget } from './AttachmentActions';
-import { AttachmentPreview, type AttachmentKeyboardOwner } from './AttachmentPreview';
-import { attachmentTree, isAttachmentPath, type AttachmentNode } from './model';
+import { AttachmentPreview } from './AttachmentPreview';
+import { AttachmentUpload } from './AttachmentUpload';
+import { attachmentKind, attachmentTree, type AttachmentNode } from './model';
 import { useAttachments, type AttachmentApi, type AttachmentController } from './useAttachments';
 import '../../../styles/attachments.css';
 
@@ -19,7 +20,6 @@ export type AttachmentUrls = {
 type TaskAttachmentsProps = {
   readonly projectId: string;
   readonly taskId: string;
-  readonly keyboardOwner?: AttachmentKeyboardOwner;
   readonly api?: AttachmentApi;
   readonly urls?: AttachmentUrls;
 };
@@ -57,8 +57,9 @@ const ancestorDirectories = (path: string | null): readonly string[] => {
   return segments.slice(0, -1).map((_segment, index) => segments.slice(0, index + 1).join('/'));
 };
 
-const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, expanded, onDirectoryToggle }: {
+const FileTree = ({ nodes, depth, selectedPath, onSelect, onActions, actionPath, busy, expanded, onDirectoryToggle }: {
   readonly nodes: readonly AttachmentNode[];
+  readonly depth: number;
   readonly selectedPath: string | null;
   readonly onSelect: (path: string) => void;
   readonly onActions: (target: AttachmentActionTarget) => void;
@@ -68,7 +69,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
   readonly onDirectoryToggle: (path: string, open: boolean) => void;
 }) => {
   const { format, messages } = useI18n();
-  return <ul className="attachment-tree">
+  return <ul className="attachment-tree" style={{ '--attachment-tree-depth': depth } as CSSProperties}>
     {nodes.map((node) => <li key={node.path}>{node.kind === 'directory' ? (
       <details open={expanded.has(node.path)} onToggle={(event) => onDirectoryToggle(node.path, event.currentTarget.open)}>
         <summary onClick={(event) => {
@@ -76,10 +77,10 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
           event.preventDefault();
           onDirectoryToggle(node.path, !expanded.has(node.path));
         }}><span aria-hidden="true">▱</span> {node.name}</summary>
-        <FileTree nodes={node.children} selectedPath={selectedPath} onSelect={onSelect} onActions={onActions} actionPath={actionPath} busy={busy} expanded={expanded} onDirectoryToggle={onDirectoryToggle} />
+        <FileTree nodes={node.children} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} onActions={onActions} actionPath={actionPath} busy={busy} expanded={expanded} onDirectoryToggle={onDirectoryToggle} />
       </details>
     ) : (
-      <div className={`attachment-file-row${selectedPath === node.path ? ' attachment-file-selected' : ''}`}><button className="attachment-file" type="button" aria-pressed={selectedPath === node.path} onClick={() => onSelect(node.path)}>
+      <div className={`attachment-file-row${selectedPath === node.path ? ' attachment-file-selected' : ''}`}><button className="attachment-file" data-attachment-path={node.path} type="button" aria-pressed={selectedPath === node.path} onClick={() => onSelect(node.path)}>
         <span className="attachment-file-icon" aria-hidden="true">▤</span>
         <span className="attachment-file-name">{node.name}</span>
         <span className="attachment-file-size">{format.bytes(node.attachment.sizeBytes)}</span>
@@ -90,20 +91,25 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
   </ul>;
 };
 
-export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, urls, navigation, reveal, onInteract, keyboardOwner, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
+export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, urls, navigation, reveal, onInteract, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
   const { messages, format } = useI18n();
   const m = messages.inspection.attachments;
   const headingId = useId();
-  const fileId = useId();
-  const pathId = useId();
-  const fileInput = useRef<HTMLInputElement>(null);
+  const split = useRef<HTMLDivElement>(null);
+  const sidebar = useRef<HTMLElement>(null);
+  const sidebarScroll = useRef(0);
+  const [compact, setCompact] = useState(false);
+  const [uploadOpen, setUploadOpenState] = useState(false);
+  const uploadFullscreen = compact && uploadOpen;
+  const uploadLayout = useRef({ compact, open: uploadOpen });
+  uploadLayout.current = { compact, open: uploadOpen };
+  const transferUploadFocus = useRef(false);
+  const previousFullscreen = useRef(uploadFullscreen);
+  const [uploadedPath, setUploadedPath] = useState<string | null>(null);
   const previewPane = useRef<HTMLDivElement>(null);
+  const actionMenu = useRef<HTMLDivElement>(null);
   const [action, setAction] = useState<(AttachmentActionTarget & { readonly kind: 'menu' | 'confirm'; readonly scope: string }) | null>(null);
   const scope = `${projectId}/${taskId}`;
-  const [file, setFile] = useState<File | null>(null);
-  const draftRevision = useRef(0);
-  const [path, setPath] = useState('');
-  const [pathError, setPathError] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(ancestorDirectories(reveal === undefined ? null : reveal.path)));
   useLayoutEffect(() => {
     if (reveal === undefined) return;
@@ -127,9 +133,9 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
   const previews = selected === undefined ? (retained === null ? [] : [retained])
     : retained !== null && retained.attachment.path !== selected.path ? [retained, { attachment: selected, preview: attachments.preview }]
     : [{ attachment: selected, preview: retained?.preview ?? attachments.preview }];
-  useEffect(() => {
-    if (action !== null && (action.scope !== scope || !active && !busy || busy && action.kind === 'menu')) setAction(null);
-  }, [active, busy, scope, action]);
+  useLayoutEffect(() => {
+    if (action !== null && (action.scope !== scope || !active && !busy || (busy || uploadFullscreen) && action.kind === 'menu')) setAction(null);
+  }, [active, busy, scope, action, uploadFullscreen]);
   const dismissMenu = (restoreFocus: boolean) => {
     if (restoreFocus) action!.trigger.focus();
     setAction(null);
@@ -149,35 +155,85 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
     attachments.select(path);
     onSelect?.(path);
   };
-  const upload = async (event: FormEvent) => {
-    event.preventDefault();
-    if (file === null || authRequestsPaused()) return;
-    if (!isAttachmentPath(path)) {
-      setPathError(true);
-      return;
-    }
-    onInteract?.();
-    const pauseRevision = authRequestsPauseRevision();
-    const submittedDraft = draftRevision.current;
-    if (await attachments.put(path, file) && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && submittedDraft === draftRevision.current) {
-      records?.clearSelection();
-      onSelect?.(path);
-      setFile(null);
-      setPath('');
-      fileInput.current!.value = '';
-    }
+  useLayoutEffect(() => {
+    const element = split.current!;
+    const measure = (width: number) => {
+      if (width <= 0) return;
+      const prior = uploadLayout.current;
+      if (width < 560 && !(prior.compact && prior.open)) sidebarScroll.current = sidebar.current!.scrollTop;
+      if ((width < 560) !== prior.compact && prior.open) {
+        const focused = document.activeElement;
+        transferUploadFocus.current = focused instanceof Element && (width < 560
+          ? sidebar.current!.querySelector('.attachment-sidebar-browser')!.contains(focused) || previewPane.current!.contains(focused) || focused.matches('.attachment-upload-disclosure>summary') || actionMenu.current !== null && actionMenu.current.contains(focused)
+          : focused.closest('.attachment-upload-heading') !== null);
+      }
+      setCompact(width < 560);
+    };
+    measure(element.clientWidth);
+    const observer = new ResizeObserver(([entry]) => measure(entry!.contentRect.width));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const setUploadOpen = (open: boolean) => {
+    if (open && compact) sidebarScroll.current = sidebar.current!.scrollTop;
+    if (open) setAction(null);
+    setUploadOpenState(open);
   };
+  const uploadFocusTarget = () => {
+    const fileInput = split.current!.querySelector<HTMLInputElement>('.attachment-upload input[type=file]')!;
+    return fileInput.disabled ? split.current!.querySelector<HTMLElement>(uploadFullscreen ? '.attachment-upload-heading button' : '.attachment-upload-disclosure>summary')! : fileInput;
+  };
+  const restoreDeleteFocus = (target: AttachmentActionTarget) => {
+    if (!active || split.current === null || split.current.closest('[hidden], [inert]') !== null) return;
+    const destination = uploadFullscreen ? uploadFocusTarget() : target.trigger.isConnected && target.trigger.closest('[hidden], [inert]') === null ? target.trigger : previewPane.current!;
+    destination.focus({ preventScroll: true });
+    destination.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+  useLayoutEffect(() => {
+    const leavingFullscreen = previousFullscreen.current && !uploadFullscreen;
+    previousFullscreen.current = uploadFullscreen;
+    if (leavingFullscreen) {
+      sidebar.current!.scrollTop = sidebarScroll.current;
+      const focused = document.activeElement;
+      if (active && uploadOpen && focused instanceof HTMLElement && focused.closest('.attachment-upload') !== null) focused.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    if (transferUploadFocus.current) {
+      transferUploadFocus.current = false;
+      const target = uploadFocusTarget();
+      if (active && uploadOpen) {
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+  }, [active, uploadFullscreen, uploadOpen]);
+  useLayoutEffect(() => {
+    if (uploadedPath === null || !active) return;
+    const target = Array.from(sidebar.current!.querySelectorAll<HTMLButtonElement>('.attachment-file')).find((element) => element.dataset.attachmentPath === uploadedPath);
+    if (target === undefined) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    setUploadedPath(null);
+  }, [active, attachments.items, uploadedPath]);
+  const uploaded = (path: string) => {
+    records?.clearSelection();
+    onSelect?.(path);
+    setExpanded((current) => new Set([...current, ...ancestorDirectories(path)]));
+    setUploadOpen(false);
+    setUploadedPath(path);
+  };
+  const writeError = attachments.write.error !== null && action?.kind !== 'confirm' ? <div className="attachment-error attachment-state" role="alert"><ErrorMessage error={attachments.write.error} message={m.writeError} /></div> : null;
 
   return (
     <section className="task-attachments" aria-labelledby={headingId}>
-      <div className="attachment-split">
-        <aside className="attachment-sidebar">
+      <div ref={split} className={`attachment-split${uploadFullscreen ? ' attachment-upload-fullscreen' : ''}`}>
+        <aside ref={sidebar} className="attachment-sidebar">
+          <div className="attachment-sidebar-browser" inert={uploadFullscreen} aria-hidden={uploadFullscreen || undefined}>
           {records?.sidebar}
           <div className="attachment-section-heading">
             <h4 id={headingId}>{attachments.complete ? m.heading({ count: format.number(attachments.items.length) }) : m.title}</h4>
             <button className="button" type="button" disabled={attachments.loading || busy || paused} onClick={attachments.reload}>{m.refresh}</button>
           </div>
-          {attachments.write.error !== null && action?.kind !== 'confirm' && <div className="attachment-error attachment-state" role="alert"><ErrorMessage error={attachments.write.error} message={m.writeError} /></div>}
+          {!uploadOpen && writeError}
           {attachments.loading && <p className="attachment-state" role="status">{m.loading}</p>}
           {attachments.error !== null && (
             <div className="attachment-state attachment-error" role="alert">
@@ -186,29 +242,11 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
             </div>
           )}
           {attachments.complete && attachments.items.length === 0 && <p className="attachment-state">{m.empty}</p>}
-          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy || paused} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
-          <details className="attachment-upload-disclosure">
-            <summary>{m.upload}</summary>
-            <form className="attachment-upload" onSubmit={(event) => { void upload(event); }}>
-              <label htmlFor={fileId}>{m.chooseFile}</label>
-              <input id={fileId} ref={fileInput} type="file" disabled={busy} onChange={(event) => {
-                ++draftRevision.current;
-                const chosen = event.currentTarget.files?.[0];
-                setFile(chosen === undefined ? null : chosen);
-                setPath(chosen === undefined ? '' : chosen.name);
-                setPathError(false);
-              }} />
-              <label htmlFor={pathId}>{m.targetPath}</label>
-              <div className="attachment-upload-target">
-                <input id={pathId} type="text" value={path} placeholder={m.pathPlaceholder} disabled={busy} aria-invalid={pathError} onChange={(event) => { ++draftRevision.current; setPath(event.currentTarget.value); setPathError(false); }} />
-                <button className="button primary" type="submit" disabled={file === null || busy || paused}>{attachments.write.status === 'saving' ? m.uploading : m.upload}</button>
-              </div>
-              <p className="attachment-hint">{m.uploadHint}</p>
-              {pathError && <p className="attachment-error" role="alert">{m.invalidPath}</p>}
-            </form>
-          </details>
+          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} depth={0} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy || paused} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
+          </div>
+          <AttachmentUpload attachments={attachments} compact={compact} open={uploadOpen} active={active} error={writeError} onOpenChange={setUploadOpen} onInteract={onInteract} onUploaded={uploaded} />
         </aside>
-        <div className="attachment-preview-pane" ref={previewPane} tabIndex={-1} role="group" aria-label={m.preview}>
+        <div className="attachment-preview-pane" inert={uploadFullscreen} aria-hidden={uploadFullscreen || undefined} ref={previewPane} tabIndex={-1} role="group" aria-label={m.preview}>
           <div className="attachment-file-preview" hidden={records?.preview != null} inert={records?.preview != null}>
           {navigation?.invalid === true ? <div className="attachment-preview-body"><p className="attachment-state attachment-error" role="alert">{m.invalidReference}</p></div> : selected === undefined ? <div className="attachment-preview-body attachment-preview-empty">
             {attachments.selectedPath === null ? <p className="attachment-state">{m.choosePreview}</p> : attachments.error !== null ? <div className="attachment-state attachment-error" role="alert">
@@ -217,24 +255,31 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
             </div> : !attachments.complete ? <p className="attachment-state" role="status">{m.loading}</p> : <div className="attachment-state" role="alert"><p>{m.missing}</p><button className="button" type="button" disabled={busy || paused} onClick={attachments.reload}>{m.retry}</button></div>}
           </div> : null}
             <section className="attachment-preview" aria-label={m.preview} hidden={selected === undefined || navigation?.invalid === true} style={selected === undefined || navigation?.invalid === true ? { display: 'none' } : undefined}>
-              {selected !== undefined && <header className="attachment-preview-header">
-                <div><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
+              {selected !== undefined && <header className="attachment-preview-header" tabIndex={0} aria-label={m.preview}>
+                <div className="attachment-file-information"><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
+                <dl className="attachment-timestamps">
+                  <dt>{m.created}</dt><dd><time dateTime={selected.createdAt}>{format.dateTime(selected.createdAt)}</time></dd>
+                  <dt>{m.lastModified}</dt><dd><time dateTime={selected.updatedAt}>{format.dateTime(selected.updatedAt)}</time></dd>
+                </dl>
                 <div className="attachment-preview-actions">
+                  {(attachmentKind(selected) === 'html' || attachmentKind(selected) === 'pdf') && <button className="button" type="button" disabled={paused} onClick={attachments.retryPreview}>{m.reloadPreview}</button>}
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentDownloadUrl(projectId, taskId, selected.path) : urls.download(selected.path)} download={paused ? undefined : true} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined}>{m.download}</a>
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentPageUrl(projectId, taskId, selected.path) : urls.page(selected.path)} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span className="attachment-preview-open-label">{m.openInNewTab}</span></a>
                 </div>
               </header>}
               {previews.map(({ attachment, preview }) => {
                 const hidden = attachment.path !== selected?.path;
-                return <div key={`${attachment.path}/${attachment.updatedAt}`} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} /></div>;
+                const kind = attachmentKind(attachment);
+                const key = kind === 'html' || kind === 'pdf' ? JSON.stringify([attachment.path]) : JSON.stringify([attachment.path, attachment.updatedAt]);
+                return <div key={key} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} /></div>;
               })}
             </section>
           </div>
           {records?.preview != null ? <div className="attachment-record-preview">{records.preview}</div> : null}
         </div>
       </div>
-      {active && action?.scope === scope && action.kind === 'menu' && !busy && <AttachmentActionMenu target={action} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
-      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} fallback={previewPane} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
+      {active && action?.scope === scope && action.kind === 'menu' && !busy && !uploadFullscreen && <AttachmentActionMenu target={action} menu={actionMenu} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
+      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} onRestoreFocus={() => restoreDeleteFocus(action)} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
     </section>
   );
 };

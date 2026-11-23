@@ -12,15 +12,14 @@ const machineId = "55555555-5555-5555-5555-555555555555";
 const worktreeId = "66666666-6666-6666-6666-666666666666";
 const userId = "77777777-7777-7777-7777-777777777777";
 const newClaimId = "88888888-8888-8888-8888-888888888888";
-const newWorktreeId = "99999999-9999-9999-9999-999999999999";
 const time = "2026-10-24T12:34:56.123456789Z";
-const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId } as const;
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "web", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "task", parentId: null,
-  id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
+  id: taskId, projectId, title: "Claimed task", description: "", tags: [], properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
   allowAgents: true, requiredPlatform: null, assignedTo: null, version, startedAt: worker?.state === "active" ? time : null,
-  completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
+  completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined,
 });
 const cleanups: (() => void | Promise<void>)[] = [];
 const api = (serverUrl: string): ApiClient => {
@@ -54,20 +53,53 @@ afterEach(async () => {
 });
 
 describe("worker protocol negotiation", () => {
-  it("advertises the extended schema for current Herdr read and claim responses", async () => {
+  it("advertises the extended schema for historical reads and Web claim responses", async () => {
     const headers: (string | string[] | undefined)[] = [];
     const origin = await listen((request, response) => {
       headers.push(request.headers["daynight-worker-protocol"]);
-      respond(response, task(claim()));
+      respond(response, task(headers.length === 1 ? { ...claim(), agentControlMode: "herdr" } : claim()));
     });
     const client = api(origin);
     await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
-    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "web" } } });
     expect(headers).toEqual(["2", "2"]);
   });
 });
 
 describe("in-process worker task API", () => {
+  it("sends an applied filter digest with the claim and preserves deterministic refusals", async () => {
+    const bodies: unknown[] = [];
+    const key = "a".repeat(64);
+    const origin = await listen((_request, response, body) => {
+      bodies.push(body);
+      if (bodies.length === 1) respond(response, task(claim()));
+      else respond(response, { error: { code: "claim_conflict", message: "changed", requestId: "claim-test" } }, 409);
+    });
+    const client = api(origin);
+    const input = { ...descriptor, version: 1n, taskTagFilterKey: key };
+    await expect(client.claimWorkerTask(projectId, taskId, input)).resolves.toHaveProperty("properties.worker.claimId", claimId);
+    await expect(client.claimWorkerTask(projectId, taskId, input)).rejects.toMatchObject({ status: 409, code: "claim_conflict", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(bodies).toEqual([input, input]);
+  });
+
+  it("preserves the service's unsupported-filter refusal without retrying", async () => {
+    let count = 0;
+    const origin = await listen((_request, response) => {
+      count++;
+      respond(response, { error: { code: "worker_task_tag_filter_unsupported", message: "missing filter proof", requestId: "claim-test" } }, 409);
+    });
+    await expect(api(origin).claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).rejects.toMatchObject({ status: 409, code: "worker_task_tag_filter_unsupported", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(count).toBe(1);
+  });
+
+  it.each([null, "", "A".repeat(64), "a".repeat(63), "g".repeat(64)])("rejects invalid claim digest %s before dispatch", (taskTagFilterKey) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, taskTagFilterKey } as never)).toThrow("taskTagFilterKey must be a lowercase SHA-256 digest.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("requires the exact startup report in a confirmed update receipt", async () => {
     const startupReport = { schemaVersion: 1 as const, source: "worker" as const, sessionId: taskId, claimId,
       executionGeneration: "1", controllerInstanceId: workerId, revision: "1", observedAt: time,
@@ -86,7 +118,11 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), { ...task(undefined), allowAgents: false }, task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" })];
+    const webClaim = { ...claim(), agentControlMode: "web" as const };
+    const { herdr: _herdr, ...newWebClaim } = webClaim;
+    const claimed = task(webClaim, max);
+    const updated = task({ ...webClaim, phase: "executing", nativeSessionId: "native" });
+    const responses = [{ ...claimed, properties: { ...claimed.properties, worker: newWebClaim } }, { ...updated, properties: { ...updated.properties, worker: { ...newWebClaim, phase: "executing", nativeSessionId: "native" } } }, task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -94,24 +130,33 @@ describe("in-process worker task API", () => {
       respond(response, result);
     });
     const client = api(origin);
-    const initial: ClaimWorkerTaskInput = { ...descriptor, version: max - 1n };
-    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: claim() } });
-    const update = { version: 1n, claimId, phase: "executing", herdr: { paneId: "p", session: "w", workspaceId: "ws" }, nativeSessionId: "native" } as const;
+    const initial: ClaimWorkerTaskInput = { ...descriptor, agentControlMode: "web", version: max - 1n };
+    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: newWebClaim } });
+    const update = { version: 1n, claimId, phase: "executing", nativeSessionId: "native" } as const;
     await client.updateWorkerClaim(projectId, taskId, update);
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true });
     await client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId });
-    await client.resumeWorkerTask(projectId, taskId, { ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
     const prefix = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     expect(requests.map(({ method, path }) => [method, path])).toEqual([
       ["POST", `${prefix}/worker-claim`], ["PATCH", `${prefix}/worker-claim`], ["PUT", `${prefix}/status`],
-      ["POST", `${prefix}/worker-claim/release`], ["POST", `${prefix}/worker-claim/withdraw`], ["POST", `${prefix}/worker-claim/resume`],
+      ["POST", `${prefix}/worker-claim/release`], ["POST", `${prefix}/worker-claim/withdraw`],
     ]);
     expect(requests[0]!.body).toEqual(initial);
     expect(requests[1]!.body).toEqual(update);
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
+    expect(requests[3]!.body).toEqual({ version: 1n, claimId, stoppedConfirmed: true });
     expect(requests[4]!.body).toEqual({ version: 1n, claimId });
-    expect(requests[5]!.body).toEqual({ ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
+  });
+
+  it.each([null, undefined, { session: "w", workspaceId: "ws", paneId: "p" }])("rejects herdr=%j in new claim and update inputs before dispatch", (herdr) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(() => client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([true, false, undefined, null])("rejects deprecated continuityConfirmed=%s before any worker write", (continuityConfirmed) => {
@@ -121,16 +166,14 @@ describe("in-process worker task API", () => {
     const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
     expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
     expect(() => client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
-    expect(() => client.resumeWorkerTask(projectId, taskId, { ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, version: 1n, previousClaimId: claimId, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("matches canonical server UUIDs when worker action inputs use uppercase UUIDs", async () => {
     const lower = { claimId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", workerId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", machine: { id: "cccccccc-cccc-cccc-cccc-cccccccccccc", name: "Build machine" }, worktreeId: "dddddddd-dddd-dddd-dddd-dddddddddddd", userId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" };
     const upper = { ...descriptor, claimId: lower.claimId.toUpperCase(), workerId: lower.workerId.toUpperCase(), machine: { ...lower.machine, id: lower.machine.id.toUpperCase() }, worktreeId: lower.worktreeId.toUpperCase() };
-    const replacementId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
     const active = { ...claim(), ...lower };
-    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), { ...task(undefined), allowAgents: false }, task({ ...active, claimId: replacementId })];
+    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((_request, response) => respond(response, responses.shift()));
     const client = api(origin);
     await expect(client.claimWorkerTask(projectId, taskId, { ...upper, version: 1n })).resolves.toHaveProperty("properties.worker.claimId", lower.claimId);
@@ -138,7 +181,27 @@ describe("in-process worker task API", () => {
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId: upper.claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId, stoppedConfirmed: true });
     await client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId });
-    await client.resumeWorkerTask(projectId, taskId, { ...upper, version: 1n, claimId: replacementId.toUpperCase(), previousClaimId: upper.claimId });
+  });
+
+  it.each([
+    task(claim()),
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released" } } },
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released", claimId: newClaimId } } },
+    task(undefined, 1n),
+    task(undefined, 3n),
+    { ...task(undefined), properties: { ...task(undefined).properties, sessionStartup: null } },
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: null } },
+    { ...task(undefined), status: "in_progress" },
+    { ...task(undefined), startedAt: time },
+    { ...task(undefined), completedAt: time },
+    { ...task(undefined), id: newClaimId },
+    { ...task(undefined), projectId: newClaimId },
+  ])("rejects an unconfirmed release response without another request %#", async (responseTask) => {
+    let requests = 0;
+    const origin = await listen((_request, response) => { requests++; respond(response, responseTask); });
+    await expect(api(origin).releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true }))
+      .rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(requests).toBe(1);
   });
 
   it.each([
@@ -198,20 +261,20 @@ describe("in-process worker task API", () => {
     expect(count).toBe(1);
   });
 
-  it("retains the candidate cursor so an unavailable released task does not hide later work", async () => {
+  it("retains the candidate cursor so an unavailable task does not hide later work", async () => {
     const urls: URL[] = [];
     const availableId = "99999999-9999-9999-9999-999999999999";
-    const released = task(claim("released"));
+    const candidate = task(undefined);
     const available = { ...task(undefined), id: availableId };
     const origin = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost");
       urls.push(url);
-      respond(response, url.searchParams.has("cursor") ? { items: [available], nextCursor: null } : { items: [released], nextCursor: "next+/=" });
+      respond(response, url.searchParams.has("cursor") ? { items: [available], nextCursor: null } : { items: [candidate], nextCursor: "next+/=" });
     });
     const client = api(origin);
     const filters = { limit: 1, ready: true, allowAgents: true, compatiblePlatform: "linux" } as const;
     const first = await client.listTaskPage(projectId, filters);
-    expect(first).toEqual({ items: [released], nextCursor: "next+/=" });
+    expect(first).toEqual({ items: [candidate], nextCursor: "next+/=" });
     if (first.nextCursor === null) throw new Error("Missing candidate continuation");
     const second = await client.listTaskPage(projectId, { ...filters, cursor: first.nextCursor });
     expect(second).toEqual({ items: [available], nextCursor: null });
@@ -272,7 +335,7 @@ describe("in-process worker task API", () => {
 
   it.each([
     { name: "no claim", value: task(undefined) },
-    { name: "released claim", value: task(claim("released")) },
+    { name: "retired released claim", value: { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released" } } } },
     { name: "completed claim", value: task(claim("completed")) },
     { name: "another worker", value: task({ ...claim(), workerId: newClaimId }) },
     { name: "malformed worker ID", value: { ...task(claim()), properties: { pullRequests: [], worker: { ...claim(), workerId: "not-a-worker-id" } } } },
@@ -321,6 +384,19 @@ describe("in-process worker task API", () => {
 
     expect(() => client.listTasks(projectId, { workerId: invalidWorkerId } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
     expect(() => client.listTaskPage(projectId, { workerId: invalidWorkerId, limit: 1 } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("validates candidate worker identity and its query scope before dispatch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    for (const candidateWorkerId of ["invalid", null, false]) {
+      expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, candidateWorkerId } as never)).toThrow("Candidate worker ID filter must be a hyphenated UUID.");
+    }
+    expect(() => client.listTaskPage(projectId, { limit: 1, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
+    expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, workerId, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
     expect(fetch).not.toHaveBeenCalled();
   });
 

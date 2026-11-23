@@ -3,14 +3,15 @@ import { SESSION_ARCHIVE_HISTORY_MAX_BYTES, sessionArchiveReferences } from "../
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import type { PendingContent } from "../pending-content.js";
+import type { SessionContent } from "../content/session-content.js";
+import type { TimelineEntry } from "../../../session/protocol.js";
+import { parseImageError, type ImageError, type ImageOccurrence } from "../../../session/image-values.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
-import type { controllerMetadataBudget } from "./metadata-budget.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-export const createImageHistorySource = (file: string, db: Database.Database, content: PendingContent, transactions: Transactions, budget: ReturnType<typeof controllerMetadataBudget>) => {
-  const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint";
+export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, policy?: { contentPolicy(): string; onlineImageOccurrences(): readonly ImageOccurrence[] }) => {
+  const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint", failureKey = "active_history_failure";
   const syncDirectory = () => { if (process.platform !== "win32") { const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } } };
   const intent = (): ImageHistorySyncIntent | null => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
@@ -35,15 +36,15 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     // every file while an original intent is still pending or unknown.
     for (const name of readdirSync(root)) if (new RegExp(`^${uuid}\\.json(?:\\.${uuid}\\.tmp)?$`).test(name)) { const p = path.join(root, name); const stat = lstatSync(p); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Invalid frozen controller history file."); unlinkSync(p); }
     syncDirectory();
-    const entries = [...content.entries.values()].sort((a, b) => BigInt(a.entrySeq) < BigInt(b.entrySeq) ? -1 : 1);
+    const entries: TimelineEntry[] = [];
+    content.timeline.iterate(entry => { entries.push(entry); });
     const resources = [...sessionArchiveReferences(entries, false).resources].sort().map(id => {
-      const resource = content.resources.get(id)?.resource;
+      const resource = content.resourceFiles.resources.get(id)?.resource;
       if (!resource) throw new Error("Controller history references a missing resource descriptor.");
       return resource;
     });
-    const body = { historyEpoch, sourceThrough: source.through, entries, resources }, bytes = Buffer.from(JSON.stringify(body));
+    const body = { ...(policy?.contentPolicy() === "task_body" ? { contentPolicy: "task_body", onlineImageOccurrences: policy.onlineImageOccurrences() } : {}), historyEpoch, sourceThrough: source.through, entries, resources }, bytes = Buffer.from(JSON.stringify(body));
     if (bytes.length > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller image history exceeds its synchronization budget.");
-    budget.assert(bytes.length + 16_384, true);
     const syncId = randomUUID(), filename = path.join(root, `${syncId}.json`), next: ImageHistorySyncIntent = { syncId, filename, historyEpoch, sourceThrough: source.through, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") };
     writeDurableJson(filename, body);
     // Acquire write access before sealing: Windows cannot flush a read-only handle.
@@ -52,8 +53,29 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     return next;
   });
   return { prepareImageHistorySync,
-    finishImageHistorySync: (syncId: string, complete: boolean): void => {
-      const current = transactions.write(() => { const current = intent(); if (!current || current.syncId !== syncId) throw new Error("Controller history synchronization identity changed."); if (complete) db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(checkpoint, JSON.stringify(current)); db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(key); return current; });
+    hasImageHistoryCheckpoint: (sourceThrough: string): boolean => transactions.read(() => {
+      const epoch = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as { value: string } | undefined;
+      const completed = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(checkpoint) as { value: string } | undefined;
+      if (!epoch || !completed) return false;
+      const value = JSON.parse(completed.value) as ImageHistorySyncIntent;
+      return value.historyEpoch === JSON.parse(epoch.value) && BigInt(value.sourceThrough) >= BigInt(sourceThrough);
+    }),
+    getImageHistorySyncFailure: (): ImageError | null => transactions.read(() => {
+      const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(failureKey) as { value: string } | undefined;
+      return row ? parseImageError(JSON.parse(row.value)) : null;
+    }),
+    finishImageHistorySync: (syncId: string, complete: boolean, failure?: ImageError): void => {
+      const savedFailure = complete ? null : parseImageError(failure);
+      const current = transactions.write(() => {
+        const current = intent(); if (!current || current.syncId !== syncId) throw new Error("Controller history synchronization identity changed.");
+        if (complete) {
+          db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(checkpoint, JSON.stringify(current));
+          db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(failureKey);
+        } else {
+          db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(failureKey, JSON.stringify(savedFailure));
+        }
+        db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(key); return current;
+      });
       unlinkSync(current.filename); syncDirectory();
     },
   };

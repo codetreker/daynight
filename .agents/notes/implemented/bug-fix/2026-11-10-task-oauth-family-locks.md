@@ -14,8 +14,10 @@ for a rotated family.
 
 ## Decision
 
-Task OAuth send and receipt admission, including original-Actor checks during
-dispatch, acquire the grant `FOR SHARE` before the access token `FOR SHARE`.
+Session OAuth purpose admission, including original-Actor checks during
+dispatch, acquires the grant `FOR SHARE` before the access token `FOR SHARE`.
+The [API family decision](../architecture/2026-11-12-api-oauth-family.md) extends
+this existing protocol to fixed API user purposes while preserving MCP subsets.
 Revocation and refresh already acquire the grant `FOR UPDATE`, so they wait
 before changing family state. A dispatch reader can join a shared grant lock
 while revocation is queued behind another admission; no token has been deleted
@@ -51,7 +53,7 @@ lock removes the cycle without changing that boundary.
 
 ## Consequences
 
-Task OAuth checks add one query and retain a shared grant lock until their
+Session OAuth checks add one query and retain a shared grant lock until their
 transaction finishes. Refresh and revocation can wait longer behind these
 operations, while concurrent admissions and dispatch reads remain compatible.
 Database errors retain their causes and SQLSTATE; no deadlock retry converts a

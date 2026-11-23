@@ -17,10 +17,11 @@ var (
 	ErrNotRegular     = errors.New("file storage object is not a regular file")
 	ErrPathConflict   = errors.New("file storage path aliases another directory entry")
 	ErrGateBusy       = errors.New("file storage residency gate is busy")
+	ErrGateLost       = errors.New("file storage gate lease lost")
 )
 
-// ResidencyGate provides nonblocking, exact-key exclusion across instances
-// sharing a storage root. A permit holds its key until Close.
+// ResidencyGate provides nonblocking, exact-key exclusion. The caller owns
+// the returned permit and closes it after the protected work.
 type ResidencyGate interface {
 	TryAcquireResidency(context.Context, string) (io.Closer, error)
 }
@@ -75,11 +76,19 @@ const (
 	MediaLeaseGate GateDomain = "media-lease"
 )
 
-type Storage interface {
+type Gates interface {
 	ResidencyGate
-	// AcquireGate serializes a domain/key across all instances sharing the root.
-	// The permit remains held until Close, independently of database leases.
+	// TryAcquireArchive reserves a nonblocking owner slot for a Session, or an
+	// exclusive owner slot for physical cleanup. The caller closes the permit
+	// after all protected work. Different Sessions share at most limit slots;
+	// the same Session and cleanup never overlap another conflicting permit.
+	TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error)
+	// AcquireGate waits for a permit and uses ctx only for acquisition.
 	AcquireGate(ctx context.Context, domain GateDomain, key string) (io.Closer, error)
+}
+
+type Storage interface {
+	Gates
 	Put(ctx context.Context, bucket, path string, content io.Reader) (FileInfo, error)
 	Open(ctx context.Context, bucket, path string) (Object, error)
 	Delete(ctx context.Context, bucket, path string) error

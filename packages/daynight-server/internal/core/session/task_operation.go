@@ -6,21 +6,47 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// LockPurposeCredential limits OAuth admission to Task messages and receipts.
-// The DAO retains the token lock and rechecks the grant against the database clock.
+// LockPurposeCredential preserves MCP's Task message and receipt subset.
+// Other user purposes require the fixed API client and audience. The DAO retains
+// the token lock and rechecks the grant against the database clock.
 func (op *Operation) LockPurposeCredential(ctx context.Context, scope store.SessionScope, p model.Principal, purpose BrowserPurpose) error {
-	if p.Kind != model.OAuthCredential || purpose != TaskMessageAccess && purpose != TaskReceiptAccess {
+	if p.Kind != model.OAuthCredential {
 		return op.LockCredential(ctx, scope, p)
 	}
-	err := scope.SessionDAO().LockOAuthCredential(ctx, p, op.engine.Origin+"/mcp", oauth.Scope, op.engine.now())
+	return op.lockOAuthCredential(ctx, scope, p, purpose == TaskMessageAccess || purpose == TaskReceiptAccess)
+}
+
+func (op *Operation) oauthBindings(allowMCP bool) []store.OAuthBinding {
+	bindings := []store.OAuthBinding{{Resource: op.engine.Origin + "/api/v1", Scope: oauth.APIScope, ClientID: oauth.APIClientID}}
+	if allowMCP {
+		bindings = append(bindings, store.OAuthBinding{Resource: op.engine.Origin + "/mcp", Scope: oauth.Scope})
+	}
+	return bindings
+}
+
+func (op *Operation) lockOAuthCredential(ctx context.Context, scope store.SessionScope, p model.Principal, allowMCP bool) error {
+	err := scope.SessionDAO().LockOAuthCredential(ctx, p, op.oauthBindings(allowMCP), op.engine.now())
 	if errors.Is(err, model.ErrNotFound) {
 		return fault("unauthenticated", "Credential expired or was revoked.")
 	}
 	return err
+}
+
+// TaskBotSessionRefusal is the result of addressing a Bot-bound Session
+// through a Task route. Bot-bound Sessions are always independent Test
+// Sessions, which every Task binding rejects; Task Message access reports the
+// same forbidden result as BindTaskPurpose and other purposes report the
+// identity conflict of the Task bindings.
+func TaskBotSessionRefusal(purpose BrowserPurpose) error {
+	if purpose == TaskMessageAccess {
+		return denied()
+	}
+	return conflict()
 }
 
 // LoadTaskReceipt reads durable identity without attaching or discarding live state.
@@ -80,6 +106,9 @@ func (s *Execution) TaskOperation(ctx context.Context, p model.Principal, projec
 		return out, conflict()
 	}
 	err := s.browserRun(ctx, p, project, taskID, id, TaskReceiptAccess, func(a *Access) error {
+		if err := s.admitCommand(ctx, a.tx, p, scopepolicy.SessionRead); err != nil {
+			return err
+		}
 		operation, err := a.tx.dao.SessionOperation(ctx, id, operationID)
 		if err != nil {
 			return err

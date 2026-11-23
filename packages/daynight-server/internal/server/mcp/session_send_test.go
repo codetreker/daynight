@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"log/slog"
 	"net/http"
@@ -68,15 +69,22 @@ func TestSessionSendModulePublishesStrictToolsAndPreservesIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
+	assertNoDiscoveredOutputSchemas(t, client, "task_session_send", "task_session_operation")
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_send", Arguments: args})
 	if err != nil || result.IsError || calls != 1 {
 		t.Fatalf("send result=%#v %v calls=%d", result, err, calls)
 	}
-	validateDiscoveredResult(t, client, "task_session_send", result)
 	env := structured(t, result)
 	meta := object(t, env["meta"])
-	if meta["writeOutcome"] != "confirmed" || meta["phase"] != "commit" || object(t, meta["refs"])["operationId"] != args["operationId"] || object(t, object(t, env["data"])["operation"])["state"] != "accepted" {
+	operation := object(t, object(t, env["data"])["operation"])
+	if meta["writeOutcome"] != "confirmed" || meta["phase"] != "commit" || object(t, meta["refs"])["operationId"] != args["operationId"] || operation["state"] != "accepted" || operation["sessionId"] != args["sessionId"] || operation["claimId"] != args["claimId"] || operation["executionGeneration"] != "1" || operation["operationId"] != args["operationId"] || operation["kind"] != "send_message" || operation["protocol"] != sp.Protocol {
 		t.Fatalf("receipt facts: %#v", env)
+	}
+	if value, ok := operation["providerResult"]; !ok || value != nil {
+		t.Fatalf("providerResult must be explicit null: %#v", operation)
+	}
+	if value, ok := operation["error"]; !ok || value != nil {
+		t.Fatalf("error must be explicit null: %#v", operation)
 	}
 	listed, err := client.ListTools(t.Context(), nil)
 	if err != nil {
@@ -84,8 +92,8 @@ func TestSessionSendModulePublishesStrictToolsAndPreservesIntent(t *testing.T) {
 	}
 	for _, tool := range listed.Tools {
 		if tool.Name == "task_session_send" || tool.Name == "task_session_operation" {
-			if object(t, tool.InputSchema)["additionalProperties"] != false || object(t, tool.OutputSchema)["additionalProperties"] != false {
-				t.Fatal("Session schema is not strict")
+			if object(t, tool.InputSchema)["additionalProperties"] != false || tool.OutputSchema != nil {
+				t.Fatal("Session input schema is not strict or output schema is published")
 			}
 		}
 	}
@@ -156,7 +164,6 @@ func TestSessionOperationReadRetainsOriginalRefsAndUnknownAbsence(t *testing.T) 
 			if err != nil || result.IsError != missing || calls != 1 {
 				t.Fatalf("read result %#v %v", result, err)
 			}
-			validateDiscoveredResult(t, client, "task_session_operation", result)
 			env := structured(t, result)
 			key := "meta"
 			if missing {
@@ -169,25 +176,28 @@ func TestSessionOperationReadRetainsOriginalRefsAndUnknownAbsence(t *testing.T) 
 			if missing && (facts["code"] != "not_found" || !strings.Contains(facts["message"].(string), "unknown")) {
 				t.Fatalf("absence is not unknown: %#v", facts)
 			}
-			if !missing && object(t, env["data"])["currentBinding"] != false {
-				t.Fatalf("historical binding changed: %#v", env)
+			if !missing {
+				data := object(t, env["data"])
+				operation := object(t, data["operation"])
+				if data["currentBinding"] != false || operation["operationId"] != args["operationId"] || operation["sessionId"] != args["sessionId"] || operation["state"] != "provider_accepted" || operation["kind"] != "send_message" || operation["executionGeneration"] != "1" {
+					t.Fatalf("historical receipt changed: %#v", env)
+				}
+				if value, ok := operation["error"]; !ok || value != nil {
+					t.Fatalf("operation error must be explicit null: %#v", operation)
+				}
 			}
 		})
 	}
 }
 
-func TestSessionSubmitCompletionAndOutputFailureNeverRepeat(t *testing.T) {
-	for _, mode := range []string{"not_committed", "unknown", "confirmed cleanup", "output failure", "generic failure"} {
+func TestSessionSubmitCompletionFailuresNeverRepeat(t *testing.T) {
+	for _, mode := range []string{"not_committed", "unknown", "confirmed cleanup", "generic failure"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newEntryFixture(t)
 			calls := 0
 			ops := sessionSendMock{t: t, submit: func(_ context.Context, _ model.Principal, _, _, _ string, c sp.Command) (sp.Operation, error) {
 				calls++
 				switch mode {
-				case "output failure":
-					r := sendReceipt(c)
-					r.State = "invalid"
-					return r, nil
 				case "generic failure":
 					return sp.Operation{}, errors.New("lost confirmation")
 				default:
@@ -208,16 +218,42 @@ func TestSessionSubmitCompletionAndOutputFailureNeverRepeat(t *testing.T) {
 			}
 			failure := object(t, structured(t, result)["error"])
 			want := mode
-			if mode == "confirmed cleanup" || mode == "output failure" {
+			if mode == "confirmed cleanup" {
 				want = "confirmed"
 			}
 			if mode == "generic failure" {
 				want = "unknown"
 			}
-			if failure["writeOutcome"] != want || object(t, failure["refs"])["operationId"] != sendArguments()["operationId"] {
+			requestID, hasRequestID := failure["requestId"].(string)
+			message, hasMessage := failure["message"].(string)
+			phase, hasPhase := failure["phase"].(string)
+			if failure["writeOutcome"] != want || !hasPhase || phase == "" || !hasRequestID || requestID == "" || !hasMessage || message == "" || object(t, failure["refs"])["operationId"] != sendArguments()["operationId"] {
 				t.Fatalf("completion facts lost: %#v", failure)
 			}
 		})
+	}
+}
+
+func TestSessionSendReturnsEncodableReceipt(t *testing.T) {
+	f := newEntryFixture(t)
+	calls := 0
+	ops := sessionSendMock{t: t, submit: func(_ context.Context, _ model.Principal, _, _, _ string, c sp.Command) (sp.Operation, error) {
+		calls++
+		receipt := sendReceipt(c)
+		receipt.State = "invalid"
+		return receipt, nil
+	}}
+	if err := RegisterSessionTools(f.entry, SessionSendModule(ops)); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_send", Arguments: sendArguments()})
+	if err != nil || result.IsError || calls != 1 {
+		t.Fatalf("encodable receipt: %#v %v calls=%d", result, err, calls)
+	}
+	env := structured(t, result)
+	if object(t, object(t, env["data"])["operation"])["state"] != "invalid" || object(t, env["meta"])["writeOutcome"] != "confirmed" || object(t, env["meta"])["phase"] != "commit" {
+		t.Fatalf("receipt facts changed: %#v", env)
 	}
 }
 
@@ -283,5 +319,54 @@ func TestSessionSendHTTPDeliveryFailureInvokesSubmitOnce(t *testing.T) {
 	httpx.RequestLogging(logger, entry).ServeHTTP(writer, request)
 	if calls != 1 || !strings.Contains(logs.String(), `"write_outcome":"confirmed"`) || !strings.Contains(logs.String(), "MCP response delivery failed") {
 		t.Fatalf("delivery lost completion/repeated send: calls=%d logs=%s", calls, logs.String())
+	}
+}
+
+func TestSessionToolsReturnScopeRefusalWithoutReceipt(t *testing.T) {
+	for _, tool := range []string{"task_session_send", "task_session_operation"} {
+		t.Run(tool, func(t *testing.T) {
+			f := newEntryFixture(t)
+			calls := 0
+			refusal := &model.Fault{Code: "insufficient_scope", Message: "The credential has insufficient scope."}
+			ops := sessionSendMock{
+				t: t,
+				submit: func(_ context.Context, p model.Principal, project, task, session string, command sp.Command) (sp.Operation, error) {
+					calls++
+					if tool != "task_session_send" || p != (model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}) || project != testProjectID || task != testTargetID || session != sendArguments()["sessionId"] || command.Kind != "send_message" {
+						t.Error("send changed original principal, resource or operation")
+					}
+					return sp.Operation{State: "provider_accepted"}, refusal
+				},
+				read: func(_ context.Context, p model.Principal, project, task, session, operation string) (sessioncore.TaskOperationResult, error) {
+					calls++
+					if tool != "task_session_operation" || p != (model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}) || project != testProjectID || task != testTargetID || session != sendArguments()["sessionId"] || operation != sendArguments()["operationId"] {
+						t.Error("read changed original principal, resource or operation")
+					}
+					return sessioncore.TaskOperationResult{Operation: sp.Operation{State: "provider_accepted"}, CurrentBinding: true}, refusal
+				},
+			}
+			if err := RegisterSessionTools(f.entry, SessionSendModule(ops)); err != nil {
+				t.Fatal(err)
+			}
+			client := f.client(t, "2026-07-28", "alice")
+			args := sendArguments()
+			if tool == "task_session_operation" {
+				for _, field := range []string{"claimId", "executionGeneration", "expectedTurnId", "text"} {
+					delete(args, field)
+				}
+			}
+			result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tool, Arguments: args})
+			if err != nil || !result.IsError || calls != 1 {
+				t.Fatalf("result=%#v error=%v calls=%d", result, err, calls)
+			}
+			env := structured(t, result)
+			failure := object(t, env["error"])
+			if failure["code"] != "insufficient_scope" || env["data"] != nil || strings.Contains(fmt.Sprint(env), "provider_accepted") || strings.Contains(fmt.Sprint(env), "currentBinding") {
+				t.Fatalf("scope refusal exposed receipt: %#v", env)
+			}
+			if tool == "task_session_send" && failure["writeOutcome"] != "not_committed" {
+				t.Fatalf("scope refusal lost write outcome: %#v", failure)
+			}
+		})
 	}
 }

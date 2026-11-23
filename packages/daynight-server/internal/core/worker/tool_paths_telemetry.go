@@ -61,13 +61,13 @@ func ValidateToolPaths(value *model.ToolPathTelemetry, platform model.TaskPlatfo
 	if value == nil {
 		return nil
 	}
-	if value.SchemaVersion != 1 || !validToolTime(value.ObservedAt) || value.Entries == nil || len(value.Entries) > 5 {
+	if value.SchemaVersion != 1 || !validToolTime(value.ObservedAt) || value.Entries == nil || len(value.Entries) > 2 {
 		return invalidInput("Tool path telemetry schema, time or entries are invalid.")
 	}
 	seen := map[[2]string]bool{}
 	for _, entry := range value.Entries {
 		key := [2]string{entry.Tool, entry.Context}
-		if !slices.Contains([]string{"codex", "copilot", "herdr"}, entry.Tool) || !slices.Contains([]string{"web", "herdr"}, entry.Context) || entry.Tool == "herdr" && entry.Context != "herdr" || seen[key] {
+		if !slices.Contains([]string{"codex", "copilot"}, entry.Tool) || entry.Context != "web" || seen[key] {
 			return invalidInput("Tool path contexts must be unique supported tool/context pairs.")
 		}
 		seen[key] = true
@@ -154,7 +154,6 @@ func ValidateToolPathTargets(ctx context.Context, dao store.WorkerWriteDAO, prin
 	if err != nil {
 		return err
 	}
-	choices := map[string]*model.ToolPathChoice{"codex": current.Desired.Value.ToolPaths.Codex, "copilot": current.Desired.Value.ToolPaths.Copilot, "herdr": current.Desired.Value.ToolPaths.Herdr}
 	for _, entry := range value.Entries {
 		if entry.ConfigurationSource != "cloud" {
 			continue
@@ -166,8 +165,38 @@ func ValidateToolPathTargets(ctx context.Context, dao store.WorkerWriteDAO, prin
 		if err != nil {
 			return err
 		}
-		choice := choices[entry.Tool]
-		if observed > revision || observed == revision && (choice == nil || *choice != entry.Target) {
+		if observed > revision {
+			return invalidInput("Tool path observation does not match the desired revision.")
+		}
+		if observed != revision {
+			continue
+		}
+		fields, err := storedConfigurationFields(current.Desired)
+		if err != nil {
+			return err
+		}
+		var slots map[string]json.RawMessage
+		if json.Unmarshal(fields["toolPaths"], &slots) != nil || slots == nil {
+			return invalidInput("Stored tool paths are invalid.")
+		}
+		raw := slots[entry.Tool]
+		if len(raw) == 0 || configurationNull(raw) {
+			return invalidInput("Tool path observation does not match the desired revision.")
+		}
+		var source map[string]json.RawMessage
+		if json.Unmarshal(raw, &source) != nil || source == nil {
+			return invalidInput("Stored tool path is invalid.")
+		}
+		known := map[string]json.RawMessage{"kind": source["kind"]}
+		if path, exists := source["path"]; exists {
+			known["path"] = path
+		}
+		projected, err := json.Marshal(known)
+		if err != nil {
+			return err
+		}
+		choice, err := parseToolPathChoice(projected)
+		if err != nil || choice == nil || *choice != entry.Target {
 			return invalidInput("Tool path observation does not match the desired revision.")
 		}
 	}

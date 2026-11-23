@@ -16,7 +16,7 @@ and its real membership versions. The
 [settings sections decision](2026-11-10-team-settings-sections.md) owns its
 placement, shared navigation and retained section lifetime. Administrators can
 confirm role changes and removals, while members can confirm their own departure. Personal membership is fixed, and the last
-visible administrator is disabled; the server remains authoritative for
+visible administrator cannot be demoted or removed; the server remains authoritative for
 concurrent changes. Confirmed receipts produce a success notice independently
 of subsequent refresh and update actor context. A departure resets the Team
 selection and navigates to Personal only while its submitted confirmation and
@@ -31,6 +31,8 @@ preserved. Unknown writes stay unknown and offer a read without replay. The
 [Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) records the rationale for the server's authorization and transactional rules.
 The [role alignment decision](../bug-fix/2026-11-05-team-member-role-alignment.md)
 owns roster layout and select spacing.
+The [last-admin leave hint decision](2026-11-18-last-admin-leave-hint.md) owns
+the focusable unavailable self-exit control and its on-demand explanation.
 
 ## Alternatives
 
@@ -50,8 +52,9 @@ and the user retries after choosing B.
 Members can review nullable profiles and manage relationships within the Team's
 actual scope. Independent Project grants survive these operations. The
 [invitation management decision](2026-11-05-web-scoped-invitations.md) adds
-scoped invitations without treating Project access as Team membership. Global
-user discovery remains outside this section.
+scoped invitations without treating Project access as Team membership. The
+[member search decision](2026-11-17-web-team-member-search.md) adds discovery and
+direct addition of existing accounts to this section.
 
 The next default workspace restores a newer saved Team, and a missing preference
 remains missing. This protection compares the current stored value on each

@@ -3,7 +3,7 @@ import { listProjectPeople } from '../../api/auth';
 import { authRequestsPauseRevision } from '../../api/client';
 import type { ProjectPerson } from '../../api/auth-types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange } from '../task-cache/project-cache';
 import { canSetAssignedTo, useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 
 export const useDirectAssigneeCatalogue = (projectId: string, taskId: string, enabled: boolean, identity: string) => {
@@ -44,14 +44,14 @@ export const useDirectAssigneeCatalogue = (projectId: string, taskId: string, en
               if (!current || !eligible()) throw new Error('Task observation is no longer current.');
               return work();
             } catch (error) {
-              if (error instanceof TaskCacheLifecycleChanged && authRequestsPauseRevision() !== pauseRevision && !signal.aborted && !scope.isInvalidated &&
+              if (isRetryableTaskCacheLifecycleChange(error) && authRequestsPauseRevision() !== pauseRevision && !signal.aborted && !scope.isInvalidated &&
                 sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) continue;
               throw error;
             }
           }
         };
         const result = await runQualified(() => listProjectPeople(projectId, { kind: 'catalogue' }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
-        await runQualified(() => setState({ status: 'ready', items: result.items, error: null }));
+        await runQualified(() => { scope.markProjectReadable(projectId); setState({ status: 'ready', items: result.items, error: null }); });
       } catch (error) {
         if (!signal.aborted && !scope.isInvalidated) setState({ status: 'error', items: [], error });
       }

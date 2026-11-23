@@ -4,7 +4,7 @@ import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const otherId = "00000000-0000-4000-8000-000000000003";
-const token = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
+const token = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", lastUsedAt: null, createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
 const exact = "2099-10-25T12:34:56.123456789Z";
 const signal = () => new AbortController().signal;
 const response = (body: unknown, status = 200, principal: string | null = userId) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...(principal === null ? {} : { "Daynight-User-ID": principal }) } });
@@ -13,15 +13,15 @@ afterEach(() => invalidateAuthRequests());
 
 describe("editable nullable token expiration API", () => {
   it("reads unlimited metadata only for the reviewed account", async () => {
-    const fetcher = install(response({ items: [token] }));
-    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([token]);
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/me/tokens", expect.objectContaining({ cache: "no-store", credentials: "same-origin", redirect: "error" }));
+    const fetcher = install(response({ items: [{ ...token, description: null }] }));
+    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([{ ...token, description: null }]);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v2/me/tokens", expect.objectContaining({ cache: "no-store", credentials: "same-origin", redirect: "error" }));
   });
 
   it.each([null, exact])("creates a token with explicit nullable expiry %s", async (expiresAt) => {
-    const fetcher = install(response({ ...token, expiresAt, token: "one-time-token" }, 201));
-    await expect(createToken({ name: token.name, expiresAt }, signal())).resolves.toMatchObject({ expiresAt });
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/me/tokens", expect.objectContaining({ body: JSON.stringify({ name: token.name, expiresAt }) }));
+    const fetcher = install(response({ ...token, description: null, expiresAt, token: "one-time-token" }, 201));
+    await expect(createToken({ name: token.name, expiresAt, expectedUserId: userId }, signal(), vi.fn())).resolves.toMatchObject({ expiresAt });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v2/me/tokens", expect.objectContaining({ body: JSON.stringify({ expectedUserId: userId, name: token.name, expiresAt }) }));
   });
 
   it.each([[null, exact], [exact, null]] as const)("updates %s to %s with exact observed expiry and reviewed account", async (expectedExpiresAt, expiresAt) => {
@@ -69,7 +69,7 @@ describe("editable nullable token expiration API", () => {
     await expect(listTokens(signal(), userId, vi.fn())).rejects.toBeInstanceOf(ApiError);
     fetcher.mockResolvedValue(response({ items: [{ ...token, expiresAt: "bad" }] }));
     await expect(listTokens(signal(), userId, vi.fn())).rejects.toBeInstanceOf(ApiError);
-    expect(() => createToken({ name: "CLI", expiresAt: "bad" }, signal())).toThrow(Error);
+    expect(() => createToken({ name: "CLI", expiresAt: "bad", expectedUserId: userId }, signal(), vi.fn())).toThrow(Error);
     expect(() => updateTokenExpiry(token.id, { expiresAt: null, expectedExpiresAt: "bad", expectedUserId: userId }, signal(), vi.fn())).toThrow(Error);
   });
 

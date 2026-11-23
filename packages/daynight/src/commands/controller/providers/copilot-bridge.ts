@@ -1,17 +1,22 @@
+import { NativeDispatchRejectedError } from "./native-rpc.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { CopilotClient, CopilotSession, SessionConfig } from "@github/copilot-sdk";
+import { freezeNativeLifecycleFence, type NativeLifecycleFence } from "../native-lifecycle.js";
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import type { CopilotBridgeImageInput, CopilotBridgeExport } from "./copilot-bridge-media.js";
+import { parseCopilotRouteObservation, type CopilotRouteObservation } from "./copilot-route-observation.js";
 
 export type CopilotBridgeSpool = { readonly path: string; write(bytes: Uint8Array): void; seal(): void; remove(): void };
 export type CopilotBridgeMediaOptions = { createSpool(maxBytes: number): CopilotBridgeSpool };
 export type CopilotBridgeImage = Readonly<{ kind: "copilot_bridge_image"; path: string; byteLength: string; sha256: string; mediaType: string }>;
 type ImageOwnership = { spool: CopilotBridgeSpool; owner: boolean; readers: number; removed: boolean; retired(): void };
 const images = new WeakMap<object, ImageOwnership>();
-const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput) => Promise<string>>();
+const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null) => Promise<string>>();
+const routeSessions = new WeakMap<object, () => Promise<CopilotRouteObservation | null>>();
+export const observeCopilotBridgeRoute = async (session: CopilotSession): Promise<CopilotRouteObservation | null> => routeSessions.get(session)?.() ?? null;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const retire = (entry: ImageOwnership) => { if (!entry.owner && !entry.readers && !entry.removed) { entry.spool.remove(); entry.removed = true; entry.retired(); } };
 export const isCopilotBridgeImage = (value: unknown): value is CopilotBridgeImage => value !== null && typeof value === "object" && images.has(value) && !images.get(value)!.removed;
@@ -22,12 +27,13 @@ export const retainCopilotBridgeImage = (image: CopilotBridgeImage): (() => void
   return () => { if (!released) { released = true; entry.readers--; } retire(entry); };
 };
 export const releaseCopilotBridgeImage = (image: CopilotBridgeImage): void => { const entry = images.get(image); if (!entry) throw new Error("Copilot image has no controlled bridge lease."); entry.owner = false; retire(entry); };
-export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput): Promise<string> => {
-  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input);
+export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null = null): Promise<string> => {
+  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify, observation);
 };
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 const remoteError = (raw: unknown): Error => {
   const error = object(raw), message = typeof error.message === "string" ? error.message : "Copilot bridge operation failed; outcome is unknown.";
+  if (error.kind === "not_dispatched") return new NativeDispatchRejectedError(message);
   return error.kind === "response" && typeof error.code === "number" ? new ResponseError(error.code, message) : new Error(message);
 };
 type Transfer = { spool: CopilotBridgeSpool; length: number; offset: number; mime: string; hash: ReturnType<typeof createHash>; marker?: CopilotBridgeImage; claimed: boolean };
@@ -38,10 +44,13 @@ export const startCopilotBridge = (options: {
   cwd: string; env: NodeJS.ProcessEnv; port: number; token: string;
   onSpawn(child: ChildProcess): void; onLost(error: Error): void; onDiagnostic?(line: string): void;
   media?: CopilotBridgeMediaOptions;
+  nativeLifecycleFence?: NativeLifecycleFence;
 }) => {
+  const nativeLifecycleFence = options.nativeLifecycleFence === undefined ? undefined : freezeNativeLifecycleFence(options.nativeLifecycleFence);
   const child = spawn(process.execPath, ["--max-old-space-size=512", fileURLToPath(new URL("./copilot-bridge-worker.js", import.meta.url))], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   let closing = false, failed = false, closed = false, peakRss = 0, peakHeap = 0, peakExternal = 0, peakArrayBuffers = 0, samples = 0;
   const waiters = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  const admissions = new Map<string, { sessionId: string; verify(): void; consumed: boolean; error: Error | undefined }>();
   const callbacks = new Map<string, Callbacks>(), transfers = new Map<string, Transfer>();
   const permissions = new Map<string, { sessionId: string; request: object; serialized: string }>();
   const owned = new Set<CopilotBridgeImage>();
@@ -152,6 +161,13 @@ export const startCopilotBridge = (options: {
     }
     if (message.type !== "request" || typeof message.id !== "string") throw new Error("Invalid Copilot bridge message.");
     try {
+      if (message.method === "image_admission") {
+        const admission = typeof message.admissionId === "string" ? admissions.get(message.admissionId) : undefined;
+        if (closed || closing || failed || !admission || admission.consumed || admission.sessionId !== message.sessionId) throw new Error("Copilot image admission is no longer current.");
+        admission.consumed = true;
+        try { admission.verify(); } catch (error) { admission.error = error instanceof Error ? error : new Error(String(error)); throw error; }
+        await respond(message.id, true); return;
+      }
       if (message.method === "media") { await respond(message.id, media(object(message.args))); return; }
       if (message.method !== "callback" || typeof message.sessionId !== "string" || typeof message.callback !== "string" || !Array.isArray(message.args)) throw new Error("Invalid Copilot bridge callback.");
       const callback = callbacks.get(message.sessionId)?.[message.callback];
@@ -184,7 +200,15 @@ export const startCopilotBridge = (options: {
       };
       return (...args: unknown[]) => request("call", [sessionId, [name], args]);
     } }) as CopilotSession;
-    imageSessions.set(value, async input => await request("sendImages", [sessionId, input]) as string);
+    routeSessions.set(value, async () => parseCopilotRouteObservation(await request("observeRoute", [sessionId]), sessionId));
+    imageSessions.set(value, async (input, verify, observation) => {
+      if (closed || closing || failed || admissions.size) throw new Error("Copilot image admission is unavailable.");
+      const admissionId = randomUUID(), admission = { sessionId, verify, consumed: false, error: undefined as Error | undefined };
+      admissions.set(admissionId, admission);
+      try { return await request("sendImages", [sessionId, input, admissionId, observation]) as string; }
+      catch (error) { throw admission.error ?? error; }
+      finally { admissions.delete(admissionId); }
+    });
     sessions.set(sessionId, value); return value;
   };
   const open = async (method: "createSession" | "resumeSession", sessionId: string, config: SessionConfig): Promise<CopilotSession> => {
@@ -205,7 +229,7 @@ export const startCopilotBridge = (options: {
     if (name === "resumeSession") return (id: string, config: SessionConfig) => open("resumeSession", id, config);
     return (...args: unknown[]) => request("call", ["client", [name], args]);
   } }) as CopilotClient;
-  const ready = spawned.then(async () => { await request("initialize", [options.port, options.token]); return client; });
+  const ready = spawned.then(async () => { await request("initialize", [options.port, options.token, ...(nativeLifecycleFence ? [nativeLifecycleFence] : [])]); return client; });
   const bounded = async (operation: Promise<unknown>, ms: number) => {
     let timer: NodeJS.Timeout | undefined;
     try { await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Copilot bridge stop is unconfirmed.")), ms); })]); }
@@ -245,7 +269,7 @@ export const startCopilotBridge = (options: {
         catch (error) { errors.push(error); }
       }
       for (const image of owned) try { releaseCopilotBridgeImage(image); } catch (error) { errors.push(error); }
-      callbacks.clear(); subscriptions.clear(); permissions.clear();
+      admissions.clear(); callbacks.clear(); subscriptions.clear(); permissions.clear();
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "Copilot bridge cleanup did not release every retained transfer.");
     })();

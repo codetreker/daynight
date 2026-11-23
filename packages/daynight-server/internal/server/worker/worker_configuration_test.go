@@ -15,6 +15,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/google/uuid"
 )
 
@@ -33,6 +35,10 @@ func (f *configurationHTTPFixture) request(method, path, body string, versions .
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header = f.headers.Clone()
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(workerToolPathsHeader, "2")
+	if strings.HasSuffix(path, "/configuration") || len(versions) > 0 {
+		request.Header.Set(workerPlatformTaskModeHeader, "1")
+	}
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -55,25 +61,48 @@ func configurationHTTPModel(t *testing.T, value any) model.WorkerConfiguration {
 	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
 		t.Fatal(err)
 	}
+	if result.PlatformTaskMode == "" {
+		var legacy struct {
+			Prefer bool `json:"preferPlatformSpecificTasks"`
+		}
+		if err := json.Unmarshal([]byte(jsonBody(t, value)), &legacy); err != nil {
+			t.Fatal(err)
+		}
+		result.PlatformTaskMode = model.PlatformTaskAll
+		if legacy.Prefer {
+			result.PlatformTaskMode = model.PlatformTaskPrefer
+		}
+	}
 	return result
 }
 
-func configurationHTTPLegacyValue(t *testing.T, value model.WorkerConfiguration) map[string]any {
+func configurationHTTPWireValue(t *testing.T, value model.WorkerConfiguration) map[string]any {
 	t.Helper()
 	var result map[string]any
 	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
 		t.Fatal(err)
 	}
 	delete(result, "agentControlMode")
-	delete(result, "toolPaths")
 	return result
 }
 
 func configurationHTTPExchange(t *testing.T, value any) *model.WorkerConfigurationExchange {
 	t.Helper()
+	if value == nil {
+		return nil
+	}
 	var result model.WorkerConfigurationExchange
-	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
+	raw := []byte(jsonBody(t, value))
+	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
+	}
+	if result.Bootstrap != nil && result.Bootstrap.PlatformTaskMode == "" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		bootstrap := configurationHTTPModel(t, fields["bootstrap"])
+		result.Bootstrap = &bootstrap
 	}
 	return &result
 }
@@ -187,7 +216,7 @@ func (f *configurationHTTPFixture) put(t *testing.T, current model.WorkerConfigu
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
-	legacyValue := configurationHTTPLegacyValue(t, value)
+	legacyValue := configurationHTTPWireValue(t, value)
 	response := f.request(http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": revision, "value": legacyValue}))
 	verify()
 	f.tx.WriteWorkerCall = nil
@@ -281,7 +310,14 @@ func (f *configurationHTTPFixture) report(t *testing.T, current model.WorkerConf
 			called("desired")
 			configurationHTTPCheck(t, []string{user, worker}, []string{f.handler.principal.UserID, f.workerID})
 			configurationHTTPCheck(t, revision, int64(1))
-			configurationHTTPCheck(t, value, *expectedExchange.Bootstrap)
+			expectedValue := *expectedExchange.Bootstrap
+			if expectedValue.ArchiveSessions == nil {
+				enabled := true
+				expectedValue.ArchiveSessions = &enabled
+			}
+			expectedValue.PreserveArchiveSessions = false
+			expectedValue.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+			configurationHTTPCheck(t, value, expectedValue)
 			return configurationHTTPCopy(t, *saved), nil
 		}
 	}
@@ -338,8 +374,9 @@ func (f *configurationHTTPFixture) report(t *testing.T, current model.WorkerConf
 func configurationHTTPValue() map[string]any {
 	return map[string]any{
 		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false,
-		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
-		"projects": []any{},
+		"native":    map[string]any{"agent": "codex", "model": nil, "args": []any{}},
+		"projects":  []any{},
+		"toolPaths": map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}},
 	}
 }
 
@@ -347,6 +384,10 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
+	if strings.HasSuffix(path, "/configuration") || len(versions) > 0 {
+		request.Header.Set(workerPlatformTaskModeHeader, "1")
+	}
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -357,9 +398,20 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 }
 
 func configurationHTTPReportBody(bootstrap, observation any) map[string]any {
+	if fields, ok := bootstrap.(map[string]any); ok {
+		if mode, exists := fields["platformTaskMode"]; exists {
+			converted := make(map[string]any, len(fields))
+			for key, value := range fields {
+				converted[key] = value
+			}
+			delete(converted, "platformTaskMode")
+			converted["preferPlatformSpecificTasks"] = mode != "all" && mode != model.PlatformTaskAll
+			bootstrap = converted
+		}
+	}
 	body := workerSnapshotReportBody()
 	body["taskInventory"] = nil
-	body["configuration"] = map[string]any{"bootstrap": bootstrap, "observation": observation}
+	body["configuration"] = map[string]any{"bootstrap": bootstrap, "observation": observation, "toolPathsBootstrap": nil}
 	return body
 }
 
@@ -564,7 +616,7 @@ func TestWorkerConfigurationHTTPStrictInputAndNegotiation(t *testing.T) {
 	for _, versions := range [][]string{{""}, {"0"}, {"2"}, {"1, 1"}, {"1", "1"}} {
 		assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", base, versions...), http.StatusBadRequest, "invalid_input")
 	}
-	for _, body := range []string{jsonBody(t, workerSnapshotReportBody()), strings.Replace(base, `"configuration":{"bootstrap":null,"observation":null}`, `"configuration":null`, 1), strings.Replace(base, `"bootstrap":null`, `"bootstrap":null,"supported":true`, 1)} {
+	for _, body := range []string{jsonBody(t, workerSnapshotReportBody()), strings.Replace(base, `"configuration":{"bootstrap":null,"observation":null,"toolPathsBootstrap":null}`, `"configuration":null`, 1), strings.Replace(base, `"bootstrap":null`, `"bootstrap":null,"supported":true`, 1)} {
 		assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", body, "1"), http.StatusBadRequest, "invalid_input")
 	}
 	observation := configurationHTTPObservation(configurationHTTPItem("maxConcurrent", 3))
@@ -601,6 +653,7 @@ func TestWorkerConfigurationHTTPResourceAdmission(t *testing.T) {
 		request := httptest.NewRequest(http.MethodHead, server.URL+f.path(), nil)
 		request.RequestURI = ""
 		authorizeResourceRequest(f.handler, request)
+		request.Header.Set(workerToolPathsHeader, "2")
 		var err error
 		head, err = server.Client().Do(request)
 		if err != nil {
@@ -632,7 +685,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	origin := workerTestOrigin
 	value := configurationHTTPModel(t, configurationHTTPValue())
 	putBody := func(revision string) string {
-		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPLegacyValue(t, value)})
+		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPWireValue(t, value)})
 	}
 	f.headers = http.Header{}
 	f.handler.authenticate = false
@@ -651,10 +704,10 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}}}
 	bootstrap := &model.WorkerConfigurationExchange{Bootstrap: &value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPWireValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
 	f.get(t, uninitialized)
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPWireValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
 	current := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "0"}
 	f.actor(t, bob, cookieHeaders(origin))
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
@@ -711,5 +764,57 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	f.put(t, current, value, "3", nil, []string{projectID}, model.ErrNotFound, http.StatusNotFound, "not_found")
 	if strings.Contains(logs.String(), defaultHTTPToken()) || strings.Contains(logs.String(), httpTestToken(model.SessionCredential)) || strings.Contains(logs.String(), "private-configuration-repository") {
 		t.Fatal("configuration requests leaked credentials or private repository details to logs")
+	}
+}
+
+func TestConfigurationPUTPreservedEmptyFilterAtLegacyBodyLimit(t *testing.T) {
+	f := newConfigurationHTTPFixture(t, io.Discard)
+	value := configurationHTTPModel(t, configurationHTTPValue())
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := true
+	current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Raw: raw, ArchiveSessions: &archive}, ObservationRevision: "0"}
+	f.tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		return op(&workerHTTPReadScope{t: t, DAO: &workerHTTPReader{t: t, WorkerConfigurationCall: func(context.Context, string, string) (model.WorkerConfigurationResource, error) { return current, nil }}})
+	}
+	response := f.request(http.MethodGet, f.path(), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET: %s", response.Body)
+	}
+	var got struct {
+		Desired struct {
+			Value map[string]json.RawMessage `json:"value"`
+		} `json:"desired"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Desired.Value["taskTagFilter"]) != `{"names":[],"match":"any"}` {
+		t.Fatalf("GET lost filter: %s", response.Body)
+	}
+	body, err := json.Marshal(map[string]any{"revision": "1", "value": got.Desired.Value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := httpx.MaxJSONBody + workerprotocol.EmptyTaskTagFilterMemberBytes
+	body = append(body, bytes.Repeat([]byte(" "), int(limit)-len(body))...)
+	f.tx.WriteWorkerCall = func(ctx context.Context, op func(store.WorkerScope) error) (store.Completion, error) {
+		dao := &workerHTTPWriteDAO{t: t, WorkerConfigurationCall: func(context.Context, string, string) (model.WorkerConfigurationResource, error) { return current, nil }}
+		err := op(&workerHTTPWriteScope{t: t, DAO: dao})
+		if err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
+	response = f.request(http.MethodPut, f.path(), string(body))
+	if response.Code != http.StatusOK {
+		t.Fatalf("old client retained GET field at limit: %d %s", response.Code, response.Body)
+	}
+	response = f.request(http.MethodPut, f.path(), string(append(body, ' ')))
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("one byte over limit: %d %s", response.Code, response.Body)
 	}
 }

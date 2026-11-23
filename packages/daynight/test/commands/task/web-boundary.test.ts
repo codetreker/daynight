@@ -12,7 +12,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const dependentId = "cccccccc-3333-4333-8333-333333333333";
 const time = "2026-10-20T00:00:00.123456Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: dependentId, version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", tags: [], properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "Content-Type": "application/json" } });
 const cleanups: (() => void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach((cleanup) => cleanup()); });
@@ -53,7 +53,7 @@ describe("task CLI protocol outcomes", () => {
     const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
     expect(diagnostic).toContain(code); expect(diagnostic).toContain("refused-request");
     if (status === 401) expect(diagnostic).toContain("daynight login");
-    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch).toHaveBeenCalledTimes(args[0] === "show" ? 1 : 2);
     for (const [, init] of f.fetch.mock.calls) expect(new Headers(init!.headers).get("Authorization")).toBe("Bearer fixture-token");
   });
 
@@ -86,6 +86,6 @@ describe("task CLI protocol outcomes", () => {
     f.context.stdout.mockClear();
     expect(await f.run(["show", taskId, "--json", "--project", projectId])).toBe(0);
     expect((parseApiJson(f.context.stdout.mock.calls[0]![0]) as Task).description).toBe(markdown);
-    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["GET", "PATCH", "GET", "GET"]);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["PATCH", "GET"]);
   });
 });

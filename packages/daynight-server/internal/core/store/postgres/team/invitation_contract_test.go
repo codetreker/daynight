@@ -113,7 +113,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		joined, err := tx.AddInvitedMember(ctx, member.UserID)
+		joined, err := tx.AddMember(ctx, member.UserID, model.ProjectMemberRole)
 		if err != nil {
 			return err
 		}

@@ -19,11 +19,13 @@ export type AccountPublication =
   | { readonly kind: "failed"; readonly issue: AccountSignalIssue; readonly persisted: boolean }
   | { readonly kind: "superseded" };
 
+export type AccountSignalSource = "broadcast" | "storage" | "foreground";
+
 export type AccountSignal = {
   read: () => ActiveUserRead;
   publish: (userId: string | null) => AccountPublication;
   retryNotification: (expectedUserId: string | null) => AccountPublication;
-  subscribe: (listener: () => void) => () => void;
+  subscribe: (listener: (source: AccountSignalSource) => void) => () => void;
   dispose: () => void;
 };
 
@@ -43,17 +45,17 @@ export function createAccountSignal(): AccountSignal {
   let channel: BroadcastChannel | undefined;
   let channelOpenError: unknown;
   let pending: { userId: string | null; issue: AccountSignalIssue } | undefined;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(source: AccountSignalSource) => void>();
 
-  const notify = () => {
+  const notify = (source: AccountSignalSource) => {
     if (disposed) return;
     for (const listener of listeners) {
       if (disposed) break;
-      listener();
+      listener(source);
     }
   };
   const onMessage = (event: MessageEvent) => {
-    if (event.data === CHANGE_MESSAGE) notify();
+    if (event.data === CHANGE_MESSAGE) notify("broadcast");
   };
   const openChannel = () => {
     try {
@@ -66,13 +68,14 @@ export function createAccountSignal(): AccountSignal {
     }
   };
   const onStorage = (event: StorageEvent) => {
-    if (event.key === ACTIVE_USER_KEY || event.key === null) notify();
+    if (event.key === ACTIVE_USER_KEY || event.key === null) notify("storage");
   };
+  const onForeground = () => notify("foreground");
   const onVisibility = () => {
-    if (document.visibilityState === "visible") notify();
+    if (document.visibilityState === "visible") onForeground();
   };
   window.addEventListener("storage", onStorage);
-  window.addEventListener("focus", notify);
+  window.addEventListener("focus", onForeground);
   document.addEventListener("visibilitychange", onVisibility);
   openChannel();
 
@@ -164,7 +167,7 @@ export function createAccountSignal(): AccountSignal {
       listeners.clear();
       pending = undefined;
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", notify);
+      window.removeEventListener("focus", onForeground);
       document.removeEventListener("visibilitychange", onVisibility);
       if (channel) {
         channel.removeEventListener("message", onMessage);

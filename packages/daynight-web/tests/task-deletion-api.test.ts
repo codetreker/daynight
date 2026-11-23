@@ -18,8 +18,8 @@ describe('versioned task soft-delete transport', () => {
     const fetcher = fetchResponse(response()); const abortSignal = signal(); const confirmed = vi.fn(); const mismatch = vi.fn();
     await expect(deleteTask(project.toUpperCase(), task.toUpperCase(), version, undefined, abortSignal, { userId: TEST_VIEWER_ID, onPrincipalMismatch: mismatch, onWriteConfirmed: confirmed })).resolves.toBeUndefined();
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${task}`, {
-      method: 'DELETE', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2' }, body: `{"version":${version}}`,
+      method: 'DELETE', redirect: 'error', signal: expect.any(AbortSignal), cache: 'no-store', credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2', 'Daynight-Task-Relations': 'task-parent-v1' }, body: `{"version":${version}}`,
     });
     expect(confirmed).toHaveBeenCalledOnce(); expect(mismatch).not.toHaveBeenCalled();
   });

@@ -19,7 +19,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -210,7 +209,10 @@ func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*ta
 	for name, count := range want {
 		counts[name] = count
 	}
-	counts["snapshot"], counts["access"] = 1, 1
+	counts["snapshot"], counts["access"] = 2, 1
+	if snapshots, ok := want["snapshot"]; ok {
+		counts["snapshot"] = snapshots
+	}
 	plan := newHTTPCallPlan(f.t, counts)
 	base := newTaskHTTPMockBase(f.t, "Task HTTP snapshot")
 	reader := &taskHTTPReaderMock{taskHTTPMockBase: base.withLabel("tasks")}
@@ -245,11 +247,12 @@ func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*ta
 	configure(reader, projects, sessions, scope, plan)
 	f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
 		plan.Called("snapshot")
-		if run == nil || f.active {
+		if run == nil {
 			unexpectedHTTPCall(f.t, "snapshot callback")
 		}
+		previousContext, previousActive := f.ctx, f.active
 		f.ctx, f.active = ctx, true
-		defer func() { f.active = false }()
+		defer func() { f.ctx, f.active = previousContext, previousActive }()
 		return run(scope)
 	}
 }
@@ -283,6 +286,10 @@ func (f *taskHTTPFixture) expectList(want []store.TaskQuery, pages []store.TaskP
 	pages = copyTaskHTTPSlice(pages)
 	for index := range want {
 		query := &want[index]
+		query.TagFilter.TagIDs = append([]string{}, query.TagFilter.TagIDs...)
+		if query.TagFilter.TagMatch == "" {
+			query.TagFilter.TagMatch = "all"
+		}
 		query.Page.After = copyTaskHTTPPointer(query.Page.After)
 		query.Status = copyTaskHTTPPointer(query.Status)
 		query.Ready = copyTaskHTTPPointer(query.Ready)
@@ -413,15 +420,25 @@ func (base taskHTTPMockBase) need(method string, configured bool) {
 
 type taskHTTPSnapshotScopeMock struct {
 	taskHTTPMockBase
-	CredentialDAOFn func() store.CredentialReader
-	TeamDAOFn       func() store.TeamReader
-	ProjectDAOFn    func() store.ProjectReader
-	TaskDAOFn       func() store.TaskReader
-	WorkerDAOFn     func() store.WorkerReader
-	SessionDAOFn    func() store.SessionReader
-	BotDAOFn        func() store.BotReader
-	AttachmentDAOFn func() store.AttachmentReader
-	ObservedAtFn    func(context.Context) (time.Time, error)
+	CredentialDAOFn    func() store.CredentialReader
+	TeamDAOFn          func() store.TeamReader
+	ProjectDAOFn       func() store.ProjectReader
+	TaskDAOFn          func() store.TaskReader
+	WorkerDAOFn        func() store.WorkerReader
+	SessionDAOFn       func() store.SessionReader
+	BotDAOFn           func() store.BotReader
+	AttachmentDAOFn    func() store.AttachmentReader
+	ObservedAtFn       func(context.Context) (time.Time, error)
+	UserCandidateDAOFn func() store.UserCandidateReader
+}
+
+func (mock *taskHTTPSnapshotScopeMock) UserCandidateDAO() store.UserCandidateReader {
+	mock.need("UserCandidateDAO", mock.UserCandidateDAOFn != nil)
+	return mock.UserCandidateDAOFn()
+}
+
+func (mock *taskHTTPSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (mock *taskHTTPSnapshotScopeMock) CredentialDAO() store.CredentialReader {
@@ -473,11 +490,27 @@ var _ store.SnapshotScope = (*taskHTTPSnapshotScopeMock)(nil)
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
-	EligibilityDAOFn func() store.WebhookEligibilityDAO
-	CaptureDAOFn     func() store.WebhookCaptureDAO
-	ProjectDAOFn     func() store.ProjectWriteDAO
-	TaskDAOFn        func() store.TaskWriteDAO
-	SessionDAOFn     func() store.ProjectSessionDAO
+	EligibilityDAOFn           func() store.WebhookEligibilityDAO
+	CaptureDAOFn               func() store.WebhookCaptureDAO
+	ProjectDAOFn               func() store.ProjectWriteDAO
+	TaskDAOFn                  func() store.TaskWriteDAO
+	SessionDAOFn               func() store.ProjectSessionDAO
+	GoalDependencyDAOFn        func() store.GoalDependencyDAO
+	ProjectGoalDependencyDAOFn func() store.ProjectGoalDependencyDAO
+}
+
+func (mock *taskHTTPProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
+	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
+	mock.need("GoalDependencyDAO", mock.GoalDependencyDAOFn != nil)
+	return mock.GoalDependencyDAOFn()
 }
 
 func (mock *taskHTTPProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -517,10 +550,6 @@ type taskHTTPReaderMock struct {
 	TaskPriorityListFn         func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
 	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
 	TaskHeaderFn               func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn                 func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn                func(context.Context, string) ([]model.TaskStep, error)
-	TaskStepPageFn             func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
-	TaskStepSummaryFn          func(context.Context, string, string) (store.TaskStepProjection, error)
 	ThreadMessageFn            func(context.Context, string, string) (model.ThreadMessage, error)
 	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
 	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
@@ -529,6 +558,8 @@ type taskHTTPReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
+	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
@@ -568,26 +599,6 @@ func (mock *taskHTTPReaderMock) TaskPresence(p0 context.Context, p1 string, p2 s
 func (mock *taskHTTPReaderMock) TaskHeader(p0 context.Context, p1 string, p2 string) (model.TaskHeader, error) {
 	mock.need("TaskHeader", mock.TaskHeaderFn != nil)
 	return mock.TaskHeaderFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", mock.TaskStepFn != nil)
-	return mock.TaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	mock.need("TaskStepPage", mock.TaskStepPageFn != nil)
-	return mock.TaskStepPageFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskHTTPReaderMock) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	mock.need("TaskStepSummary", mock.TaskStepSummaryFn != nil)
-	return mock.TaskStepSummaryFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPReaderMock) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
@@ -630,6 +641,16 @@ func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
 }
 
+func (mock *taskHTTPReaderMock) TaskSyncGoalDependsOn(ctx context.Context, project string, ids []string) (map[string][]string, error) {
+	mock.need("TaskSyncGoalDependsOn", mock.TaskSyncGoalDependsOnFn != nil)
+	return mock.TaskSyncGoalDependsOnFn(ctx, project, ids)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
+	mock.need("TaskSyncActiveTasks", mock.TaskSyncActiveTasksFn != nil)
+	return mock.TaskSyncActiveTasksFn(ctx, project)
+}
+
 func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
 	mock.need("TaskSyncDependencyStates", mock.TaskSyncDependencyStatesFn != nil)
 	return mock.TaskSyncDependencyStatesFn(ctx, id, lower)
@@ -645,6 +666,7 @@ type taskHTTPWriterMock struct {
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDsFn     func(context.Context, []string) ([]string, error)
 	ActiveDependentIDsFn func(context.Context, string) ([]string, error)
+	UnfinishedChildIDsFn func(context.Context, string) ([]string, error)
 	ReachableFn          func(context.Context, string, string, store.DependencyReplacement) (bool, error)
 	CreateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
 	UpdateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
@@ -652,12 +674,7 @@ type taskHTTPWriterMock struct {
 	DependentIDsFn       func(context.Context, string) ([]string, error)
 	DeleteTaskFn         func(context.Context, string, bool) (model.TaskTombstone, error)
 	TaskHeaderFn         func(context.Context, string) (model.TaskHeader, error)
-	TaskStepsFn          func(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStepFn     func(context.Context, string, model.TaskStep) error
 	TouchTaskFn          func(context.Context, string, time.Time) error
-	UpdateTaskStepFn     func(context.Context, string, model.TaskStep) error
-	MoveTaskStepFn       func(context.Context, string, string, int64, int64) error
-	DeleteTaskStepFn     func(context.Context, string, string, int64, int64) error
 }
 
 func (mock *taskHTTPWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
@@ -688,6 +705,11 @@ func (mock *taskHTTPWriterMock) VisibleTaskIDs(ctx context.Context, ids []string
 func (mock *taskHTTPWriterMock) ActiveDependentIDs(p0 context.Context, p1 string) ([]string, error) {
 	mock.need("ActiveDependentIDs", mock.ActiveDependentIDsFn != nil)
 	return mock.ActiveDependentIDsFn(p0, p1)
+}
+
+func (mock *taskHTTPWriterMock) UnfinishedChildIDs(ctx context.Context, id string) ([]string, error) {
+	mock.need("UnfinishedChildIDs", mock.UnfinishedChildIDsFn != nil)
+	return mock.UnfinishedChildIDsFn(ctx, id)
 }
 
 func (mock *taskHTTPWriterMock) Reachable(p0 context.Context, p1 string, p2 string, p3 store.DependencyReplacement) (bool, error) {
@@ -725,34 +747,9 @@ func (mock *taskHTTPWriterMock) TaskHeader(p0 context.Context, p1 string) (model
 	return mock.TaskHeaderFn(p0, p1)
 }
 
-func (mock *taskHTTPWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
-	return mock.InsertTaskStepFn(p0, p1, p2)
-}
-
 func (mock *taskHTTPWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
 	mock.need("TouchTask", mock.TouchTaskFn != nil)
 	return mock.TouchTaskFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
-	return mock.UpdateTaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
-	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskHTTPWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
-	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 var _ store.TaskWriteDAO = (*taskHTTPWriterMock)(nil)
@@ -770,6 +767,11 @@ type taskHTTPProjectReaderMock struct {
 	ScopedProjectsFn      func(context.Context, model.Principal, store.ProjectScope, store.Page) (store.ProjectPage, error)
 	TransferTeamFn        func(context.Context, string) (store.TransferTeam, error)
 	TransferRoleFn        func(context.Context, string, string, string) (*model.ProjectRole, error)
+}
+
+func (mock *taskHTTPProjectReaderMock) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.need("FindVisibleRepositoryForCreation", false)
+	panic("unreachable")
 }
 
 func (mock *taskHTTPProjectReaderMock) Project(p0 context.Context, p1 string) (model.Project, error) {
@@ -847,6 +849,8 @@ type taskHTTPProjectWriterMock struct {
 	CreateGrantFn           func(context.Context, string, model.ProjectRole) (model.ProjectGrant, error)
 	LockTransferOwnershipFn func(context.Context) (model.ProjectOwnership, error)
 	LockTransferTeamsFn     func(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error)
+	RepositoryIdentityFn    func(context.Context) (*string, error)
+	RepositoryOccupiedFn    func(context.Context, string, string) (bool, error)
 	MoveOwnershipFn         func(context.Context, string) (model.ProjectOwnership, error)
 }
 
@@ -1034,7 +1038,7 @@ func (mock *taskHTTPReaderMock) TaskWorkGroups(context.Context, string, store.Ta
 	mock.need("TaskWorkGroups", false)
 	panic("unreachable")
 }
-func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	mock.need("TaskWorkTargets", false)
 	panic("unreachable")
 }
@@ -1045,378 +1049,6 @@ func (mock *taskHTTPSessionReaderMock) TaskSessionSources(ctx context.Context, p
 func (mock *taskHTTPSessionReaderMock) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
 	mock.need("TaskSessionInspectionSource", false)
 	panic("unreachable")
-}
-
-type stepHTTPFixture struct {
-	*taskHTTPFixture
-	files    *local.Storage
-	role     model.ProjectRole
-	server   *httptest.Server
-	wireMu   sync.Mutex
-	wireDone chan struct{}
-}
-
-func stepsHTTPFixture(t *testing.T, logs io.Writer) (*stepHTTPFixture, *resourceTestHandler, api.Task) {
-	t.Helper()
-	project, target, principal := taskHTTPMockModels()
-	files := attachmentTestFiles(t)
-	f := &stepHTTPFixture{taskHTTPFixture: &taskHTTPFixture{t: t, store: newHTTPTestStore(t), project: project, target: target, principal: principal, observed: target.UpdatedAt.Add(time.Minute)}, files: files, role: model.ProjectAdmin}
-	f.handler = resourceTestServer(t, f.store, files, logs)
-	f.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		f.wireMu.Lock()
-		done := f.wireDone
-		f.wireMu.Unlock()
-		if done == nil {
-			unexpectedHTTPCall(t, "unplanned Step HTTP request")
-		}
-		defer close(done)
-		f.handler.ServeHTTP(w, request)
-	}))
-	t.Cleanup(f.server.Close)
-	t.Cleanup(f.server.Client().CloseIdleConnections)
-	task, err := taskprotocol.RESTTask(target, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return f, f.handler, task
-}
-
-func (f *stepHTTPFixture) expectStepsRead(header model.TaskHeader, steps []model.TaskStep) {
-	header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-	steps = copyTaskHTTPSlice(steps)
-	f.expectSnapshot(map[string]int{"header": 1, "steps": 1}, func(reader *taskHTTPReaderMock, projects *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		f.stepReadRole(projects, plan)
-		reader.TaskHeaderFn = func(ctx context.Context, project, task string) (model.TaskHeader, error) {
-			f.require(ctx, project)
-			plan.Called("header")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "Step parent")
-			}
-			header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-			return header, nil
-		}
-		reader.TaskStepsFn = func(ctx context.Context, task string) ([]model.TaskStep, error) {
-			f.require(ctx, header.ProjectID)
-			plan.Called("steps")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "Step collection parent")
-			}
-			return copyTaskHTTPSlice(steps), nil
-		}
-	})
-}
-
-func (f *stepHTTPFixture) expectMissingStep(header model.TaskHeader, id string) {
-	header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-	f.expectSnapshot(map[string]int{"header": 1, "step": 1}, func(reader *taskHTTPReaderMock, projects *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		f.stepReadRole(projects, plan)
-		reader.TaskHeaderFn = func(ctx context.Context, project, task string) (model.TaskHeader, error) {
-			f.require(ctx, project)
-			plan.Called("header")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "missing Step parent")
-			}
-			header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-			return header, nil
-		}
-		reader.TaskStepFn = func(ctx context.Context, task, step string) (model.TaskStep, error) {
-			f.require(ctx, header.ProjectID)
-			plan.Called("step")
-			if task != header.ID || step != id {
-				unexpectedHTTPCall(f.t, "missing Step identity")
-			}
-			return model.TaskStep{}, model.ErrNotFound
-		}
-	})
-}
-
-type stepHTTPWritePlan struct {
-	Header    model.TaskHeader
-	Steps     []model.TaskStep
-	Operation string
-	ID        string
-	From      int64
-	To        int64
-	Candidate model.TaskStep
-	Observed  time.Time
-	Refused   bool
-	Stale     bool
-}
-
-func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
-	expected.Steps = copyTaskHTTPSlice(expected.Steps)
-	expected.Header.DeletedAt = copyTaskHTTPPointer(expected.Header.DeletedAt)
-	f.t.Helper()
-	want := map[string]int{"write": 1, "access": 1, "header": 1}
-	if !expected.Stale {
-		want["steps"] = 1
-	}
-	if !expected.Refused && !expected.Stale {
-		want["header"], want["observed"], want["touch"], want["capture"] = 2, 1, 1, 1
-		want[expected.Operation] = 1
-	}
-	plan := newHTTPCallPlan(f.t, want)
-	base := newTaskHTTPMockBase(f.t, "Step HTTP write")
-	project := &taskHTTPProjectWriterMock{taskHTTPMockBase: base.withLabel("project")}
-	project.ProjectAccessFn = func(ctx context.Context, actor model.Principal) (model.ProjectAccess, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("access")
-		if actor != f.principal {
-			unexpectedHTTPCall(f.t, "Step actor")
-		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = f.role
-		return access, nil
-	}
-	writer := &taskHTTPWriterMock{taskHTTPMockBase: base.withLabel("steps")}
-	headers := 0
-	writer.TaskHeaderFn = func(ctx context.Context, task string) (model.TaskHeader, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("header")
-		if task != expected.Header.ID {
-			unexpectedHTTPCall(f.t, "Step write parent")
-		}
-		headers++
-		header := expected.Header
-		if headers == 2 {
-			header.Version++
-		}
-		header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-		return header, nil
-	}
-	writer.TaskStepsFn = func(ctx context.Context, task string) ([]model.TaskStep, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("steps")
-		if task != expected.Header.ID {
-			unexpectedHTTPCall(f.t, "Step write collection")
-		}
-		return copyTaskHTTPSlice(expected.Steps), nil
-	}
-	writer.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("observed")
-		return expected.Observed, nil
-	}
-	writer.TouchTaskFn = func(ctx context.Context, task string, at time.Time) error {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("touch")
-		if task != expected.Header.ID || at != expected.Observed {
-			unexpectedHTTPCall(f.t, "Step touch")
-		}
-		return nil
-	}
-	if expected.Operation == "delete" {
-		writer.DeleteTaskStepFn = func(ctx context.Context, task, id string, from, remaining int64) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called("delete")
-			if task != expected.Header.ID || id != expected.ID || from != expected.From || remaining != expected.To {
-				f.t.Errorf("Step deletion arguments: %s %s %d %d", task, id, from, remaining)
-				panic("Step deletion arguments changed")
-			}
-			return nil
-		}
-	}
-	if expected.Operation == "add" || expected.Operation == "change" {
-		write := func(ctx context.Context, task string, step model.TaskStep) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called(expected.Operation)
-			if task != expected.Header.ID || step != expected.Candidate {
-				f.t.Errorf("Step candidate: %#v want %#v", step, expected.Candidate)
-				panic("Step candidate changed")
-			}
-			return nil
-		}
-		if expected.Operation == "add" {
-			writer.InsertTaskStepFn = write
-		} else {
-			writer.UpdateTaskStepFn = write
-		}
-	}
-	if expected.Operation == "move" {
-		writer.MoveTaskStepFn = func(ctx context.Context, task, id string, from, to int64) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called("move")
-			if task != expected.Header.ID || id != expected.ID || from != expected.From || to != expected.To {
-				unexpectedHTTPCall(f.t, "Step move")
-			}
-			return nil
-		}
-	}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-	capture.FreezeAudienceFn = func(ctx context.Context, project string, types []string) ([]store.WebhookAudience, error) {
-		f.require(ctx, project)
-		plan.Called("capture")
-		if !reflect.DeepEqual(types, []string{protocol.StepUpdated}) {
-			unexpectedHTTPCall(f.t, "Step capture event")
-		}
-		return []store.WebhookAudience{}, nil
-	}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
-	f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
-		plan.Called("write")
-		if project != expected.Header.ProjectID || f.active || run == nil {
-			unexpectedHTTPCall(f.t, "Step write callback")
-		}
-		f.ctx, f.active = ctx, true
-		defer func() { f.active = false }()
-		err := run(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
-}
-
-func (f *stepHTTPFixture) expectStepAccessError(write bool) {
-	base := newTaskHTTPMockBase(f.t, "Step denied access")
-	plan := newHTTPCallPlan(f.t, map[string]int{"scope": 1, "access": 1})
-	access := func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
-		plan.Called("access")
-		if actor != f.principal || project != f.project.ID || ctx.Err() != nil {
-			unexpectedHTTPCall(f.t, "denied Step authorization")
-		}
-		return model.ProjectAccess{}, model.ErrNotFound
-	}
-	if write {
-		dao := &taskHTTPProjectWriterMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal) (model.ProjectAccess, error) {
-			return access(ctx, actor, f.project.ID)
-		}}
-		scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return dao }}
-		f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
-			plan.Called("scope")
-			if project != f.project.ID {
-				unexpectedHTTPCall(f.t, "denied Project scope")
-			}
-			err := run(scope)
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-	} else {
-		dao := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: access}
-		scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return dao }}
-		f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
-			plan.Called("scope")
-			return run(scope)
-		}
-	}
-}
-
-func (f *stepHTTPFixture) authenticatedRequest(actor model.Principal, method, path, body, origin string, status int, code string) *httptest.ResponseRecorder {
-	f.t.Helper()
-	f.principal = actor
-	ctx, cancel := context.WithTimeout(f.t.Context(), 5*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, method, f.server.URL+path, strings.NewReader(body))
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Request-ID", "project-test")
-	if actor.UserID != "" {
-		f.store.WriteIdentityCall = newHTTPTestStoreForPrincipal(f.t, actor).WriteIdentityCall
-		if actor.Kind == model.SessionCredential {
-			request.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(actor.Kind)})
-		} else {
-			request.Header.Set("Authorization", "Bearer "+httpTestToken(actor.Kind))
-		}
-	}
-	if origin != "" {
-		request.Header.Set("Origin", origin)
-	}
-	done := make(chan struct{})
-	f.wireMu.Lock()
-	f.wireDone = done
-	f.wireMu.Unlock()
-	wire, err := f.server.Client().Do(request)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	data, readErr := io.ReadAll(wire.Body)
-	closeErr := wire.Body.Close()
-	if readErr != nil || closeErr != nil {
-		f.t.Fatalf("HTTP response body: read=%v close=%v", readErr, closeErr)
-	}
-	select {
-	case <-done:
-	case <-ctx.Done():
-		f.t.Fatal("Step HTTP handler did not finish")
-	}
-	f.wireMu.Lock()
-	f.wireDone = nil
-	f.wireMu.Unlock()
-	response := httptest.NewRecorder()
-	response.Code = wire.StatusCode
-	response.HeaderMap = wire.Header.Clone()
-	response.Body = bytes.NewBuffer(data)
-	if response.Code != status || response.Header().Get("Cache-Control") != "no-store" {
-		f.t.Fatalf("Step response %s %s: %d %s", method, path, response.Code, response.Body)
-	}
-	if code != "" {
-		assertProjectError(f.t, response, status, code)
-	}
-	return response
-}
-
-type stepHTTPAttachmentReader struct {
-	store.AttachmentReader
-	t    *testing.T
-	plan *httpCallPlan
-	item model.Attachment
-}
-
-func (d *stepHTTPAttachmentReader) Attachment(ctx context.Context, project, task, path string) (model.Attachment, error) {
-	d.plan.Called("metadata")
-	if project != d.item.ProjectID || task != d.item.TaskID || path != d.item.Path || ctx.Err() != nil {
-		unexpectedHTTPCall(d.t, "referenced attachment identity")
-	}
-	return d.item, nil
-}
-
-func (d *stepHTTPAttachmentReader) Attachments(ctx context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
-	d.plan.Called("metadata")
-	expected := store.AttachmentQuery{Limit: 50}
-	if project != d.item.ProjectID || task != d.item.TaskID || !reflect.DeepEqual(query, expected) || ctx.Err() != nil {
-		unexpectedHTTPCall(d.t, "referenced attachment page")
-	}
-	return store.AttachmentPage{Items: []model.Attachment{d.item}}, nil
-}
-
-func (f *stepHTTPFixture) referencedAttachment(path, contentType string, content []byte) model.Attachment {
-	f.t.Helper()
-	address, err := attachmentcore.NewAddress(f.project.ID, f.target.ID, path)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if _, err := f.files.Put(f.t.Context(), attachmentcore.Bucket, address.StoragePath, bytes.NewReader(content)); err != nil {
-		f.t.Fatal(err)
-	}
-	return model.Attachment{ProjectID: f.project.ID, TaskID: f.target.ID, Path: path, ContentType: contentType, SizeBytes: int64(len(content)), CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.CreatedAt}
-}
-
-func (f *stepHTTPFixture) expectAttachmentRead(item model.Attachment) {
-	f.expectSnapshot(map[string]int{"presence": 1, "metadata": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		reader.TaskPresenceFn = func(ctx context.Context, project, task string) (store.TaskPresence, error) {
-			f.require(ctx, project)
-			plan.Called("presence")
-			if task != item.TaskID {
-				unexpectedHTTPCall(f.t, "attachment parent")
-			}
-			return store.TaskPresence{Found: true}, nil
-		}
-		scope.AttachmentDAOFn = func() store.AttachmentReader { return &stepHTTPAttachmentReader{t: f.t, plan: plan, item: item} }
-	})
-}
-
-func (f *stepHTTPFixture) stepReadRole(projects *taskHTTPProjectReaderMock, plan *httpCallPlan) {
-	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
-		f.require(ctx, id)
-		plan.Called("access")
-		if actor != f.principal {
-			unexpectedHTTPCall(f.t, "Step read principal")
-		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = f.role
-		return access, nil
-	}
 }
 
 type sessionHTTPFixture struct {
@@ -1624,7 +1256,7 @@ type sessionHTTPStore struct {
 
 type sessionHTTPScope struct {
 	t   *testing.T
-	dao store.SessionDAO
+	dao *sessionHTTPDAO
 }
 
 func (s sessionHTTPScope) SessionDAO() store.SessionDAO { return s.dao }
@@ -1927,9 +1559,14 @@ var _ store.SessionDAO = (*sessionHTTPDAO)(nil)
 
 type sessionHTTPRejectedDAO struct{ t *testing.T }
 
-func (d sessionHTTPRejectedDAO) LockOAuthCredential(context.Context, model.Principal, string, string, time.Time) error {
+func (d sessionHTTPRejectedDAO) LockOAuthCredential(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
 	unexpectedHTTPCall(d.t, "SessionDAO.LockOAuthCredential")
 	panic("unconfigured SessionDAO.LockOAuthCredential")
+}
+
+func (d sessionHTTPRejectedDAO) ReadOAuthCredential(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	unexpectedHTTPCall(d.t, "SessionDAO.ReadOAuthCredential")
+	panic("unconfigured SessionDAO.ReadOAuthCredential")
 }
 
 func (d sessionHTTPRejectedDAO) LockCredential(a0 context.Context, a1 model.Principal, a2 time.Time) error {
@@ -2162,74 +1799,9 @@ func (d sessionHTTPRejectedDAO) LockTerminal(a0 context.Context, a1 string) ([]b
 	panic("unconfigured SessionDAO.LockTerminal")
 }
 
-func (d sessionHTTPRejectedDAO) SaveTerminal(a0 context.Context, a1 string, a2 []byte, a3 *time.Time, a4 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminal")
-	panic("unconfigured SessionDAO.SaveTerminal")
-}
-
-func (d sessionHTTPRejectedDAO) FindTerminalRegistration(a0 context.Context, a1 string, a2 string, a3 string, a4 string, a5 string) (string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.FindTerminalRegistration")
-	panic("unconfigured SessionDAO.FindTerminalRegistration")
-}
-
-func (d sessionHTTPRejectedDAO) InsertTerminal(a0 context.Context, a1 store.TerminalRegistration) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertTerminal")
-	panic("unconfigured SessionDAO.InsertTerminal")
-}
-
-func (d sessionHTTPRejectedDAO) InsertRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string, a4 int64, a5 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertRecordingEvidence")
-	panic("unconfigured SessionDAO.InsertRecordingEvidence")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalOperation(a0 context.Context, a1 string, a2 string) (store.TerminalOperation, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalOperation")
-	panic("unconfigured SessionDAO.TerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) InsertTerminalOperation(a0 context.Context, a1 store.TerminalOperation) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertTerminalOperation")
-	panic("unconfigured SessionDAO.InsertTerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) SetTerminalOperationResult(a0 context.Context, a1 string, a2 v2.OperationResult) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SetTerminalOperationResult")
-	panic("unconfigured SessionDAO.SetTerminalOperationResult")
-}
-
-func (d sessionHTTPRejectedDAO) InvalidateTerminalOperations(a0 context.Context, a1 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InvalidateTerminalOperations")
-	panic("unconfigured SessionDAO.InvalidateTerminalOperations")
-}
-
-func (d sessionHTTPRejectedDAO) ExpireTerminalOperations(a0 context.Context, a1 string, a2 time.Time) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.ExpireTerminalOperations")
-	panic("unconfigured SessionDAO.ExpireTerminalOperations")
-}
-
-func (d sessionHTTPRejectedDAO) QueuedTerminalOperation(a0 context.Context, a1 string) ([]string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.QueuedTerminalOperation")
-	panic("unconfigured SessionDAO.QueuedTerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalViewerOperationPending(a0 context.Context, a1 string, a2 string, a3 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalViewerOperationPending")
-	panic("unconfigured SessionDAO.TerminalViewerOperationPending")
-}
-
 func (d sessionHTTPRejectedDAO) TerminalArchive(a0 context.Context, a1 string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
 	unexpectedHTTPCall(d.t, "SessionDAO.TerminalArchive")
 	panic("unconfigured SessionDAO.TerminalArchive")
-}
-
-func (d sessionHTTPRejectedDAO) SaveTerminalReceipt(a0 context.Context, a1 string, a2 v2.Receipt, a3 *string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminalReceipt")
-	panic("unconfigured SessionDAO.SaveTerminalReceipt")
-}
-
-func (d sessionHTTPRejectedDAO) SaveTerminalArchiveStatus(a0 context.Context, a1 string, a2 v2.ArchiveStatus) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminalArchiveStatus")
-	panic("unconfigured SessionDAO.SaveTerminalArchiveStatus")
 }
 
 func (d sessionHTTPRejectedDAO) CurrentTerminalSession(a0 context.Context, a1 string, a2 string, a3 string) (string, error) {
@@ -2240,21 +1812,6 @@ func (d sessionHTTPRejectedDAO) CurrentTerminalSession(a0 context.Context, a1 st
 func (d sessionHTTPRejectedDAO) TerminalHistory(a0 context.Context, a1 string, a2 string, a3 *time.Time, a4 *string, a5 int) ([]store.TerminalHistoryRow, error) {
 	unexpectedHTTPCall(d.t, "SessionDAO.TerminalHistory")
 	panic("unconfigured SessionDAO.TerminalHistory")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string) (string, string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalRecordingEvidence")
-	panic("unconfigured SessionDAO.TerminalRecordingEvidence")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalAutomationAllowed(a0 context.Context, a1 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalAutomationAllowed")
-	panic("unconfigured SessionDAO.TerminalAutomationAllowed")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalInputPending(a0 context.Context, a1 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalInputPending")
-	panic("unconfigured SessionDAO.TerminalInputPending")
 }
 
 var _ store.SessionDAO = sessionHTTPRejectedDAO{}
@@ -2333,6 +1890,31 @@ func (d sessionHTTPRejectedBotDAO) BotCreationWorker(context.Context, string, st
 
 var _ store.BotWriteDAO = sessionHTTPRejectedBotDAO{}
 
+func (d sessionHTTPRejectedBotDAO) RecoveryWorker(context.Context, string, string) (model.WorkerMachine, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RecoveryWorker")
+	panic("unconfigured BotDAO.RecoveryWorker")
+}
+func (d sessionHTTPRejectedBotDAO) RegisterBotRecovery(context.Context, string, int64, model.BotRecovery) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RegisterBotRecovery")
+	panic("unconfigured BotDAO.RegisterBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) AdvanceBotRecovery(context.Context, string, int64, int64, string, model.WorkerMachine) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.AdvanceBotRecovery")
+	panic("unconfigured BotDAO.AdvanceBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryOperation(context.Context, string, string) (store.BotRecoveryOperation, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryOperation")
+	panic("unconfigured BotDAO.BotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) SaveBotRecoveryOperation(context.Context, string, store.BotRecoveryOperation) error {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.SaveBotRecoveryOperation")
+	panic("unconfigured BotDAO.SaveBotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryTokenUsed(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryTokenUsed")
+	panic("unconfigured BotDAO.BotRecoveryTokenUsed")
+}
+
 func startupBody(f *sessionHTTPFixture) map[string]any {
 	return map[string]any{
 		"schemaVersion": 1, "source": "worker", "sessionId": f.snapshot.SessionID, "claimId": f.snapshot.ClaimID,
@@ -2360,7 +1942,7 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	report["startup"] = map[string]any{"state": "failed", "reasonCode": "native_rejected"}
 	body := jsonBody(t, map[string]any{
 		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
-		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
+		"nativeSessionId": nil, "startupReport": report,
 	})
 	currentTask := startupTaskModel(f.task)
 	value := startupReportValue(t, report)
@@ -2368,7 +1950,6 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	expectedTask = startupReplaceWorker(t, expectedTask, func(worker *api.WorkerClaim) {
 		worker.Phase = "waiting"
 		worker.NativeSessionID = nil
-		worker.Herdr = nil
 	})
 	startupExpectWrite(t, f, currentTask, &value, true, &expectedTask, nil, f.handler.principal, nil)
 	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
@@ -2554,8 +2135,12 @@ func startupTaskModel(value api.Task) model.Task {
 		v := model.TaskPlatform(*value.RequiredPlatform)
 		platform = &v
 	}
+	var tags []model.TagReference
+	for _, tag := range value.Tags {
+		tags = append(tags, model.TagReference{ID: tag.ID, Name: tag.Name})
+	}
 	return model.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description,
-		Properties: taskproperty.Clone(value.Properties), Status: model.TaskStatus(value.Status), Version: value.Version,
+		Properties: taskproperty.Clone(value.Properties), Tags: tags, Status: model.TaskStatus(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt,
 		CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn,
 		BlockedBy: value.BlockedBy, RequiredPlatform: platform, AssignedTo: value.AssignedTo, AllowAgents: value.AllowAgents, Ready: value.Ready}
@@ -2573,7 +2158,11 @@ func startupReportValue(t *testing.T, body map[string]any) sp.StartupReport {
 func startupReportedTask(t *testing.T, current model.Task, report sp.StartupReport) model.Task {
 	t.Helper()
 	result := current
-	result.Properties = taskproperty.Clone(current.Properties)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(current.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result.Properties["sessionStartup"] = rawProperty(t, report)
 	result.Version, result.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	return result
@@ -2586,6 +2175,11 @@ func startupReplaceWorker(t *testing.T, current model.Task, change func(*api.Wor
 	worker := apiWorker(t, result.Properties)
 	change(worker)
 	result.Properties["worker"] = rawProperty(t, worker)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(result.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return result
 }
 
@@ -2604,7 +2198,7 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	var requestContext context.Context
 	check := func(ctx context.Context, name string, valid bool) {
 		counts[name]++
-		if ctx != requestContext || counts[name] != 1 || !valid {
+		if ctx.Done() != requestContext.Done() || counts[name] != 1 || !valid {
 			t.Errorf("startup %s changed context, arguments or count", name)
 			panic("invalid startup DAO call")
 		}
@@ -2612,6 +2206,10 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
+	}
+	tasks.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
+		check(ctx, "header", id == current.ID && counts["access"] == 1)
+		return model.TaskHeader{ProjectID: current.ProjectID, ID: current.ID, Type: current.Type, Version: current.Version}, nil
 	}
 	tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
 		check(ctx, "task", id == current.ID && counts["access"] == 1)
@@ -2730,12 +2328,16 @@ func startupExpectTaskRead(t *testing.T, f *sessionHTTPFixture, value model.Task
 	}
 	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return project }, TaskDAOFn: func() store.TaskReader { return task }}
 	f.store.ReadSnapshotCall = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		snapshots++
-		if snapshots != 1 || work == nil {
+		if work == nil {
 			unexpectedHTTPCall(t, "startup snapshot")
 		}
 		requestContext = ctx
-		return work(scope)
+		before := access
+		err := work(scope)
+		if access != before {
+			snapshots++
+		}
+		return err
 	}
 	t.Cleanup(func() {
 		if snapshots != 1 || access != 1 || reads != 1 || epochs != 1 {
@@ -2838,6 +2440,86 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 		v := string(*value.RequiredPlatform)
 		platform = &v
 	}
-	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
+	tags := make([]taskprotocol.RESTTagReference, 0, len(value.Tags))
+	for _, tag := range value.Tags {
+		tags = append(tags, taskprotocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
+	}
+	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Tags: tags, Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
+}
+
+func (mock *taskHTTPSnapshotScopeMock) TagDAO() store.TagReader {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TagDAO() store.TagWriteDAO {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TaskTagDAO() store.TaskTagWriteDAO {
+	mock.need("TaskTagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) error {
+	mock.need("RotateTagCatalogEpoch", false)
+	panic("unreachable")
+}
+
+func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
+	panic("unexpected GitHubDAO access")
+}
+
+func (mock *taskHTTPProjectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", mock.RepositoryIdentityFn != nil)
+	return mock.RepositoryIdentityFn(ctx)
+}
+func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
+	return mock.RepositoryOccupiedFn(ctx, team, identity)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", false)
+	return nil
+}
+
+func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
+}
+
+func (s sessionHTTPScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return s.dao }
+
+func (d *sessionHTTPDAO) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	_, err := d.WorkerExecutionVersion(ctx, user, worker)
+	return err
+}
+func (d *sessionHTTPDAO) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	d.called(ctx, "WorkerExecutionVersion")
+	if user != d.f.handler.principal.UserID || worker != d.f.registration.WorkerID || d.calls["LockSession"] != 1 || d.calls["LockCredential"] < 1 {
+		d.fail("Worker admission changed the declared owner, Worker or Session lock order")
+	}
+	// This fixture's declared Worker has no lifecycle history. Other identities
+	// fail above; production admission still requires its transaction capability.
+	return nil, nil
+}
+
+func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskHTTPWriterMock) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskHTTPWriterMock) HasTerminalAncestorGoal(ctx context.Context, id string) (bool, error) {
+	parent, err := mock.ParentTask(ctx, id)
+	return parent.Status.IsTerminal(), err
+}
+
+func (d *taskHTTPWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

@@ -26,9 +26,10 @@ func testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t *tes
 	hash := sha256.Sum256([]byte(actor.CredentialID))
 	table := "personal_access_tokens"
 	if kind == model.PATCredential {
-		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
+		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
 	} else {
 		table = "oauth_access_tokens"
+		mustQueryExec(t, db, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'observation-test','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, queryID(202), actor.UserID, seen.Add(-10*time.Minute), seen.Add(time.Hour))
 		mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, actor.CredentialID, queryID(202), actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
 	}
 	read := func(wantCredential, wantMember bool) {
@@ -157,19 +158,30 @@ func testObservationReaderProjectsHerdrWithoutFrames(t *testing.T, db *postgres.
 	worker, raw := readerWorker(t, queryID(100))
 	raw = strings.ReplaceAll(raw, `"agentControlMode":"web"`, `"agentControlMode":"herdr"`)
 	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, raw)
-	state := `{"Envelope":{"sessionId":"` + queryID(111) + `","claimId":"` + worker.ClaimID + `","executionGeneration":"9"},"Owner":{"projectId":"` + project.ID + `","taskId":"` + task.ID + `","workerId":"` + worker.WorkerID + `","worktreeId":"` + worker.WorktreeID + `","provider":"codex"},"Binding":{"nativeSessionId":"native-terminal"},"ConnectionEpoch":"4","FinalizationID":null}`
+	state := `{"Envelope":{"sessionId":"` + queryID(111) + `","claimId":"` + worker.ClaimID + `","executionGeneration":"9"},"Owner":{"ownerUserId":"` + worker.UserID + `","projectId":"` + project.ID + `","taskId":"` + task.ID + `","workerId":"` + worker.WorkerID + `","worktreeId":"` + worker.WorktreeID + `","provider":"codex"},"Binding":{"nativeSessionId":"native-terminal"},"ConnectionEpoch":"4","FinalizationID":null}`
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,backend,snapshot,terminal_state) VALUES($1,$2,$3,$4,$5,$1,'{}','herdr',NULL,$6)`, queryID(111), project.ID, task.ID, worker.ClaimID, worker.UserID, state)
-	if err := db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
-		sources, err := snapshot.SessionDAO().TaskSessionSources(t.Context(), project.ID, []string{task.ID})
-		if err != nil {
-			return err
+	read := func(wantOwner string) {
+		t.Helper()
+		if err := db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
+			sources, err := snapshot.SessionDAO().TaskSessionSources(t.Context(), project.ID, []string{task.ID})
+			if err != nil {
+				return err
+			}
+			got := sources[0].Session
+			if got == nil || got.Backend != "herdr" || got.OwnerID != worker.UserID || got.Identity.OwnerUserID != wantOwner || got.Fence.ExecutionGeneration != "9" || got.Fence.ConnectionEpoch != "4" || got.Identity.NativeSessionID == nil || *got.Identity.NativeSessionID != "native-terminal" || got.Identity.WorkerID != worker.WorkerID {
+				t.Fatalf("herdr source: %#v", got)
+			}
+			inspection, err := snapshot.SessionDAO().TaskSessionInspectionSource(t.Context(), project.ID, task.ID, queryID(111))
+			if err != nil || inspection.Session == nil || inspection.Session.Identity.OwnerUserID != wantOwner || inspection.Session.OwnerID != worker.UserID {
+				t.Fatalf("herdr inspection: %#v error=%v", inspection.Session, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
-		got := sources[0].Session
-		if got == nil || got.Backend != "herdr" || got.Fence.ExecutionGeneration != "9" || got.Fence.ConnectionEpoch != "4" || got.Identity.NativeSessionID == nil || *got.Identity.NativeSessionID != "native-terminal" || got.Identity.WorkerID != worker.WorkerID {
-			t.Fatalf("herdr source: %#v", got)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
+	read(worker.UserID)
+	otherOwner := queryID(199)
+	mustQueryExec(t, db, `UPDATE task_sessions SET terminal_state=jsonb_set(terminal_state,'{Owner,ownerUserId}',to_jsonb($2::text)) WHERE id=$1`, queryID(111), otherOwner)
+	read(otherOwner)
 }

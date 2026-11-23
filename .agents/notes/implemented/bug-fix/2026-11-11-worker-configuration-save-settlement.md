@@ -28,6 +28,8 @@ result's destructive effects. Further saves use the existing revision,
 permission and freshness checks. The [configuration specification](../../../../docs/spec/daynight-worker-configuration.md#web-消费者)
 owns the observable behavior.
 
+The [configuration source decision](../architecture/2026-11-17-web-worker-configuration-source.md) preserves unknown target data through this lifecycle.
+
 ## Alternatives
 
 **Keep the save pending until admission resumes.** The

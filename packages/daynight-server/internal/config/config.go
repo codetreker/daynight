@@ -2,6 +2,7 @@ package config
 
 import (
 	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/archiveconfig"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
 	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
 	redisconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis/config"
@@ -24,6 +25,7 @@ type MCPConfig struct {
 	Transfer transferconfig.Config `yaml:",inline"`
 }
 type Config struct {
+	S2S                 S2SConfig                        `yaml:"s2s"`
 	LocalOverrideLoaded bool                             `yaml:"-"`
 	Server              serverconfig.Config              `yaml:"server"`
 	Database            databaseconfig.Config            `yaml:"database"`
@@ -34,6 +36,7 @@ type Config struct {
 	OAuth               oauthconfig.Config               `yaml:"oauth"`
 	Webhook             webhookconfig.Config             `yaml:"webhook"`
 	TaskSync            applicationconfig.TaskSyncConfig `yaml:"task_sync"`
+	Session             archiveconfig.Config             `yaml:"session"`
 	ImageDecoder        imageconfig.Config               `yaml:"image_decoder"`
 }
 
@@ -42,7 +45,7 @@ func DefaultConfig() Config {
 		Server: serverconfig.DefaultConfig(), Database: databaseconfig.DefaultConfig(), Storage: storageconfig.DefaultConfig(),
 		Monitoring: MonitoringConfig{Redis: redisconfig.DefaultConfig(), Metrics: serverconfig.DefaultMetricsConfig()},
 		UniAuth:    identityconfig.DefaultConfig(), MCP: MCPConfig{Origins: mcpconfig.DefaultConfig(), Transfer: transferconfig.DefaultConfig()},
-		OAuth: oauthconfig.DefaultConfig(), Webhook: webhookconfig.DefaultConfig(), TaskSync: applicationconfig.DefaultConfig(), ImageDecoder: imageconfig.DefaultConfig(),
+		OAuth: oauthconfig.DefaultConfig(), Webhook: webhookconfig.DefaultConfig(), TaskSync: applicationconfig.DefaultConfig(), ImageDecoder: imageconfig.DefaultConfig(), Session: archiveconfig.DefaultConfig(),
 	}
 }
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -50,7 +53,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	lookup := func(key string) (string, bool) { v := getenv(key); return v, v != "" }
 	mark := func(string, string) {}
 	for _, apply := range []func(func(string) (string, bool), func(string, string)) error{
-		c.OAuth.ApplyEnvironment, c.MCP.Transfer.ApplyEnvironment, c.Server.ApplyEnvironmentDurations, c.TaskSync.ApplyEnvironment, c.Server.ApplyEnvironmentRemaining, c.UniAuth.ApplyEnvironment, c.Webhook.ApplyEnvironment, c.Database.ApplyEnvironment, c.Monitoring.Redis.ApplyEnvironment, c.Storage.ApplyEnvironment, c.MCP.Origins.ApplyEnvironment, c.Monitoring.Metrics.ApplyEnvironment, c.ImageDecoder.ApplyEnvironment,
+		c.S2S.ApplyEnvironment, c.OAuth.ApplyEnvironment, c.MCP.Transfer.ApplyEnvironment, c.Server.ApplyEnvironmentDurations, c.TaskSync.ApplyEnvironment, c.Server.ApplyEnvironmentRemaining, c.UniAuth.ApplyEnvironment, c.Webhook.ApplyEnvironment, c.Database.ApplyEnvironment, c.Monitoring.Redis.ApplyEnvironment, c.Storage.ApplyEnvironment, c.MCP.Origins.ApplyEnvironment, c.Monitoring.Metrics.ApplyEnvironment, c.ImageDecoder.ApplyEnvironment, c.Session.ApplyEnvironment,
 	} {
 		if err := apply(lookup, mark); err != nil {
 			return Config{}, err
@@ -59,12 +62,18 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
+	if err := c.S2S.Validate(c.Server.AllowHTTPTestOrigin); err != nil {
+		return err
+	}
 	for _, validate := range []func() error{c.OAuth.Validate, c.MCP.Transfer.Validate, c.Database.Validate, c.Monitoring.Redis.Validate, c.Storage.Validate, c.Server.ValidateRequired, c.UniAuth.ValidateRequired} {
 		if err := validate(); err != nil {
 			return err
 		}
 	}
 	if _, _, err := authconfig.ValidateAuthSettings(authconfig.AuthSettings{PublicOrigin: c.Server.PublicOrigin, AllowHTTPTestOrigin: c.Server.AllowHTTPTestOrigin}, c.UniAuth.CallbackURL); err != nil {
+		return err
+	}
+	if err := c.Server.ValidatePreviewOrigin(); err != nil {
 		return err
 	}
 	if err := c.MCP.Origins.Validate(); err != nil {
@@ -76,7 +85,7 @@ func (c Config) Validate() error {
 	if err := serverconfig.ValidateListeners(c.Server, c.Monitoring.Metrics); err != nil {
 		return err
 	}
-	for _, validate := range []func() error{c.Server.ValidateTimeouts, c.TaskSync.Validate, c.ImageDecoder.Validate} {
+	for _, validate := range []func() error{c.Server.ValidateTimeouts, c.TaskSync.Validate, c.ImageDecoder.Validate, c.Session.Validate} {
 		if err := validate(); err != nil {
 			return err
 		}

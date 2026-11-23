@@ -32,7 +32,6 @@ const fixture = (initial = [attachment()]) => {
   const api: AttachmentApi = {
     list: vi.fn(async () => ({ items, nextCursor: null })),
     readText: vi.fn(async () => 'Raw 用户内容'),
-    checkPreview: vi.fn(async () => {}),
     put: vi.fn(async (_project, _task, path, source) => attachment(path, source.type)),
     remove: vi.fn(async () => {}),
   };
@@ -106,7 +105,6 @@ describe('inspection language changes', () => {
     expect(screen.getByTitle('HTML preview: site/index.html')).toBe(frame);
     expect(frame).toHaveAttribute('src', src);
     expect(data.api.list).toHaveBeenCalledTimes(1);
-    expect(data.api.checkPreview).toHaveBeenCalledTimes(1);
     expect(put).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'site/index.html', source, signal);
     expect(signal.aborted).toBe(false);
     await act(async () => first.reject(new ApiError('server', 500, 'internal_error', 'overwrite-request-raw')));
@@ -165,7 +163,6 @@ describe('inspection language changes', () => {
     expect(document.querySelector('iframe')).toBeNull();
     expect(remove).toHaveBeenCalledTimes(2);
     expect(data.api.list).toHaveBeenCalledTimes(2);
-    expect(data.api.checkPreview).toHaveBeenCalledTimes(1);
   });
 
   it('keeps preference failure feedback at the page entry, including while deletion is pending', async () => {
@@ -191,7 +188,7 @@ describe('inspection language changes', () => {
   it('retranslates preview errors while retaining their request IDs and raw content boundaries', () => {
     const item = attachment('原始-file.txt', 'text/plain');
     renderWithLocale(<><LanguageSelector /><AttachmentPreview attachment={item}
-      preview={{ path: item.path, status: 'error', text: null, error: new ApiError('server', 500, 'internal_error', 'preview-request-raw') }}
+      preview={{ scope: 'p/t', path: item.path, status: 'error', text: null, error: new ApiError('server', 500, 'internal_error', 'preview-request-raw') }}
       url="/original-preview" previewRoot="/" onRetry={vi.fn()} /></>, { locale: 'zh-CN' });
     expect(screen.getByRole('alert')).toHaveTextContent('无法读取文件预览');
     switchTo('en');

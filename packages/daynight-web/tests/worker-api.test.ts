@@ -11,13 +11,13 @@ const worker: WorkerClaim = {
   claimId, state: "active", userId: projectId, workerId: taskId, machine: { id: claimId, name: "Machine" },
   platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
 };
-const task: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
+const task: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null,
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
   version: 9_223_372_036_854_775_807n, properties: { pullRequests: [{ url: "\0", title: "\ud800" }], worker },
   startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const invalidWorkers: unknown[] = [
-  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
+  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, state: "released" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
   { ...worker, workerId: "bad" }, { ...worker, worktreeId: "bad" }, { ...worker, machine: { id: claimId, name: "" } },
   { ...worker, machine: { id: "bad", name: "Machine" } }, { ...worker, machine: { ...worker.machine, unexpected: true } },
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
@@ -34,6 +34,11 @@ describe("worker ownership detail reads", () => {
   it.each(["codex", "claude", "copilot"])("accepts explicit Web claims for %s", (agent) => {
     const value = { ...task, properties: { ...task.properties, worker: { ...worker, agent, agentControlMode: "web", herdr: null } } };
     expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
+    const { herdr: _herdr, ...withoutHerdr } = worker;
+    const without = { ...task, properties: { ...task.properties, worker: { ...withoutHerdr, agent, agentControlMode: "web" } } };
+    const parsed = parseTaskDetail(without, projectId, taskId);
+    expect(parsed).toEqual(without);
+    expect(readWorkerClaim(parsed.properties)).toMatchObject({ agent, agentControlMode: "web", herdr: null });
   });
   it("retains Claude Herdr and existing Copilot Herdr claims", () => {
     for (const agent of ["claude", "copilot"]) {
@@ -75,10 +80,11 @@ describe("worker ownership detail reads", () => {
   });
 });
 
-it("accepts cancelled released history without accepting an active cancelled execution", () => {
-  const value = { ...task, status: "cancelled", cancelledAt: time, properties: { ...task.properties, worker: { ...worker, state: "released" } } };
+it("accepts cancelled tasks without ownership while rejecting released and active ownership", () => {
+  const value = { ...task, status: "cancelled", cancelledAt: time, properties: { pullRequests: task.properties.pullRequests } };
   expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
   expect(() => parseTaskDetail({ ...value, properties: task.properties }, projectId, taskId)).toThrow("invalid response");
+  expect(() => parseTaskDetail({ ...value, properties: { worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
   for (const patch of [{ cancelledAt: undefined }, { cancelledAt: null }, { status: "todo" }]) {
     expect(() => parseTaskDetail({ ...value, ...patch }, projectId, taskId)).toThrow("invalid response");
   }

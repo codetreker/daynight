@@ -50,6 +50,32 @@ func TestAuthorizationCodeInputAdmission(t *testing.T) {
 	}
 }
 
+func TestSelectedLocalhostPortRemainsExactAtCodeExchange(t *testing.T) {
+	metadata, err := ParseCIMDClientMetadata([]byte(`{"client_id":"https://client.example/meta","redirect_uris":["http://localhost/callback"]}`), "https://client.example/meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := FreezeClient(metadata.ClientID, "cimd", metadata, time.Time{}, "http://localhost:49416/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	a := NewAuthorization(AuthorizationRequest{ClientID: client.ClientID, RedirectURI: client.SelectedExactRedirect, Resource: "https://server.example/mcp", Scope: Scope, Challenge: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA"}, now)
+	expiry := now.Add(time.Minute)
+	a.Status, a.CodeExpiresAt = "approved", &expiry
+	binding := CodeBinding{ClientID: client.ClientID, RedirectURI: client.SelectedExactRedirect, Resource: a.Resource, Verifier: strings.Repeat("a", 43)}
+	for _, redirect := range []string{"http://localhost/callback", "http://localhost:49417/callback", "http://127.0.0.1:49416/callback"} {
+		wrong := binding
+		wrong.RedirectURI = redirect
+		if _, err := CheckAuthorizationCode(a, wrong, now); err != ErrInvalidGrant || a.Status != "approved" {
+			t.Fatal("changed callback accepted or original authorization consumed")
+		}
+	}
+	if replay, err := CheckAuthorizationCode(a, binding, now); err != nil || replay {
+		t.Fatalf("original exact redirect: %v %v", replay, err)
+	}
+}
+
 func TestAuthorizationChallengeAndCallback(t *testing.T) {
 	verifier := strings.Repeat("a", 43)
 	if !VerifyChallenge("ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA", verifier) {

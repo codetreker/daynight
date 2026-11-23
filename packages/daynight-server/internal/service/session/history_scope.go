@@ -22,7 +22,7 @@ func historyScopeBindings() historyScopeOperations {
 		lockTask:    (*core.Operation).LockTask,
 		credential:  (*core.Operation).LockTaskReadCredential,
 		project:     (*core.Operation).CheckProjectAccess,
-		load:        loadSession,
+		load:        loadTaskReadSession,
 		bindRead:    (*core.Operation).BindTaskRead,
 		bindArchive: (*core.Operation).BindArchive,
 	}
@@ -42,10 +42,17 @@ func (s *Service) taskReadQuery(ctx context.Context, p model.Principal, project,
 		if e != nil {
 			return e
 		}
+		check, e := readCheck(ctx, scope, p)
+		if e != nil {
+			return e
+		}
 		if e = s.historyOps.credential(op, ctx, scope, p); e != nil {
 			return e
 		}
 		if e = s.historyOps.project(op, ctx, scope, p, project); e != nil {
+			return e
+		}
+		if e = check(); e != nil {
 			return e
 		}
 		return work(op, scope, task, func(id string) (*core.Access, error) { return s.historyOps.load(ctx, op, scope, id) })
@@ -63,6 +70,9 @@ func (s *Service) taskContentRead(ctx context.Context, p model.Principal, projec
 		if err = s.historyOps.bindRead(op, a, task, project, taskID); err != nil {
 			return err
 		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+			return err
+		}
 		return work(a)
 	})
 }
@@ -73,6 +83,9 @@ func (s *Service) taskArchiveRead(ctx context.Context, p model.Principal, projec
 			return err
 		}
 		if err = s.historyOps.bindArchive(op, a, task, p, project, taskID, false); err != nil {
+			return err
+		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
 			return err
 		}
 		return work(a)

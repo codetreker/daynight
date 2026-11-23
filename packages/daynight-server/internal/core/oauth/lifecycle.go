@@ -14,21 +14,44 @@ import (
 
 // GrantLifecycle owns refresh rotation, revocation and credential retention.
 type GrantLifecycle struct {
-	writer store.GrantLifecycleWriter
-	now    func() time.Time
+	writer          store.GrantLifecycleWriter
+	now             func() time.Time
+	observeRotation RotationObserver
 }
 type RotatedTokens struct {
 	AccessToken, RefreshToken string
 	ExpiresIn                 int64
+	Grant                     *store.OAuthGrant
+	AccessID                  string
+	AccessExpiresAt           time.Time
 }
+
+// RotationObservation describes a real rotation candidate and its transaction
+// completion, independently of any cleanup error.
+type RotationObservation struct {
+	Event   model.CredentialUsageEvent
+	Outcome store.TransactionOutcome
+	Cause   error
+}
+
+type RotationObserver func(context.Context, RotationObservation)
 
 func NewGrantLifecycle(writer store.GrantLifecycleWriter) *GrantLifecycle {
 	return &GrantLifecycle{writer: writer, now: time.Now}
 }
+
+// SetRotationObserver installs the observer before the lifecycle is used.
+func (s *GrantLifecycle) SetRotationObserver(observer RotationObserver) {
+	s.observeRotation = observer
+}
 func (s *GrantLifecycle) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 func lifecycleCompletion(c store.Completion, err error) error {
 	if c.Outcome == store.TransactionUnknown {
-		return fmt.Errorf("%w: transaction not confirmed", ErrAuthorizationUnknown)
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return errors.Join(ErrAuthorizationUnknown, err)
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: errors.Join(ErrAuthorizationUnknown, err)}
 	}
 	if err != nil {
 		return err
@@ -39,11 +62,51 @@ func lifecycleCompletion(c store.Completion, err error) error {
 	return nil
 }
 
+func invalidGrantRefusal() error {
+	return &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: ErrInvalidGrant}
+}
+
+// A missing family is a refusal only when every retained cause confirms a clean lookup miss.
+func missingGrant(err error) bool {
+	if err == model.ErrNotFound {
+		return true
+	}
+	switch failure := err.(type) {
+	case *model.Fault:
+		return false
+	case *store.TransactionError:
+		if failure.Phase != "operation" || failure.Outcome != store.TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
+			return false
+		}
+	case *store.Error:
+		if failure.DatabaseFailure {
+			return false
+		}
+		if failure.MissingRow && errors.Is(failure, model.ErrNotFound) {
+			return true
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !missingGrant(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	return err != nil && errors.Unwrap(err) != nil && missingGrant(errors.Unwrap(err))
+}
+
 // Rotate consumes a refresh token once. admit is called only after the client
 // and resource match, before any mutation, including replay revocation. A
 // successful response is emitted only after the enclosing transaction commits.
 func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource string, admit func(context.Context, string) error) (RotatedTokens, error) {
-	if !secret.Valid(token, RefreshPrefix) || clientID == "" || !validResource(resource) || admit == nil {
+	profile, valid := profileForResource(resource)
+	if !valid || !secret.Valid(token, profile.refreshPrefix) || clientID == "" || (profile.clientID != "" && clientID != profile.clientID) || admit == nil {
 		return RotatedTokens{}, ErrInvalidGrant
 	}
 	hash := secret.Hash(token)
@@ -59,13 +122,13 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 		if e != nil {
 			return e
 		}
-		if r.GrantID != g.ID || r.ClientID != clientID || g.ClientID != clientID || g.Resource != resource || g.Scope != Scope {
-			return ErrInvalidGrant
+		if r.GrantID != g.ID || r.ClientID != clientID || g.ClientID != clientID || g.Resource != resource || g.Scope != profile.scope {
+			return invalidGrantRefusal()
 		}
 		return nil
 	})
-	if c.Outcome != store.TransactionUnknown && errors.Is(err, model.ErrNotFound) {
-		return RotatedTokens{}, ErrInvalidGrant
+	if c.Outcome == store.TransactionNotCommitted && missingGrant(err) {
+		return RotatedTokens{}, errors.Join(ErrInvalidGrant, err)
 	}
 	if e := lifecycleCompletion(c, err); e != nil {
 		return RotatedTokens{}, e
@@ -75,6 +138,7 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 	}
 	var result RotatedTokens
 	var replay bool
+	var candidate *model.CredentialUsageEvent
 	c, err = s.writer.WriteGrantLifecycle(ctx, func(d store.GrantLifecycleDAO) error {
 		first, e := d.Refresh(ctx, hash, false)
 		if e != nil {
@@ -88,15 +152,15 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 		if e != nil {
 			return e
 		}
-		if r.GrantID != grant.ID || r.ClientID != clientID || grant.ClientID != clientID || grant.Resource != resource || grant.Scope != Scope {
-			return ErrInvalidGrant
+		if r.GrantID != grant.ID || r.ClientID != clientID || grant.ClientID != clientID || grant.Resource != resource || grant.Scope != profile.scope {
+			return invalidGrantRefusal()
 		}
 		now, e := d.FreshTime(ctx, s.clock())
 		if e != nil {
 			return e
 		}
 		if grant.RevokedAt != nil || !grant.ExpiresAt.After(now) || !r.ExpiresAt.After(now) {
-			return ErrInvalidGrant
+			return invalidGrantRefusal()
 		}
 		if r.ConsumedAt != nil {
 			if _, e = d.RevokeFamily(ctx, grant.ID, now); e != nil {
@@ -105,17 +169,27 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 			replay = true
 			return nil
 		}
-		accessExpiry := minTime(now.Add(AccessLifetime), grant.ExpiresAt)
-		access, refresh := secret.Random(model.OAuthAccessPrefix), secret.Random(RefreshPrefix)
-		e = d.RotateRefresh(ctx, store.OAuthRotation{Grant: grant, OldHash: hash, AccessHash: secret.Hash(access), RefreshHash: secret.Hash(refresh), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: accessExpiry})
+		grantExpiry := grant.ExpiresAt
+		if profile.rolling {
+			grantExpiry = now.Add(GrantLifetime)
+		}
+		accessExpiry := minTime(now.Add(AccessLifetime), grantExpiry)
+		access, refresh := secret.Random(profile.accessPrefix), secret.Random(profile.refreshPrefix)
+		accessID := uuid.NewString()
+		e = d.RotateRefresh(ctx, store.OAuthRotation{Grant: grant, OldHash: hash, AccessHash: secret.Hash(access), RefreshHash: secret.Hash(refresh), AccessID: accessID, CreatedAt: now, AccessExpiresAt: accessExpiry, GrantExpiresAt: grantExpiry})
 		if e != nil {
 			return e
 		}
-		result = RotatedTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(accessExpiry.Sub(now) / time.Second)}
+		candidate = &model.CredentialUsageEvent{Kind: model.UsageSubjectOAuthGrant, UserID: grant.UserID, SubjectID: grant.ID, At: now.UTC().Truncate(time.Microsecond)}
+		grant.ExpiresAt = grantExpiry
+		result = RotatedTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(accessExpiry.Sub(now) / time.Second), Grant: &grant, AccessID: accessID, AccessExpiresAt: accessExpiry}
 		return nil
 	})
-	if c.Outcome != store.TransactionUnknown && errors.Is(err, model.ErrNotFound) {
-		return RotatedTokens{}, ErrInvalidGrant
+	if candidate != nil && s.observeRotation != nil {
+		s.observeRotation(ctx, RotationObservation{Event: *candidate, Outcome: c.Outcome, Cause: err})
+	}
+	if c.Outcome == store.TransactionNotCommitted && missingGrant(err) {
+		return RotatedTokens{}, errors.Join(ErrInvalidGrant, err)
 	}
 	if e := lifecycleCompletion(c, err); e != nil {
 		return RotatedTokens{}, e
@@ -135,8 +209,8 @@ func minTime(a, b time.Time) time.Time {
 // RevokePublic never discloses whether a token or client matched. Both access
 // and refresh tokens identify a family, but the submitted client must own it.
 func (s *GrantLifecycle) RevokePublic(ctx context.Context, token, clientID string) error {
-	isRefresh := secret.Valid(token, RefreshPrefix)
-	isAccess := secret.Valid(token, model.OAuthAccessPrefix)
+	isRefresh := secret.Valid(token, RefreshPrefix) || secret.Valid(token, APIRefreshPrefix)
+	isAccess := secret.Valid(token, model.OAuthAccessPrefix) || secret.Valid(token, APIAccessPrefix)
 	if (!isRefresh && !isAccess) || clientID == "" {
 		return nil
 	}
@@ -164,7 +238,8 @@ func (s *GrantLifecycle) RevokePublic(ctx context.Context, token, clientID strin
 		if e != nil {
 			return e
 		}
-		if grant.ClientID != clientID {
+		profile, valid := profileForResource(grant.Resource)
+		if !valid || grant.ClientID != clientID || grant.Scope != profile.scope || (profile.clientID != "" && clientID != profile.clientID) || (isRefresh && !secret.Valid(token, profile.refreshPrefix)) || (isAccess && !secret.Valid(token, profile.accessPrefix)) {
 			return nil
 		}
 		if isRefresh {

@@ -35,3 +35,23 @@ test("retry and read_capture use the original capture with an explicit attempt a
   const { attemptId: _attempt, ...oldRead } = body;
   expect(() => parseRelayMessage({ ...frame, type: "image_request", action: "read_capture", body: oldRead })).toThrow();
 });
+test("submit accepts only the three strict outcomes and retains the original request on a later attempt", () => {
+  const currentAttempt = randomUUID();
+  for (const outcome of [
+    { kind: "validated", validated },
+    { kind: "resource" },
+    { kind: "failed", error: { code: "decode_failed", message: "Malformed original" } },
+  ]) {
+    const body = { request, attemptId: currentAttempt, outcome };
+    expect(parseControllerMessage({ ...frame, type: "image_capture", action: "submit", body })).toMatchObject({ action: "submit", body });
+    expect(parseRelayMessage({ ...frame, type: "image_capture_result", action: "submit", result: receipt, error: null })).toMatchObject({ action: "submit", result: receipt });
+  }
+  for (const outcome of [
+    { kind: "validated" }, { kind: "resource", validated },
+    { kind: "failed", error: { code: "decode_failed", message: "Malformed original" }, extra: true },
+    { kind: "other" }, null,
+  ]) {
+    expect(() => parseControllerMessage({ ...frame, type: "image_capture", action: "submit", body: { request, attemptId, outcome } })).toThrow();
+  }
+  expect(() => parseControllerMessage({ ...frame, type: "image_capture", action: "submit", body: { request, attemptId, outcome: { kind: "resource" }, extra: true } })).toThrow();
+});

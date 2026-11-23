@@ -29,6 +29,25 @@ An entire input acquires its resources before dispatching; a later preparation
 failure therefore cannot partially call the native provider. An uncertain native
 result retains the original operation and its pins for observation.
 
+Service-effective and Provider capability revisions are independently allocated.
+Image authorization returns the effective capability snapshot alongside the
+original operation and execution fence. The Controller matches the frozen
+intent to its service revision and the current Provider to its providerRevision;
+numeric equality between those counters establishes no relationship. The
+snapshot does not rewrite the durable intent or its hash. Validated leases retain
+the original MIME, bytes and full geometry so upload completion, authorization
+and final native dispatch enforce the smaller effective limits. Asynchronous
+preparation and native encoding end with another qualification check; a failed
+image refuses the complete input. Historical reads remain independent of current
+input qualification.
+
+The [qualification-boundary decision](2026-11-16-image-qualification-boundaries.md)
+keeps these limits attached to the original input and separates native internal
+processing from application-original retention. Service capability synthesis
+intersects the Provider report with installed components; new image operations
+also require current complete history in their authorization transaction. The
+service revision remains independent of the Controller's state projection.
+
 Resource reads require both Session access and a publishing reference. Message
 references and committed archive closures permit shared reads; a private upload
 requires its original actor and matching complete receipt. Operation, unknown,
@@ -48,28 +67,32 @@ Releasing an unused complete upload retires its preparation pin and retains its
 upload tombstone. A resource with no remaining references receives a durable
 `gc_pending` marker under the Session lock. New references and covering leases
 cannot revive it; existing exact reader and writer locks remain held through
-physical cleanup and the final database confirmation. Its row and quota remain
-until those barriers finish. A cleanup error or unknown commit therefore leaves
-the original identity available for reconciliation rather than returning space
-that might still be occupied. Cleanup sweeps the exact typed upload namespace,
-not only paths with committed chunk rows: durable file publication can precede
-a failed or uncertain chunk-row commit. A shared upload payload gate joins late
-read-response writers before the durable sweep and final accounting decision.
-A completed prepare error does not prove that no Controller files remain.
-After reading the exact durable failed prepare, service release carries the
-original spec. The Controller verifies that spec or writes a released tombstone
-when no preparation exists, preventing delayed prepare replay. A successful
-prepare keeps its original release body; an unknown prepare must first finish.
-Preparation records name their random private path before creating or flushing
-the file, so an error leaves a reclaimable identity rather than a rowless file.
-Controller relay and local release share the temporary-storage classifier,
-including lazy media-directory and budget-ledger initialization before a local
-release can begin. Typed storage, metadata-capacity and local reader-busy failures
-remain separate from identity, format, safety and native-use refusals. Only that release-specific response keeps the original durable service
-request pending for cleanup under the same request ID, body and fence. Existing
-terminal results remain immutable. Files and quota stay charged through unknown,
-cancelled and failed cleanup until all release barriers confirm completion.
-Fixed upload expiry follows the same mechanism;
+physical cleanup and the final database confirmation. Its row remains until
+those barriers finish, preserving both its content accounting and original
+identity for reconciliation after cleanup errors or unknown commits. Cleanup
+sweeps the exact typed upload namespace, not only paths with committed chunk
+rows: durable file publication can precede a failed or uncertain chunk-row
+commit. A shared upload payload gate joins late read-response writers before the
+durable sweep and final accounting decision. A completed prepare error does not
+prove that no Controller files remain. After reading the exact durable failed
+prepare, service release carries the original spec. The Controller verifies that
+spec or writes a released tombstone when no preparation exists, preventing
+delayed prepare replay. A successful prepare keeps its original release body; an
+unknown prepare must first finish. Preparation records name their random private
+path before creating or flushing the file, so an error leaves a reclaimable
+identity rather than a rowless file. Controller relay and local release share
+the temporary-storage classifier, including lazy media-directory initialization
+before a local release can begin. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes cumulative media accounting and its initialization failures. The later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes disk predictions; the [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission. Typed storage
+and local reader-busy failures remain separate from identity, format, safety and
+native-use refusals. Only that release-specific response keeps the original
+durable service request pending for cleanup under the same request ID, body and
+fence. Existing terminal results remain immutable. Files and cleanup
+responsibility remain through unknown, cancelled and failed cleanup until all
+barriers confirm completion. Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
 references survive expiry. Historical upload queries retain the original actor
@@ -102,9 +125,8 @@ New media tables keep identity and concurrency uniqueness in PostgreSQL while
 protocol, state, expiry and rate policy belong to core. Account token buckets
 retain a short owner/category row lock so a preparation can debit control and
 prepare buckets together without replaying the authorized operation on a second
-bucket conflict. Aggregate volume and transfer admission retain deployment locks
-because a single resource version cannot cover occupancy added by other
-Sessions. These locks end before I/O. Core supplies the lease occupancy limits as explicit
+bucket conflict. Transfer lease admission retains its deployment lock because a single resource
+version cannot cover concurrent occupancy across Sessions. The lock ends before I/O. Core supplies the lease occupancy limits as explicit
 atomic conditions and decides capture transitions before a compare-and-swap of
 the original request, receipt and validation facts. Source ACK retention likewise
 belongs to core: original identity/hash checks precede its bounded prune and
@@ -125,9 +147,9 @@ the shared archive permit and timeline read lease survive until response
 delivery. No legacy archive copy or second competing archive admission is needed.
 
 A source retry retains its capture, occurrence and locator while a new attempt
-fences private staging and every subsequent commit. Its reservation and durable
-Controller request commit together, so cancellation cannot strand a reserved
-attempt without a recoverable request. Controller decoding has one active slot
+fences private staging and every subsequent commit. Its attempt and durable
+Controller request commit together, so cancellation cannot strand an attempt
+without a recoverable request. Controller decoding has one active slot
 and a bounded queue of metadata requests; transient capacity rejection leaves
 the original durable request pending rather than permanently poisoning that
 identity. Observation reconciles existing work and does not create source IO.
@@ -163,12 +185,15 @@ An active connection handoff persists its latest target history epoch together
 with the consumed grant. It retains acknowledged entries, source hashes and
 file identities, allowing stopped synchronization to finish that verified
 connection without accepting arbitrary epoch changes or reverting the chain.
-The 132 MiB archive reservation remains a conservative capacity commitment.
+The [actual content capacity decision](2026-11-13-session-actual-content-capacity.md)
+replaces the former fixed archive and future-volume reservations.
 Deletion closes admission and joins physical operations before its final sweep.
 Ordinary media admission also reaps crash-orphaned leases across the deployment.
-It ends the listing transaction before trying each original filesystem lock,
-retains busy owners, and holds an acquired lock through confirmed deletion of
-that exact lease. A timeout or uncertain commit never clears the counters.
+It ends the listing transaction before trying each original owner gate,
+retains busy owners, and holds an acquired permit through confirmed deletion of
+that exact lease. A timeout or uncertain commit leaves the counters intact.
+[Redis storage gates](2026-11-19-redis-storage-gates.md) own expiry and recovery
+of the synchronization keys.
 The immutable archive barrier includes unresolved content-changing commands and
 resource associations; unrelated unknown control receipts retain their original
 identity without preventing publication of complete message history.
@@ -182,6 +207,17 @@ drafts consume this foundation; their support profiles remain closed until their
 own complete evidence exists.
 
 ## Alternatives
+
+**Compare service and Provider revision numbers directly.** Their independent
+publication histories can produce different valid counters or coincidentally
+equal stale counters. Carrying the authorized association preserves both owners
+without renumbering an immutable input intent.
+
+**Rely on browser validation or generic decoder limits.** A model or policy can
+change during upload, file acquisition or native encoding. Smaller qualified
+limits must be enforced using the original decoded metadata at each admission
+boundary; decoding the same immutable bytes again adds cost without proving the
+current capability relationship.
 
 **Keep separate image wire, provider sendInput and resource collections.** This
 was the earlier design's response to strict old readers. It would also keep two
@@ -197,8 +233,8 @@ rule while allowing display snapshots to preserve unresolved history.
 **Publish a deterministic schema1 archive copy for old readers.** This was the
 earlier compatibility plan. It duplicates metadata, creates a second hash and
 publication boundary and constrains current records to two complete projections.
-Requiring the unified reader for new records keeps one authoritative closure;
-the conservative reservation is retained rather than assuming immediate savings.
+Requiring the unified reader for new records keeps one authoritative closure.
+The later actual content capacity decision replaces the former reservation.
 
 **Store only local paths, or collect originals when a Session ends.** Sources may
 change or disappear and a Controller may stop before that point. Upload and
@@ -206,7 +242,7 @@ capture success therefore include service persistence before archive sealing.
 
 **Keep raw media chunks in completed database requests.** This makes relay
 replay convenient but retains originals after upload release outside resource
-accounting. Bounded metadata plus the already reserved shared files preserves
+accounting. Bounded metadata plus shared staging files preserves
 cross-instance replay without a permanent database copy. A transient mailbox
 alone cannot carry that durable responsibility across relay instances.
 

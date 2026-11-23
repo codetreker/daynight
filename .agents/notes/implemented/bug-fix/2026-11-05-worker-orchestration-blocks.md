@@ -25,7 +25,7 @@ report revision atomically. It does not prepare or launch a Controller, change
 generation, replay submitted input or reset native recovery count. An unfinished
 first launch may bind its native identity from the authenticated original
 Controller and submit the original operation only when both durable and live
-observations prove it has not been submitted. Unknown delivery stays fenced.
+observations prove it has not been submitted. Unknown delivery stays fenced. Later ready generations can clear a nonlegacy orchestration block while observing an inherited initial operation whose original identity, frozen content and positive predecessor generation are proven by the current ticket-bound journal. Native readiness and input acceptance remain separate gates; accepted evidence cannot regress. The [inherited input decision](2026-11-23-worker-inherited-initial-input.md) records this distinction.
 An allocated retry completes on the same healthy generation; its retained
 authorization flag does not authorize or require another replacement. All allocated
 generations permit verified append-only native process evidence because the

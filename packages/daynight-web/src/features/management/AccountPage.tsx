@@ -1,21 +1,24 @@
-import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent } from "react";
 import type { CurrentUser } from "../../api/auth";
 import { browserNavigation, type PromptDraftScope } from "../../app/navigation";
-import { useAccountHistory } from "../../app/use-page-history";
+import { useBrowserLocation } from "../../app/browser-location";
+import { accountUrl, type AccountSelection, type AccountTab } from "../../app/account-route";
 import { parseAuthRoute } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { TaskConfirmation } from "../task-detail/TaskConfirmation";
 import { promptMessages } from "../worker-prompts/messages";
 import { useWorkerPrompt } from "../worker-prompts/useWorkerPrompt";
-import { WorkerPromptEditor } from "../worker-prompts/WorkerPromptEditor";
+import { WorkerPromptEditor, type PromptPurpose } from "../worker-prompts/WorkerPromptEditor";
 import { Identity } from "./feedback";
-import { TokensPanel } from "./TokensPanel";
-import { OwnerGrantsPanel } from "./OwnerGrantsPanel";
+import { ScopedTokensPanel } from "./ScopedTokensPanel";
+import { ScopedOwnerGrantsPanel } from "./ScopedOwnerGrantsPanel";
+import { BrowserSessionsPanel } from "./BrowserSessionsPanel";
+import { CredentialClockProvider } from "./CredentialLastUse";
 
 type AccountPageProps = { readonly user: CurrentUser; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly active?: boolean; readonly onRetentionChange?: (retain: boolean) => void };
 
-export const usePromptNavigation = (target: { readonly scope: 'user' } | { readonly scope: 'project'; readonly projectId: string }, state: { readonly dirty: boolean; readonly unavailable: boolean; readonly abandon: () => void }, options: { readonly visible?: boolean; readonly onContinueEditing?: () => void } = {}) => {
+export const usePromptNavigation = (target: { readonly scope: 'user' } | { readonly scope: 'project'; readonly projectId: string }, state: { readonly dirty: boolean; readonly unavailable: boolean; readonly abandon: () => void }, options: { readonly visible?: boolean; readonly onContinueEditing?: () => void; readonly survives?: (destination: URL) => boolean } = {}) => {
   const identity = useTaskCacheScope(), navigation = browserNavigation();
   const projectId = target.scope === 'project' ? target.projectId : null;
   const scope = useMemo<PromptDraftScope>(() => projectId === null ? { kind: 'user-prompt', identity } : { kind: 'project-prompt', identity, projectId }, [identity, projectId]);
@@ -26,10 +29,10 @@ export const usePromptNavigation = (target: { readonly scope: 'user' } | { reado
     const unregister = navigation.register({ scope, signal: identity.signal,
       isDirty: () => !identity.isInvalidated && !current.current.unavailable && current.current.dirty,
       discard: () => current.current.abandon(),
-      survives: url => { const route = parseAuthRoute(url.pathname, url.search); return projectId === null ? route.kind === 'account' : route.kind === 'settings' && route.projectId === projectId; },
+      survives: url => { if (options.survives) return options.survives(url); const route = parseAuthRoute(url.pathname, url.search); return projectId === null ? route.kind === 'account' : route.kind === 'settings' && route.projectId === projectId; },
     });
     return () => { if (current.current.unavailable) navigation.retireScope(scope); unregister(); };
-  }, [scope, identity, navigation, projectId, state.unavailable]);
+  }, [scope, identity, navigation, projectId, state.unavailable, options.survives]);
   const decision = useSyncExternalStore(navigation.subscribeDecision, navigation.decision);
   const confirming = decision?.drafts.some(draft => draft.scope === scope) === true;
   useLayoutEffect(() => {
@@ -48,24 +51,38 @@ export const AccountPage = (props: AccountPageProps) => <AccountContent key={pro
 
 const AccountContent = ({ user, onSignOut, onIdentityMismatch, active = true, onRetentionChange }: AccountPageProps) => {
   const { locale, messages: { auth: { management: { account: m } } } } = useI18n();
-  const { tab, select: setTab, error: historyError } = useAccountHistory(user.id, active);
+  const location = useBrowserLocation();
+  const route = active ? parseAuthRoute(location.pathname, location.search) : null;
+  const retained = useRef<AccountSelection>({ kind: 'tab', tab: 'profile' });
+  if (route?.kind === 'account') retained.current = route.selection;
+  const selection = retained.current;
+  const tab = selection.kind === 'tab' ? selection.tab : null;
+  const historyError = selection.kind === 'invalid';
+  const select = (event: MouseEvent<HTMLAnchorElement>, next: AccountTab) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (active && next !== tab) browserNavigation().navigate(accountUrl(next));
+  };
   const [tokensOpened, setTokensOpened] = useState(false);
-  const prompt = useWorkerPrompt({ scope: 'user' }, { readEnabled: active });
-  const navigation = usePromptNavigation({ scope: 'user' }, prompt, { visible: tab === 'prompt', onContinueEditing: () => setTab('prompt', true) });
+  const [tokensRetained, setTokensRetained] = useState(false), [grantsRetained, setGrantsRetained] = useState(false), [sessionsRetained, setSessionsRetained] = useState(false);
+  const [purpose, setPurpose] = useState<PromptPurpose>('worker');
+  const prompt = useWorkerPrompt({ scope: 'user' }, { readEnabled: active && purpose === 'worker' });
+  const reviewer = useWorkerPrompt({ scope: 'user', purpose: 'reviewer' }, { readEnabled: active && purpose === 'reviewer' });
+  const navigation = usePromptNavigation({ scope: 'user' }, { dirty: (!prompt.unavailable && prompt.dirty) || (!reviewer.unavailable && reviewer.dirty), unavailable: prompt.unavailable && reviewer.unavailable, abandon: () => { prompt.abandon(); reviewer.abandon(); } }, { visible: active && tab === 'prompt', onContinueEditing: () => { if (purpose === 'worker' && !prompt.dirty && reviewer.dirty) setPurpose('reviewer'); if (purpose === 'reviewer' && !reviewer.dirty && prompt.dirty) setPurpose('worker'); browserNavigation().navigate(accountUrl('prompt'), true); } });
   useLayoutEffect(() => { if (tab === "tokens") setTokensOpened(true); }, [tab]);
-  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.uncertain); }, [onRetentionChange, prompt.pending, prompt.uncertain]);
+  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain || reviewer.pending || reviewer.confirmed || reviewer.uncertain || tokensRetained || grantsRetained || sessionsRetained); }, [onRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain, reviewer.pending, reviewer.confirmed, reviewer.uncertain, tokensRetained, grantsRetained, sessionsRetained]);
   return <div ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div>
-    {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
-    <div hidden={historyError} inert={historyError}><div className="settings-grid"><nav className="settings-nav" aria-label={m.title}>
-      <button type="button" className={tab === "profile" ? "active" : ""} aria-current={tab === "profile" ? "page" : undefined} onClick={() => setTab("profile")}>{m.profileTab}</button>
-      <button type="button" className={tab === "tokens" ? "active" : ""} aria-current={tab === "tokens" ? "page" : undefined} onClick={() => setTab("tokens")}>{m.tokensTab}</button>
-      <button type="button" className={tab === "prompt" ? "active" : ""} aria-current={tab === "prompt" ? "page" : undefined} onClick={() => setTab("prompt")}>{promptMessages(locale).titles.user}</button>
-    </nav><div className="settings-main">
+    {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "账户设置页签无效，请选择一个页签。" : "Invalid account settings tab. Choose a tab to continue."}</div>}
+    <div className="settings-grid"><nav className="settings-nav" aria-label={m.title}>
+      <a href={accountUrl('profile')} className={tab === "profile" ? "active" : ""} aria-current={tab === "profile" ? "page" : undefined} onClick={event => select(event, 'profile')}>{m.profileTab}</a>
+      <a href={accountUrl('tokens')} className={tab === "tokens" ? "active" : ""} aria-current={tab === "tokens" ? "page" : undefined} onClick={event => select(event, 'tokens')}>{m.tokensTab}</a>
+      <a href={accountUrl('prompt')} className={tab === "prompt" ? "active" : ""} aria-current={tab === "prompt" ? "page" : undefined} onClick={event => select(event, 'prompt')}>{promptMessages(locale).titles.user}</a>
+    </nav><div className="settings-main" hidden={historyError} inert={historyError}>
       <div hidden={tab !== "profile"} inert={tab !== "profile"}><section className="panel"><div className="panel-body"><div className="profile-info"><Identity user={user} /></div><dl className="info-list"><dt>{m.loginMethod}</dt><dd>{m.viaUniAuth}</dd><dt>{m.profileSource}</dt><dd>{m.profileSourceDescription}</dd></dl></div></section><section className="panel"><div className="panel-heading"><div><h2>{m.sessionTitle}</h2><p>{m.sessionDescription}</p></div><button className="button" type="button" onClick={onSignOut}>{m.signOut}</button></div></section></div>
-      {(tokensOpened || tab === "tokens") && <div hidden={tab !== "tokens"} inert={tab !== "tokens"}><TokensPanel user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /><OwnerGrantsPanel user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /></div>}
-      <div hidden={tab !== "prompt"} inert={tab !== "prompt"}><WorkerPromptEditor state={prompt} scope="user" /></div>
-    </div></div></div>
+      {(tokensOpened || tab === "tokens") && <div hidden={tab !== "tokens"} inert={tab !== "tokens"}><CredentialClockProvider visible={active && !historyError && tab === "tokens"}><BrowserSessionsPanel onRetentionChange={setSessionsRetained} user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /><ScopedTokensPanel onRetentionChange={setTokensRetained} user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /><ScopedOwnerGrantsPanel onRetentionChange={setGrantsRetained} user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /></CredentialClockProvider></div>}
+      <div hidden={tab !== "prompt"} inert={tab !== "prompt"}><WorkerPromptEditor state={purpose === 'worker' ? prompt : reviewer} scope="user" purpose={purpose} onPurposeChange={setPurpose} /></div>
+    </div></div>
     {navigation.confirmation}
   </div>;
 };

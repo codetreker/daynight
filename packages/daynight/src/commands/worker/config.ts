@@ -11,10 +11,8 @@ import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
-import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
 import type { ExecutionConfiguration } from "./types.js";
-import type { AgentControlMode } from "../../api/types.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
 import { normalizeWorkerNative } from "./native-overrides.js";
@@ -31,6 +29,7 @@ export type WorkerConfiguration = ExecutionConfiguration & {
   maxConcurrent: number;
   pollIntervalMs: number;
   preferPlatformSpecificTasks: boolean;
+  archiveSessions: boolean;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
@@ -44,6 +43,7 @@ export const workerConfigurationDefaults = Object.freeze({
   maxConcurrent: 1,
   pollIntervalMs: 60_000,
   preferPlatformSpecificTasks: false,
+  archiveSessions: true,
   recoveryLimit: 3,
   agent: "copilot" as const,
 });
@@ -75,6 +75,12 @@ const platformPreference = (worker: Record<string, unknown>): boolean => {
   return worker.preferPlatformSpecificTasks;
 };
 
+const archiveSessions = (worker: Record<string, unknown>): boolean => {
+  if (!Object.hasOwn(worker, "archiveSessions")) return workerConfigurationDefaults.archiveSessions;
+  if (typeof worker.archiveSessions !== "boolean") throw new TypeError("worker.archiveSessions must be a boolean.");
+  return worker.archiveSessions;
+};
+
 const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration, local?: WorkerLocalNativeOverrides): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, claude or copilot.`);
@@ -92,11 +98,10 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
     });
   } else args = sameKind ? [...inherited.args] : [];
   if (local !== undefined && (local.agentModel !== undefined || local.agentReasoningEffort !== undefined)) {
-    return { ...normalizeWorkerNative({ agent, model, args }, inherited.agentControlMode ?? "herdr", local).native, validateNativeSelection: true, agentControlMode: inherited.agentControlMode ?? "herdr", recoveryLimit: inherited.recoveryLimit };
+    return { ...normalizeWorkerNative({ agent, model, args }, local).native, validateNativeSelection: true, agentControlMode: "web", recoveryLimit: inherited.recoveryLimit };
   }
-  if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
-  else validateHerdrAgentArguments(agent, args);
-  return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
+  parseProviderArguments(agent, args);
+  return { agent, agentControlMode: "web", model, args, recoveryLimit: inherited.recoveryLimit };
 };
 
 export const resolveWorkerRepositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
@@ -114,8 +119,8 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
-  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "web";
+  if (agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be web; Herdr is no longer supported.");
   const local = parseWorkerLocalNativeOverrides(worker);
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
@@ -146,7 +151,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), repositories };
+  return { ...effective, repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), archiveSessions: archiveSessions(worker), repositories };
 };
 
 const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
@@ -216,5 +221,5 @@ export const validateWorkerConfigurationSource = async (source: string, paths: W
   return configuration;
 };
 
-export const resolveCloudNative = (native: WorkerCloudNative, agentControlMode: AgentControlMode, recoveryLimit: number): ExecutionConfiguration =>
-  agentConfiguration({ ...native }, "worker.native", { ...native, agentControlMode, recoveryLimit });
+export const resolveCloudNative = (native: WorkerCloudNative, recoveryLimit: number): ExecutionConfiguration =>
+  agentConfiguration({ ...native }, "worker.native", { ...native, agentControlMode: "web", recoveryLimit });

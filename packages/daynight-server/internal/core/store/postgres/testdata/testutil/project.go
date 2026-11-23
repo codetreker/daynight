@@ -24,19 +24,32 @@ func QueryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%0
 
 // Historical fixtures must write the source schema before a migration can run.
 func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtureWriter, id, name, repoURL string) (model.Project, error) {
-	var current bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32)`).Scan(&current); err != nil {
+	var ownership, current, currentIdentity bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32),
+		EXISTS(SELECT 1 FROM schema_migrations WHERE version=83),
+		EXISTS(SELECT 1 FROM schema_migrations WHERE version=120)`).Scan(&ownership, &current, &currentIdentity); err != nil {
 		return model.Project{}, err
 	}
-	if current {
+	var owner model.User
+	if ownership {
 		now := time.Now().UTC()
 		hash := sha256.Sum256([]byte(uuid.NewString()))
-		user, err := SeedIdentitySession(ctx, writer, model.User{ID: uuid.NewString(), UniAuthID: "fixture:" + uuid.NewString()},
-			model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+		identity := model.User{ID: uuid.NewString(), UniAuthID: "fixture:" + uuid.NewString()}
+		session := model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		var user model.User
+		var err error
+		if currentIdentity {
+			user, err = SeedIdentitySession(ctx, writer, identity, session)
+		} else {
+			user, err = seedProjectIdentity(ctx, pool, identity, session)
+		}
 		if err != nil {
 			return model.Project{}, err
 		}
-		return CreatePrivateProject(ctx, writer, model.Principal{UserID: user.ID}, id, name, repoURL)
+		if current {
+			return CreatePrivateProject(ctx, writer, model.Principal{UserID: user.ID}, id, name, repoURL)
+		}
+		owner = user
 	}
 	var project model.Project
 	err := pool.QueryRow(ctx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,$2,$3)
@@ -45,10 +58,49 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtur
 	if err != nil {
 		return model.Project{}, pg.QueryError("create historical fixture project", err)
 	}
-	if err := SeedHistoricalProjectAdmin(ctx, pool, id); err != nil {
-		return model.Project{}, err
+	if ownership {
+		if _, err := pool.Exec(ctx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, id, owner.PersonalTeam.ID); err != nil {
+			return model.Project{}, err
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, id, owner.ID); err != nil {
+			return model.Project{}, err
+		}
+	} else {
+		if err := SeedHistoricalProjectAdmin(ctx, pool, id); err != nil {
+			return model.Project{}, err
+		}
 	}
 	return project, nil
+}
+
+// Project migration fixtures retain the identity columns available at migration 32.
+// Authentication DAO behavior belongs to the current-schema identity fixtures.
+func seedProjectIdentity(ctx context.Context, pool *pgxpool.Pool, user model.User, session model.Session) (model.User, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return model.User{}, err
+	}
+	defer tx.Rollback(ctx)
+	teamID := uuid.NewString()
+	statements := []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, []any{user.ID, user.UniAuthID, session.CreatedAt}},
+		{`INSERT INTO teams(id,personal_user_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, []any{teamID, user.ID, session.CreatedAt}},
+		{`INSERT INTO team_members(team_id,user_id,role,created_at,updated_at) VALUES($1,$2,'admin',$3,$3)`, []any{teamID, user.ID, session.CreatedAt}},
+		{`INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, []any{session.ID, user.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt}},
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(ctx, statement.sql, statement.args...); err != nil {
+			return model.User{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.User{}, err
+	}
+	user.PersonalTeam = model.TeamRef{ID: teamID, Kind: "personal"}
+	return user, nil
 }
 
 func SeedHistoricalProjectAdmin(ctx context.Context, pool *pgxpool.Pool, projectID string) error {

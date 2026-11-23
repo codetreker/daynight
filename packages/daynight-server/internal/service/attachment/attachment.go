@@ -27,6 +27,7 @@ type attachmentOperations struct {
 
 type Attachments struct {
 	operations  attachmentOperations
+	admit       func(context.Context) error
 	store       store.SnapshotReader
 	mutations   store.AttachmentMutationWriter
 	files       filestorage.Storage
@@ -69,6 +70,10 @@ func NewAttachments(database store.SnapshotReader, mutations store.AttachmentMut
 }
 
 func (s *Attachments) mutate(ctx context.Context, principal model.Principal, address attachmentcore.Address, operation func(store.AttachmentMutationDAO) error) error {
+	return s.mutateScoped(ctx, principal, address, func(scope store.AttachmentMutationScope) error { return operation(scope.AttachmentDAO()) })
+}
+
+func (s *Attachments) mutateScoped(ctx context.Context, principal model.Principal, address attachmentcore.Address, operation func(store.AttachmentMutationScope) error) error {
 	completion, err := s.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
 		presence, err := scope.LockTaskPresence(ctx, address.ProjectID, address.TaskID)
 		if err != nil {
@@ -83,7 +88,12 @@ func (s *Attachments) mutate(ctx context.Context, principal model.Principal, add
 		if presence.DeletedAt != nil {
 			return taskcore.NotFound(model.ErrTaskDeleted)
 		}
-		return operation(scope.AttachmentDAO())
+		if s.admit != nil {
+			if err := s.admit(ctx); err != nil {
+				return err
+			}
+		}
+		return operation(scope)
 	})
 	if err != nil {
 		return err
@@ -118,6 +128,14 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 		if presence.DeletedAt != nil {
 			missing = taskcore.NotFound(model.ErrTaskDeleted)
 			return nil
+		}
+		if s.admit != nil {
+			if err := s.admit(ctx); err != nil {
+				if errors.As(err, &missing) {
+					return nil
+				}
+				return err
+			}
 		}
 		err = operation(snapshot.AttachmentDAO())
 		if errors.As(err, &missing) {
@@ -184,6 +202,8 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 	if err != nil {
 		return model.Attachment{}, false, nil, err
 	}
+	ctx, cancelUpload := UploadLeaseContext(ctx, lease)
+	defer cancelUpload()
 	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
 	if err != nil {
 		return model.Attachment{}, false, lease, fmt.Errorf("acquire attachment gate: %w", err)
@@ -197,6 +217,11 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			}
 		}
 	}()
+	ctx, cancelTarget := filestorage.GateContext(ctx, permit)
+	defer cancelTarget()
+	if body, ok := content.(interface{ SetReadContext(context.Context) }); ok {
+		body.SetReadContext(ctx)
+	}
 	var attachment model.Attachment
 	var created bool
 	publication := filestorage.NotPublished
@@ -226,11 +251,14 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			}
 			return fmt.Errorf("write attachment content: %w", err)
 		}
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		attachment, created, err = s.operations.putMetadata(ctx, dao, address, contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
@@ -262,6 +290,7 @@ type TransferAdmission struct {
 	mu           sync.Mutex
 	used, closed bool
 	closeErr     error
+	authorize    func(context.Context, store.AttachmentMutationScope) error
 }
 
 // AdmitTransfer validates the current Task and authority once. The caller must
@@ -269,6 +298,19 @@ type TransferAdmission struct {
 // Revocation after admission does not cancel the admitted identity. Publication
 // still serializes with Task and Project deletion.
 func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, namespace filestorage.TransferNamespace) (*TransferAdmission, error) {
+	return s.admitTransfer(ctx, principal, projectID, taskID, path, contentType, namespace, nil)
+}
+
+// AdmitTransferAuthorized rechecks authority in each target transaction after
+// locking the Task and before inspecting or publishing attachment content.
+func (s *Attachments) AdmitTransferAuthorized(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, namespace filestorage.TransferNamespace, authorize func(context.Context, store.AttachmentMutationScope) error) (*TransferAdmission, error) {
+	if authorize == nil {
+		return nil, errors.New("transfer authorization is required")
+	}
+	return s.admitTransfer(ctx, principal, projectID, taskID, path, contentType, namespace, authorize)
+}
+
+func (s *Attachments) admitTransfer(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, namespace filestorage.TransferNamespace, authorize func(context.Context, store.AttachmentMutationScope) error) (*TransferAdmission, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return nil, err
 	}
@@ -301,12 +343,27 @@ func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Princip
 	if err != nil {
 		return nil, fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	if err := s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
-		return s.operations.checkPathConflict(ctx, dao, address)
+	ctx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
+	if err := s.mutateScoped(ctx, principal, address, func(scope store.AttachmentMutationScope) error {
+		if authorize != nil {
+			if err := authorize(ctx, scope); err != nil {
+				return err
+			}
+		}
+		return s.operations.checkPathConflict(ctx, scope.AttachmentDAO(), address)
 	}); err != nil {
-		return nil, errors.Join(err, permit.Close())
+		if closeErr := permit.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return nil, err
 	}
-	return &TransferAdmission{service: s, principal: principal, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit}, nil
+	return &TransferAdmission{service: s, principal: principal, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit, authorize: authorize}, nil
+}
+
+// GateContext binds work to the retained target permit.
+func (a *TransferAdmission) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return filestorage.GateContext(ctx, a.permit)
 }
 
 // Put consumes an admission at most once and leaves cleanup of staged objects
@@ -319,6 +376,8 @@ func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.A
 // transfer reader must hold its private permit and use only scope-bound receipt
 // reads, avoiding a Task-to-transfer lock inversion during Project deletion.
 func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (item model.Attachment, created bool, resultErr error) {
+	ctx, cancelTarget := a.GateContext(ctx)
+	defer cancelTarget()
 	lease, err := a.service.AcquireUploadLease(ctx, a.principal, a.address.ProjectID, a.address.TaskID)
 	if err != nil {
 		return model.Attachment{}, false, err
@@ -355,6 +414,13 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 		return model.Attachment{}, false, errors.New("transfer admission is closed or already used")
 	}
 	a.used = true
+	ctx, cancelUpload := lease.gateContext(ctx)
+	defer cancelUpload()
+	ctx, cancelTarget := a.GateContext(ctx)
+	defer cancelTarget()
+	if ctx.Err() != nil {
+		return model.Attachment{}, false, context.Cause(ctx)
+	}
 	object, err := uuid.NewRandom()
 	if err != nil {
 		return model.Attachment{}, false, fmt.Errorf("generate staged attachment ID: %w", err)
@@ -375,6 +441,11 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 		}
 		if presence.DeletedAt != nil {
 			return taskcore.NotFound(model.ErrTaskDeleted)
+		}
+		if a.authorize != nil {
+			if err := a.authorize(ctx, scope); err != nil {
+				return err
+			}
 		}
 		dao := scope.AttachmentDAO()
 		if err := a.service.operations.checkPathConflict(ctx, dao, a.address); err != nil {
@@ -397,11 +468,14 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 			return fmt.Errorf("publish attachment content: %w", err)
 		}
 		publication = filestorage.Published
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		attachment, created, err = a.service.operations.putMetadata(ctx, dao, a.address, a.contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
@@ -429,7 +503,20 @@ func (a *TransferAdmission) Close() error {
 	return a.closeErr
 }
 
-func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
+// OpenAdmitted rechecks admission after the target gate and before metadata or
+// content is read, without changing ordinary attachment assembly.
+func (s *Attachments) OpenAdmitted(ctx context.Context, principal model.Principal, projectID, taskID, path string, admit func(context.Context) error) (model.Attachment, filestorage.Object, error) {
+	if s == nil || admit == nil {
+		return model.Attachment{}, filestorage.Object{}, errors.New("attachment admission is required")
+	}
+	return s.open(ctx, principal, projectID, taskID, path, admit)
+}
+
+func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (result model.Attachment, opened filestorage.Object, resultErr error) {
+	return s.open(ctx, principal, projectID, taskID, path, nil)
+}
+
+func (s *Attachments) open(ctx context.Context, principal model.Principal, projectID, taskID, path string, admit func(context.Context) error) (result model.Attachment, opened filestorage.Object, resultErr error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
@@ -441,24 +528,47 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	defer permit.Close()
+	defer func() {
+		if err := permit.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("release attachment gate: %w", err))
+			if opened.Body != nil {
+				resultErr = errors.Join(resultErr, opened.Body.Close())
+				result, opened = model.Attachment{}, filestorage.Object{}
+			}
+		}
+	}()
+	gateCtx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
+	if admit != nil {
+		if err := admit(gateCtx); err != nil {
+			return model.Attachment{}, filestorage.Object{}, err
+		}
+	}
 	var attachment model.Attachment
-	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
+	err = s.read(gateCtx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		attachment, err = s.operations.metadata(ctx, reader, address)
+		attachment, err = s.operations.metadata(gateCtx, reader, address)
 		return err
 	})
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
+	if gateCtx.Err() != nil {
+		return model.Attachment{}, filestorage.Object{}, context.Cause(gateCtx)
+	}
+	// The open handle pins the file version. Its reader remains bound to the
+	// caller after the target permit is released.
 	object, err := s.files.Open(ctx, attachmentcore.Bucket, address.StoragePath)
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("open attachment content: %w", err)
 	}
+	if gateCtx.Err() != nil {
+		return model.Attachment{}, filestorage.Object{}, errors.Join(context.Cause(gateCtx), object.Body.Close())
+	}
 	return attachment, object, nil
 }
 
-func (s *Attachments) Delete(ctx context.Context, principal model.Principal, projectID, taskID, path string) error {
+func (s *Attachments) Delete(ctx context.Context, principal model.Principal, projectID, taskID, path string) (resultErr error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
@@ -470,7 +580,17 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	if err != nil {
 		return fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	defer permit.Close()
+	defer func() {
+		if err := permit.Close(); err != nil {
+			if resultErr == nil {
+				resultErr = &FileEffectError{Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: err}}
+			} else {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}
+	}()
+	ctx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
 	fileStarted := false
 	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
 		if _, err := s.operations.metadata(ctx, dao, address); err != nil {
@@ -480,10 +600,13 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 		if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
 			return fmt.Errorf("delete attachment content: %w", err)
 		}
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		if err := s.operations.deleteMetadata(ctx, dao, address); err != nil {
 			return fmt.Errorf("delete attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err != nil && fileStarted {
 		return &FileEffectError{Cause: err}

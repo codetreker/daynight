@@ -3,8 +3,10 @@ import { createRequire, stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
+import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../../../src/commands/worker/codex-probe-owner.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { withinOperation } from "../../../src/platform/tool-io.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
 
 // Exercise the locked launcher sources while replacing every filesystem and process effect.
 const require = createRequire(import.meta.url);
@@ -48,7 +50,7 @@ const launcher = (kind: "native" | "shebang") => {
 const ownerSource = readFileSync(new URL("../../../src/commands/worker/codex-probe-owner.ts", import.meta.url), "utf8")
   .split("\n").filter(line => !line.startsWith("import ") && !line.startsWith("export { ")).join("\n").replaceAll("export ", "");
 const windows = vm.runInNewContext(`${stripTypeScriptTypes(ownerSource)}\n({ createCodexProbeOwner, captureCodexProbeEnvironment });`, {
-  process: { platform: "win32" }, hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup,
+  process: { platform: "win32" }, BotCliProbeCleanupError, hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, withinOperation,
   captureCodexProbeEnvironment: (environment: NodeJS.ProcessEnv) => captureCodexProbeEnvironment(environment, "win32"),
 }) as { createCodexProbeOwner: typeof createCodexProbeOwner; captureCodexProbeEnvironment: typeof captureCodexProbeEnvironment };
 
@@ -88,7 +90,7 @@ describe("captured Windows Codex launcher inputs", () => {
       expect(Object.keys(first.options.env).filter(key => key.toUpperCase() === "PATH")).toEqual(["PATH"]);
       expect(Object.keys(second.options.env).filter(key => key.toUpperCase() === "PATHEXT")).toEqual(["PATHEXT"]);
       const owner = windows.createCodexProbeOwner(capturedOrdinary, "C:\\fixture");
-      const failure = new HerdrCommandCleanupError([new Error("owned fixture cleanup")], undefined);
+      const failure = new OwnedCommandCleanupError([new Error("owned fixture cleanup")], undefined);
       const operation = { check: () => {} } as Parameters<typeof owner.observe>[1];
       await expect(owner.observe({ file: "codex", environment: capturedOrdinary, workingDirectory: "C:\\fixture" }, operation, async () => { launch(capturedOrdinary); throw failure; })).rejects.toBe(failure);
       let callbacks = 0;

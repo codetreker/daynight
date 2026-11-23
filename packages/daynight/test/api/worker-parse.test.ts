@@ -12,12 +12,12 @@ const worker: WorkerClaim = {
   platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
 };
 const task: Task = {
-  id: taskId, type: "task", parentId: null, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null,
+  id: taskId, type: "task", parentId: null, projectId, title: "Task", description: "", tags: [], status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null,
   version: 9_223_372_036_854_775_807n, properties: { pullRequests: [{ url: "\0", title: "\ud800" }], worker },
   startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const malformedWorkers: unknown[] = [
-  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "not-id" }, { ...worker, userId: "not-id" },
+  undefined, null, {}, [], false, { ...worker, state: "released" }, { ...worker, state: "expired" }, { ...worker, claimId: "not-id" }, { ...worker, userId: "not-id" },
   { ...worker, workerId: "not-id" }, { ...worker, worktreeId: "not-id" }, { ...worker, machine: { id: claimId, name: "" } },
   { ...worker, machine: { id: "bad", name: "Machine" } }, { ...worker, machine: { ...worker.machine, unexpected: true } },
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
@@ -57,15 +57,17 @@ describe("worker ownership read DTO", () => {
   it.each(malformedWorkers)("rejects missing or malformed protected execution metadata %#", (value) => {
     expect(() => parseTask({ ...task, properties: { ...task.properties, worker: value } }, projectId, taskId)).toThrow("invalid response");
   });
-  it("retains released history on cancelled tasks and rejects an active claim on them", () => {
+  it("accepts a cancelled task without ownership and rejects an active claim on it", () => {
     const cancelled = { ...task, status: "cancelled", ready: false, cancelledAt: time };
-    const released = { ...cancelled, properties: { ...task.properties, worker: { ...worker, state: "released" } } };
-    expect(parseTask(released, projectId, taskId)).toEqual(released);
+    const unowned = { ...cancelled, properties: { pullRequests: task.properties.pullRequests! } };
+    expect(parseTask(unowned, projectId, taskId)).toEqual(unowned);
     expect(() => parseTask(cancelled, projectId, taskId)).toThrow("invalid response");
   });
-  it("rejects active ownership outside in_progress and released ownership outside todo or cancelled", () => {
+  it("rejects active ownership outside in_progress", () => {
     expect(() => parseTask({ ...task, status: "done" }, projectId, taskId)).toThrow("invalid response");
-    expect(() => parseTask({ ...task, properties: { ...task.properties, worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
+  });
+  it.each(["todo", "cancelled"] as const)("rejects the retired released state on %s", (status) => {
+    expect(() => parseTask({ ...task, status, cancelledAt: status === "cancelled" ? time : null, properties: { ...task.properties, worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
   });
 });
 
@@ -78,6 +80,11 @@ describe("worker execution mode read contract", () => {
   });
   it.each(["codex", "claude", "copilot"])("reads %s web claims with no Herdr binding", (agent) => {
     expect(read({ ...worker, agentControlMode: "web", agent, herdr: null })).toMatchObject({ agentControlMode: "web", agent, herdr: null });
+    const { herdr: _herdr, ...withoutHerdr } = worker;
+    const value = { ...task, properties: { ...task.properties, worker: { ...withoutHerdr, agentControlMode: "web", agent } } };
+    const parsed = parseTask(value, projectId, taskId);
+    expect(parsed).toEqual(value);
+    expect(readWorkerClaim(parsed.properties)).toMatchObject({ agentControlMode: "web", agent, herdr: null });
   });
   it.each([null, "", "other", undefined])("rejects explicit invalid mode %j", (agentControlMode) => {
     expect(() => read({ ...worker, agentControlMode })).toThrow("invalid response");

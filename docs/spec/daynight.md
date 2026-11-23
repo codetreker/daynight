@@ -21,7 +21,7 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和本仓库任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
-Task Steps 的已交付 CLI 提供 `task step list/show` 读取与 `task step add`；完整有序资源、短 ID、四状态、共享父版本和严格输出由[Steps 资源契约](daynight-task-steps.md)拥有。
+CLI 不提供 `task step` 命令、专用客户端、补全项或 Steps 手册主题。旧命令按未知 Task 操作失败，普通 Task、附件、Thread 和 Session 命令保持。REST 和 MCP 也不提供 Steps 入口；旧路径拒绝及剩余内部边界由[Steps 退役要求](daynight-task-steps.md)拥有。
 
 ## 需求
 
@@ -53,7 +53,6 @@ daynight logout
 daynight worker
 daynight worker setup
 daynight worker run
-daynight worker attach
 daynight review
 daynight review run
 daynight review list
@@ -74,10 +73,6 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--assigned-to <assignee>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
-daynight task step
-daynight task step list <task-id> [--json] [--project <project-id>]
-daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
-daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -89,7 +84,7 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 
 无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `worker`、`review`、`update`、`login`、`logout`、
 `completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `worker`、裸 `review` 和裸 `completion`
-显示各自帮助；裸 `skill`、`project`、`task` 与 `task step` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
+显示各自帮助；裸 `skill`、`project`、`task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本与 `--skill` 选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
 `daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到
@@ -97,7 +92,7 @@ stdout 并成功退出，保留构建产物的 YAML frontmatter、换行和全�
 该完整手册由公开 `using-daynight` 的同一组主题源按确定顺序生成，内部主题和章节链接
 转换为有效锚点；不维护手写汇总副本。安装后的 skill 可独立按主题读取，离线输出自身
 包含完整内容，不依赖独立主题文件、已安装 skill 或源码仓库。手册说明产品概念、项目与
-任务、Steps、资料、写安全、Sessions、Webhooks 和 Worker 操作的前提、结果与失败；
+任务、资料、写安全、Sessions、Webhooks 和 Worker 操作的前提、结果与失败；
 详细参数通过对应子命令的 `--help` 查询，不承载仓库任务编排工作流。
 
 `--skill` 必须是唯一参数；额外参数、其他选项和内联赋值按 usage error 以状态码 2 拒绝，且在读取手册前停止。手册文件缺失、读取失败或非法 UTF-8 以状态码 1 退出并保留原因。读取与校验完成后才输出；输出失败可能留下部分 stdout。
@@ -131,7 +126,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
 遵守 C5 的本地执行要求。使用手册输出只读取当前包内文件，无需 cwd、登录、配置、服务、Git、Agent launcher 或交互式终端，不加载安装器或 `using-daynight` bundle。
 
-`worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker、Herdr 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
+`worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git 与 Web 执行协调循环，读取固定状态根及启动时配置，不触发 review 配置引导，也不启动或探测 Herdr。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
 `review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
 `review list` 与 `review ls` 读取配置及已存数据库的业务快照，受支持旧格式在读取前自动升级；

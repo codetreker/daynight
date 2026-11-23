@@ -32,10 +32,10 @@ test.each([{ count: 1, imageBytes: 25 * 1024 * 1024, available: false }, { count
       await file.write(',{"type":"text","text":"after"}]}}\n');
     } finally { await file.close(); }
     const encodedBytes = (await stat(transcriptPath)).size; expect(encodedBytes).toBeGreaterThan(32 * 1024 * 1024);
-    let activeReservations = 0, maxReservation = 0, maxChunk = 0, streamedBytes = 0;
+    let activeLeases = 0, maxChunk = 0, streamedBytes = 0;
     const reader = await helper({ nativeHome, cwd, nativeSessionId, transcriptPath, indexDirectory,
       onSpawn: process => { child = process; },
-      acquireIndexReservation: bytes => { expect(activeReservations).toBe(0); activeReservations++; maxReservation = Math.max(bytes, maxReservation); return { release: () => { activeReservations--; } }; },
+      acquireIndexLease: () => { expect(activeLeases).toBe(0); activeLeases++; return { release: () => { activeLeases--; } }; },
     }); close = reader.close;
     const page = await reader.nextPage(); expect(page.records).toHaveLength(1); expect(page.records[0]?.media).toHaveLength(count); expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(8192);
     expect(page.records[0]?.value.message).toMatchObject({ content: expect.arrayContaining([{ type: "text", text: "before" }, { type: "text", text: "after" }]) });
@@ -45,9 +45,9 @@ test.each([{ count: 1, imageBytes: 25 * 1024 * 1024, available: false }, { count
       if (!available) { expect(media.error).toBe("image_too_large"); await expect(reader.readMedia(media.mediaId, () => { throw new Error("must not consume"); })).rejects.toThrow("unavailable"); continue; }
       const observed = createHash("sha256"); await reader.readMedia(media.mediaId, bytes => { maxChunk = Math.max(maxChunk, bytes.length); streamedBytes += bytes.length; observed.update(bytes); }); expect(observed.digest("hex")).toBe(digest);
     }
-    expect(maxChunk).toBeLessThanOrEqual(49_152); expect(streamedBytes).toBe(available ? count * imageBytes : 0); expect(activeReservations).toBe(0);
+    expect(maxChunk).toBeLessThanOrEqual(49_152); expect(streamedBytes).toBe(available ? count * imageBytes : 0); expect(activeLeases).toBe(0);
     await reader.close(); close = undefined; expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true); expect(await readdir(indexDirectory)).toEqual([]);
-    process.stdout.write(JSON.stringify({ count, imageBytes, encodedBytes, streamedBytes, maxChunk, maxReservation, elapsedMs: Math.round(performance.now() - started), maxRSSBeforeKiB: rssBefore, maxRSSAfterKiB: process.resourceUsage().maxRSS, nodeVersion: process.version, evidence: "controlled-native-JSONL-and-real-helper; no model, SDK execution or image decoder" }) + "\n");
+    process.stdout.write(JSON.stringify({ count, imageBytes, encodedBytes, streamedBytes, maxChunk, elapsedMs: Math.round(performance.now() - started), maxRSSBeforeKiB: rssBefore, maxRSSAfterKiB: process.resourceUsage().maxRSS, nodeVersion: process.version, evidence: "controlled-native-JSONL-and-real-helper; no model, SDK execution or image decoder" }) + "\n");
   } finally {
     if (close) await close();
     if (child && child.exitCode === null && child.signalCode === null) { const exited = new Promise<void>(resolve => child!.once("exit", () => resolve())); child.kill("SIGKILL"); await exited; }

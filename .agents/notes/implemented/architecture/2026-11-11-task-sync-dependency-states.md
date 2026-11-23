@@ -19,9 +19,11 @@ bodies. The Web cache stores intrinsic summaries separately from owner-versioned
 dependency states. It merges intrinsic versions first, then applies each state
 only when its owner version matches; state-only changes persist and publish.
 The typed resource map includes Goals, while the ordinary graph connects only
-visible endpoints and retains unavailable prerequisite references. Schema 10
-rebuilds incompatible task data while preserving unrelated profile and compatible
-Session history data. The [sync design](../../../../docs/design/daynight-task-sync.md) owns the
+visible endpoints and retains unavailable prerequisite references. Schema 11
+rebuilds task data before strict Worker parsing while preserving unrelated profile
+and compatible Session history data; a full snapshot can clear the refetchable
+Session catalogue. The [release decision](../simplification/2026-11-12-release-clears-ownership.md)
+explains the current Worker representation. The [sync design](../../../../docs/design/daynight-task-sync.md) owns the
 wire contract and the [typed read decision](2026-11-11-typed-task-resource-reads.md)
 owns visibility and retained dependency semantics. This refines the Web
 projection described in the [cancellation decision](../feature/2026-11-06-task-cancellation-terminal.md),

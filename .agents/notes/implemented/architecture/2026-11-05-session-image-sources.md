@@ -41,20 +41,25 @@ not delay native receipts. First source IO waits for complete, untruncated
 Markdown and its original position acknowledgement.
 
 Projection state, source intents, contexts and request admission use the existing
-journal's `image_runtime_state` and metadata budget. A source intent preserves
+journal's `image_runtime_state`. The [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission. A source intent preserves
 the original occurrence, locator, context and capture/attempt identity before
 position registration. Recovery repairs an interrupted registration and waits
-for the original position's service ACK before register, reservation or source
-IO. A persisted receipt can repair an interrupted timeline update without
-changing the occurrence. Unknown register/commit outcomes query the original
-capture; an interrupted source writer is never restarted by recovery. A source
+for the original position's service ACK and actual complete history before local
+reservation or source IO. The [direct-submission decision](2026-11-13-session-direct-image-submission.md)
+replaces the original register/reserved prerequisite with sealed-byte submission.
+A persisted receipt can repair an interrupted timeline update without
+changing the occurrence. Unknown submissions query the original capture and
+replay only the same frozen business content and sealed bytes after an explicit
+authorized absence result; an interrupted source writer is never restarted by recovery. A source
 intent becomes settled only after committed-byte adoption and its original
 position projection both succeed.
 
 Native image publication and Markdown projection share the current committed
 entry. The named Markdown publication operation commits projection state with
-the timeline candidate pointer and outbox in one SQLite transaction, following
-the [atomic publication decision](2026-11-10-atomic-content-publication.md).
+the current SQL body, totals and outbox in one SQLite transaction. The
+[atomic publication decision](2026-11-10-atomic-content-publication.md) owns the
+original visibility guarantee; [SQL activation](2026-11-12-session-sqlite-activation.md)
+replaces its candidate pointer with the body row.
 Before parsing, receipt updates or stop settlement, Markdown state adopts
 same-position native image updates and invalidates stale parser tokens. This
 also closes the crash window between a native patch and Markdown state repair.
@@ -106,17 +111,21 @@ DNS, connection and peer targets participate in the guard. Configuration or
 network changes invalidate the attempt's generation. This does not claim that
 application checks independently verify the operator's deployment facts.
 
-Source writers reserve both the source and validation-copy peak through the
-existing media budget. `reserveCaptureSource` and relay block delivery share
-`tryAcquireMediaBlock`, keeping the Controller's total at two block slots.
-`readCapture` verifies and delivers each block synchronously while holding its
-policy lease. Cancellation waits for the writer and validation work before
-releasing their reservation; shutdown preserves unknown and retained ownership.
-After writer and stage completion and durable release, the in-memory shared slot
-is returned even when refreshing the storage budget fails. That error still
-reaches the caller. A repeated release reconciles an active slot whose durable
-record already says released; it must not return a slot while joining or release
-persistence remains unconfirmed.
+The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes source writers' cumulative media charge. The later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes source and validation-copy unwritten-byte estimates without changing
+source leases or the durable capture/attempt/source/stage/released records.
+`reserveCaptureSource` and relay block delivery share `tryAcquireMediaBlock`,
+keeping the Controller's total at two block slots. `readCapture` verifies and
+delivers each block synchronously while holding its policy lease. Cancellation
+waits for the writer and validation work before releasing their reservation;
+shutdown preserves unknown and retained ownership. After writer and stage
+completion and durable release, the in-memory shared slot is returned. A
+repeated release reconciles an active slot whose durable record already says
+released; it must not return a slot while joining or release persistence remains
+unconfirmed.
 
 Local cleanup has a durable obligation separate from the service receipt and
 source phase. Before reserving source storage, the coordinator records the
@@ -132,11 +141,12 @@ Older started records acquire the same conservative cleanup obligation on recove
 
 `media.adoptCaptureResource(captureId, attemptId, resource)` requires a durable
 committed receipt matching the original request, occurrence and complete resource,
-and checks every validated metadata field. It takes a shared IO slot and admits
-the third saved-copy peak before `pending-content.importResourceFile` imports
-the validated file in 512 KiB blocks. An existing saved original is verified
-in place; missing or corrupt bytes cannot be repaired from staging or an old
+and checks every validated metadata field. It takes a shared IO slot before
+`ResourceFiles.importResourceFile` imports the validated file in 512 KiB blocks.
+An existing saved original is verified in place; missing or corrupt bytes cannot be repaired from staging or an old
 source. This keeps local adoption from silently replacing committed history.
+The [resource ownership decision](2026-11-12-session-resource-files.md) describes
+the file owner and the guarded deletion used during import cleanup.
 
 Source retry is one operation on an already-registered occurrence. Unknown
 captures are observed under their original identity. Only a confirmed failed,
@@ -204,10 +214,11 @@ commit before source admission. Reporting those bytes as retry success lets the
 service enter copying while every transfer rejects the missing admission. The
 coordinator owns that association and must validate even a cached result.
 
-**Return shared slots only after a successful budget refresh.** Free space can
-fall below its floor after release is durable. Keeping the slot in that case
-turns a recoverable storage error into permanent capacity loss. Returning the
-slot after proven cleanup preserves the error without retaining dead work.
+**Return shared slots only after a successful budget refresh.** The original
+space-watermark design could fail a refresh after release was already durable.
+Keeping the slot then would turn a recoverable storage error into permanent
+capacity loss. Cleanup completion therefore owned slot return independently of
+that refresh. Removing the space policy preserves the same cleanup barrier.
 
 **Use service settlement as proof of local cleanup.** A failed service capture
 can be terminal while directory synchronization or release persistence is still

@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
@@ -154,60 +153,6 @@ func TestNativeSessionHTTPAndBrowserEncodeSuppliedReaderPermissions(t *testing.T
 			if !reflect.DeepEqual(accepted.Operation, commandResult) || accepted.OperationURL != location || response.Header().Get("Location") != location {
 				t.Fatal("HTTP changed the supplied accepted operation or its URL", accepted)
 			}
-		})
-	}
-}
-
-func TestTerminalSessionHTTPEncodesReaderStateAndControlRefusals(t *testing.T) {
-	for _, role := range []string{"member", "admin"} {
-		t.Run(role, func(t *testing.T) {
-			f := terminalHTTPSetup(t)
-			reader := sessionReaderHandler(t, f.h)
-			marker, browserID := uuid.NewString(), uuid.NewString()
-			supplied := f.knownState("1")
-			supplied["control"] = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{}}
-			want := routeCopy(supplied)
-			expected := f.message
-			expected.Type = "control_request"
-			expected.Payload = v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: browserID}
-			scope := func(ctx context.Context, principal model.Principal, project, task, session string) {
-				t.Helper()
-				owner := f.message.Payload.(v2.Registration).Owner
-				if ctx.Err() != nil || ctx.Value(ownerPermissionContextKey{}) != marker || principal != reader.principal || project != owner.ProjectID || task != owner.TaskID || session != f.message.SessionID {
-					t.Errorf("terminal reader scope changed: actor=%+v project=%s task=%s session=%s context=%v", principal, project, task, session, ctx.Err())
-				}
-			}
-			f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
-				calls.CurrentTerminal = func(ctx context.Context, principal model.Principal, project, task string) (map[string]any, error) {
-					scope(ctx, principal, project, task, f.message.SessionID)
-					return routeCopy(want), nil
-				}
-				calls.TerminalState = func(ctx context.Context, principal model.Principal, project, task, session string) (map[string]any, error) {
-					scope(ctx, principal, project, task, session)
-					return routeCopy(want), nil
-				}
-				calls.SubmitTerminal = func(ctx context.Context, principal model.Principal, project, task, session, actualBrowser string, message v2.Message) (v2.Message, error) {
-					scope(ctx, principal, project, task, session)
-					if actualBrowser != browserID || !reflect.DeepEqual(message, expected) {
-						t.Error("terminal control request body or browser-client header changed")
-					}
-					return v2.Message{}, &model.Fault{Code: "forbidden", Message: "Session interaction is unavailable."}
-				}
-			})
-			f.calls.ExpectCalls("CurrentTerminal", 1)
-			f.calls.ExpectCalls("TerminalState", 1)
-			f.calls.ExpectCalls("SubmitTerminal", 1)
-			headers := http.Header{v2.ProtocolHeader: {v2.Protocol}}
-			for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
-				response := ownerPermissionRequest(t, reader, http.MethodGet, path, "", marker, headers)
-				view := decodeResponse[map[string]any](t, response, http.StatusOK)
-				if !reflect.DeepEqual(view, want) {
-					t.Fatal("HTTP changed the supplied terminal reader state", view)
-				}
-			}
-			headers.Set("Daynight-Browser-Client", browserID)
-			response := ownerPermissionRequest(t, reader, http.MethodPost, f.base+"/"+f.message.SessionID+"/commands", jsonBody(t, expected), marker, headers)
-			assertProjectError(t, response, http.StatusForbidden, "forbidden")
 		})
 	}
 }

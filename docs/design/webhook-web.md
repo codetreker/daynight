@@ -4,11 +4,17 @@
 
 `AuthenticatedApp`在已认证的TaskCacheScope下提供独立`WebhookCatalogProvider`，与侧栏默认Team选择解耦。`WorkspaceSidebar`只有验证过当前service/principal的catalog后展示入口；`/webhooks`的查询明确表达owner、teamId、endpointId和configuration/subscriptions/deliveries。deliveryId必须配合endpointId及deliveries；非法查询保留错误，不作为另一个归属读取。筛选按主体、owner和endpoint隔离在内存中，不扩展URL或Task IndexedDB。
 
+目录解码将可订阅集合与已知历史事件分开：五个继续支持的唯一事件为必选项，`task.step_updated` 为可选项，每项仍严格校验 wire type、schema version 与 resource kind。`WebhooksPage` 将已验证目录传给新建及订阅编辑对话框；选择项由目录生成，仅排序元数据保留既有显示顺序。原订阅选择独立于可选项保存，投递历史继续使用已知六事件解码。
+
 `WebhooksPage`组织配置、订阅、秘密和投递页签；`useWebhookData`管理配置列表与详情，`useWebhookDirectories`读取实际Team/Project目录。`WebhookDeliveriesPanel`拥有Delivery列表、详情dialog、Attempt分页、独立payload及重投确认；`useWebhookHistory`共用历史读取、页数和错误保留逻辑，`useScopedState`隔离筛选。正常配置GC在Delivery仍引用endpoint时保留墓碑，页面可挂载只读投递页签。有效归属的deliveries地址在配置GET返回真实404且配置未加载时，使用`WebhookHistoryEndpoint`的`{kind:"retained-history",id}`分支挂载独立历史读取。它只持有endpoint ID，不合成配置名称、版本、capabilities或活跃endpoint；历史自身的200/403/404由严格读取处理。`{kind:"checking-configuration",id}`另表示配置尚在核验且当前管理投影已撤下，仍按独立历史读权保留资料；它与真实配置404后的retained-history分支有不同提示。两者都是客户端上下文，不是合成的Endpoint DTO，均不添加名称、版本或capabilities。授权历史的生命周期按service/principal/owner/endpointId/readKey隔离，与当前配置渲染分支及配置请求成败无关。管理缓存已撤下或配置404后的非权威配置500保留同一ID-only上下文、在途Delivery/payload读取及详情交互，错误在配置区域单独显示。缺失配置事实保留到同scope新的权威配置观察；500不撤销它，也不能恢复旧管理投影。身份/owner可读性、导航、历史404及已知载荷期限仍执行各自清理。墓碑、缺失配置及配置核验上下文均无重投入口资格。页面保持生产shell，Webhook组件使用独立作用域样式。可见结果由[Web规格](../spec/webhook-web.md)拥有，服务端管理和历史机制分别见[管理设计](webhook-management.md)与[历史设计](webhook-history.md)。
 
-页面的空状态从当前已经验证的资源集合派生：endpoint 的空 subscriptions 产生独立 code 图标和订阅提示，项目目录的空集合只在项目选择中表达；读取未完成或失败不替换为这些空状态。 状态图标在 Webhook 样式范围内明确采用正常 grid 轨道分布，避免其他页面的同名 state-icon 规则将内部轨道收缩成 SVG 宽度。范围摘要的空集合使用 tiny 样式的“—”，保留与非空字段一致的结构。数字 SPAN 只包含计数；标签与尾部分隔空格形成同一外部文本节点，保留参考的字符 shaping 与窄屏徽标换行。固定页面/列表标题及数字计数采用原型的正常换行，动态资源名称继续允许长内容换行。
+端点详情使用公共 `HorizontalTabList` 保持单行。详情条带宽度不超过 360px 时，通过容器查询采用左右各 8px 内边距、4px 页签间距和 3px 计数间距，余量按文字所需宽度分配；宽容器保留原有间距。字号和选中底线保持不变，触控目标至少 44px 高。大计数或放大字体超出可用宽度时，仅页签轨道横向滚动，边缘阴影标识尚未显示的内容且不拦截指针。路由、语言和实际尺寸变化后，布局阶段只调整轨道的 `scrollLeft` 以显示当前选中项，不移动外层文档或主动更换焦点；手动滚动不触发重新定位。方向键及 Home/End 仍由 Webhook 页面拥有。仅投递历史的分支共用同一条带和原有只读语义。取舍见[单行页签决策](../../.agents/notes/implemented/bug-fix/2026-11-20-webhook-detail-tabs.md)。
+
+页面的空状态从当前已经验证的资源集合派生：endpoint 的空 subscriptions 产生独立 code 图标和订阅提示，项目目录的空集合只在项目选择中表达；读取未完成或失败不替换为这些空状态。状态图标在 Webhook 样式范围内明确采用正常 grid 轨道分布，避免其他页面的同名 state-icon 规则将内部轨道收缩成 SVG 宽度。范围摘要的空集合使用 tiny 样式的“—”，保留与非空字段一致的结构。数字 SPAN 只包含计数；页签标签与计数共同保持单行。固定页面/列表标题采用正常换行，动态资源名称继续允许长内容换行。
 
 新建按钮保留原生事件目标与禁用语义，并在未设样式的 SPAN 内参与页头布局；按钮自身处于普通内联上下文，避免直接 flex item 的 blockification 改变 resolved display/min-width。新建配置 form 使用 webhook-create-form 标记，其 fieldset.form-field 采用 min-content 最小尺寸；编辑和订阅 form 保留各自现有尺寸规则。该标记只表达表单布局类型，不改变创建、版本或请求逻辑。
+
+接收端点状态 `select.filter` 使用专属定位包装，隐藏浏览器绘制的箭头并叠加不接收指针事件的装饰 SVG；原生 select 仍拥有名称、焦点和选择行为。箭头盒为 10px，距右框 9px、垂直居中，select 为文字预留 29px 右内边距。包装与 select 在工具栏交叉轴拉伸，沿用页面自身的宽度限制及桌面和 450px 以下的字体、边框与其余内边距；窄屏规则保留箭头所需空间。箭头不参与固有宽度计算，搜索框继续收缩，团队选择器不受专属样式影响。浏览器箭头与文字 padding 分别受浏览器控制，故单调 padding 无法固定右边距；取舍记录于[状态筛选箭头决策](../../.agents/notes/implemented/bug-fix/2026-11-14-webhook-status-select-spacing.md)。
 
 ## 请求与配置发布
 
@@ -50,7 +56,7 @@ payload只在明确请求时调用独立GET，不能凭endpoint可见性或已�
 
 delivery.redeliver descriptor固定endpointId、deliveryId、ifVersion、ifGeneration和原destinationRevision，请求body只添加操作元数据。仅202进入重投登记确认：configVersionAfter不变，generationAfter为原ifGeneration+1，目标revision不变。当前Delivery可已到更高generation，不能要求它等于原回执；页面分别显示原登记generation和当前generation，实际发送通过后续GET读取。原事件、body、目标、计划与手动机会由服务端[历史设计](webhook-history.md#重投与执行)裁决，浏览器不生成替代事件或重置预算。
 
-unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata，body只在内存；重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏保留明确persistenceError，不宣称原操作回滚或记录已清理，当前文档的新明确提交仍保留完整固定意图和核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理失败由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
+每次写入或核对拥有独立取消信号，停止和dispose可结束摘要、准入或网络等待并接收迟到错误；尚未派发的操作按拒绝结束，已派发未确认保留unknown，已匹配回执继续为confirmed。已派发请求收到服务端4xx或`webhooks_unavailable`503时按确定拒绝结束：服务端只在随后确认回滚的写事务内返回该维护拒绝，回滚无法确认时改报`write_outcome_unknown`；其余5xx仍为unknown。停止后的原工作不能发布当前投影或启动核对，收尾只释放原pending。页面把后续读取绑定原操作及身份暂停代次，暂停、新操作和卸载取消该读取；控制器停止会通知其结果发布工作取消，并递增停止代次阻止已停止结果再创建延迟工作。跨暂停的已确认结果由页面持有可取消的延迟发布；恢复准入后仅在原操作、编辑实例、草稿和导航仍匹配时刷新、撤回、关闭或导航。现有临时身份暂停不主动停止在途写入，账户刷新入口负责在最终启用时调用停止入口。unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata，body只在内存；重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏保留明确persistenceError，不宣称原操作回滚或记录已清理，当前文档的新明确提交仍保留完整固定意图和核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理失败由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
 
 回执nullable overlapUntil来自原持久化结果；逻辑到期由数据库时钟决定。GET404和重放410只说明回执当前不可确认，不能证明回滚，详见[回执决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-receipt-results.md)。[浏览器管理决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-management.md)记录共有基础，[投递资料决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-deliveries.md)记录共同观察与原字节验证的原因。
 
@@ -58,10 +64,14 @@ unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，�
 
 配置对话框将明确编辑字段与版本基线分开保存。手动查看冲突后的当前版本刷新未编辑值，保留编辑值；双方都改变的字段须明确选用当前值、保留本人修改或重新编辑，重复查看不会自动解除冲突。提交只包含已明确解决的编辑字段与观察版本；订阅dialog提交完整最终数组及显式confirmProjectIds。创建dialog对已选但不在当前权威目录中的项目保留可取消复选框，仅显示原ID，复用订阅选择的不可用项目回退方式；目录刷新不擅自改变用户选择或保留旧名称和归属标签。服务端裁决实际资格和字节边界，前端目录不替代授权。扩大与启用遵循catalog能力，暂停、删除和范围收缩仍使用管理权与原CAS。
 
-独立secret GET只在当前capability获准时读取。返回key与当前版本匹配才展示；离开配置区域、窄屏返回列表、响应式切入列表模式、轮换、降权或账号变化撤下旧值并失效未完成秘密读取，再次进入须重新GET，隐藏面板不保留可显示秘密。复制失败提供可选中明文的当前文档操作，不写额外持久存储。历史轮换结果保持原key和截止，当前secret另读。
+独立secret GET只在当前capability获准时读取。返回key与当前版本匹配才展示；离开配置区域、窄屏返回列表、响应式切入列表模式、轮换、降权或账号变化撤下旧值并失效未完成秘密读取，再次进入须重新GET，隐藏面板不保留可显示秘密。复制使用[共享展示控件](web-copy-button.md)，仍由 Webhook 拥有 capability 与身份准入；secret 尚未显示时先 reveal 并返回，不复制掩码。复制失败提供可选中明文的当前文档操作，不写额外持久存储。历史轮换结果保持原key和截止，当前secret另读。
 
 ## 验证与交付
 
 单元验证负责wire、版本、状态机、存储和UI生命周期边界，包含跨列表/详情/payload限制、仅目标URL收缩、Attempt404与在途读取竞争、跨载荷期限迟到响应及权威历史失效。无头浏览器连接同一生产RegisterRoutes、真实认证和PostgreSQL，通过真实第二客户端、barrier及仅转发的故障层验证业务效果；接收结果与签名使用实际发送器和受控HTTPS接收方。临时fixture只接线模块，不复制业务handler或成功JSON。合法边界载荷fixture只证明独立原字节接口与浏览器上限，不把安装的边界内容冒称实际事件渲染输出。
 
 内容区与dialog对照视觉输入的样式向量、局部geometry和像素，生产shell单独核对控件、响应式与导航。全页截图保留shell起点、宽度、页头及边距差异，只允许对齐外层可用内容盒。未变化背景检查同时验证节点身份、草稿、选区、焦点、滚动和分页；产品测试不导入原型或场景状态。局部模块验证不替代完整应用生命周期与物理保留清理的组合证明。
+
+状态与 Team 筛选采用公共 `NativeSelect` 的 filter 变体，订阅 Project 和投递筛选采用 form/fill；页面仅负责外部宽度和布局，公共层负责箭头、间距、焦点及禁用外观。选项、归属与提交时序仍由页面管理，投递筛选变更只更新草稿。公共接口和几何见[原生选择组件](native-select.md)。
+
+选择字段的定向浏览器回归挂载生产页面并控制 API 响应，测量箭头与选择框几何、响应式布局，操作原生选择并核对查询与背景复核连续性；这项局部视觉和交互检查不替代真实服务的业务效果验证。

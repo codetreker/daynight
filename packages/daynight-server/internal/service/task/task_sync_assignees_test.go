@@ -110,7 +110,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 		return []model.TaskViewRecord{task}, nil
 	}, facts, 10*time.Second)
 	old, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch})
-	if err != nil || old.Tasks[0].TitlePreview != task.TitlePreview || f.reads != 1 {
+	if err != nil || old.Tasks[0].TitlePreview != task.TitlePreview || f.reads != 2 {
 		t.Fatalf("task/profile scope: %#v %v", old, err)
 	}
 	initial := syncAssigneeVersions(t, old)
@@ -130,7 +130,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	versions := syncAssigneeVersions(t, fresh)
-	if versions[member].Version == initial[member].Version || versions[member].HasProjectAccess || versions[unreferenced].UserID != "" || fresh.Tasks[0].TitlePreview == task.TitlePreview || f.reads != 2 {
+	if versions[member].Version == initial[member].Version || versions[member].HasProjectAccess || versions[unreferenced].UserID != "" || fresh.Tasks[0].TitlePreview == task.TitlePreview || f.reads != 4 {
 		t.Fatalf("fresh scope missed profile or Task fields: %#v", fresh)
 	}
 	if !reflect.DeepEqual(syncAssigneeVersions(t, old), initial) || old.Tasks[0].TitlePreview != task.TitlePreview {

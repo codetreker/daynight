@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,13 +23,12 @@ import (
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Dependencies struct {
@@ -45,7 +45,19 @@ func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.
 	if err != nil {
 		return nil, err
 	}
-	return New(service.NewModules(c, d.Store, d.Ready, d.Files, client), c, logger)
+	app := service.NewModules(c, d.Store, d.Ready, d.Files, client)
+	app.CredentialUsage = unusedUsageRecorder(logger)
+	return New(app, c, logger)
+}
+
+func unusedUsageRecorder(logger *slog.Logger) *credentialusage.Recorder {
+	r, err := credentialusage.New(runtimeUsageWriter(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}), logger, nil)
+	if err != nil {
+		panic(err)
+	}
+	return r
 }
 
 type resourceTestHandler struct {
@@ -85,37 +97,61 @@ func authorizeResourceRequest(handler http.Handler, request *http.Request) {
 
 // Each callback supplies independent facts; writes never determine later reads.
 type httpTestStore struct {
-	t                           *testing.T
-	ReadSnapshotCall            func(ctx context.Context, fn func(store.SnapshotScope) error) error
-	WriteIdentityCall           func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
-	WriteProjectCall            func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
-	WriteProjectCreationCall    func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
-	CreateTeamCall              func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
-	WriteTeamCall               func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
-	WriteWorkerCall             func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
-	ReadPromptSnapshotCall      func(ctx context.Context, fn func(store.PromptSnapshot) error) error
-	WritePromptCall             func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
-	WriteBotCall                func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
-	WriteSessionCall            func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
-	WriteThreadCall             func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
-	WriteAttachmentMutationCall func(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error)
-	PutAttachmentCall           func(ctx context.Context, item model.Attachment) (model.Attachment, bool, error)
-	DeleteAttachmentCall        func(ctx context.Context, project, task, path string) error
-	WritePrivateTransferCall    func(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error)
-	WriteOAuthClientsCall       func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
-	WriteAuthorizationsCall     func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
-	WriteCredentialFamilyCall   func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
-	WriteGrantLifecycleCall     func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
-	ReadTaskSearchCall          func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
-	WriteWebhookCall            func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
-	ReadWebhookSnapshotCall     func(ctx context.Context, fn func(store.WebhookReadScope) error) error
+	t                              *testing.T
+	ReadSnapshotCall               func(ctx context.Context, fn func(store.SnapshotScope) error) error
+	WriteIdentityCall              func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
+	WritePreviewSSOCall            func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error)
+	WriteProjectCall               func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
+	WriteProjectDirectMemberCall   func(ctx context.Context, id string, fn func(store.ProjectDirectMemberScope) error) (store.Completion, error)
+	WriteGitHubProjectTransferCall func(context.Context, string, func(store.GitHubProjectTransferScope) error) (store.Completion, error)
+	WriteGitHubProjectDeletionCall func(context.Context, string, func(store.GitHubProjectDeletionScope) error) (store.Completion, error)
+	WriteGitHubTeamDeletionCall    func(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error)
+	WriteProjectCreationCall       func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
+	CreateTeamCall                 func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
+	WriteTeamCall                  func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
+	WriteWorkerCall                func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
+	ReadPromptSnapshotCall         func(ctx context.Context, fn func(store.PromptSnapshot) error) error
+	WritePromptCall                func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
+	WriteAssistantTaskCall         func(context.Context, func(store.AssistantTaskScope) error) (store.Completion, error)
+	WriteBotCall                   func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
+	WriteSessionCall               func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
+	WriteThreadCall                func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
+	WriteAttachmentMutationCall    func(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error)
+	PutAttachmentCall              func(ctx context.Context, item model.Attachment) (model.Attachment, bool, error)
+	DeleteAttachmentCall           func(ctx context.Context, project, task, path string) error
+	WritePrivateTransferCall       func(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error)
+	WriteOAuthClientsCall          func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
+	WriteAuthorizationsCall        func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
+	WriteCredentialFamilyCall      func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
+	WriteCredentialUsageCall       func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
+	WriteGrantLifecycleCall        func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
+	ReadTaskSearchCall             func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
+	ReadHistoryDirectoryCall       func(ctx context.Context, fn func(store.HistoryDirectoryScope) error) error
+	WriteWebhookCall               func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
+	ReadWebhookSnapshotCall        func(ctx context.Context, fn func(store.WebhookReadScope) error) error
 }
 
 var _ store.Transactions = (*httpTestStore)(nil)
 
+func (s *httpTestStore) ReadHistoryDirectory(ctx context.Context, fn func(store.HistoryDirectoryScope) error) error {
+	if s.ReadHistoryDirectoryCall == nil {
+		unexpectedHTTPCall(s.t, "ReadHistoryDirectory")
+	}
+	return s.ReadHistoryDirectoryCall(ctx, fn)
+}
+
+func (s *httpTestStore) ReadUsage(context.Context, func(store.UsageScope) error) error {
+	unexpectedHTTPCall(s.t, "ReadUsage")
+	return nil
+}
+func (s *httpTestStore) WriteUsage(context.Context, func(store.UsageScope) error) (store.Completion, error) {
+	unexpectedHTTPCall(s.t, "WriteUsage")
+	return store.Completion{}, nil
+}
+
 func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
 	if s.ReadSnapshotCall == nil {
-		unexpectedHTTPCall(s.t, "ReadSnapshot")
+		return fn(newHTTPTestSnapshot(s.t))
 	}
 	return s.ReadSnapshotCall(ctx, fn)
 }
@@ -127,11 +163,46 @@ func (s *httpTestStore) WriteIdentity(ctx context.Context, fn func(store.Identit
 	return s.WriteIdentityCall(ctx, fn)
 }
 
+func (s *httpTestStore) WritePreviewSSO(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error) {
+	if s.WritePreviewSSOCall == nil {
+		unexpectedHTTPCall(s.t, "WritePreviewSSO")
+	}
+	return s.WritePreviewSSOCall(ctx, fn)
+}
+
 func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
 	if s.WriteProjectCall == nil {
 		unexpectedHTTPCall(s.t, "WriteProject")
 	}
 	return s.WriteProjectCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteProjectDirectMember(ctx context.Context, id string, fn func(store.ProjectDirectMemberScope) error) (store.Completion, error) {
+	if s.WriteProjectDirectMemberCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectDirectMember")
+	}
+	return s.WriteProjectDirectMemberCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubProjectTransfer(ctx context.Context, id string, fn func(store.GitHubProjectTransferScope) error) (store.Completion, error) {
+	if s.WriteGitHubProjectTransferCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubProjectTransfer")
+	}
+	return s.WriteGitHubProjectTransferCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubProjectDeletion(ctx context.Context, id string, fn func(store.GitHubProjectDeletionScope) error) (store.Completion, error) {
+	if s.WriteGitHubProjectDeletionCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubProjectDeletion")
+	}
+	return s.WriteGitHubProjectDeletionCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubTeamDeletion(ctx context.Context, id string, fn func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
+	if s.WriteGitHubTeamDeletionCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubTeamDeletion")
+	}
+	return s.WriteGitHubTeamDeletionCall(ctx, id, fn)
 }
 
 func (s *httpTestStore) WriteProjectCreation(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error) {
@@ -174,6 +245,13 @@ func (s *httpTestStore) WritePrompt(ctx context.Context, fn func(store.PromptWri
 		unexpectedHTTPCall(s.t, "WritePrompt")
 	}
 	return s.WritePromptCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteAssistantTask(ctx context.Context, fn func(store.AssistantTaskScope) error) (store.Completion, error) {
+	if s.WriteAssistantTaskCall == nil {
+		unexpectedHTTPCall(s.t, "WriteAssistantTask")
+	}
+	return s.WriteAssistantTaskCall(ctx, fn)
 }
 
 func (s *httpTestStore) WriteBot(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {
@@ -237,6 +315,13 @@ func (s *httpTestStore) WriteAuthorizations(ctx context.Context, fn func(store.A
 		unexpectedHTTPCall(s.t, "WriteAuthorizations")
 	}
 	return s.WriteAuthorizationsCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteCredentialUsage(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+	if s.WriteCredentialUsageCall == nil {
+		unexpectedHTTPCall(s.t, "WriteCredentialUsage")
+	}
+	return s.WriteCredentialUsageCall(ctx, events)
 }
 
 func (s *httpTestStore) WriteCredentialFamily(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
@@ -337,6 +422,10 @@ type httpAuthenticationDAO struct {
 	principal model.Principal
 	hash      []byte
 	calls     int
+}
+
+func (d *httpAuthenticationDAO) SessionTime(context.Context) (time.Time, error) {
+	return time.Now().UTC().Truncate(time.Microsecond), nil
 }
 
 func (d *httpAuthenticationDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
@@ -503,9 +592,20 @@ type httpTestSnapshot struct {
 	Bots           store.BotReader
 	Attachments    store.AttachmentReader
 	ObservedAtCall func(context.Context) (time.Time, error)
+	UserCandidates store.UserCandidateReader
 }
 
 func newHTTPTestSnapshot(t *testing.T) *httpTestSnapshot { return &httpTestSnapshot{t: t} }
+func (s *httpTestSnapshot) UserCandidateDAO() store.UserCandidateReader {
+	if s.UserCandidates == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.UserCandidateDAO")
+	}
+	return s.UserCandidates
+}
+func (s *httpTestSnapshot) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
 	if s.Credentials == nil {
 		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")
@@ -592,7 +692,7 @@ const uiTestScriptPath = "/assets/app-12345678.js"
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}, Files: attachmentTestFiles(t)}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +704,7 @@ func TestUIWiringAndUnknownRoutes(t *testing.T) {
 	var logs bytes.Buffer
 	handler := uiTestHandler(t, &logs)
 	root := projectRequest(handler, http.MethodGet, "/", "")
-	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><body>server test shell</body></html>\n" {
+	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><head><meta name=\"daynight-preview-origin\" content=\"https://preview.daynight.example\"></head><body>server test shell</body></html>\n" {
 		t.Fatalf("root UI response: %d %+v", root.Code, root.Header())
 	}
 	var entries []map[string]any
@@ -737,22 +837,23 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseWork)
-	schema := map[string]any{"type": "object"}
-	err := fixture.application.mcp.RegisterTool(&sdk.Tool{Name: "test_shutdown", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
-		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
-			close(entered)
-			<-ctx.Done()
-			close(canceled)
-			<-release
-			return mcphttp.ToolResult{}, ctx.Err()
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
+	scope := newHTTPTestSnapshot(t)
+	scope.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+		if p != fixture.handler.principal || project != fixture.task.ProjectID {
+			t.Errorf("MCP shutdown operation changed actor or project: %#v %s", p, project)
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return model.ProjectAccess{}, ctx.Err()
+	}}
+	fixture.store.ReadSnapshotCall = func(_ context.Context, run func(store.SnapshotScope) error) error { return run(scope) }
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
-		request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test_shutdown","arguments":{}}}`))
+		request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_ready","arguments":{"projectId":%q,"view":"summary"}}}`, fixture.task.ProjectID)))
 		if err != nil {
 			return
 		}
@@ -776,7 +877,7 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	})
 	await(t, entered)
 	shutdown, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	err = fixture.application.Shutdown(shutdown)
+	err := fixture.application.Shutdown(shutdown)
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected MCP drain timeout, got %v", err)
@@ -837,6 +938,7 @@ func (f *webhookHTTPApplicationFixture) start() {
 		f.t.Fatal(err)
 	}
 	app := service.NewModules(f.cfg, f.store, func(context.Context) error { return nil }, attachmentTestFiles(f.t), client)
+	app.CredentialUsage = unusedUsageRecorder(testLogger())
 	// Routes consume the selected service. Process tests own OpenApp's worker and resource assembly.
 	app.Webhooks = &webhookservice.Service{DB: f.store, ConfigurationExpansionAvailable: f.cfg.Webhook.Enabled, DispatchEnabled: f.cfg.Webhook.Enabled, Random: bytes.NewReader(nil)}
 	handler, err := New(app, f.cfg, testLogger())
@@ -923,6 +1025,17 @@ type rootWebhookReadScope struct {
 	calls     []string
 }
 
+func (s *rootWebhookReadScope) CurrentWebhookAuthorization(_ context.Context, p model.Principal, profile model.CredentialPolicyProfile) (model.CredentialAuthorization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "Authorization")
+	a, err := assemblyAuthorization(p)
+	if p != s.principal || a.Profile != profile {
+		s.t.Fatalf("webhook authorization changed identity or profile: %#v %s", p, profile)
+	}
+	return a, err
+}
+
 func (s *rootWebhookReadScope) CredentialDAO() store.CredentialReader { return s }
 func (s *rootWebhookReadScope) WebhookDAO() store.WebhookReader       { return s }
 func (s *rootWebhookReadScope) Credential(_ context.Context, p model.Principal) (store.ThreadCredential, error) {
@@ -979,7 +1092,7 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 			Dispatch bool `json:"dispatchEnabled"`
 		} `json:"service"`
 	}
-	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 6 || data.Service.Dispatch {
+	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 5 || data.Service.Dispatch {
 		t.Fatalf("catalog: %s (%v)", catalog, err)
 	}
 	empty := f.expect("GET", "/api/v1/me/webhooks", "", 200)
@@ -992,7 +1105,7 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 	if len(scopes) != 2 {
 		t.Fatalf("scope count: %d", len(scopes))
 	}
-	for i, want := range [][]string{{"Credential", "Policy"}, {"Credential", "Endpoints"}} {
+	for i, want := range [][]string{{"Credential", "Authorization", "Policy"}, {"Credential", "Authorization", "Endpoints"}} {
 		scopes[i].mu.Lock()
 		got := append([]string(nil), scopes[i].calls...)
 		scopes[i].mu.Unlock()
@@ -1073,3 +1186,10 @@ func TestApplicationBeginShutdownStopsWorkerReadOnlyAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func (s *httpTestSnapshot) TagDAO() store.TagReader {
+	unexpectedHTTPCall(s.t, "SnapshotScope.TagDAO")
+	return nil
+}
+
+func (s *httpTestSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

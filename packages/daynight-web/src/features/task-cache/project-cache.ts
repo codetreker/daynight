@@ -22,6 +22,7 @@ export type SyncTicket = {
 };
 export type TaskSyncTicket = SyncTicket & {
   readonly taskBindings: ReadonlyMap<string, TaskExecutionBinding>;
+  readonly taskVersions: ReadonlyMap<string, bigint>;
 };
 export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
@@ -42,11 +43,13 @@ export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE
 export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "sessionHistory", "readwrite">;
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly peerHintWithdrawal?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true }; readonly unboundProjectDenial?: true; readonly authoritative?: true };
 export class TaskCacheLifecycleChanged extends DOMException {
-  constructor() { super("The task cache lifecycle changed.", "AbortError"); }
+  constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
 }
+export const isRetryableTaskCacheLifecycleChange = (error: unknown): error is TaskCacheLifecycleChanged =>
+  error instanceof TaskCacheLifecycleChanged && error.retryable;
 const released = (): never => { throw new TaskCacheLifecycleChanged(); };
 const protocol = (): never => { throw new ApiError("protocol"); };
 const invalidated = (userId: string, projectId: string, userFence: string, invalidatedBy: "access" | "corrupt" | "user" = "access", history?: { readonly generationAncestors: readonly string[]; readonly unknownAncestors: boolean }): ProjectRecord => ({
@@ -91,6 +94,7 @@ export class TaskCacheScope {
   private readonly channel: BroadcastChannel | null;
   private readonly lifetime = new AbortController();
   private readonly listeners = new Set<(event: CacheEvent) => void>();
+  private readonly tagColorListeners = new Set<(projectId: string, admitted?: true) => void>();
   private readonly projectionListeners = new Set<(event: CacheEvent) => void>();
   private readonly projectionHints = new Set<Promise<void>>();
   private readonly projectionHintProjects = new Map<Promise<void>, string>();
@@ -102,6 +106,9 @@ export class TaskCacheScope {
   private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
+  private readonly unboundProjectDenials = new Map<string, { readonly revision: number; isolated: boolean; direct: boolean; error: unknown; timer: ReturnType<typeof setTimeout> | null; retry: (() => void) | null; inFlight: boolean; retryRequested: boolean }>();
+  private readonly readableProjects = new Map<string, number>();
+  private readonly projectReadRevisions = new Map<string, number>();
   private readonly pendingUnknownProjects = new Map<string, { count: number; readonly baseRevision: number; readonly isolationRevision: number }>();
   private readonly projectRevisions = new Map<string, number>();
   private readonly directRevisions = new Map<string, number>();
@@ -122,6 +129,7 @@ export class TaskCacheScope {
   private readonly historyPurges = new Map<string, Promise<void>>();
   private readonly historyPurgeEpochs = new Map<string, string>();
   private readonly pending = new Set<Transaction>();
+  private readonly admittedTransactions = new Set<Transaction>();
   // Retired generations also fence results whose transactions committed before access withdrawal.
   private readonly revokedGenerations = new Map<string, Set<string>>();
   private readonly withdrawnProjects = new Set<string>();
@@ -133,7 +141,11 @@ export class TaskCacheScope {
   private readonly projectionSnapshotAncestors = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, readonly string[]>>();
   private readonly deniedProjects = new Map<string, SyncTicket>();
   private readonly projectPurges = new Map<string, Promise<void>>();
+  private readonly pendingTagColorAdmissions = new Map<string, { readonly readRevision: number; readonly scopeRevision: number; readonly directRevision: number; readonly userFence: string | null }>();
   private invalidated = false;
+  private identityMismatch = false;
+  private readonly admission = new AbortController();
+  get hasIdentityMismatch(): boolean { return this.identityMismatch; }
   private disposed = false;
   private purge: Promise<void> | null = null;
   private userFence: string | null = null;
@@ -152,11 +164,26 @@ export class TaskCacheScope {
       }
       for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
     });
-    this.channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("daynight-task-cache");
+    // Cache hints are optional; blocked channel creation must not prevent the
+    // confirmed account from opening its local scope.
+    let channel: BroadcastChannel | null = null;
+    try { if (typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel("daynight-task-cache"); } catch { /* Local cache remains available without hints. */ }
+    this.channel = channel;
     if (this.channel !== null) this.channel.onmessage = (event: MessageEvent<unknown>) => {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
+      if (this.identityMismatch && !("revokedGeneration" in hint) && !("unboundProjectDenial" in hint)) return;
+      if ("tagColorsChanged" in hint) {
+        if (hint.tagColorsChanged !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
+        this.emitTagColors(hint.projectId);
+        return;
+      }
+      if ("unboundProjectDenial" in hint) {
+        if (hint.unboundProjectDenial !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
+        this.receiveUnboundProjectDenial(hint.projectId);
+        return;
+      }
       if ("uncertainEpoch" in hint) {
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
           !("userFence" in hint) || hint.userFence !== this.userFence || typeof hint.uncertainEpoch !== "string" || canonicalId(hint.uncertainEpoch) !== hint.uncertainEpoch) return;
@@ -215,7 +242,7 @@ export class TaskCacheScope {
           typeof marker !== "object" || marker === null || !("taskId" in marker) || typeof marker.taskId !== "string" || canonicalId(marker.taskId) !== marker.taskId ||
           !("token" in marker) || typeof marker.token !== "string" || canonicalId(marker.token) !== marker.token) return;
         void this.receiveHistoryClear(hint.projectId, hint.userFence, hint.cacheGeneration, marker.taskId, marker.token).catch((error: unknown) => {
-          if (!isAbortError(error)) {
+          if (!isAbortError(error) && !this.identityMismatch) {
             const projectId = hint.projectId as string;
             this.historyPreviews.delete(projectId); this.projections.delete(projectId);
             this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
@@ -226,17 +253,54 @@ export class TaskCacheScope {
       }
       if ("revokedGeneration" in hint) {
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId || typeof hint.revokedGeneration !== "string" || canonicalId(hint.revokedGeneration) !== hint.revokedGeneration ||
-          !("userFence" in hint) || typeof hint.userFence !== "string" || canonicalId(hint.userFence) !== hint.userFence || this.userFence !== hint.userFence) return;
+          !("userFence" in hint) || typeof hint.userFence !== "string" || canonicalId(hint.userFence) !== hint.userFence ||
+          "authoritative" in hint && hint.authoritative !== true) return;
         const ancestors = "generationAncestors" in hint ? hint.generationAncestors : [];
         if (!Array.isArray(ancestors) || ancestors.some((value: unknown) => typeof value !== "string" || canonicalId(value) !== value) || new Set(ancestors).size !== ancestors.length || ancestors.includes(hint.revokedGeneration) ||
           "unknownAncestors" in hint && typeof hint.unknownAncestors !== "boolean") return;
-        this.receiveNegative(hint.projectId, hint.userFence, hint.revokedGeneration, ancestors, "unknownAncestors" in hint && hint.unknownAncestors === true);
+        if (this.userFence !== hint.userFence) {
+          if (this.userFence === null) {
+            if ("authoritative" in hint) this.suspendProject(hint.projectId);
+            else if (this.readableProjects.has(hint.projectId)) this.receiveUnboundProjectDenial(hint.projectId);
+          }
+          return;
+        }
+        if (this.identityMismatch && this.readableProjects.has(hint.projectId) && !this.projections.has(hint.projectId) && !this.historyPreviews.has(hint.projectId) && !this.directProjects.has(hint.projectId)) this.receiveUnboundProjectDenial(hint.projectId);
+        else if (this.identityMismatch) this.receiveRetainedNegative(hint.projectId, hint.revokedGeneration, ancestors, "unknownAncestors" in hint && hint.unknownAncestors === true);
+        else if ("authoritative" in hint && !this.projections.has(hint.projectId) && !this.historyPreviews.has(hint.projectId)) this.suspendProject(hint.projectId);
+        else if (!("authoritative" in hint) && this.readableProjects.has(hint.projectId) && !this.projections.has(hint.projectId) && !this.historyPreviews.has(hint.projectId) && !this.directProjects.has(hint.projectId)) this.receiveUnboundProjectDenial(hint.projectId);
+        else this.receiveNegative(hint.projectId, hint.userFence, hint.revokedGeneration, ancestors, "unknownAncestors" in hint && hint.unknownAncestors === true);
         return;
       }
       void this.receiveHint({ userId: this.userId, projectId: hint.projectId }).catch((error: unknown) => {
         if (!isAbortError(error)) for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
       });
     };
+  }
+  // A peer's independently confirmed withdrawal remains authoritative for a
+  // retained projection, but must not reopen this scope's durable admission.
+  private receiveRetainedNegative(projectId: string, generation: string, history: readonly string[], unknownAncestors: boolean): void {
+    const current = this.projections.get(projectId)?.manifest ?? this.historyPreviews.get(projectId);
+    const matches = current !== undefined && (current.cacheGeneration === generation || history.includes(current.cacheGeneration));
+    const incomparable = unknownAncestors && current !== undefined && !(current.generationAncestors ?? []).includes(generation);
+    const direct = this.directProjects.has(projectId);
+    let retired = this.revokedGenerations.get(projectId);
+    if (retired === undefined) { retired = new Set(); this.revokedGenerations.set(projectId, retired); }
+    const newlyRetired = [...new Set([generation, ...history])].filter(value => !retired!.has(value));
+    for (const value of newlyRetired) retired.add(value);
+    if (newlyRetired.length === 0 && !direct) return;
+    if (direct) this.fenceUncertainDirectHistory(projectId);
+    if (matches || incomparable) {
+      this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
+      this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId);
+      this.withdrawnProjects.add(projectId); this.clearProjectHistoryUncertainty(projectId);
+    }
+    const event: CacheEvent = { projectId, ...(matches || incomparable ? { accessRevoked: true as const } : {}),
+      ...(direct ? { directAccessUncertain: true as const } : {}), revokedGeneration: generation,
+      ...(unknownAncestors ? { unknownAncestors: true as const } : {}), error: new ApiError("server", 404, "not_found") };
+    if (matches || incomparable || direct) for (const listener of this.listeners) listener(event);
+    for (const value of newlyRetired) for (const listener of this.projectionListeners) listener({ projectId, accessRevoked: true, revokedGeneration: value,
+      ...(unknownAncestors ? { unknownAncestors: true as const } : {}), error: new ApiError("server", 404, "not_found") });
   }
   private receiveNegative(projectId: string, userFence: string, generation: string, history: readonly string[] = [], unknownAncestors = false): void {
     let retired = this.revokedGenerations.get(projectId);
@@ -263,7 +327,7 @@ export class TaskCacheScope {
       epoch: current?.epoch ?? null, maxUpdatedAt: current?.maxUpdatedAt ?? null,
       generationAncestors: history, unknownAncestors, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId) };
     const isolateUnknown = (): void => {
-      if (!unknownAncestors || unknownNotified || this.isInvalidated) return;
+      if (!unknownAncestors || unknownNotified || this.isInvalidated || this.identityMismatch) return;
       unknownNotified = true;
       provisional = !matchesCurrent && (current === undefined || !(current.generationAncestors ?? []).includes(generation));
       if (provisional) {
@@ -296,7 +360,7 @@ export class TaskCacheScope {
     // Exact generations can be withdrawn immediately. An unknown predecessor is
     // resolved against durable state before it can affect an incomparable history.
     const immediate = matchesCurrent
-      ? this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).then(() => {})
+      ? this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true }).then(() => {})
       : Promise.resolve();
     const action = immediate.then(async () => {
       if (!unknownAncestors && current !== undefined) return;
@@ -313,12 +377,12 @@ export class TaskCacheScope {
         } catch (error) {
           // A new foreground check may interrupt the durable read; retain the
           // provisional isolation until the same live scope can check again.
-          if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && !this.signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && !this.isInvalidated && !this.signal.aborted) continue;
           if (!unknownAncestors || isAbortError(error)) throw error;
           stopPause();
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
           releaseProvisional();
-          if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
+          if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true }).catch(() => {});
           throw error;
         }
       }
@@ -329,7 +393,7 @@ export class TaskCacheScope {
         if (matches && unknownAncestors && !matchesCurrent && current !== undefined && latest?.userFence === current.userFence &&
           latest.cacheGeneration === current.cacheGeneration && ticket.admissionRevision === this.getAdmissionRevision(projectId) &&
           ticket.scopeRevision === this.getProjectRevision(projectId) && this.canRevokeProject(ticket)) {
-          const cleanup = this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
+          const cleanup = this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true });
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation,
             unknownAncestors: true, error: new ApiError("server", 404, "not_found") });
           await cleanup;
@@ -343,7 +407,7 @@ export class TaskCacheScope {
       }
       if (unknownAncestors && !unknownNotified) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error: new ApiError("server", 404, "not_found") });
       if (!matchesCurrent) {
-        const revoked = await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
+        const revoked = await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true });
         if (!revoked && released && provisional) this.emit({ projectId, accessRestored: true });
       }
     });
@@ -371,28 +435,55 @@ export class TaskCacheScope {
     if (this.invalidated || this.disposed || this.lifetime.signal.aborted || authRequestsPaused()) released();
   }
   get signal(): AbortSignal { return this.lifetime.signal; }
-  async ready(signal: AbortSignal): Promise<void> {
-    await waitForAuthRequests(AbortSignal.any([signal, this.lifetime.signal]));
+  get mismatchSignal(): AbortSignal { return this.admission.signal; }
+  private assertAdmitted(signal?: AbortSignal): void {
+    if (this.identityMismatch) throw new TaskCacheLifecycleChanged(false);
     this.assertLive(signal);
   }
+  async ready(signal: AbortSignal): Promise<void> {
+    if (this.identityMismatch) throw new TaskCacheLifecycleChanged(false);
+    await waitForAuthRequests(AbortSignal.any([signal, this.lifetime.signal, this.admission.signal]));
+    this.assertAdmitted(signal);
+  }
   principalMismatch = (): void => {
-    this.invalidateScope();
-    this.onIdentityMismatch();
+    if (this.identityMismatch) return;
+    this.identityMismatch = true;
+    try { this.onIdentityMismatch(); }
+    finally {
+      this.admission.abort(new TaskCacheLifecycleChanged(false));
+      for (const transaction of this.admittedTransactions) { try { transaction.abort(); } catch { /* Already committed. */ } }
+    }
   };
   subscribe = (listener: (event: CacheEvent) => void): (() => void) => {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
+  subscribeTagColors = (listener: (projectId: string, admitted?: true) => void): (() => void) => {
+    this.tagColorListeners.add(listener);
+    return () => { this.tagColorListeners.delete(listener); };
+  };
+  // Only a locally admitted read may restore a withdrawn color projection;
+  // ordinary invalidations and peer hints carry no access authority.
+  private emitTagColors(projectId: string, admitted?: true): void {
+    if (this.isInvalidated || this.identityMismatch || authRequestsPaused()) return;
+    for (const listener of this.tagColorListeners) admitted ? listener(projectId, true) : listener(projectId);
+  }
+  notifyTagColors(projectId: string, broadcast = true): void {
+    projectId = requestId(projectId);
+    if (this.isInvalidated || this.identityMismatch || this.isProjectSuspended(projectId)) return;
+    this.emitTagColors(projectId);
+    if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId, tagColorsChanged: true });
+  }
   subscribeProjection = (listener: (event: CacheEvent) => void): (() => void) => {
     this.projectionListeners.add(listener);
     return () => { this.projectionListeners.delete(listener); };
   };
   private emitProjection(event: CacheEvent): void {
-    if (this.invalidated || this.disposed) return;
+    if (this.invalidated || this.disposed || this.identityMismatch) return;
     for (const listener of this.projectionListeners) listener(event);
   }
   private emit(event: CacheEvent, notifyProjection = true, allowAuthPaused = false): void {
-    if (this.invalidated || this.disposed || !allowAuthPaused && authRequestsPaused() && event.accessRevoked !== true && event.sessionHistoryUncertain?.unbound !== true) return;
+    if (this.invalidated || this.disposed || this.identityMismatch || !allowAuthPaused && authRequestsPaused() && event.accessRevoked !== true && event.sessionHistoryUncertain?.unbound !== true) return;
     for (const listener of this.listeners) listener(event);
     if (notifyProjection && (event.accessRevoked || event.accessRestored)) this.emitProjection(event);
   }
@@ -402,7 +493,7 @@ export class TaskCacheScope {
       catch (error) {
         // A foreground identity check can interrupt the durable snapshot without
         // retiring this scope or the caller's request.
-        if (error instanceof TaskCacheLifecycleChanged && !signal.aborted && !this.isInvalidated) continue;
+        if (isRetryableTaskCacheLifecycleChange(error) && !signal.aborted && !this.isInvalidated) continue;
         throw error;
       }
     }
@@ -431,7 +522,7 @@ export class TaskCacheScope {
       this.projectionFailure = null;
       this.corruptProjectionProjects = corrupt;
       this.projectionSnapshotCorrupt.set(generations, corrupt);
-      this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...this.pendingUnknownProjects.keys()]));
+      this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...[...this.unboundProjectDenials].filter(([, value]) => value.isolated).map(([id]) => id), ...this.pendingUnknownProjects.keys()]));
       this.projectionSnapshotAncestors.set(generations, histories);
       return generations;
     } catch (error) {
@@ -464,8 +555,9 @@ export class TaskCacheScope {
   get projectionError(): TaskCacheError | null { return this.projectionFailure ?? (this.corruptProjectionProjects.size ? new TaskCacheError("corrupt") : null); }
   get hasGlobalProjectionFailure(): boolean { return this.projectionFailure !== null; }
   isProjectionDenied(projectId: string): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.has(projectId) || this.deniedProjects.has(projectId) || this.isProjectSuspended(projectId); }
-  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0 || this.pendingUnknownProjects.size !== 0; }
+  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0 || [...this.unboundProjectDenials.values()].some(value => value.isolated) || this.pendingUnknownProjects.size !== 0; }
   reportTaskNotFound(projectId: string): void {
+    if (this.identityMismatch) return;
     projectId = requestId(projectId);
     if (authRequestsPaused()) {
       void this.ready(this.signal).then(() => { this.emit({ projectId, taskNotFound: true }); }).catch(() => {});
@@ -480,7 +572,7 @@ export class TaskCacheScope {
   }
   private async receiveDirectSessionDenied(projectId: string, userFence: string, taskId: string, epoch: string, manifestAbsent = false, origin?: symbol): Promise<void> {
     const history = this.histories.get(projectId); const revision = this.getDirectRevision(projectId);
-    if (this.isInvalidated || this.userFence !== userFence || history?.epoch !== epoch || this.isDirectProjectBlocked(projectId)) return;
+    if (this.isInvalidated || this.identityMismatch || this.userFence !== userFence || history?.epoch !== epoch || this.isDirectProjectBlocked(projectId)) return;
     if (manifestAbsent) {
       try {
         // Negative receipts can be checked during the identity gate without
@@ -518,13 +610,15 @@ export class TaskCacheScope {
   async revalidateProjectAccess(projectId: string, broadcast = true): Promise<boolean> {
     const revision = this.getDirectRevision(projectId);
     const ticket = await this.beginSync(projectId, this.signal);
+    const projectReadRevision = this.getProjectReadRevision(projectId);
     try {
       await getProjectAccess(projectId, this.signal, { userId: this.userId, onPrincipalMismatch: this.principalMismatch });
       if (revision !== this.getDirectRevision(projectId)) return released();
+      this.markProjectReadable(projectId);
     }
     catch (error) {
       if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-        if (revision !== this.getDirectRevision(projectId)) return released();
+        if (revision !== this.getDirectRevision(projectId) || !this.canRevokeProjectRead(ticket, projectReadRevision)) return released();
         if (!await this.revokeProject(ticket, this.signal, broadcast, error)) return released();
         return false;
       }
@@ -533,7 +627,7 @@ export class TaskCacheScope {
     return true;
   }
   private requestDirectAccessRecheck(projectId: string): void {
-    if (this.isInvalidated || this.isProjectSuspended(projectId) || this.directHintCounts.has(projectId) || this.directRecheckWorks.has(projectId) || !this.directRecheckPending.delete(projectId)) return;
+    if (this.isInvalidated || this.identityMismatch || this.isProjectSuspended(projectId) || this.directHintCounts.has(projectId) || this.directRecheckWorks.has(projectId) || !this.directRecheckPending.delete(projectId)) return;
     const work = (async () => {
       try {
         for (;;) {
@@ -551,20 +645,26 @@ export class TaskCacheScope {
               }
               return;
             }
-            this.directRecheckErrors.delete(projectId);
-            if (accessible) this.emit({ projectId, accessRestored: true, directAccessRecheck: true }, true, true);
+            if (accessible) {
+              this.directRecheckErrors.delete(projectId);
+              this.emit({ projectId, accessRestored: true, directAccessRecheck: true }, true, true);
+            } else {
+              const error = new ApiError("server", 404, "not_found");
+              this.directRecheckErrors.set(projectId, error);
+              this.emit({ projectId, directAccessRecheck: true, error }, true, true);
+            }
             return;
           } catch (error) {
             if (!this.isInvalidated && (this.directHintCounts.has(projectId) || this.isProjectSuspended(projectId) || this.directRecheckPending.has(projectId))) {
               this.directRecheckPending.add(projectId); return;
             }
-            if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && pauseRevision !== authRequestsPauseRevision()) continue;
+            if (isRetryableTaskCacheLifecycleChange(error) && !this.isInvalidated && pauseRevision !== authRequestsPauseRevision()) continue;
             throw error;
           }
         }
       } catch (error) {
-        if (!this.isInvalidated && (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged)) {
-          const failure = error instanceof TaskCacheLifecycleChanged ? new ApiError("protocol") : error;
+        if (!this.isInvalidated && (!isAbortError(error) || isRetryableTaskCacheLifecycleChange(error))) {
+          const failure = isRetryableTaskCacheLifecycleChange(error) ? new ApiError("protocol") : error;
           this.directRecheckErrors.set(projectId, failure);
           this.emit({ projectId, directAccessRecheck: true, error: failure }, true, true);
         }
@@ -580,6 +680,9 @@ export class TaskCacheScope {
     const observed = new Set([...this.authorizedProjects, ...this.historyPreviews.keys(), ...this.histories.keys()]);
     const projects = hint.projectId === null ? [...observed] : observed.has(hint.projectId) ? [hint.projectId] : [];
     for (const projectId of projects) {
+      // Preserve a locally confirmed view until an unordered peer denial is rechecked.
+      const pendingDenial = this.unboundProjectDenials.get(projectId);
+      if (pendingDenial !== undefined && !pendingDenial.isolated) continue;
       // A hint carries no content or access grant; receivers read the committed stores.
       const previous = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
       let project: CachedProject | null;
@@ -780,31 +883,35 @@ export class TaskCacheScope {
     await this.observeHistoryUncertain(ticket, taskId, expectedToken, this.lifetime.signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt);
   }
   private async transaction<T>(work: (transaction: Transaction) => Promise<T>, signal?: AbortSignal, allowInvalidated = false): Promise<T> {
-    if (!allowInvalidated) this.assertLive(signal);
+    if (!allowInvalidated) this.assertAdmitted(signal);
     const database = await this.database.open();
-    if (!allowInvalidated) this.assertLive(signal);
+    if (!allowInvalidated) this.assertAdmitted(signal);
     let transaction: Transaction;
     try { transaction = database.transaction([...TASK_CACHE_STORES], "readwrite"); }
     catch (error) { throw new TaskCacheError("storage", error); }
     this.pending.add(transaction);
+    if (!allowInvalidated) this.admittedTransactions.add(transaction);
     const completion = transaction.done;
     void completion.catch(() => {});
     const abort = () => { try { transaction.abort(); } catch { /* A completed transaction has no pending publication. */ } };
     signal?.addEventListener("abort", abort, { once: true });
     try {
       const result = await work(transaction);
-      if (!allowInvalidated) this.assertLive(signal);
+      if (!allowInvalidated) this.assertAdmitted(signal);
       await completion;
+      if (!allowInvalidated) this.assertAdmitted(signal);
       return result;
     } catch (error) {
       abort();
       await completion.catch(() => {});
+      if (!allowInvalidated && this.identityMismatch && !this.isInvalidated) throw new TaskCacheLifecycleChanged(false);
       if (error instanceof ApiError || error instanceof TaskCacheError || error instanceof TaskCacheLifecycleChanged ||
         signal?.aborted === true || !allowInvalidated && this.lifetime.signal.aborted) throw error;
       throw new TaskCacheError("storage", error);
     } finally {
       signal?.removeEventListener("abort", abort);
       this.pending.delete(transaction);
+      this.admittedTransactions.delete(transaction);
     }
   }
   private async replaceUserScope(transaction: Transaction, cause: "corrupt" | "user"): Promise<string> {
@@ -833,9 +940,12 @@ export class TaskCacheScope {
       return { kind: "result" as const, userFence, value: await work(transaction, userFence) };
     }, signal);
     // Lifecycle changes become visible only after their transaction is durable.
+    this.assertAdmitted(signal);
     if (outcome.kind === "repaired" && !this.isInvalidated && !authRequestsPaused()) this.hint(null);
     if (this.userFence !== null && this.userFence !== outcome.userFence && !this.isInvalidated) {
-      this.close(); this.onIdentityMismatch(); return released();
+      this.principalMismatch();
+      // Unlike a temporary gate interruption, a replaced fence cannot be retried by this scope.
+      throw new TaskCacheLifecycleChanged(false);
     }
     this.assertLive(signal);
     this.userFence = outcome.userFence;
@@ -895,7 +1005,7 @@ export class TaskCacheScope {
     return result;
   }
   private assertProjectGeneration(projectId: string, cacheGeneration: string, signal?: AbortSignal, revision?: number): void {
-    this.assertLive(signal);
+    this.assertAdmitted(signal);
     if (this.isProjectSuspended(projectId) || revision !== undefined && revision !== (this.projectRevisions.get(projectId) ?? 0)) released();
     if (this.revokedGenerations.get(projectId)?.has(cacheGeneration) === true) released();
   }
@@ -913,6 +1023,11 @@ export class TaskCacheScope {
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence, "access", nextHistory(manifest)));
     }, lifetime)).then(() => {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
+      const admission = this.pendingTagColorAdmissions.get(projectId);
+      this.pendingTagColorAdmissions.delete(projectId);
+      if (admission !== undefined && admission.userFence === this.userFence && admission.readRevision === this.getProjectReadRevision(projectId) &&
+        admission.scopeRevision === this.getProjectRevision(projectId) && admission.directRevision === this.getDirectRevision(projectId) &&
+        !this.isDirectProjectBlocked(projectId)) this.emitTagColors(projectId, true);
       this.hint(projectId);
     }).catch((error: unknown) => {
       if (notifyFailure) {
@@ -925,7 +1040,7 @@ export class TaskCacheScope {
     return work;
   }
   canRevokeProject(ticket: SyncTicket): boolean {
-    if (this.isInvalidated || ticket.userId !== this.userId || ticket.userFence !== this.userFence || ticket.scopeRevision !== this.getProjectRevision(ticket.projectId)) return false;
+    if (this.isInvalidated || this.identityMismatch || ticket.userId !== this.userId || ticket.userFence !== this.userFence || ticket.scopeRevision !== this.getProjectRevision(ticket.projectId)) return false;
     const denied = this.deniedProjects.get(ticket.projectId);
     if (denied !== undefined && (denied.userFence !== ticket.userFence || denied.cacheGeneration !== ticket.cacheGeneration)) return false;
     const manifest = this.projections.get(ticket.projectId)?.manifest ?? this.historyPreviews.get(ticket.projectId);
@@ -936,11 +1051,12 @@ export class TaskCacheScope {
       (ticket.generationAncestors ?? []).includes(manifest.cacheGeneration) ||
       ticket.unknownAncestors === true && !(manifest.generationAncestors ?? []).includes(ticket.cacheGeneration));
   }
-  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true, onWithdrawn?: () => void): Promise<boolean> {
+  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true, onWithdrawn?: () => void, options?: { readonly confirmedDeletion?: boolean; readonly peerHintWithdrawal?: boolean }): Promise<boolean> {
     if (signal.aborted) return Promise.reject(signal.reason);
     if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
     if (ticket.userId !== this.userId || ticket.userFence !== this.userFence) return Promise.reject(new ApiError("protocol"));
     if (!this.canRevokeProject(ticket)) return Promise.resolve(false);
+    this.projectReadRevisions.set(ticket.projectId, this.getProjectReadRevision(ticket.projectId) + 1);
     this.fenceUncertainDirectHistory(ticket.projectId);
     const denied = this.deniedProjects.get(ticket.projectId);
     let revoked = this.revokedGenerations.get(ticket.projectId);
@@ -949,12 +1065,14 @@ export class TaskCacheScope {
     const current = this.projections.get(ticket.projectId)?.manifest ?? this.historyPreviews.get(ticket.projectId);
     if (current !== undefined && current.cacheGeneration !== ticket.cacheGeneration) revoked.add(current.cacheGeneration);
     this.withdrawnProjects.add(ticket.projectId);
+    this.readableProjects.delete(ticket.projectId);
     if (denied === undefined) this.deniedProjects.set(ticket.projectId, ticket);
     onWithdrawn?.();
     this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId); this.historyPreviews.delete(ticket.projectId); this.clearProjectHistoryUncertainty(ticket.projectId);
     if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, revokedGeneration: ticket.cacheGeneration,
-      generationAncestors: ticket.generationAncestors ?? [], unknownAncestors: ticket.unknownAncestors === true } satisfies Hint);
-    this.emit({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error: reason }, notifyProjection);
+      generationAncestors: ticket.generationAncestors ?? [], unknownAncestors: ticket.unknownAncestors === true, ...(options?.confirmedDeletion ? { authoritative: true as const } : {}) } satisfies Hint);
+    // A peer hint withdraws a cache generation, not a confirmed current Project denial.
+    this.emit({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(options?.peerHintWithdrawal ? { peerHintWithdrawal: true as const } : {}), ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error: reason }, notifyProjection);
     if (notifyProjection) for (const ancestor of ticket.generationAncestors ?? []) {
       revoked.add(ancestor);
       this.emitProjection({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ancestor, error: reason });
@@ -988,7 +1106,7 @@ export class TaskCacheScope {
         const tasks = manifest.state === "active" ? (await this.stored(transaction, manifest)).tasks : [];
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
           generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision,
-          taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])) };
+          taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])), taskVersions: new Map(tasks.map((task) => [task.id, task.version])) };
       }, signal);
       if (scopeRevision !== this.getProjectRevision(projectId)) return released();
       if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: ticket.epoch, generation: 0 });
@@ -1053,12 +1171,12 @@ export class TaskCacheScope {
     return fence;
   }
   isTaskReadCurrent(fence: TaskReadFence, allowAuthPaused = false): boolean {
-    return !this.isInvalidated && (allowAuthPaused || !authRequestsPaused()) && !this.isDirectProjectBlocked(fence.projectId) && fence.userId === this.userId &&
+    return !this.isInvalidated && !this.identityMismatch && (allowAuthPaused || !authRequestsPaused()) && !this.isDirectProjectBlocked(fence.projectId) && fence.userId === this.userId &&
       fence.userFence === this.userFence && fence.scopeRevision === this.getDirectRevision(fence.projectId) &&
       fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0);
   }
   isTaskHistoryPossiblyCurrent(fence: TaskReadFence): boolean {
-    return this.isTaskReadCurrent(fence, true) || !this.isInvalidated &&
+    return this.isTaskReadCurrent(fence, true) || !this.isInvalidated && !this.identityMismatch &&
       fence.userId === this.userId && fence.userFence === this.userFence &&
       fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0) &&
       this.uncertainDirectRevisions.get(fence.projectId)?.has(fence.scopeRevision) === true;
@@ -1078,19 +1196,19 @@ export class TaskCacheScope {
   // A confirmed Goal deletion rotates the project epoch even before a new
   // snapshot is available. Fence old content immediately, including peers.
   retireGoalHistory(projectId: string, epoch: string): void {
-    if (this.userFence === null) return;
+    if (this.userFence === null || this.identityMismatch) return;
     this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, retiredEpoch: epoch } satisfies Hint);
     this.retireKnownEpoch(projectId, epoch);
   }
   // A 410 does not report its epoch. Fence rather than retire a potentially
   // current history, and require an observation started after the response.
   fenceGoalHistory(projectId: string, epoch: string): void {
-    if (this.userFence === null) return;
+    if (this.userFence === null || this.identityMismatch) return;
     this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, uncertainEpoch: epoch } satisfies Hint);
     this.fenceGoalEpoch(projectId);
   }
   private fenceGoalEpoch(projectId: string): void {
-    if (this.isInvalidated) return;
+    if (this.isInvalidated || this.identityMismatch) return;
     this.uncertainHistories.add(projectId);
     this.historyVersions.set(projectId, (this.historyVersions.get(projectId) ?? 0) + 1);
     this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
@@ -1100,7 +1218,7 @@ export class TaskCacheScope {
   }
   private retireKnownEpoch(projectId: string, epoch: string): void {
     const old = this.histories.get(projectId);
-    if (this.isInvalidated) return;
+    if (this.isInvalidated || this.identityMismatch) return;
     if (old?.epoch == null) { this.fenceGoalEpoch(projectId); return; }
     if (old.epoch !== epoch) { this.fenceGoalEpoch(projectId); return; }
     let retired = this.retiredEpochs.get(projectId);
@@ -1291,6 +1409,7 @@ export class TaskCacheScope {
     }
     this.authorizedProjects.add(ticket.projectId);
     const project = this.materialize(result.manifest, result.stored, response.assigneeVersions);
+    if (!this.isDirectProjectBlocked(ticket.projectId)) this.emitTagColors(ticket.projectId, true);
     if (result.changed) this.hint(ticket.projectId);
     if (result.changed || versionsChanged) this.emit({ projectId: ticket.projectId });
     return { project, changed: result.changed, changedTaskIds: result.changedTaskIds };
@@ -1308,7 +1427,7 @@ export class TaskCacheScope {
       if (manifest === undefined || manifest.state === "invalidated") return null;
       return { manifest, tasks: await this.stored(transaction, manifest) };
     }, signal);
-    this.assertLive(signal);
+    this.assertAdmitted(signal);
     if (revision !== this.getProjectRevision(projectId) || this.isProjectSuspended(projectId)) return released();
     if (stored === null) { this.projections.delete(projectId); return null; }
     const history = this.histories.get(projectId);
@@ -1355,7 +1474,7 @@ export class TaskCacheScope {
     return result;
   }
   isSessionHistoryTicketCurrent(ticket: SyncTicket): boolean {
-    if (this.isInvalidated || authRequestsPaused() || !this.canPreviewProject(ticket.projectId) || ticket.userId !== this.userId ||
+    if (this.isInvalidated || this.identityMismatch || authRequestsPaused() || !this.canPreviewProject(ticket.projectId) || ticket.userId !== this.userId ||
       ticket.scopeRevision !== this.getProjectRevision(ticket.projectId)) return false;
     const current = this.historyPreviews.get(ticket.projectId);
     return current !== undefined && current.userFence === ticket.userFence && current.cacheGeneration === ticket.cacheGeneration && current.scopeRevision === ticket.scopeRevision;
@@ -1474,7 +1593,7 @@ export class TaskCacheScope {
   }
   getObservedHistoryTicket(projectId: string): SyncTicket | null {
     projectId = requestId(projectId);
-    if (this.isInvalidated || authRequestsPaused() || !this.canPreviewProject(projectId)) return null;
+    if (this.isInvalidated || this.identityMismatch || authRequestsPaused() || !this.canPreviewProject(projectId)) return null;
     const project = this.getAuthorizedProject(projectId);
     const manifest = project?.manifest;
     if (manifest !== undefined && manifest.userFence === this.userFence) return { userId: this.userId, projectId, userFence: manifest.userFence,
@@ -1483,10 +1602,181 @@ export class TaskCacheScope {
     const preview = this.historyPreviews.get(projectId);
     return preview !== undefined && preview.userFence === this.userFence && preview.scopeRevision === this.getProjectRevision(projectId) ? preview : null;
   }
-  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId); }
+  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId) || this.unboundProjectDenials.get(projectId)?.isolated === true || this.pendingUnknownProjects.has(projectId); }
   private isProjectAccessBlocked(projectId: string): boolean { return this.isProjectSuspended(projectId) || this.deniedProjects.has(projectId); }
   private isDirectProjectBlocked(projectId: string): boolean {
     return this.isProjectAccessBlocked(projectId) || this.directHintCounts.has(projectId) || this.directRecheckPending.has(projectId) || this.directRecheckWorks.has(projectId) || this.directRecheckErrors.has(projectId);
+  }
+  markProjectReadable(projectId: string): void {
+    if (this.isInvalidated || this.identityMismatch) return;
+    const revision = this.getProjectReadRevision(projectId) + 1;
+    this.readableProjects.set(projectId, revision);
+    this.projectReadRevisions.set(projectId, revision);
+    if (!this.isDirectProjectBlocked(projectId)) {
+      this.pendingTagColorAdmissions.delete(projectId);
+      this.emitTagColors(projectId, true);
+    } else if (this.deniedProjects.has(projectId)) {
+      // The successful read can finish before the older denial's cleanup.
+      // Preserve its fences, not its contents, until that cleanup commits.
+      this.pendingTagColorAdmissions.set(projectId, { readRevision: revision, scopeRevision: this.getProjectRevision(projectId),
+        directRevision: this.getDirectRevision(projectId), userFence: this.userFence });
+    }
+  }
+  getProjectReadRevision(projectId: string): number { return this.projectReadRevisions.get(projectId) ?? 0; }
+  canRevokeProjectRead(ticket: SyncTicket, revision: number): boolean {
+    return revision === this.getProjectReadRevision(ticket.projectId) && this.canRevokeProject(ticket);
+  }
+  reportUnboundProjectDenial(projectId: string): void {
+    projectId = requestId(projectId);
+    if (this.isInvalidated || this.identityMismatch) return;
+    this.channel?.postMessage({ userId: this.userId, projectId, unboundProjectDenial: true } satisfies Hint);
+  }
+  enrollDirectProject(projectId: string): { readonly error: unknown } | null {
+    this.directProjects.add(projectId);
+    const denial = this.unboundProjectDenials.get(projectId);
+    if (denial === undefined) return null;
+    if (!denial.direct) {
+      denial.direct = true;
+      this.emit({ projectId, directAccessUncertain: true }, true, true);
+    }
+    return { error: denial.error };
+  }
+  retryProjectVerification(projectId: string): void {
+    const denial = this.unboundProjectDenials.get(projectId);
+    if (denial !== undefined) {
+      if (denial.inFlight || denial.retry === null) { denial.retryRequested = true; return; }
+      if (denial.timer !== null) clearTimeout(denial.timer);
+      denial.timer = null; denial.retry();
+    } else if (this.directRecheckErrors.has(projectId) || this.directHintCounts.has(projectId) || this.directRecheckPending.has(projectId) || this.directRecheckWorks.has(projectId)) {
+      this.directRecheckPending.add(projectId); this.requestDirectAccessRecheck(projectId);
+    }
+  }
+  private receiveUnboundProjectDenial(projectId: string): void {
+    if (this.isInvalidated) return;
+    const prior = this.unboundProjectDenials.get(projectId);
+    if (prior?.timer !== null && prior?.timer !== undefined) clearTimeout(prior.timer);
+    const observed = !this.identityMismatch && !authRequestsPaused() ? this.getObservedHistoryTicket(projectId) : null;
+    // An unbound hint cannot prove which generation it affects.
+    const isolated = true;
+    const direct = this.directProjects.has(projectId);
+    const revision = this.getProjectRevision(projectId) + (isolated ? 1 : 0);
+    const history = observed === null ? null : { ...observed, scopeRevision: revision };
+    const denial = { revision, isolated, direct, error: null as unknown, timer: null as ReturnType<typeof setTimeout> | null, retry: null as (() => void) | null, inFlight: false, retryRequested: false };
+    this.unboundProjectDenials.set(projectId, denial);
+    if (isolated) {
+      this.projectRevisions.set(projectId, revision);
+      this.fenceUncertainDirectHistory(projectId);
+      this.withdrawnProjects.add(projectId);
+      this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+      const event: CacheEvent = { projectId, accessRevoked: true, scopeSuspended: true, ...(direct ? { directAccessUncertain: true as const } : {}) };
+      if (this.identityMismatch) {
+        for (const listener of this.listeners) listener(event);
+        for (const listener of this.projectionListeners) listener(event);
+      } else this.emit(event);
+    }
+    const check = () => {
+      if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial || denial.inFlight) return;
+      denial.timer = null;
+      denial.inFlight = true;
+      denial.retryRequested = false;
+      const admission = this.getAdmissionRevision(projectId);
+      const readable = this.readableProjects.get(projectId);
+      const readRevision = this.getProjectReadRevision(projectId);
+      let confirmedDenial = false;
+      const unchanged = () => this.getProjectRevision(projectId) === revision && this.getAdmissionRevision(projectId) === admission && this.readableProjects.get(projectId) === readable && this.getProjectReadRevision(projectId) === readRevision;
+      const superseded = () => {
+        if (this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId) || this.getProjectRevision(projectId) !== revision || this.getAdmissionRevision(projectId) !== admission || !this.readableProjects.has(projectId) || this.readableProjects.get(projectId) === readable) return false;
+        this.unboundProjectDenials.delete(projectId);
+        this.projectRevisions.set(projectId, revision + 1);
+        this.emit({ projectId, accessRestored: true, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
+        return true;
+      };
+      void (async () => {
+        await this.ready(this.signal);
+        let captured = history;
+        if (captured === null) {
+          const preparing = new AbortController();
+          const signal = AbortSignal.any([this.signal, preparing.signal]);
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          try {
+            captured = await Promise.race([
+              this.beginSync(projectId, signal).catch(() => null),
+              new Promise<null>(resolve => { timer = setTimeout(() => { preparing.abort(); resolve(null); }, 5_000); }),
+            ]);
+          } finally { if (timer !== null) clearTimeout(timer); preparing.abort(); }
+        }
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (!unchanged()) { if (!superseded()) this.receiveUnboundProjectDenial(projectId); return; }
+        try {
+          await getProjectAccess(projectId, this.signal, { userId: this.userId, onPrincipalMismatch: this.principalMismatch });
+        } catch (error) {
+          if (this.unboundProjectDenials.get(projectId) === denial && unchanged() && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+            if (captured !== null && this.canRevokeProject(captured)) {
+              confirmedDenial = true;
+              void this.revokeProject(captured, this.signal, true, error).catch(() => {});
+            } else if (captured === null && denial.isolated) {
+              confirmedDenial = true;
+            } else if (captured === null && !denial.isolated) {
+              confirmedDenial = true;
+              denial.isolated = true;
+              this.readableProjects.delete(projectId);
+              this.projectRevisions.set(projectId, revision + 1);
+              this.fenceUncertainDirectHistory(projectId);
+              this.withdrawnProjects.add(projectId);
+              this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+              this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error });
+            }
+          }
+          throw error;
+        }
+        await this.ready(this.signal);
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (!unchanged()) { if (!superseded()) this.receiveUnboundProjectDenial(projectId); return; }
+        if (this.deniedProjects.has(projectId)) {
+          await this.clearDeniedProject(projectId);
+          await this.ready(this.signal);
+          if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+          if (!unchanged()) { if (!superseded()) this.receiveUnboundProjectDenial(projectId); return; }
+        }
+        if (this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId)) {
+          denial.timer = setTimeout(check, 30_000); return;
+        }
+        this.markProjectReadable(projectId);
+        this.unboundProjectDenials.delete(projectId);
+        if (denial.isolated) {
+          this.projectRevisions.set(projectId, revision + 1);
+          if (!this.isProjectSuspended(projectId)) this.emit({ projectId, accessRestored: true, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
+        }
+        this.requestDirectAccessRecheck(projectId);
+      })().catch(error => {
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (confirmedDenial) {
+          denial.error = error;
+          this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
+          denial.timer = setTimeout(check, 30_000);
+          return;
+        }
+        if (!unchanged()) {
+          if (superseded()) return;
+          if (denial.isolated) denial.timer = setTimeout(() => this.receiveUnboundProjectDenial(projectId), 30_000);
+          else this.receiveUnboundProjectDenial(projectId);
+          return;
+        }
+        if (!isAbortError(error)) {
+          denial.error = error;
+          this.emit(denial.isolated ? { projectId, accessRevoked: true, scopeSuspended: true, error, ...(denial.direct ? { directAccessRecheck: true as const } : {}) } : { projectId, error });
+        }
+        denial.timer = setTimeout(check, 30_000);
+      }).finally(() => {
+        denial.inFlight = false;
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial || !denial.retryRequested) return;
+        if (denial.timer !== null) clearTimeout(denial.timer);
+        denial.timer = null;
+        check();
+      });
+    };
+    denial.retry = check;
+    check();
   }
   suspendProject(projectId: string): void {
     projectId = requestId(projectId);
@@ -1494,6 +1784,7 @@ export class TaskCacheScope {
     this.projectRevisions.set(projectId, (this.projectRevisions.get(projectId) ?? 0) + 1);
     this.fenceUncertainDirectHistory(projectId);
     this.suspendedProjects.add(projectId);
+    this.readableProjects.delete(projectId);
     this.withdrawnProjects.add(projectId);
     if (!this.revokedGenerations.has(projectId)) this.revokedGenerations.set(projectId, new Set());
     this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
@@ -1503,7 +1794,8 @@ export class TaskCacheScope {
     if (!this.suspendedProjects.delete(projectId)) return;
     this.projectRevisions.set(projectId, (this.projectRevisions.get(projectId) ?? 0) + 1);
     this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
-    this.emit({ projectId, accessRestored: true });
+    if (!this.isProjectSuspended(projectId)) this.emit({ projectId, accessRestored: true });
+    if (this.unboundProjectDenials.has(projectId)) this.retryProjectVerification(projectId);
     this.requestDirectAccessRecheck(projectId);
   }
   getSummaryVersion(projectId: string, taskId: string): bigint | null {
@@ -1541,11 +1833,20 @@ export class TaskCacheScope {
     if (this.disposed) return Promise.resolve();
     this.invalidated = true;
     this.lifetime.abort();
+    for (const denial of this.unboundProjectDenials.values()) if (denial.timer !== null) clearTimeout(denial.timer);
+    this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
-    this.purge = this.transaction(async (transaction) => { await this.replaceUserScope(transaction, "user"); }, undefined, true)
-      .then(() => { this.hint(null); }).finally(() => { this.close(); });
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.purge = this.transaction(async (transaction) => {
+      const stored = await transaction.objectStore("userScopes").get(this.userId);
+      let currentFence: string | null = null;
+      try { currentFence = validateUserScope(stored, this.userId).userFence; }
+      catch (error) { if (!(error instanceof TaskCacheError) || error.category !== "corrupt") throw error; }
+      if (this.userFence !== null && currentFence !== null && this.userFence !== currentFence) return false;
+      await this.replaceUserScope(transaction, "user");
+      return true;
+    }, undefined, true).then((cleared) => { if (cleared) this.hint(null); }).finally(() => { this.close(); });
     // Session clearing is synchronous; storage failure remains observable without blocking identity removal.
     void this.purge.catch((error: unknown) => { console.error("Task cache user cleanup failed", { error_category: error instanceof TaskCacheError ? error.category : "storage" }); });
     return this.purge;
@@ -1556,10 +1857,12 @@ export class TaskCacheScope {
   }
   private close(): void {
     this.disposed = true; this.lifetime.abort();
+    for (const denial of this.unboundProjectDenials.values()) if (denial.timer !== null) clearTimeout(denial.timer);
+    this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already completed. */ } }
     this.pending.clear(); this.channel?.close(); this.database.close();
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
   }
 }
 

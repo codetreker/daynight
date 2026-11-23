@@ -1,15 +1,15 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 10、权威依赖状态及本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 14、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
-[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由。
+[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍；[完整标题决策](../../.agents/notes/implemented/architecture/2026-11-15-task-sync-full-titles.md)记录标题传输及缓存重建的权衡。
 
 ## 1. 总体方案
 
 服务端实现入口为 `internal/service/task/task_sync.go` 的 `TaskSync.Get`、
 `internal/core/store/postgres/task/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
 与应用共享 Engine 提供的 `service/task.SessionStateReader` 一起显式传给 `NewTaskSync(database, engine, overlap)`。`015_task_sync.sql` 提供 epoch 和更新时间索引。
-浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：可见页面每 15 秒自动读取，隐藏暂停，首次读取、显式刷新和恢复可见立即触发；自动触发遇到活动读取时跳过。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
+浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：按 `document.visibilityState` 选择唯一 interval：可见每 15 秒、隐藏每 5 分钟自动读取，窗口失焦不改变周期。首次挂载（包括初始隐藏）、显式刷新和恢复可见立即尝试；隐藏转换只从转换时刻重建 interval，不发请求或取消在途读取。每次可见性转换清除旧 interval 并从转换时刻重新计时；周期与可见性触发遇到活动读取或项目访问读取时跳过；显式刷新与变更通知的后台核对取消并替换在途同步，历史确认／重建的后续读取仍为后台语义。只有显式刷新显示进度。浏览器节流或冻结使后台周期仅为名义值。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
 
 ```text
 首次完整任务摘要 → IndexedDB → 本地图 / 列表 / 统计
@@ -17,7 +17,15 @@
 客户端摘要最大 updatedAt → 服务端减去配置窗口 → 返回匹配任务摘要
 ```
 
-同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map；Task 水位不筛选该集合。`useTaskGraph` 在同一次同步接纳后将它发布到稳定的页面 Session store，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
+同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map 和进行中普通 Task 的完整观测；Task 水位不筛选这两个集合。`useTaskGraph` 在同一次同步接纳后将四态 map 与完整观测分别交给独立的页面内存 store；隐藏时拒绝发布 Session 观察，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
+
+显式 scoped TaskSync 在项目可见性通过后检查 task:read 与 project:read，完整
+Project 投影需要两者。缺少 session:read 时跳过两次 TaskSessionSources 和实时
+采样，按同一快照中的全部可见进行中普通 Task 构造 taskObservations，逐项保留
+真实 taskVersion 与 unavailable。该键集合不受 since 筛选影响；sessions 为空、
+sessionPartial=true，执行相关 worker/sessionStartup 属性被排除。观察完成时间
+和 Task 水位取自任务快照，不能从会话补齐。生产装配使用 scoped 入口，并
+遵循[凭据准入合同](credential-scope-internal.md#任务读取准入与投影)。
 
 客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
 
@@ -42,6 +50,8 @@ ORDER BY created_at, id;
 ```
 
 M 原样保存，不预先减窗口。服务端每次应用当前 W。边界使用 >=；不增加当前请求时间上界。没有任务时 M=null，不填 1970 等默认时间，下一次无 since 读取全部当前摘要。
+
+`core/task.ReadSync` 先通过 `TaskSyncTasks` 读取 snapshot 或更新时间窗口内的摘要，再从实际返回的摘要收集 Goal ID，以同一个 `SyncReader` 调用 `TaskSyncGoalDependsOn`，将返回的完整项目内直接验收前置写入对应 Goal 的 `dependsOn`。没有选中 Goal 时不执行该查询。摘要与边共享已有读取快照；前置目标无需进入更新时间窗口，有效孤点明确返回 `[]`，Goal 的 `externalDependsOn` 保持 `[]`。查询或快照完成失败使整个同步失败。普通 Task 依赖、`dependencyStates` 和执行图继续只处理普通执行边。查询范围和职责由[Goal 关系设计](goal-dependencies.md#项目内前置批量读取)拥有。
 
 只从项目同步接口成功接受的摘要计算 M。单任务 GET 或写响应即使包含更大的 updatedAt，也不能推进 M：例如未读的任务 A 更新于 10:01，单独打开 B 得到 10:05；若把 B 的时间作为项目水位，就会跳过 A。
 
@@ -84,6 +94,8 @@ type TaskViewRecord = {
   id: string;
   version: string; // 已有业务 version，规范正 int64 十进制
   properties: TaskProperties; // 完整 JSON 属性对象，保留实际键
+  tags: { id: string; name: string }[]; // 当前自身标签引用
+  title: string; // 完整标题
   titlePreview: string;
   titleTruncated: boolean;
   status: TaskStatus;
@@ -108,6 +120,17 @@ type TaskSync = {
   tasks: TaskViewRecord[];
   dependencyStates: Record<string, { taskVersion: string; blockedBy: string[]; ready: boolean }>;
   sessions: Record<string, "working" | "notice" | "warning" | "pending">;
+  taskObservations: Record<string, {
+    taskVersion: string; // 精确正 int64 十进制
+    state: "no_session" | "not_registered" | "pending" | "working" | "notice" | "warning" | "unavailable";
+    observedAt: string | null;
+    freshUntil: string | null;
+    needsAttention: boolean | null;
+    canOpen: boolean;
+  }>;
+  sessionPartial: boolean;
+  responseTaskAt: string; // 最终核验的数据库时钟
+  responseSessionAt: string; // 完成最终核验后的 Engine 时钟
 };
 ```
 
@@ -126,15 +149,19 @@ type TaskSync = {
 `RequireProjectRead` 返回值保存在必填 `actorAccess`，再读取 Project/epoch、
 匹配摘要、完整属性、完整 assigneeVersions 和 observedAt。GET access 与该字段共用
 [本人权限投影](daynight-auth.md)；即使空 delta 也返回同一快照的实际角色与 grant，
-同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 关闭匹配任务 rows 后，以全部选中 task IDs 的一次 `ANY` 查询批量加载完整属性，空属性为 {}。任务与属性属于同一快照，查询次数不随命中任务或属性数量线性增长；授权先于任务及属性读取。
+同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。title 与 titlePreview、titleTruncated 从同一快照内的同一标题生成；预览保留前 160 个 Unicode 字符和截断标记，完整 title 不按写入限制截断历史记录。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 关闭匹配任务 rows 后，以全部选中 task IDs 的一次 `ANY` 查询批量加载完整属性，空属性为 {}。选定任务的标签引用也在关闭结果集后一次批量加载，空集合编码为 `[]`。任务、属性和标签属于同一快照，查询次数不随命中任务、属性或标签数量线性增长；授权先于这些读取。标签改名与删除 touch 关联条目的版本和时间，沿用普通增量及任务水位，不轮换 epoch。
 
-属性读取直接装入已规范化的 `json.RawMessage` map，不重复定义注册表的结构校验或规范化；查询、扫描、自然解码与编码以及事务完成错误沿原链路传播。独立的 Session source 查询只读取全项目适用 Task 的 Worker 属性及窄 Session 标量。完整响应包含 `sessions`，不设置读取节点、边或字节预算；协议仍一次返回完整 snapshot/delta，不引入分页或中间发布。完整 assigneeVersions 及匹配摘要由当前请求物化，读取成本随实际集合增长，不承诺固定内存上限。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)拥有职责取舍。
+属性读取直接装入已规范化的 `json.RawMessage` map，不重复定义注册表的结构校验或规范化；查询、扫描、自然解码与编码以及事务完成错误沿原链路传播。Session source 查询读取全项目进行中普通 Task 的 Worker 属性及所需 Session 标量。完整响应包含 `sessions` 和 `taskObservations`，不设置读取节点、边或字节预算；协议仍一次返回完整 snapshot/delta，不引入分页或中间发布。完整 assigneeVersions 及匹配摘要由当前请求物化，读取成本随实际集合增长，不承诺固定内存上限。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)拥有职责取舍。
+
+Web 的 `parseTaskSummary` 按资源 type 接纳依赖：普通 Task 继续使用执行前置，Goal 的 `dependsOn` 可为项目内验收前置集合，`externalDependsOn` 必须为空。Goal 不得出现在 `dependencyStates`，`projectSummaries` 先选择普通 Task 再构建执行图；typed 摘要集合保留 Goal 和其同步边。Server 的 Goal 摘要与浏览器 schema 14 的一次摘要重建配套启用，避免旧空边基线与同版本新边发生冲突。该接纳与详情核对的职责见[Goal 摘要决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-summary-admission.md)。
+
+项目 Goal 验收图直接消费已提交的项目同步基线，图的开关及本地交互不增加 TaskSync 读取或改变其调度、水位和 URL。详情驱动的即时视图投影与该基线分开，项目内 Goal 图边及检查栏的完整本地关系、标题和状态只随正常同步提交变化，独立原始关系页不能覆盖它们；准确对应已知边的隐藏目标提供窄化撤回证据，图会话立即屏蔽该旧目标，不改写持久摘要或推断整个 Project 失权。跨项目上下文由图会话调用现有 Goal 关系 GET，结果不进入持久摘要或水位，也不建立另一条轮询。当前同步准入与保留显示分开；保留基线不能为新请求提供资格。投影范围、关系会话、局部检查与阅读层由[Goal 关系设计](goal-dependencies.md#项目-goal-验收图)拥有。
 
 `dependencyStates` 是必填非 null 的普通 Task 派生状态 map。snapshot 覆盖全部可见普通 Task；delta 仅包含自身或直接前置的 updatedAt 命中同一窗口下界的可见普通 Task。每项 `taskVersion` 是所属 Task 的精确十进制版本，`blockedBy` 是未满足的直接前置 ID 数组，`ready` 沿用 Task 自身规则，不受父 Goal 状态影响。每条普通 Task 摘要都伴随同版本状态；空集合为 `{}`，空阻塞数组为 `[]`。一次批量 SQL 在相同快照读取保留的物理前置事实，隐藏的 done/cancelled 前置仍满足，隐藏的未结束前置仍阻塞。读取和事务失败使整个同步失败。Web 严格解码并持久化该 map，依照所属 Task 版本合并。
 
 map 的键和 `blockedBy` 元素是规范 Task UUID；`taskVersion` 为正 int64 的规范十进制字符串，`blockedBy` 按 ID 排序且属于该 Task 的 `dependsOn` 子集。普通 Task 的 `ready` 等价于 status 为 `todo` 且 `blockedBy` 为空。同版本状态可能反映不同前置观察，跨响应乱序时旧状态可能晚到；该协议不提供派生状态的严格全序。后续相关变化或完整 snapshot 可刷新它，但不保证下一轮轮询必然修正。
 
-TaskStatus为proposed/todo/in_progress/done/cancelled五态，cancelledAt为必需nullable字段；仅cancelled有值。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
+完整 title 为必填字符串；缺失或非法值按协议错误拒绝，不从预览推测，也不逐项请求详情。TaskStatus为proposed/todo/in_progress/done/cancelled五态，cancelledAt为必需nullable字段；仅cancelled有值。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
 directGrant.version 的 JSON number 分别在已知子树中无损解码。Project 内在字段必含
 ownership:{teamId,version}，owner Team 名称和 actorAccess 不进入 Project 持久记录。
 存在的 grant 必须属于请求项目和已核对的实际用户，role 与 effectiveRole 分别校验。properties 必须是对象，缺失、null 或数组均拒绝，通用 parseTaskProperties 保留客户端未知的全部键；属性内同名 version 保持普通 JSON 值，不递归转成 bigint。缓存字段不得缺省。GET/HEAD、no-store、错误信封与请求取消保持。task-sync 的完整项目摘要范围独立于[按任务查询的 task-graph](../spec/daynight-server.md#任务链图查询)；后者不能提供完整项目摘要或替代缓存基线。
@@ -143,44 +170,31 @@ ownership:{teamId,version}，owner Team 名称和 actorAccess 不进入 Project 
 
 ### 服务端 Session 状态投影
 
-`core/store/reader_session.go` 定义只读 `SessionReader.CurrentTaskSessionSources` 与内部 `TaskSessionSource/TaskSessionStateSource`，由 `SnapshotScope.SessionDAO()` 提供。`store/postgres/session.NewReader(tx)` 与其他 Reader 绑定同一个只读 Repeatable Read 事务，读取能力不要求会话锁定或写入。`TaskSync.Get` 在已有主体校验、RequireProjectRead、Project 和 ReadSync 全部成功且无 refusal 后才读取 Session source，再通过消费方定义的单方法 `SessionStateReader.TaskListSessionStates` 读取状态；应用组装注入已有共享 Engine，TaskSync 不依赖 Engine 的完整内容和生命周期 API；数据库快照成功完成后才返回。权限或项目拒绝不能触发 Session 查询。
+TaskSync 的项目读取在同一只读数据库快照中完成主体和项目准入、Project、窗口摘要以及全部可见进行中普通 Task 的 ID、精确版本和执行来源读取。`SessionReader.TaskSessionSources` 包含 web 与 herdr 的持久身份、fence、生命周期和期限标量；它不读取目录、内容或操作正文。来源不受 `since` 窗口限制，每批最多 200 项。释放数据库快照后，服务按批从共享 Session Engine 读取已提交 live 标量；请求 context 贯穿采样和后续核验，取消不会遗留脱离请求的后台工作。每个源的 Task、Worker、claim、Worktree、控制模式及 Session 身份必须匹配；重新核对 principal、凭据、项目权限、Task 版本与执行绑定，变化时不得将旧样本归给新执行。采样不是数据库与所有 live cell 的单一原子时刻，也不引入跨实例 Session 内容同步。
 
-查询独立于 `since`，覆盖项目未删除的 `in_progress` Task，只取当前 `worker` 属性，以及与 task scope、web backend 和当前 claim 关联的 Session 身份、fence、生命周期、LastSeen 与 DrainUntil。`task_properties.value` 是 TEXT，claim 关联用 `(value::jsonb)->>'claimId'` 并将右侧转换为 UUID，以匹配既有 `(project_id, task_id, claim_id)` 唯一键。Worker 属性与所需 Session snapshot 标量使用普通 typed `json.Unmarshal`，不重复 Normalize/Validate/Admit、字段合法性或容量检查。写入入口仍拥有 Worker 与 Session 结构及规范 fence 表示；读取保留实际 Task/Worker/Session 绑定和 live fence 的必要比较，正常解码错误继续传播。查询不加载其他属性、controls、registration、grants、目录、source history、操作记录或操作存在性检查；不使用 `FOR UPDATE/FOR SHARE`，不另开事务。
+Engine 短持 registry mutex 捕获 cell 引用后释放，再逐个锁 cell、复制已提交标量并立即解锁；若重验 registry 引用，在 cell 解锁后进行，避免 cell→registry 的嵌套锁顺序。读取通过既有 `BeginOperation`/`Close` 保持 Engine admission 与 Stop 的所有权；取消在请求及逐 cell 边界检查，Go mutex 等待本身不能被 context 立即中断。读取不会持有 cell 锁执行 SQL、响应编码或另一个 cell 的工作。期限使用 Engine 时刻及持久 LastSeen，heartbeat 使用严格 `>30s`，drain 使用到期包含边界。
 
-`core/session/task_list_states.go` 的共享 Engine 只复制已提交 `liveCell.value` 中的 ControllerFence、ConnectionState、Synchronized 与 Activity。它短持 registry mutex 捕获 cell 引用后释放，再逐个锁 cell、复制标量并立即解锁；若重验 registry 引用，在 cell 解锁后进行，避免 cell→registry 的嵌套锁顺序。读取通过既有空 `BeginOperation`/`Close` 保持 Engine admission 与 Stop 的所有权，不调用 `Operation.content`、`cloneLive` 或创建 live draft。取消在请求及逐 cell 边界检查；Go mutex 等待本身不能被 context 立即中断，不能用分离 goroutine 掩盖该限制。读取不会持有 cell 锁执行 SQL、响应编码或另一个 cell 的工作。
+同一批现场采样分别生成原有 `sessions` 和完整 `taskObservations`，各自使用自己的判定，不将完整观测套入原四态汇总。前者为适用 web Session 的稀疏四态集合：可靠的同步中为 pending，非 active 或断开为 warning，已连接且同步的 waiting_input、idle/stopped、working 分别为 notice、warning、working；active、未断线且活动 unknown 不贡献键。缺少 live 或 live fence 不匹配仍按既有断线归一化。省略键表示无可靠贡献，不能推断为无执行。链／Goal 汇总继续使用 warning > notice > working，pending 保留原入口语义。
 
-Task、Worker 和持久 Session 来自一致的数据库快照；live 是逐 cell 观察到的最近已提交值，并非跨数据库和内存的原子快照。可靠持久绑定以及 matching fence 防止把另一执行的活动归给本 Task。期限使用本批 Engine 时刻及数据库持久 LastSeen，不能用 live.LastSeen 替代；heartbeat 使用严格 `>30s`，drain 使用到期包含边界。无本机 live 或 fence 不匹配保持既有 disconnected/false/unknown 归一化，多实例读取不增加状态总线。
+`taskObservations` 覆盖快照中每个可见进行中普通 Task，包括没有 Worker、未注册和 herdr；不因本轮 delta 未携带 Task 而省略。已确认没有 active claim 时为 `no_session`，completed Worker 与旧 Session 仍可作为历史记录，但不成为当前 Session；新 claim 只采用其自身绑定。未注册为 `not_registered`；失败、未知 registration、不可确认身份或绑定为 `unavailable`。注册后的非 active 或断开为 `warning`，明确的 working、notice、warning 保留；web 活动 unknown 为 unavailable，活动已知但未连接或未同步、或明确 pending 为 pending。herdr connected 不足以推断 working，活动不可靠为 unavailable，断开或归档为 warning。`needsAttention` 未知保持 null。完整字段、空值和可打开性由[需求](../spec/daynight-task-sync.md#完整任务-session-观测)定义；单项失败或绑定变化保留 Task 并标为 unavailable，任一 unavailable 令 `sessionPartial=true`。取消、认证／访问拒绝、整体快照或读取失败继续传播，不伪装成完整空集合。
 
-按以下顺序判断，先建立可靠关联，再应用既有生命周期与活动语义：
+最终核验数据库快照给出 `responseTaskAt`；所有批次和核验结束后，由生成 Session 样本的同一 Engine 时钟给出 `responseSessionAt`。两者是独立 UTC 时间域，既不能相减得到 Task 执行耗时，也不能替代数据库初始快照的 `observedAt` 或增量水位。无效或缺失时钟使读取失败；响应锚点到 body 接收的处理与传输延迟仍存在。完整 map 与源读取成本随进行中任务数量增长；不增加任意数量／字节限制、截断或逐任务 HTTP。读取不推进生命周期或归档，也不授予 Session 内容与控制权限。
 
-| 条件 | `sessions[taskId]` |
-|---|---|
-| 非适用 Task/Worker、当前 Session 缺席或持久执行身份不匹配 | 省略键 |
-| active、未断线且 activity=unknown | 省略键 |
-| 生命周期非 active，或 disconnected | `warning` |
-| 尚未 synchronized，或 connectionState 不是 connected | `pending` |
-| connected、synchronized、waiting_input | `notice` |
-| connected、synchronized、idle/stopped | `warning` |
-| connected、synchronized、working | `working` |
-| 其他合法初始化状态 | `pending` |
-
-`pending` 保留可靠会话入口而不提供角标。省略表示无可靠贡献；HTTP 或存储失败不能转换为省略、pending 或成功 `{}`。Provider 继续负责 waiting_input 归一化，不从 canRespond 推测待处理交互。disconnected、idle、stopped、draining 和 archived 会话只要仍关联进行中的 Task 就继续参与；live 缺失和 fence mismatch 经断线归一化后产生 warning。
-
-`model.TaskSync`、公开 `api.TaskSync` 及 HTTP converter 必须保留 producer 创建的非 nil map；没有贡献时正常编码 `{}`，converter 不用 nil→空对象回退掩盖 producer 错误。每轮返回完整 Task 状态集合，`tasks=[]` 仍重算；map 的处理和响应字节随适用 Task 数量增长。Task 属性一次批量读取，Session Worker 属性使用独立窄查询和普通解码，不复查存储规模或响应字节容量。
-
-该读取不持久化归档 marker 或推进 drain，不新增 sweeper。现有 Current、Controller admission、Session 权限和归档入口继续执行各自期限与存储规则；轻量集合不授予内容或控制权限。查询、codec、Engine admission、取消及事务完成错误沿用 task-sync 的错误链和优先级，不增加 Session 部分失败协议。现有浏览器列表读取、聚合、入口和新鲜度仍由[Session 状态设计](task-session-status.md)拥有。
+Web 分别消费 `sessions` 与完整观测。后者按 Task 版本和执行绑定接纳，使用双时钟计算时效并在项目普通 Task 行展示；四态 store 的 web eligibility 不用于完整观测。浏览器列表读取、聚合、入口和新鲜度由[Session 状态设计](task-session-status.md)拥有。
 
 ### 浏览器 Session 状态接纳
 
-`api/types.ts` 定义必填 `TaskSync.sessions` 与本地 `TaskSyncRead {sync, receivedMonotonic}`。`getTaskSync` 的成功 reader 在 `await response.text()` 完成后立即记录 `performance.now()`，随后才共用 Task graph 文本解码、执行 source scan、精确字段解码及 `parseTaskSync` 校验。四态集合要求普通对象、规范 Task UUID 键和严格合法值，不设置任务条数上限，不接纳缺字段、null 或空对象 fallback。非成功响应沿用原 decoder 与 `parseServerError` 原 JSON 值；其它 API 与 relations decoder 保留各自合同。receipt 不进入 HTTP JSON。
+`api/types.ts` 定义必填 `TaskSync.sessions`、`taskObservations`、`sessionPartial`、`responseTaskAt`、`responseSessionAt` 与本地 `TaskSyncRead {sync, receivedMonotonic}`。`getTaskSync` 的成功 reader 在 `await response.text()` 完成后立即记录 `performance.now()`，随后才共用 Task graph 文本解码、执行 source scan、精确字段解码及 `parseTaskSync` 校验。四态集合要求普通对象、规范 Task UUID 键和严格合法值，不设置任务条数上限，不接纳缺字段、null 或空对象 fallback。非成功响应沿用原 decoder 与 `parseServerError` 原 JSON 值；其它 API 与 relations decoder 保留各自合同。完整观测严格校验规范 UUID、精确正 int64 版本、状态、可空字段和状态／入口组合，缺键不补成无 Session；两个响应时钟必须是有效 UTC 时间。receipt 不进入 HTTP JSON。
 
-`task-cache/execution-binding.ts` 的 `TaskExecutionBinding` 保存 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode，缺少 Worker 明确为 null。`TaskSyncTicket` 扩展原 SyncTicket，将这些 slim bindings 从 beginSync 已有的完整 stored Tasks 读取结果建立为不可变 map，与 epoch、水位和 manifest 位于同一事务；不增加事务、持久字段或 Session version。`deriveTaskSyncBindings` 对 snapshot 从响应 Tasks 建立基线，对 delta 使用 ticket.taskBindings 并覆盖响应实际 Tasks。`applySync` 继续按版本合并此刻的持久集合，但该最终集合不能反向改变响应的执行观察。
+`task-cache/execution-binding.ts` 的 `TaskExecutionBinding` 保存 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode，缺少 Worker 明确为 null。`TaskSyncTicket` 扩展原 SyncTicket，将这些 slim bindings 和精确 Task 版本从 beginSync 已有的完整 stored Tasks 读取结果分别建立为不可变 map，与 epoch、水位和 manifest 位于同一事务；不增加事务、持久字段或 Session version。`deriveTaskSyncBindings` 与 `deriveTaskSyncVersions` 对 snapshot 从响应 Tasks 建立基线，对 delta 使用 ticket 中各自基线并覆盖响应实际 Tasks。`applySync` 继续按版本合并此刻的持久集合，但该最终集合不能反向改变响应的执行观察。
 
-`useTaskGraph` 保留唯一项目 HTTP 调度与原有 history/applySync 顺序，拥有稳定的 `TaskSessionSummaryStore`。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，通过 `Store.replace({project: result.project, observedBindings, sessions, receivedMonotonic})` 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。store 经 ProjectPage、ProjectTaskWorkspace 和 TaskSessionSummaryProvider 传递，Provider 只负责 context 与展示活动。
+`useTaskGraph` 保留唯一项目 HTTP 调度与原有 history/applySync 顺序，拥有稳定且相互独立的 `TaskSessionSummaryStore` 与完整项目观测 store。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，分别向两个 store 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。两个 store 经各自 Provider 传给项目列表，Provider 只负责 context 与展示活动。
 
-状态值与完整 map 的键缺席使用相同 observed/current eligible binding 比较；旧 claim 的状态及缺席都不能影响较新执行或续期它的 receipt。其它 cache producer 和标签页只通过既有 Task 通知撤销不匹配绑定，不向本页发布 Session map。响应 key 不属于其 observed eligible Task 为协议错误。entry 的 30 秒期限从 API body receipt 起算，发布前、恢复展示与文档可见时复核；解码和 IDB 延迟不续期。普通在途同步保留尚有效状态，当前失败、auth pause、scope 失效和执行变化撤销相应贡献。
+四态汇总的状态值与 map 的键缺席使用相同 observed/current eligible binding 比较；旧 claim 的状态及缺席都不能影响较新执行或续期它的 receipt。其它 cache producer 和标签页只通过既有 Task 通知撤销不匹配绑定，不向本页发布 Session map。响应 key 不属于其 observed eligible Task 为协议错误。entry 的 30 秒期限从 API body receipt 起算，发布前、恢复展示与文档可见时复核；解码和 IDB 延迟不续期。普通在途同步保留尚有效状态，当前失败、auth pause、scope 失效和执行变化撤销相应贡献。
 
-状态只在页面内存通知自身消费者，不进入 summaries/details、Task properties、version/updatedAt、BroadcastChannel 或普通 CacheEvent，不新增正文重读或图计算。原有 applySync 的 Task 工作执行一次。链聚合仍包含根任务及折叠/筛选隐藏的全部普通成员，外部前置链排除；pending 保留入口，warning > notice > working 优先级及原 UI 保持。详细期限、聚合和交互由[Session 状态设计](task-session-status.md)拥有。
+完整观测还必须匹配当前进行中普通 Task 的精确版本和可空执行绑定；缺项或未准入显示未观测，单项或整体读取失败显示不可用，非 `unavailable` 的成功观测失效显示过期。整体失败投影只属于仍授权的当前项目，身份或项目准入失效时清除；成功同步重新建立观测。它使用响应的数据库与 Engine 时钟分别推进启动宽限与每项期限，细节见[Session 状态设计](task-session-status.md)。它不扩大四态 store 的 web Worker 准入。
+
+状态只在页面内存通知自身消费者，不进入 summaries/details、Task properties、version/updatedAt、BroadcastChannel 或普通 CacheEvent，不新增正文重读或图计算。原有 applySync 的 Task 工作执行一次。链聚合仍包含根任务及折叠/筛选隐藏的全部普通成员，外部前置链排除；pending 不贡献角标，warning > notice > working 优先级及原汇总 UI 保持。详细期限、聚合和交互由[Session 状态设计](task-session-status.md)拥有。
 
 ## 当前权限的内存发布
 
@@ -189,8 +203,8 @@ actorAccess 发布给同一项目的内存权限 Provider；持久 applySync 仍
 摘要和详情。provider 覆盖项目弹层、设置/成员以及独立 Task/附件路径，绑定既有
 TaskCacheScope 和用户/项目生命周期，不增加第二份持久缓存或单独更改缓存 schema。
 
-图页面的首次及每 15 秒 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
-GET access；每次成功观察重置可见三十秒 fallback。隐藏暂停，恢复可见、focus 和管理
+图页面的首次和周期 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
+GET access；每次成功观察重置可见三十秒 fallback。该 fallback 隐藏时暂停，恢复可见、focus 和管理
 操作前重验；并发 GET 合并。每个实际读取在派发前捕获观察顺序与作用域，迟到的 GET
 或 sync 不得替换较新成功观察，管理重验期间旧观察也不能解除提交限制。
 
@@ -207,9 +221,9 @@ cacheGeneration，覆盖仅有磁盘历史或在途首次同步、尚无在线�
 
 ## 5. IndexedDB 与去重
 
-采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 10，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
+采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 14，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
 
-schema 10 在升级事务中重建不兼容 Type/Parent 与依赖状态表示的 projects/summaries/details 及水位，完整 snapshot 重新建立 Task 基线；从 schema 9 升级保留 userScopes、profiles 和兼容 Session 目录。从 schema 1–4 升级同时轮换 userFence，从 schema 7 升级清除缺少完整空证明的 Session 目录。缺少必需字段的旧记录不能补默认值。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
+schema 14 在严格解析前于升级事务中清空 projects/summaries/details 及水位，以移除缺少 Goal 同步边、完整标题等不兼容表示。schema 13 的旧 Goal 空边即使结构合法，也不能与新输出的同版本非空边合并，因此同样重建；升级后通过一次正常完整 snapshot 重新建立 Task 基线。重新打开 schema 14 不再清空已重建内容。升级保留 userScopes、profiles 和兼容 Session 目录；完整 snapshot 可按现有规则清除项目的可重取 Session 目录。从 schema 1–4 升级同时轮换 userFence，从 schema 7 升级清除缺少完整空证明的 Session 目录。缺少必需字段的旧记录不能补默认值。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
 
 同源数据库 `daynight-task-cache`：
 
@@ -244,17 +258,19 @@ Session 记录目录复用共享 scope 的事务及身份准入，按用户、�
 
 ### 多标签页与广播
 
-各可见页面独立维持 15 秒轮询，无选主。IDB 写事务排序与当前集合的 version 合并防止自身字段被较旧版本回退；同一版本的依赖状态不具备跨响应全序。只在任务自身内容、依赖状态、设置、归属或生命周期实际变化后广播轻量提示；重复结果、显示时钟、纯读取不广播，也不转发提示。
+各挂载项目页面独立维持可见 15 秒、隐藏 5 分钟轮询，无选主。IDB 写事务排序与当前集合的 version 合并防止自身字段被较旧版本回退；同一版本的依赖状态不具备跨响应全序。只在任务自身内容、依赖状态、设置、归属或生命周期实际变化后广播轻量提示；重复结果、显示时钟、纯读取不广播，也不转发提示。
 
 普通变更提示在提交后触发，接收方重读当前持久集合，不仅因提示再发网络。它不授予首次访问或提供可复用的时钟锚；已打开页沿用本页样本，下一正常周期重新同步。负向撤权提示在确认可信 not_found 后立即发送，不等待持久清理；其匹配、暂停期间处理和 CAS 清理见第 7 节。两类提示都不转发，不包含任务正文。
 
 ## 6. 投影、时钟与详情
 
-sameSummary 对包括 assignedTo 在内的全部自身字段进行比较，并复用 sameTaskProperties 比较全部属性键及 JSON 值；对象成员顺序不影响结果，数组顺序有意义，缺失、[] 与 null 不相等。summaryOf(detail) 保留 assignedTo 和完整属性，详情与摘要的同版本检查使用同一比较，不另用 JSON.stringify 判断键序差异。
+sameSummary 对包括完整 title、assignedTo 和标签引用在内的全部自身字段进行比较，并复用 sameTaskProperties 比较全部属性键及 JSON 值；属性对象成员顺序不影响结果，属性数组顺序有意义，缺失、[] 与 null 不相等；标签按 ID 和名称的集合比较。summaryOf(detail) 保留完整 title、assignedTo、标签引用和完整属性，详情与摘要的同版本检查使用同一比较，不另用 JSON.stringify 判断键序差异；详情新鲜度比较完整标题，因此相同预览的不同后缀不会被视为相等。
 
-projectSummaries 从全部 typed 摘要中选择普通 Task，以匹配版本的权威依赖状态物化 blockedBy 和 ready，并计算 summary，再由 buildGraphIndex 生成完整普通组件和独立任务分类。图节点剔除 version 与 properties，完整摘要和包括 Goal 的版本 map 保留资源存在性。缺失前置的引用保留，仅连接可见端点；普通依赖决定可见链成员，不合成隐藏节点。重复 ID、环、状态关系及统计均须校验后一次发布，不能呈现半批图。
+projectSummaries 从全部 typed 摘要中选择普通 Task，以匹配版本的权威依赖状态物化 blockedBy 和 ready，并计算 summary，再由 buildGraphIndex 生成完整普通组件和独立任务分类。图节点剔除 version、properties 与 tags，完整摘要和包括 Goal 的版本 map 保留资源存在性。缺失前置的引用保留，仅连接可见端点；普通依赖决定可见链成员，不合成隐藏节点。重复 ID、环、状态关系及统计均须校验后一次发布，不能呈现半批图。
 
 精确比较 UTC 秒部分、补齐到九位的小数及规范 ID，保留原字符串；不能以 Date.parse 毫秒或可变小数的原始字典序排序。时间水位也用相同精度计算。
+
+`useTaskGraph.snapshot` 保持当前历史的读取观察，`displaySnapshot` 仅保留同一用户、项目、scope 与访问边界内最后已显示的投影。内容历史变化或确认期间清除当前 snapshot、receipt 和 liveAccess，但保持 displaySnapshot 与 ready 呈现；网络、超时或协议失败保留显示并暴露错误和 Retry。访问撤销、身份或 scope 生命周期结束立即清除显示。新快照通过身份、权限、历史及 applySync 校验后同时发布两种状态；新旧历史不能按业务版本合并。ProjectPage 的列表、Goal 图和统计消费 displaySnapshot；详情的 snapshot、revision/task 观察、资源类型准入和修改资格仍只使用当前 snapshot。组织表单的显示选项可用显示投影，但已挂载表单与草稿不因当前快照暂缺而关闭，读取与提交仍遵循当前资格。显示快照的 receivedAt 或 revision 不能作为新读取或写入资格。
 
 仅本地摘要的 GraphSnapshot 没有成功接收时间或服务端时钟样本，revision 为 0；最近刷新标签、运行中耗时与可能卡住提醒等待实际响应，已完成耗时仍使用持久起止端点。概览的近期分类在此期间使用本机墙钟作为暂时当前时刻，首个成功响应后切换为服务端与单调时间；本地自然日边界继续使用浏览器时区，不把本机时间用于执行耗时或同步水位。每次成功实际响应的 observedAt 与 body 读取完成、解码前立即取得的本页 performance.now 接收值配对，独立推进 TaskExecutionClock；JSON/source 解码、校验和缓存等待沿用同一 receipt。observedAt 不参与 M。磁盘和跨页广播不能提供可复用的单调锚点；设置及自身字段和依赖状态均重复的摘要保持已发布图索引身份。`GraphSnapshot.revision` 的正值是本挂载每次成功同步的 receipt，不是任务版本、水位或持久提交序号。它提供当前挂载的访问准入和失败恢复机会，正常重复 receipt 不使匹配详情重新 GET。跨页读取沿用本页已取得的时钟 receipt。
 
@@ -270,11 +286,11 @@ projectSummaries 从全部 typed 摘要中选择普通 Task，以匹配版本的
 
 Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完整 Task 与 `TaskCacheEpoch`；事务完成后才发布原完整正文与 `Daynight-Task-Epoch`。Web 的 `getTaskObservation` 严格验证主体、身份及 epoch。`TaskObservationInput` 区分摘要和 direct；后者由 `TaskCacheScope` 建立 userFence、项目 revision、history generation、Task、opening 和请求 generation 围栏，不要求 manifest。成功观察只属于当前 opening，不能写入持久详情或推进同步水位。摘要来源保留原完整摘要校验和持久化规则。
 
-图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影、详情、Steps 与阅读子树并使旧 ticket 失效，再在新围栏下至多补读一次；缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch。重叠网络请求获得的不同 epoch 也不能按请求启动顺序判断快照先后，须在隔离旧投影后以新请求确认；不确定期间保守保留同历史可能存在的在途写锁，确认换代或撤权后退休。持久 manifest 与已知实时 epoch 不一致时不能作为项目预览发布，网络失败也不能恢复该旧投影。普通身份核验期间保留当前详情、关系、菜单、确认、Session 录像和本地输入，认证屏障仍阻止新的网络请求与写入；实际身份、项目或历史失效立即撤回内容。已接受写入在关闭详情后由原操作所有者和审阅围栏继续准备或核对，重开后的观察只能使过期意图失效，不能替代原准入。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。具体准入和替代方案由 [direct 观察决策](../../.agents/notes/implemented/architecture/2026-11-06-task-direct-observation.md)记录。
+图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影的读取资格、详情、Steps 与阅读子树并使旧 ticket 失效；同一身份和访问边界中的最后显示投影可暂时保留用于项目页面呈现；读取在新围栏下至多补读一次。缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch。重叠网络请求获得的不同 epoch 也不能按请求启动顺序判断快照先后，须在隔离旧投影后以新请求确认；不确定期间保守保留同历史可能存在的在途写锁，确认换代或撤权后退休。持久 manifest 与已知实时 epoch 不一致时不能作为新的项目预览或读取资格发布，网络失败也不能恢复旧资格。账户变化等待刷新时保留当前详情、关系、菜单、确认、Session 录像和本地输入，认证屏障阻止新的网络请求与写入；真实会话失效、项目或历史退休按各自规则撤回内容。已接受写入在关闭详情后由原操作所有者和审阅围栏继续准备或核对，重开后的观察只能使过期意图失效，不能替代原准入。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。具体准入和替代方案由 [direct 观察决策](../../.agents/notes/implemented/architecture/2026-11-06-task-direct-observation.md)记录。
 
 ### 详情存储与预算
 
-`detail-cache.ts` 导出 `readCachedDetail`、`saveDetail`、`materializeDetail`、`validateDetailSummary` 和 `detailByteSize`。详情记录必须匹配所属用户/项目/任务、fence/generation、当前摘要业务版本和全部自身摘要字段；不能含 ready/blockedBy。精确正文 JSON 的 UTF-8 字节数必须与 byteSize 相同。单条与项目总量、记录数都验证，损坏不能作为成功命中。
+`detail-cache.ts` 导出 `readCachedDetail`、`saveDetail`、`materializeDetail`、`validateDetailSummary` 和 `detailByteSize`。详情记录必须匹配所属用户/项目/任务、fence/generation、当前摘要业务版本和详情实际覆盖的自身摘要字段；不能含 ready/blockedBy。`sameDetailSummary` 供详情缓存准入及已确认写入投影共同使用：普通 Task 比较全部自身摘要字段，Goal 不比较仅由同步提供的两类依赖数组，其余字段仍完整比较。摘要间及详情间的同版本比较仍使用严格的 `sameSummary`。精确正文 JSON 的 UTF-8 字节数必须与 byteSize 相同。单条与项目总量、记录数都验证，损坏不能作为成功命中。
 
 `DETAIL_CACHE_LIMITS` 固定每项目最多 32 条、总量 8 MiB、单条 2 MiB，边界值可缓存。字节使用 `TextEncoder` 编码 `stringifyApiJson` 产生的自身内容，业务 bigint 保持精确。实际缓存读取更新 lastUsedAt；新增正文按 lastUsedAt、再 taskId 的顺序淘汰最旧详情，摘要及水位不参与淘汰。相同版本和内容的保存不重复写详情。超过单条预算的成功正文仍可在当前会话显示，按策略不持久化，与真实配额错误区分。
 
@@ -282,33 +298,37 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 ### 响应身份与写操作结果
 
-详情 GET 及全部任务写 API 必须接收 `TaskResponseAdmission`：明确 userId、onPrincipalMismatch，写入可提供 onWriteConfirmed。客户端在解析正文和资源错误前检查实际 `Daynight-User-ID`，401 继续既有会话失效流程。缺失/畸形头是协议错误，可信不同用户同步失效旧 scope；这些失败不能被当成本用户 404 撤权。
+详情 GET 及全部任务写 API 必须接收 `TaskResponseAdmission`：明确 userId、onPrincipalMismatch，写入可提供 onWriteConfirmed。客户端在解析正文和资源错误前检查实际 `Daynight-User-ID`，401 继续既有会话失效流程。缺失/畸形头是协议错误，可信不同用户同步通知根账户 owner 并拒绝该响应；由根 owner 决定旧 scope 的清理策略。这些失败不能被当成本用户 404 撤权。
 
 写入接受时同步捕获确认所审阅的 cacheGeneration 与 mutation 对象身份；每次异步准备完成后及网络派发前，都要求该 owner、审阅历史和当前准入仍匹配。`beginSync` 在等待期间取得的新历史 ticket 不能替换旧确认的历史，即使任务 ID、版本相同也不足以派发。失效准备零写入，只 GET 刷新当前历史，取得 fresh GET 后要求新确认；被取代的准备不改变较新 mutation 的反馈或共享写锁。详情关闭本身保留仍属于同一 owner 和历史的已接受意图。提交准备和普通结果处理在同用户身份暂停时先经现有 `scope.ready` 等待，恢复后复核身份生命周期、原审阅 generation 与 owner，再读取受保护的实时投影或同步改变阶段；若又暂停则重新等待，不能在异常处理里重复访问受阻 getter。未发送的过期准备转为本地冲突或拒绝并 GET 当前历史；已发送的旧历史结果进入 unknown 与 GET 核对，被新 owner 取代的处理不再修改 entry。身份结束丢弃旧操作。
 
-同用户认证的 HTTP 200 或删除成功的 204 在解析正文前确认远端写响应，与正文是否可安装、是否持久化分开。正文无效仍要求 GET 核对，存储失败保留确认结果及错误，不重发操作。pending、unknown、reconciling、committed-version floor 与精确目标/版本检查继续归详情会话；关闭对话框不释放已提交写请求，身份失效仍使其结果无权发布。单任务 GET 或写结果只能触发项目同步，不能直接修改摘要或 M。附件目录与文件保持独立按需路径。
+同用户认证的 HTTP 200 或删除成功的 204 在解析正文前确认远端写响应，与正文是否可安装、是否持久化分开。正文无效仍要求 GET 核对，存储失败保留确认结果及错误，不重发操作。pending、unknown、reconciling、committed-version floor 与精确目标/版本检查继续归详情会话；关闭对话框不释放已提交写请求，身份失效仍使其结果无权发布。已确认写入回执由 `committed-task-projection` 生成即时视图摘要时，完整标题和精确 Task version 与项目 epoch 一起发布；该投影不修改持久集合，版本合并拒绝较旧的后台结果。Goal 详情回执的空依赖字段不表示其验收前置为空。投影将回执实际覆盖的字段与同步摘要核对，并为 Goal 保留当前摘要的 `dependsOn` 和 `externalDependsOn`；同版本核对和更新前基线核对使用相同规则。标题或状态等其它字段冲突仍为协议错误，Goal 边只能由项目同步更新。单任务 GET 或写结果不能推进 M，因为它们不证明项目中其他任务的覆盖。附件目录与文件保持独立按需路径。
 
 ## 7. 身份、错误与本地生命周期
 
-沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信 Task 404 在身份暂停期间先撤回任务并安排项目访问重验；项目确认撤权的路径按捕获历史检查，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
+账户 owner 在观察到变化时暂停持久读取、网络和正向内容发布，直到真实刷新；健康前后台切换不建立身份 gate。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信 Task 404 在身份暂停期间先撤回任务并安排项目访问重验；项目确认撤权的路径按捕获历史检查，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
 
-实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
+实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户先同步通知根账户 owner，再拒绝响应。缓存 scope 不在通知前销毁投影，根 owner 同步进入等待刷新并保留旧 scope 和已呈现内容。若 owner 保留 scope，通知返回后身份错配围栏终止旧的准入等待和未提交事务，拒绝继续读取或发布迟到的成功和负向结果，也不重复通知；已确认的写入事实仍可记录。普通同账户暂停不设置该围栏，可信撤权仍按原规则处理；另一标签页已确认的项目撤权按 userFence 和代际撤回相应内存投影，不让旧 scope 重新访问持久数据。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
 
-`canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
+`canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。读取请求在派发前另捕获 Project 正向读取序号，`canRevokeProjectRead` 不允许旧读取 404 撤回更新的 Project 或权限观察；任务同步、人员读取、删除预览、已拒绝的删除请求与权限重验使用该规则；通过各自生命周期和身份围栏的预览、人员、Task 详情及搜索成功也记录正向读取。已确认删除或转移的写入回执仍按原 ticket 清理，不受后续读取序号影响。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除当前和显示快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
 
 访问撤回与持久清理归仍存活的 scope，超出详情 UI 和 `TaskDetailSessions` 的寿命。切换到 `/invitations` 等页面可以释放详情会话而保留认证 scope；已提交写入返回可信 not_found 时按原历史发起项目访问重验，只有确认项目撤权才执行 scope 撤权。已释放会话只保留操作拒绝意图/错误并清自身旧正文，不通知其 UI listener、不补 GET 或重发写入；scope 退出/账号替换仍优先使旧响应失效，旧 E1 仍不能撤 E2。共享缓存 RW 事务只在持久 userFence 和 manifest.cacheGeneration 仍等于捕获 ticket 时清除该项目 summaries/details/profiles/sessionHistory，并写新的 invalidated manifest；不同用户、项目或 generation 不在该 CAS 清理范围。清理失败保留内存拒绝与可见存储错误。beginSync 先重试待处理清理，再建立同步基线；撤权后的持久摘要预览须等新的在线项目同步成功。direct 详情须在清理、身份与历史围栏允许后，通过新的实时 Task 观察准入。摘要预览以 scope 的既有退役记录和在线授权判定：未观察过有效撤权时允许首次本地预览；观察后必须重新在线授权，不能因清理跳过了不同 generation 的较新持久集合就恢复预览。hook 在 readProject 前与异步读取后均检查 canPreviewProject；同 scope 的项目导航与重新挂载沿用该判断，普通提示与失败的 Retry/轮询不改变授权。成功 applySync 恢复授权但不清除旧 generation 的退役围栏。manifest 在 snapshot、失效与清理时同事务保存完整代际祖先，ticket 携带该链；它用于识别撤权影响的旧投影，不扩大持久清理的 CAS 范围。任何保留记录也不能代替在线准入。
 
-负向 BroadcastChannel 提示携带 userId、projectId、userFence、revokedGeneration 及 ticket 的完整祖先。接收方同步封锁被撤代际及祖先，按其投影读取时捕获的历史撤回内容；新代际的撤权也能覆盖其先前投影，旧提示不能撤回可证明的后继。清理以实际持久 generation 为 CAS，不转发提示。损坏使前驱不可证明时标记 unknownAncestors；接收方核对持久 generation 或刚完成的清理记录后隔离无法比较的旧投影并重新读取。身份核验暂停时立即暂时隔离无法比较的内容；核对进行中发生的后续暂停也立即触发隔离。若恢复后核对确认提示过期，则恢复原准入并重新读取。存储无法核对时保守隔离并显示错误，可证明的后继保持准入。独立目录和 Worker 投影及存储故障行为由 [Web 设计](daynight-web.md#我的-worker-列表与详情)拥有，相关代际决策见 [投影撤回记录](../../.agents/notes/implemented/architecture/2026-11-06-web-project-projection-withdrawal.md)。
+负向 BroadcastChannel 提示携带 userId、projectId、userFence、revokedGeneration 及 ticket 的完整祖先。已确认删除的写入提示直接撤回相关 peer。其他带代次的负向提示沿用缓存代际及 direct 详情的撤回与复核规则；仅已读取 Project、尚无缓存 fence 或投影的 peer 无法比较代次时暂时隔离并独立核验，不据此推断代次或永久清理。可比较的负向提示同步封锁被撤代际及祖先，按投影读取时捕获的历史撤回内容；新代际的撤权也能覆盖其先前投影，旧提示不能撤回可证明的后继。清理以实际持久 generation 为 CAS，不转发提示。损坏使前驱不可证明时标记 unknownAncestors；接收方核对持久 generation 或刚完成的清理记录后隔离无法比较的旧投影并重新读取。账户准入暂停时立即暂时隔离无法比较的内容；核对进行中发生的后续暂停也立即触发隔离。若恢复后核对确认提示过期，则恢复原准入并重新读取。存储无法核对时保守隔离并显示错误，可证明的后继保持准入。独立目录和 Worker 投影及存储故障行为由 [Web 设计](daynight-web.md#我的-worker-列表与详情)拥有，相关代际决策见 [投影撤回记录](../../.agents/notes/implemented/architecture/2026-11-06-web-project-projection-withdrawal.md)。
+
+项目页面的独立 Project GET 若在发出前捕获可用的项目历史 ticket，可信当前 404 使用该 ticket 按上述代际规则撤权。没有可证明代际时，来源 scope 先本地隔离并广播同账号、同项目的无代次负向提示；接收 scope 独立核验 Project 访问。peer 暂时隔离相关图和 direct 内容并独立核验，失败显示可恢复错误并周期重试；direct 内容在核验成功后重新读取，项目页同样等待 direct 核验结束。核验前最多等待 5 秒准备持久 generation ticket，无法取得时仍执行访问读取；自身读取确认 404 且捕获 ticket 仍匹配时才按该 ticket 撤权和清理，没有 ticket 则本地隔离。Project、准入或读取事实变化时重验，旧观察不能撤销更新的准入；无代次提示本身不能永久撤销一个推测的代际。该提示是内存广播，不持久化；所有 scope 关闭且未完成可信代际清理时，后续 scope 沿用既有持久摘要预览与服务端核验规则。
 
 direct 详情的在线观察不持有项目快照代际，不能仅凭祖先链判断负向提示发生在观察之前。提示到达时先隔离对应 direct 内容并保留已派发写入的互斥所有权，再核验当前 Project 访问；确认仍可访问后重新读取 direct Task 和 Session，失败或离线保持隐藏。独立目录及 Worker 仍按各自代际接收撤回，Project 权威撤权和持久清理不因 direct 重验而跳过。历史清理不能覆盖已提交的访问撤权记录；未观察到的跨服务撤权与重新授权顺序仍遵循 direct 观察的服务端合同。
 
-持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。退出/换号/401 通过 invalidateScope 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户内容并保留失效 manifest；dispose 仅关闭当前 scope，保留可重用持久记录。
+持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。真实退出或当前有效 401 通过 invalidateScope 同步中止 scope、释放内存；观察到账户变化时保留内存并停止远程准入，直到真实刷新；持久事务只在已绑定 fence 与当前有效 fence 相同、尚未绑定或当前 fence 缺失/损坏时轮换 userFence、清除该用户内容并保留失效 manifest。已绑定 scope 不能清除其他生命周期的较新 fence 和内容；dispose 仅关闭当前 scope，保留可重用持久记录。
 
-IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的共享缓存修复事务直接写新用户 fence、清除该用户摘要/详情/人员和 Session 目录内容，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 关闭并发起身份核验，不能采用替代 fence。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
+同项目缓存事件可以重新发布最新已授权快照，但不证明 task-sync 失败已经恢复；异步发布在实际状态更新时保留该项目和身份作用域当前的同步错误及手动刷新状态，只有成功同步清除同步错误。历史或访问退休继续优先撤回内容。IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的共享缓存修复事务直接写新用户 fence、清除该用户摘要/详情/人员和 Session 目录内容，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 同步通知根 owner 并拒绝操作，不关闭 scope 或采用替代 fence。根 owner 决定清理，当前根回调保留 scope 并进入等待刷新。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
 
 schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓存并轮换生命周期 fence，兼容升级保留已有内容。组件/身份释放关闭句柄、通道、timer 并取消读请求；已提交修改继续由身份级详情会话核对。保留现有筛选、焦点、视口、全屏、滚动和附件 frame，以及对话框、独立任务详情页、独立附件工作区的读取与操作。TaskDetailPage 的完整详情使用 direct 观察，关系与项目图读取独立；图失败不能阻塞详情。
 
 ## 8. 历史替换与约束
+
+Goal 同步边的部署先退出不推进 Goal Task version/updatedAt 的旧关系写入者，再启用新版摘要输出。生产 Server 与匹配的嵌入式 Web 一同发布；旧页面刷新加载配套 Web，升级至 schema 14 后正常获取完整 snapshot。Server 不增加协议版本参数、URL、时间水位或独立轮询，既有 Goal 改边与项目清理的版本推进负责后续增量。
 
 只保留一个项目 cache epoch，避免数据库恢复后要求每个浏览器人工清缓存。支持的恢复/导入/原始替换流程停止全部写入，完成操作后、开放服务前执行受影响项目的 `UPDATE projects SET task_cache_epoch=gen_random_uuid()`。备份本身会恢复旧 UUID，维护流程必须显式轮换。
 
@@ -344,13 +364,13 @@ schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓�
 
 数据库测试证明查询边界、精度、配置、快照与项目写锁顺序；不再验证已移除的同步序号。默认10s、其他正值、配置增减及非法配置均有验收。在数据稳定的夹具中，用完整公开任务事实对照本地图投影；可使用完整 task-sync snapshot 或任务列表/详情，不能用 CLI 的局部任务链图替代。
 
-Session source 测试验证全项目查询独立于窗口、规范 Worker 和 Session 的普通解码、无大字段以及相同只读事务。Engine 测试覆盖已提交状态、实际 binding/fence 比较、状态顺序、期限边界、admission/Stop、取消与 registry/cell 锁顺序。HTTP 测试验证完整 `sessions`、合法空 map 和自然失败传播；CLI/Web 消费完整响应时不再按存储节点、边或 Session 项数拒绝。
+Session source 测试验证全项目查询独立于窗口、web／herdr、Worker 与 Session 的绑定及只读快照。Engine 测试覆盖已提交状态、binding/fence、状态与期限、admission/Stop、取消及锁顺序；service 测试覆盖批次、最终核验、权限变化、partial 和两个独立时钟。HTTP 与真实 Server／PostgreSQL 集成验证完整 map、必填字段、版本精度、空值及自然失败传播。CLI/Web 消费完整响应时不按存储节点、边或 Session 项数拒绝。
 
 真实 IDB 验证同时间戳不同任务/版本、迟到响应、当前集合合并、失败原子性、重复零写入、账号/项目清理与升级。双标签页重复结果不广播，不形成请求反馈环；详情不能推进项目覆盖水位。Session 所属测试补充同事务请求绑定、snapshot/delta 实际观察、旧值与旧缺席、body 后处理延迟及期限、失败/暂停/恢复和其它来源不发布状态。Session-only 变化必须证明不写 Task 缓存、不失效正文、不增加普通通知或额外图构建；组件守住整链、pending 与原入口。
 
 保留既有四容量图各五次的交互预算。传输测试比较返回 ID 与 SQL 窗口选择的集合，记录重复率及实际字节；不再要求无变化零任务或单根修改只返回一条。窗口中集中修改可能反复返回较多记录，重复传输与无历史同步序号是已确认取舍。
 
-完整属性会增加响应、解析、全量本地校验及持久化成本。写请求的 1 MiB 外壳限制不等于累计任务属性上限；仅适用于 details 的 8 MiB 缓存预算不限制 summaries 的总字节。协议不截断属性、不隐加条数或大小限制，也不承诺任意合法最大数据量均可缓存。实际项目样本、接近请求上限的 PR 值与较大属性多任务样本应记录响应字节、解析时间和 IDB 提交时间。网络限制或 QuotaExceededError 明确失败，摘要、详情失效与水位保持同一事务结果。分页、流式 staging 和项目字节预算需要独立的同步合同。
+完整标题和属性会增加响应、解析、全量本地校验及持久化成本。标题读取不新增长度或响应上限；代表性数据和边界合法数据须对照旧投影测量编码字节、任务数和标题长度分布、解码及 IDB 写入时间与请求次数。写请求的 1 MiB 外壳限制不等于累计任务属性上限；仅适用于 details 的 8 MiB 缓存预算不限制 summaries 的总字节。协议不截断属性、不隐加条数或大小限制，也不承诺任意合法最大数据量均可缓存。实际项目样本、接近请求上限的 PR 值与较大属性多任务样本应记录响应字节、解析时间和 IDB 提交时间。网络限制或 QuotaExceededError 明确失败，摘要、详情失效与水位保持同一事务结果。分页、流式 staging 和项目字节预算需要独立的同步合同。
 
 曾比较完整图条件请求、事务修订号、变更日志。完整图变化后仍传全部；变更日志带来历史保留和重放；修订号可避免末尾重复并独立于墙钟，但需要新的每写修订字段。当前选择现有 updatedAt 加配置窗口，并接受重复；不存在固定 requestAt 水位或事后更新时间写入。
 

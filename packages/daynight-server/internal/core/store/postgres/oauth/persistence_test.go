@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func transaction(t *testing.T) (pgx.Tx, *oauth.DAO) {
@@ -60,9 +61,9 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 	_, err := tx.Exec(ctx, `INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$2,$3,$3)`, issue.Grant.UserID, "family-owner", now)
 	check(t, err)
 	check(t, dao.IssueFamily(ctx, issue))
-	got, err := dao.AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, now)
+	got, err := dao.AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now)
 	check(t, err)
-	if got.Principal != (model.Principal{Kind: model.OAuthCredential, UserID: issue.Grant.UserID, CredentialID: issue.AccessID}) || got.GrantID != issue.Grant.ID {
+	if got.Principal.Kind != model.OAuthCredential || got.Principal.UserID != issue.Grant.UserID || got.Principal.CredentialID != issue.AccessID || !got.ExpiresAt.Equal(issue.AccessExpiresAt) || got.GrantID != issue.Grant.ID {
 		t.Fatalf("access identity: %+v", got)
 	}
 	for _, input := range []struct {
@@ -77,7 +78,7 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 		{"expiry boundary", issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, issue.AccessExpiresAt},
 	} {
 		t.Run(input.name, func(t *testing.T) {
-			_, err := dao.AuthenticateAccess(ctx, input.hash, input.resource, input.scope, input.at)
+			_, err := dao.AuthenticateAccess(ctx, input.hash, []store.OAuthBinding{{Resource: input.resource, Scope: input.scope}}, input.at)
 			missing(t, err)
 		})
 	}
@@ -123,7 +124,7 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 	if revoked.RevokedAt == nil || revoked.RevokedAt.Before(now) {
 		t.Fatalf("revocation timestamp: %+v", revoked)
 	}
-	_, err = dao.AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, now)
+	_, err = dao.AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now)
 	missing(t, err)
 	active, err = dao.ActiveClientReferences(ctx, issue.Grant.ClientID, now)
 	check(t, err)
@@ -296,5 +297,21 @@ func TestClientMetadataJSONBRoundTripBeyondWireLimit(t *testing.T) {
 	check(t, json.Unmarshal(raw, &persisted))
 	if !lastUsed.Equal(pinAt) || !expires.Equal(pinAt.Add(7*24*time.Hour)) || !pinned.LastUsedAt.Equal(lastUsed) || !pinned.ExpiresAt.Equal(expires) || !reflect.DeepEqual(persisted, metadata) {
 		t.Fatalf("large metadata pin persistence: metadataEqual=%t last=%s expiry=%s", reflect.DeepEqual(persisted, metadata), lastUsed, expires)
+	}
+}
+
+func TestFreshTimeReturnsUTCMicrosecondsFromNonUTCDriver(t *testing.T) {
+	tx, dao := transaction(t)
+	tx.Conn().TypeMap().RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID, Codec: &pgtype.TimestamptzCodec{ScanLocation: time.FixedZone("UTC+08", 8*60*60)}})
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+	var raw time.Time
+	check(t, tx.QueryRow(t.Context(), `SELECT $1::timestamptz`, now).Scan(&raw))
+	if _, offset := raw.Zone(); offset != 8*60*60 {
+		t.Fatal("non-UTC driver scan was not installed")
+	}
+	fresh, err := dao.FreshTime(t.Context(), now)
+	check(t, err)
+	if fresh.Location() != time.UTC || fresh.Nanosecond()%1000 != 0 || !fresh.Equal(now) {
+		t.Fatalf("database clock changed instant or retained driver representation: %v", fresh)
 	}
 }

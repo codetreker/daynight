@@ -41,7 +41,7 @@ func TestOnlineValueAdmissionUsesNormalizedSize(t *testing.T) {
 	for _, fn := range []func() error{
 		func() error { _, err := ParseInput("pullRequests", string(over)); return err },
 		func() error {
-			_, err := Normalize(model.TaskProperties{"paused": json.RawMessage(`true`), "pullRequests": over})
+			_, err := Normalize(model.TaskProperties{"blocked": json.RawMessage(`true`), "pullRequests": over})
 			return err
 		},
 	} {

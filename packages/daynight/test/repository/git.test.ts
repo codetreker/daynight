@@ -227,6 +227,20 @@ describe("repository Git discovery", () => {
     expect((await runRepositoryGit(root, ["ls-files", "-z", "--", ".daynight"], operation())).stdout).toBe("");
   });
 
+  it("retains failed Git stdout only when requested and keeps it out of diagnostics", async () => {
+    const bare = await directory();
+    git(bare, ["init", "--bare"]);
+    const args = ["rev-parse", "--is-bare-repository", "--show-toplevel"];
+    await expect(runRepositoryGit(bare, args, operation())).rejects.toMatchObject({ name: "RepositoryGitError", exitCode: 128, failedStdout: undefined });
+    const error = await runRepositoryGit(bare, args, operation(), { captureFailedStdout: true }).catch(reason => reason);
+    expect(error).toBeInstanceOf(RepositoryGitError);
+    expect(error.exitCode).toBe(128);
+    expect(error.signal).toBeNull();
+    expect(error.failedStdout).toMatch(/^true\r?\n$/);
+    expect(error.message).not.toContain(error.failedStdout);
+    expect(JSON.stringify(error)).not.toContain("failedStdout");
+  });
+
   it("does not launch Git for an already cancelled operation", async () => {
     const controller = new AbortController();
     const op = operation({ signal: controller.signal });

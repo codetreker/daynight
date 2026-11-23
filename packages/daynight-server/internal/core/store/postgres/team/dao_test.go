@@ -86,7 +86,7 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.HasMore {
 		t.Fatalf("last page: %+v %v", page, err)
 	}
-	member, err := writer.AddInvitedMember(ctx, guest)
+	member, err := writer.AddMember(ctx, guest, model.ProjectMemberRole)
 	if err != nil || member.Role != model.ProjectMemberRole {
 		t.Fatalf("add: %+v %v", member, err)
 	}
@@ -184,7 +184,7 @@ func TestTeamInvitationDAOLifecycleAndTokenPrivacy(t *testing.T) {
 	if err != nil || member.Role != model.ProjectAdmin {
 		t.Fatalf("member: %+v %v", member, err)
 	}
-	member, err = writer.AddInvitedMember(ctx, guest)
+	member, err = writer.AddMember(ctx, guest, model.ProjectMemberRole)
 	if err != nil || member.UserID != guest {
 		t.Fatalf("invited: %+v %v", member, err)
 	}
@@ -275,7 +275,7 @@ func TestTeamDAOClosedTransactionPreservesCauses(t *testing.T) {
 		"consume":           func() error { return writer.ConsumeInvitation(ctx, id, id, time.Now()) },
 		"reference":         func() error { _, err := reader.InvitationTeam(ctx, id); return err },
 		"invitation member": func() error { _, err := reader.InvitationTeamMember(ctx, id, id); return err },
-		"add member":        func() error { _, err := writer.AddInvitedMember(ctx, id); return err },
+		"add member":        func() error { _, err := writer.AddMember(ctx, id, model.ProjectMemberRole); return err },
 	}
 	for name, check := range checks {
 		t.Run(name, func(t *testing.T) {

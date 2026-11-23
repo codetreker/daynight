@@ -20,11 +20,14 @@ fixed diagnostic identifiers; arbitrary error text remains excluded. Public
 WebSocket errors and connection-close behavior retain their original semantics.
 
 The history-sync client records whether status lookup or chunk upload failed,
-the HTTP status, and bounded, validated error and request identifiers. Failure
-body reading has a 16 KiB limit and shares the original request deadline and
-cancellation. Malformed or unreadable diagnostics preserve the original HTTP
-failure. Logging never adds a request or replaces the frozen synchronization
-identity.
+the HTTP status, and bounded, validated error and request identifiers. The
+shared archive error reader retains its 64 KiB business parsing limit and the
+original request deadline and cancellation. Diagnostic extraction uses only a
+complete envelope of at most 16 KiB and never reads the body again. Formatting
+preserves the original ArchiveRequestError, capacity classification, retry
+budget and original-receipt reconciliation. Transport and cancellation failures
+retain their existing classification. Logging never adds a request or replaces
+the frozen synchronization identity.
 
 The [design](../../../../docs/design/session-reconnect-diagnostics.md) owns the
 field restrictions and original-Session recovery conditions. This change
@@ -49,5 +52,9 @@ provenance at the cost of requiring further internal evidence for some failures.
 Operators can distinguish the first failed Controller operation from later
 history-sync failures without changing execution or retry behavior. The design
 requires a concrete reproduction before modifying the underlying recovery rule.
+The original standalone diagnostic reader had a 16 KiB total read limit.
+Shared archive parsing now owns response consumption and may need up to 64 KiB
+for business classification; keeping a separate 16 KiB extraction budget avoids
+changing capacity decisions merely to collect diagnostics.
 Production recovery still depends on locating the actual failure, delivering any
 necessary business fix and verifying the original Session after deployment.

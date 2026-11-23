@@ -67,16 +67,18 @@ it('rejects a new Bot execution announced on the live channel and clears its sav
   expect(f.client.snapshot().status).toBe('unavailable'); expect(f.client.snapshot().draft.text).toBe(''); expect(f.onInvalidate).toHaveBeenCalledOnce();
 });
 
-it('drops obsolete generation receipts only after authenticating the current Bot fence', async () => {
+it('isolates older generation receipts without deleting their unknown operation identity', async () => {
   const f = fixture(); await ready(f); f.client.setDraft('old generation');
   vi.mocked(f.api.command).mockRejectedValue(new Error('unknown delivery'));
   await expect(f.client.send('old generation')).rejects.toThrow();
   const oldKeys = Object.keys(sessionStorage).filter(key => key.startsWith('daynight:session-operations:'));
   expect(oldKeys).toHaveLength(1);
+  const savedReceipts = oldKeys.map(key => sessionStorage.getItem(key));
   f.receive({ ...f.s, executionGeneration: String(BigInt(f.s.executionGeneration) + 1n) });
   await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true));
   expect(f.client.snapshot().draft.text).toBe(''); expect(f.client.snapshot().state.operations.size).toBe(0);
-  expect(oldKeys.map(key => sessionStorage.getItem(key))).toEqual([null]);
+  expect(oldKeys.map(key => sessionStorage.getItem(key))).toEqual(savedReceipts);
+  expect(f.api.command).toHaveBeenCalledOnce();
 });
 
 it.each(['command', 'operation', 'resource'] as const)('does not revoke the current Bot generation for a late rejected %s request', async kind => {

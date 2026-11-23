@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { parseSessionArchiveManifest, verifySessionArchiveMetadata } from '../../../daynight/src/session/archive';
 import type { SessionHistoryItem } from '../../src/api/terminal-sessions';
 import { imageBrowserData } from '../helpers/sessionImageBrowser';
@@ -12,7 +12,7 @@ const uuid = (index: number) => `00000089-1111-4111-8111-${String(index).padStar
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
 /** Execute the production App and fixed-record reader against controlled HTTP. */
-async function openRecords(page: Page, completed: boolean) {
+async function openRecords(page: Page, completed: boolean, busy?: { target: 'content' | 'timeline'; principal?: string; code?: string; always?: boolean; waitForLoad?: boolean }) {
   const { source, resources, entries, bodies } = imageBrowserData();
   const projectId = source.identity.projectId, taskId = source.identity.taskId, root = `/api/v1/projects/${projectId}/tasks/${taskId}`;
   const time = '2026-11-06T00:00:00Z', personalId = uuid(1);
@@ -22,7 +22,7 @@ async function openRecords(page: Page, completed: boolean) {
   const detail = detailFixture(projectId, taskId, { title: 'Saved image records', status: completed ? 'done' : 'todo', ready: !completed, completedAt: completed ? time : null, properties: completed ? { worker } : {} });
   const graph = graphFixture([detail]);
   const records = [
-    { sessionId: source.sessionId, claimId: source.claimId, name: 'Completed saved record', time },
+    { sessionId: source.sessionId, claimId: source.claimId, name: 'Completed saved record 中文 😀', time },
     { sessionId: uuid(2), claimId: uuid(3), name: 'Attachment saved record', time: '2026-11-07T00:00:00Z' },
   ].map((record, index) => {
     const savedEntries = [...entries, { entryId: uuid(100 + index), entrySeq: '7', revision: '1', kind: 'assistant_message' as const, content: [{ type: 'text' as const, text: record.name }] }];
@@ -37,9 +37,23 @@ async function openRecords(page: Page, completed: boolean) {
     return { ...record, item, manifest, status, timeline };
   });
   await Promise.all(records.map(record => verifySessionArchiveMetadata(parseSessionArchiveManifest(record.manifest), new TextEncoder().encode(record.timeline))));
-  const observations = { currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], pageErrors: [] as string[], unexpected: [] as string[] };
+  const observations = { contentReads: 0, timelineReads: 0, currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], completedResourceReads: [] as string[], cancelledResourceReads: [] as string[], failedResourceReads: [] as { key: string; error: string | null }[], pageErrors: [] as string[], unexpected: [] as string[] };
+  const resourceRequests = new Map<Request, string>();
+  page.on('requestfinished', request => {
+    const key = resourceRequests.get(request);
+    if (key === undefined) return;
+    observations.completedResourceReads.push(key); resourceRequests.delete(request);
+  });
+  page.on('requestfailed', request => {
+    const key = resourceRequests.get(request);
+    if (key === undefined) return;
+    const error = request.failure()?.errorText ?? null;
+    if (error === 'net::ERR_ABORTED') observations.cancelledResourceReads.push(key);
+    else observations.failedResourceReads.push({ key, error });
+    resourceRequests.delete(request);
+  });
   page.on('pageerror', error => observations.pageErrors.push(error.message));
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(() => { localStorage.setItem('daynight.web.locale', 'en'); Math.random = () => 0.5; });
   await page.routeWebSocket('**/channel*', socket => { observations.channels++; socket.close(); });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -61,24 +75,31 @@ async function openRecords(page: Page, completed: boolean) {
     for (const record of records) {
       const base = `${root}/sessions/${record.sessionId}`;
       if (path === `${base}/archive`) return send({ archive: record.status });
-      if (path === `${base}/archive/content`) return send(record.manifest);
-      if (path === `${base}/archive/files/${record.manifest.timeline.fileId}`) return route.fulfill({ status: 200, body: record.timeline, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      const isContent = path === `${base}/archive/content`, isTimeline = path === `${base}/archive/files/${record.manifest.timeline.fileId}`;
+      if (isContent || isTimeline) {
+        const count = isContent ? ++observations.contentReads : ++observations.timelineReads;
+        if (busy && busy.target === (isContent ? 'content' : 'timeline') && (count === 1 || busy.always)) {
+          return route.fulfill({ status: 429, json: { error: { code: busy.code ?? 'resource_busy', message: 'busy', requestId: source.sessionId } }, headers: { 'Retry-After': '2', ...(busy.principal === undefined ? {} : { 'Daynight-User-ID': busy.principal }) } });
+        }
+      }
+      if (isContent) return send(record.manifest);
+      if (isTimeline) return route.fulfill({ status: 200, body: record.timeline, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
       const resourceId = path.startsWith(`${base}/resources/`) && path.endsWith('/content') ? path.split('/').at(-2) : null;
       if (resourceId && bodies.has(resourceId)) {
-        observations.resourceReads.push(`${record.sessionId}/${resourceId}`);
+        const key = `${record.sessionId}/${resourceId}`;
+        observations.resourceReads.push(key); resourceRequests.set(request, key);
         const resource = resources.find(item => item.resourceId === resourceId)!, original = bodies.get(resourceId)!, offset = Number(url.searchParams.get('offset'));
         const bytes = original.subarray(offset, offset + Number(url.searchParams.get('limit')));
         return send({ resourceId, byteLength: resource.byteLength, sha256: resource.sha256, offset: String(offset), data: bytes.toString('base64'), eof: offset + bytes.length === original.length });
       }
     }
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
-    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
     observations.unexpected.push(`${request.method()} ${path}`);
     return send({ error: { code: 'not_found', message: 'Unexpected record fixture request', requestId: source.sessionId } }, 404);
   });
   await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=session`);
   const selected = records[completed ? 0 : 1]!;
-  await expect(page.getByText(selected.name, { exact: true })).toBeVisible();
+  if (busy?.waitForLoad !== false) await expect(page.getByText(selected.name, { exact: true })).toBeVisible();
   return { records, resources, bodies, observations };
 }
 
@@ -86,6 +107,17 @@ async function assertDecoded(image: Locator) {
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate(node => ({ width: (node as HTMLImageElement).naturalWidth, height: (node as HTMLImageElement).naturalHeight, loaded: (node as HTMLImageElement).complete }))).toEqual({ width: 3, height: 2, loaded: true });
 }
+
+test('reads an archived timeline after reload without a Node Buffer global', async ({ page }) => {
+  const fixture = await openRecords(page, true);
+  expect(await page.evaluate(() => typeof globalThis.Buffer)).toBe('undefined');
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toBeVisible();
+  const before = fixture.observations.timelineReads;
+  await page.reload();
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toBeVisible();
+  expect(fixture.observations.timelineReads).toBeGreaterThan(before);
+  expect(fixture.observations.pageErrors).toEqual([]);
+});
 async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof openRecords>>, fullscreen: boolean) {
   const host = page.locator('.task-agent-session:visible');
   await expect(host.locator('textarea')).toHaveCount(0);
@@ -96,6 +128,8 @@ async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof o
     const trigger = host.getByRole('button', { name: `View image: ${resource.name}`, exact: true });
     await trigger.scrollIntoViewIfNeeded();
     await assertDecoded(trigger.getByRole('img', { name: resource.name, exact: true }));
+    const readCount = () => fixture.observations.resourceReads.filter(key => key.endsWith(`/${resource.resourceId}`)).length;
+    const readsBeforePreview = readCount();
     await trigger.click();
     const preview = host.getByRole('dialog', { name: resource.name, exact: true });
     await assertDecoded(preview.getByRole('img', { name: resource.name, exact: true }));
@@ -113,6 +147,7 @@ async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof o
     expect(hash(bytes)).toBe(resource.sha256); expect(bytes).toEqual(fixture.bodies.get(resource.resourceId));
     await page.keyboard.press('Escape');
     await expect(preview).not.toBeVisible(); await expect(trigger).toBeFocused();
+    expect(readCount()).toBe(readsBeforePreview);
     if (fullscreen) await expect(host).toHaveClass(/session-fullscreen/);
   }
   if (fullscreen) { await page.keyboard.press('Escape'); await expect(host).not.toHaveClass(/session-fullscreen/); }
@@ -131,7 +166,11 @@ for (const width of [390, 1360]) test(`${width}px completed and attachment recor
   await expect(page.getByText(fixture.records[1]!.name, { exact: true })).toBeVisible();
   await inspectOriginals(page, fixture, false);
   await page.screenshot({ path: info.outputPath('attachment-record.png') });
-  for (const record of fixture.records) for (const resource of fixture.resources) expect(fixture.observations.resourceReads.filter(key => key === `${record.sessionId}/${resource.resourceId}`)).toHaveLength(1);
+  // Initial layout can move an in-flight thumbnail outside its read margin.
+  // Cancellation is not a completed download; each original still completes once.
+  await expect.poll(() => fixture.observations.completedResourceReads.length + fixture.observations.cancelledResourceReads.length + fixture.observations.failedResourceReads.length).toBe(fixture.observations.resourceReads.length);
+  for (const record of fixture.records) for (const resource of fixture.resources) expect(fixture.observations.completedResourceReads.filter(key => key === `${record.sessionId}/${resource.resourceId}`)).toHaveLength(1);
+  expect(fixture.observations.failedResourceReads).toEqual([]);
   expect(fixture.observations.currentReads).toBe(1); expect(fixture.observations.channels).toBe(0);
   expect(fixture.observations.writes).toEqual([]); expect(fixture.observations.pageErrors).toEqual([]); expect(fixture.observations.unexpected).toEqual([]);
   await info.attach('record-image-evidence', { body: JSON.stringify({ boundary: 'Production App and fixed-record reader with controlled HTTP; real Chrome pixel decoding, Blob preview and original downloads.', width, formats: fixture.resources.map(resource => ({ mediaType: resource.mediaType, sha256: resource.sha256, byteLength: resource.byteLength })), observations: fixture.observations }), contentType: 'application/json' });
@@ -144,4 +183,49 @@ test('unclaimed saved history reads only fixed records with no current lookup', 
   const trigger = page.getByRole('button', { name: `View image: ${resource.name}`, exact: true });
   await trigger.scrollIntoViewIfNeeded(); await assertDecoded(trigger.getByRole('img'));
   expect(fixture.observations.currentReads).toBe(0); expect(fixture.observations.channels).toBe(0); expect(fixture.observations.writes).toEqual([]);
+});
+
+for (const target of ['content', 'timeline'] as const) test(`archive ${target} retries a headerless busy response in Chromium`, async ({ page }) => {
+  const fixture = await openRecords(page, true, { target });
+  expect(fixture.observations.contentReads).toBe(target === 'content' ? 2 : 1);
+  expect(fixture.observations.timelineReads).toBe(target === 'timeline' ? 2 : 1);
+  expect(fixture.observations.writes).toEqual([]);
+  expect(fixture.observations.pageErrors).toEqual([]);
+});
+
+for (const [label, response] of [
+  ['different principal', { principal: uuid(999) }],
+  ['invalid principal', { principal: 'invalid' }],
+  ['other error code without principal', { code: 'rate_limited' }],
+] as const) test(`${label} is rejected without archive retry`, async ({ page }) => {
+  const fixture = await openRecords(page, true, { target: 'content', ...response, always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  await page.waitForTimeout(2500);
+  expect(fixture.observations.contentReads).toBe(1);
+  expect(fixture.observations.timelineReads).toBe(0);
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toHaveCount(0);
+});
+
+test('closing the page during an archive wait sends no retry', async ({ page }) => {
+  const fixture = await openRecords(page, true, { target: 'content', always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  await page.close();
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  expect(fixture.observations.contentReads).toBe(1);
+});
+
+
+test('an account change during archive backoff sends no retry', async ({ page, context }) => {
+  const fixture = await openRecords(page, true, { target: 'content', always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  const other = await context.newPage();
+  try {
+    await other.route('**/api/**', route => route.abort());
+    await other.goto('/');
+    await other.evaluate(userId => { localStorage.setItem('daynight.activeUser', JSON.stringify(userId)); const channel = new BroadcastChannel('daynight-identity'); channel.postMessage('identity-changed'); channel.close(); }, uuid(999));
+    await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
+    await page.waitForTimeout(2500);
+    expect(fixture.observations.contentReads).toBe(1);
+    expect(fixture.observations.timelineReads).toBe(0);
+  } finally { await other.close(); }
 });

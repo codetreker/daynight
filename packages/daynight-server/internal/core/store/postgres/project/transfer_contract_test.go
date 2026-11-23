@@ -137,4 +137,56 @@ func TestTransferPreviewRoleCombinesDestinationAndDirectGrant(t *testing.T) {
 	if got := read(); got != nil {
 		t.Fatalf("no access: %v", got)
 	}
+
+	t.Run("committed move preserves membership rows", func(t *testing.T) {
+		ctx := t.Context()
+		testutil.MustExec(t, s.Pool, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, other.UserID)
+		invite := testutil.ProjectInvitation(project, actor, "transfer-test")
+		testutil.MustExec(t, s.Pool, `INSERT INTO project_invitations(id,project_id,created_by,token_hash,created_at,expires_at)
+			VALUES($1,$2,$3,$4,$5,$6)`, invite.ID, invite.ProjectID, invite.CreatedBy, invite.TokenHash, invite.CreatedAt, invite.ExpiresAt)
+		readMembership := func() (grants, invites string) {
+			t.Helper()
+			err := s.Pool.QueryRow(ctx, `SELECT
+				(SELECT jsonb_agg(to_jsonb(g) ORDER BY user_id)::text FROM project_grants g WHERE project_id=$1),
+				(SELECT jsonb_agg(to_jsonb(i) ORDER BY id)::text FROM project_invitations i WHERE project_id=$1)`,
+				project.ID).Scan(&grants, &invites)
+			if err != nil {
+				t.Fatalf("read nonempty grants and invitations: %v", err)
+			}
+			return grants, invites
+		}
+		grantsBefore, invitesBefore := readMembership()
+		completion, err := s.WriteProject(ctx, project.ID, func(tx ProjectWriteScope) error {
+			dao := tx.ProjectDAO()
+			owner, err := dao.LockTransferOwnership(ctx)
+			if err != nil {
+				return err
+			}
+			if _, _, err := dao.LockTransferTeams(ctx, owner.TeamID, team.ID); err != nil {
+				return err
+			}
+			_, err = dao.MoveOwnership(ctx, team.ID)
+			return err
+		})
+		if err != nil || completion.Outcome != TransactionCommitted {
+			t.Fatalf("move did not commit: %#v %v", completion, err)
+		}
+		var owner string
+		var version int64
+		err = s.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`,
+			project.ID).Scan(&owner, &version)
+		if err != nil || owner != team.ID || version != project.Ownership.Version+1 {
+			t.Fatalf("committed ownership: Team %s version %d, error %v", owner, version, err)
+		}
+		if grants, invites := readMembership(); grants != grantsBefore || invites != invitesBefore {
+			t.Fatalf("move changed grants or invitations: grants %s → %s, invitations %s → %s", grantsBefore, grants, invitesBefore, invites)
+		}
+		err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().ProjectAccess(ctx, actor, project.ID)
+			return err
+		})
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("previous owner retained access after the move: %v", err)
+		}
+	})
 }

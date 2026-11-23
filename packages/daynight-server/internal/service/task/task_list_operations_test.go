@@ -73,10 +73,10 @@ func newListOperationFixture(t *testing.T) *listOperationFixture {
 		Status: listOperationPointer(model.TaskInProgress), Ready: listOperationPointer(false), AllowAgents: listOperationPointer(true),
 		CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true, WorkerID: listOperationPointer(strings.ToUpper(listOperationWorker))}
 	f.selection = taskcore.ListSelection{
-		Scope: query.ListScope{Type: model.TaskTypeTask, Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
+		Scope: query.ListScope{TagFilterIdentity: taskcore.TagFilterIdentity(store.TagFilter{TagIDs: []string{}, TagMatch: "all"}), Type: model.TaskTypeTask, Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
 			AllowAgents: listOperationPointer(true), CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true,
 			WorkerID: listOperationPointer(listOperationWorker), WorkerUserID: listOperationPointer(listOperationActor), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor}},
-		Query: store.TaskQuery{Page: store.Page{Limit: 2}, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor},
+		Query: store.TaskQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Page: store.Page{Limit: 2}, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor},
 			Status: listOperationPointer(model.TaskInProgress), Ready: listOperationPointer(false), AllowAgents: listOperationPointer(true), CompatiblePlatform: listOperationPointer(model.PlatformLinux),
 			PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true, Worker: &store.WorkerQuery{UserID: listOperationActor, WorkerID: listOperationWorker}},
 	}
@@ -170,6 +170,10 @@ func (s *listOperationStore) WriteProject(context.Context, string, func(store.Pr
 
 type listOperationScope struct{ fixture *listOperationFixture }
 
+func (s *listOperationScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *listOperationScope) ProjectDAO() store.ProjectReader {
 	s.fixture.step("ProjectDAO")
 	s.fixture.requireActive(s.fixture.ctx)
@@ -182,6 +186,10 @@ func (s *listOperationScope) TaskDAO() store.TaskReader {
 }
 func (s *listOperationScope) CredentialDAO() store.CredentialReader {
 	_ = s.fixture.unexpected("CredentialDAO")
+	return nil
+}
+func (s *listOperationScope) UserCandidateDAO() store.UserCandidateReader {
+	_ = s.fixture.unexpected("UserCandidateDAO")
 	return nil
 }
 func (s *listOperationScope) TeamDAO() store.TeamReader {
@@ -211,6 +219,10 @@ func (s *listOperationScope) ObservedAt(context.Context) (time.Time, error) {
 type listOperationCapability struct {
 	fixture *listOperationFixture
 	name    string
+}
+
+func (mock *listOperationCapability) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	return nil, mock.fail("FindVisibleRepositoryForCreation")
 }
 
 func (c *listOperationCapability) fail(method string) error {
@@ -285,22 +297,6 @@ func (c *listOperationCapability) TaskHeader(context.Context, string, string) (m
 	return model.TaskHeader{}, c.fail("TaskHeader")
 }
 
-func (c *listOperationCapability) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	return model.TaskStep{}, c.fail("TaskStep")
-}
-
-func (c *listOperationCapability) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	return nil, c.fail("TaskSteps")
-}
-
-func (c *listOperationCapability) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	return nil, c.fail("TaskStepPage")
-}
-
-func (c *listOperationCapability) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	return store.TaskStepProjection{}, c.fail("TaskStepSummary")
-}
-
 func (c *listOperationCapability) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	return model.ThreadMessage{}, c.fail("ThreadMessage")
 }
@@ -325,7 +321,7 @@ func (c *listOperationCapability) TaskWorkGroups(context.Context, string, store.
 	return store.TaskWorkGroups{}, c.fail("TaskWorkGroups")
 }
 
-func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	return store.TaskWorkTargets{}, c.fail("TaskWorkTargets")
 }
 
@@ -335,6 +331,14 @@ func (c *listOperationCapability) TaskCacheEpoch(context.Context, string) (strin
 
 func (c *listOperationCapability) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return nil, c.fail("TaskSyncTasks")
+}
+
+func (c *listOperationCapability) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	return nil, c.fail("TaskSyncGoalDependsOn")
+}
+
+func (c *listOperationCapability) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+	return nil, c.fail("TaskSyncActiveTasks")
 }
 
 func (c *listOperationCapability) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
@@ -383,7 +387,7 @@ func TestTaskListOperationsCoordinateSnapshotAndProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			last := listOperationRows()[1]
-			want := map[string]any{"version": float64(3), "type": "task", "kind": "tasks", "projectId": listOperationProject,
+			want := map[string]any{"tagFilter": f.selection.Scope.TagFilterIdentity, "version": float64(3), "type": "task", "kind": "tasks", "projectId": listOperationProject,
 				"status": "in_progress", "ready": false, "allowAgents": true, "compatiblePlatform": "linux", "platformSpecific": false, "automaticCandidate": true,
 				"workerId": listOperationWorker, "workerUserId": listOperationActor, "assignedTo": "user:" + listOperationActor,
 				"createdAt": last.CreatedAt.Format(time.RFC3339Nano), "id": last.ID}
@@ -501,3 +505,10 @@ func (c *listOperationCapability) GoalProgresses(context.Context, string, []stri
 func (c *listOperationCapability) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
 	return nil, c.fail("TaskBodies")
 }
+
+func (s *listOperationScope) TagDAO() store.TagReader {
+	_ = s.fixture.unexpected("TagDAO")
+	return nil
+}
+
+func (s *listOperationScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

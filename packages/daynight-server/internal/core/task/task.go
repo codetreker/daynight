@@ -16,8 +16,12 @@ import (
 )
 
 type CreateTask struct {
+	// DefaultAssignedTo records the entry point default for scope classification.
+	DefaultAssignedTo       *string
+	TagIDs                  *[]string
 	Type                    model.TaskType
 	ParentID                *string
+	ParentTaskID            *string
 	AssignedToPresent       bool
 	RequiredPlatformPresent bool
 	Status                  *model.TaskStatus
@@ -31,6 +35,7 @@ type CreateTask struct {
 }
 
 type UpdateTask struct {
+	TagIDs            *[]string
 	ParentID          **string
 	AssignedTo        **string
 	RequiredPlatform  **model.TaskPlatform
@@ -118,13 +123,20 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 	if typ == model.TaskTypeGoal && (!status.Valid() || status == model.TaskProposed) {
 		return store.TaskWrite{}, invalidInput("Goal status must be todo, in_progress, done or cancelled.")
 	}
-	if typ == model.TaskTypeGoal && (input.ParentID != nil || len(input.DependsOn) != 0 || len(input.ExternalDependsOn) != 0 || (input.RequiredPlatform != nil || input.RequiredPlatformPresent)) {
+	if input.ParentID != nil && input.ParentTaskID != nil {
+		return store.TaskWrite{}, invalidInput("Specify only one parent.")
+	}
+	if typ == model.TaskTypeGoal && (input.ParentID != nil || input.ParentTaskID != nil || len(input.DependsOn) != 0 || len(input.ExternalDependsOn) != 0 || (input.RequiredPlatform != nil || input.RequiredPlatformPresent)) {
 		return store.TaskWrite{}, invalidInput("Goal does not support a parent, dependencies or execution platform.")
 	}
 	if err := CheckPropertiesForType(typ, input.Properties); err != nil {
 		return store.TaskWrite{}, err
 	}
-	parentID, err := canonicalAssignedTo(input.ParentID)
+	parent := input.ParentID
+	if input.ParentTaskID != nil {
+		parent = input.ParentTaskID
+	}
+	parentID, err := canonicalAssignedTo(parent)
 	if err != nil {
 		return store.TaskWrite{}, err
 	}
@@ -139,7 +151,7 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 	if err != nil {
 		return store.TaskWrite{}, err
 	}
-	values := store.TaskWrite{Type: typ, ParentID: parentID, AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
+	values := store.TaskWrite{Type: typ, ParentID: parentID, OrdinaryParent: input.ParentTaskID != nil, AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id)
 	if err != nil {
 		return store.TaskWrite{}, err
@@ -301,15 +313,46 @@ func canonicalExternalDependencies(ids []string, self string, dependencies []str
 }
 
 func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) error {
-	if err := ValidateParent(ctx, dao, values.ParentID); err != nil {
+	if err := validateCreationParent(ctx, dao, values.ParentID, values.OrdinaryParent); err != nil {
 		return err
 	}
 	return validateCandidate(ctx, dao, id, values, nil)
 }
 
+func validateCreationParent(ctx context.Context, dao store.TaskWriteDAO, parentID *string, ordinary bool) error {
+	if !ordinary {
+		return ValidateParent(ctx, dao, parentID)
+	}
+	if parentID == nil {
+		return invalidInput("Parent must identify a visible task in this project.")
+	}
+	parent, err := dao.ParentTask(ctx, *parentID)
+	if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrTaskDeleted) {
+		return invalidInput("Parent must identify a visible task in this project.")
+	}
+	if err != nil {
+		return err
+	}
+	if parent.Type != model.TaskTypeTask {
+		return invalidInput("Parent must identify a visible task in this project.")
+	}
+	if parent.Status.IsTerminal() {
+		return &model.Fault{Code: "task_parent_terminal", Message: "The parent task has ended.", TaskIDs: []string{parent.ID}}
+	}
+	return nil
+}
+
 // ValidateParent is called under the Project write lock, so it observes the
 // same serialization order as Goal deletion, status changes, and claims.
 func ValidateParent(ctx context.Context, dao store.TaskWriteDAO, parentID *string) error {
+	return validateGoalParent(ctx, dao, parentID, false)
+}
+
+func validateUpdateParent(ctx context.Context, dao store.TaskWriteDAO, parentID *string) error {
+	return validateGoalParent(ctx, dao, parentID, true)
+}
+
+func validateGoalParent(ctx context.Context, dao store.TaskWriteDAO, parentID *string, updating bool) error {
 	if parentID == nil {
 		return nil
 	}
@@ -319,6 +362,9 @@ func ValidateParent(ctx context.Context, dao store.TaskWriteDAO, parentID *strin
 	}
 	if err != nil {
 		return err
+	}
+	if updating && parent.Type == model.TaskTypeTask {
+		return &model.Fault{Code: "task_parent_immutable", Message: "An ordinary task parent can only be set at creation."}
 	}
 	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
 		return invalidInput("Parent must identify a visible Goal in this project.")

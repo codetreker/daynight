@@ -18,8 +18,6 @@ const (
 	MaxImagesPerMessage           = 8
 	MaxSessionResourceBytes int64 = 1024 * 1024 * 1024
 	MaxSessionResources           = 1000
-	ArchiveResourceReserve  int64 = 132 * 1024 * 1024
-	MaxUploadIdentities           = 10000
 )
 
 type ImageError struct {
@@ -234,7 +232,7 @@ func ContainsImages(data []byte) bool {
 	return false
 }
 func validateImageSend(data []byte) error {
-	fields, err := object(data, "content", "expectedTurnId", "target", "draftId", "draftRevision", "expectedImageCapabilityRevision")
+	fields, err := messageObject(data, "content", "expectedTurnId", "target", "draftId", "draftRevision", "expectedImageCapabilityRevision")
 	if err != nil || !nullableString(fields["expectedTurnId"], false, 256) || !validateObject(fields["target"], imageTargetSchema) || !identifier(fields["draftId"]) || !sequence(fields["draftRevision"]) || !sequence(fields["expectedImageCapabilityRevision"]) {
 		return errInvalid
 	}
@@ -311,6 +309,9 @@ func validateProviderImages(raw json.RawMessage) bool {
 	m["providerRevision"] = json.RawMessage(`"1"`)
 	b, _ := json.Marshal(m)
 	return validateImageCapabilities(b)
+}
+func DecodeProviderImageCapabilities(data []byte) (ProviderImageCapabilities, error) {
+	return decode[ProviderImageCapabilities](data, validateProviderImages)
 }
 func validateImageBudget(raw json.RawMessage) bool {
 	if !validateObject(raw, schema{"revision": sequence, "maxBytes": decimalRange(MaxSessionResourceBytes, true), "committedBytes": decimalRange(MaxSessionResourceBytes, true), "reservedBytes": decimalRange(MaxSessionResourceBytes, true), "maxResources": integerRange(0, 1000), "committedResources": integerRange(0, 1000), "reservedResources": integerRange(0, 1000)}) {
@@ -448,7 +449,7 @@ func DecodeImageMedia(data []byte) (ImageMediaMessage, error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &v)
 	_ = json.Unmarshal(data, &raw)
-	fields := extend(fenceSchema, schema{"type": enum("image_request", "image_response", "image_capture", "image_capture_result"), "protocol": enum(Protocol), "connectionEpoch": sequence, "requestId": identifier, "action": enum("prepare", "write", "complete", "status", "release", "read_prepared", "read_capture", "read", "register", "query", "commit", "failed", "retry_capture")})
+	fields := extend(fenceSchema, schema{"type": enum("image_request", "image_response", "image_capture", "image_capture_result"), "protocol": enum(Protocol), "connectionEpoch": sequence, "requestId": identifier, "action": enum("prepare", "write", "complete", "status", "release", "read_prepared", "read_capture", "read", "register", "query", "commit", "failed", "retry_capture", "submit")})
 	if v.Type == "image_request" || v.Type == "image_capture" {
 		fields["body"] = func(data json.RawMessage) bool { return !null(data) }
 	} else {
@@ -458,6 +459,9 @@ func DecodeImageMedia(data []byte) (ImageMediaMessage, error) {
 	out, e := decode[ImageMediaMessage](data, nested(fields))
 	if e != nil {
 		return out, e
+	}
+	if v.Action == "submit" && v.Type != "image_capture" && v.Type != "image_capture_result" {
+		return out, errInvalid
 	}
 	if v.Type == "image_request" && !validImageMediaBody(v.Action, v.Body) || v.Type == "image_capture" && !validCaptureBody(v.Action, v.Body) {
 		return out, errInvalid

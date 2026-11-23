@@ -61,15 +61,18 @@ export type RepositoryGitResult = {
 };
 
 export class RepositoryGitError extends Error {
+  readonly #failedStdout: string | undefined;
+  get failedStdout(): string | undefined { return this.#failedStdout; }
   constructor(
     message: string,
     readonly exitCode: number | null,
     readonly signal: NodeJS.Signals | null,
     readonly stderr: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { readonly failedStdout?: string },
   ) {
     super(`${message}${exitCode === null ? "" : ` (exit ${exitCode})`}${signal === null ? "" : ` (${signal})`}${stderr === "" ? "" : `: ${stderr}`}`, options);
     this.name = "RepositoryGitError";
+    this.#failedStdout = options?.failedStdout;
   }
 }
 

@@ -1,15 +1,16 @@
-import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKUserMessage, SessionKey, SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
 import { fork, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inspectProcessProof, type ProcessProof } from "../process-proof.js";
+import { freezeNativeLifecycleFence } from "../native-lifecycle.js";
 import { ClaudeLiveChannel } from "./claude-live-channel.js";
 import type { ClaudeLiveExport, ClaudeLiveInput } from "./claude-live-media.js";
 import type { NativeImageFile, NativeInput, ProviderOptions } from "./types.js";
 
 type Wire = Record<string, unknown>;
 const object = (value: unknown): Wire => value && typeof value === "object" && !Array.isArray(value) ? value as Wire : {};
-export type ClaudeRuntimeProfile = { sdkVersion: string; cliVersion: string; executable: string; backend: "anthropic" | "bedrock" | "vertex" | "unknown" };
+export type ClaudeRuntimeProfile = { sdkVersion: string; cliVersion: string; executable: string; backend: "anthropic" | "bedrock" | "vertex" | "unknown"; backendPending?: true };
 type Media = { readonly mediaType: string; readonly byteLength: string; readonly sha256: string; retain(): NativeImageFile };
 const mediaValues = new WeakMap<object, Media>(), recordMedia = new WeakMap<object, (() => void)[]>();
 export const claudeLiveImage = (value: unknown): Media | null => value && typeof value === "object" ? mediaValues.get(value) ?? null : null;
@@ -27,9 +28,12 @@ type Transfer = { spool: ReturnType<NonNullable<ProviderOptions["imageRuntime"]>
 
 /** The Controller never imports the SDK runtime or receives a native Base64 frame. */
 export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>; options: Options }, owner: ProviderOptions): ClaudeLiveQuery => {
+  const nativeLifecycleFence = owner.nativeLifecycleFence === undefined ? undefined : freezeNativeLifecycleFence(owner.nativeLifecycleFence);
+  owner.assertNativeDispatch?.();
   const child = fork(fileURLToPath(new URL("./claude-live-worker.js", import.meta.url)), [], { cwd: owner.cwd, env: owner.env ?? process.env, execArgv: ["--max-old-space-size=512"], stdio: ["ignore", "ignore", "pipe", "ipc"], detached: false, windowsHide: true, serialization: "json" });
   let profile: ClaudeRuntimeProfile | null = null, closing: Promise<void> | null = null, nativeStopped: Promise<void> | null = null, failure: Error | null = null, stopping = false, ended = false, wake: (() => void) | null = null;
   const nativeProofs: ProcessProof[] = [], transfers = new Map<string, Transfer>(), events: { value: unknown; resolve(): void }[] = [];
+  let mirror: { id: string; bytes: number; text: string } | undefined;
   const exit = new Promise<void>(resolve => child.once("exit", () => resolve()));
   const fail = (error: Error) => { failure ??= error; ended = true; wake?.(); };
   const retire = (id: string, transfer: Transfer) => { if (!transfer.owner && transfer.readers === 0 && !transfer.removed) { transfer.spool.remove(); transfer.removed = true; transfers.delete(id); } };
@@ -74,6 +78,24 @@ export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>
   };
   const channel = new ClaudeLiveChannel(child, async (method, raw, signal) => {
     const value = object(raw), options = request.options;
+    if (method === "mirror") {
+      if (!options.sessionStore || typeof value.id !== "string") throw new Error("Claude recovery mirror is unavailable.");
+      if (value.action === "begin") {
+        if (mirror) throw new Error("Claude recovery mirror already has an unfinished batch.");
+        mirror = { id: value.id, bytes: 0, text: "" }; return null;
+      }
+      if (!mirror || mirror.id !== value.id) throw new Error("Claude recovery mirror batch identity differs.");
+      if (value.action === "chunk") {
+        if (value.offset !== mirror.bytes || typeof value.text !== "string" || Buffer.byteLength(value.text) > 65_536
+          || mirror.bytes + Buffer.byteLength(value.text) > 32 * 1024 * 1024) throw new Error("Claude recovery mirror exceeds its bounded transfer.");
+        mirror.bytes += Buffer.byteLength(value.text); mirror.text += value.text; return null;
+      }
+      if (value.action !== "commit") throw new Error("Claude recovery mirror request is invalid.");
+      const batch = mirror; mirror = undefined;
+      const decoded = object(JSON.parse(batch.text));
+      if (!Array.isArray(decoded.entries)) throw new Error("Claude recovery mirror batch is invalid.");
+      await options.sessionStore.append(decoded.key as SessionKey, decoded.entries as SessionStoreEntry[]); return null;
+    }
     if (method === "profile") { profile = value as unknown as ClaudeRuntimeProfile; return null; }
     if (method === "nativeProcess") { const proof = value as unknown as ProcessProof; if (!Number.isSafeInteger(proof.pid) || proof.parentPid !== child.pid) throw new Error("Claude native process ownership differs."); nativeProofs.push(proof); owner.onNativeProcessProof?.(proof); return null; }
     if (method === "media") return media(value);
@@ -97,11 +119,11 @@ export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>
   child.once("exit", () => { const error = new Error("Claude SDK helper exited; pending native results are unknown."); if (!stopping) fail(error); channel.close(error); });
   child.stderr?.on("data", chunk => owner.onDiagnostic?.(String(chunk).slice(0, 4096)));
   const spawned = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("spawn", () => { try { owner.onSpawn(child); resolve(); } catch (error) { reject(error); } }); });
-  const { hooks: _hooks, canUseTool: _tool, onElicitation: _elicitation, spawnClaudeCodeProcess: _spawn, stderr: _stderr, ...clean } = request.options; void _hooks; void _tool; void _elicitation; void _spawn; void _stderr;
-  const opened = spawned.then(() => channel.call("open", clean, undefined, 20_000)); void opened.catch(fail);
+  const { hooks: _hooks, canUseTool: _tool, onElicitation: _elicitation, spawnClaudeCodeProcess: _spawn, stderr: _stderr, sessionStore: _store, ...clean } = request.options; void _hooks; void _tool; void _elicitation; void _spawn; void _stderr;
+  const opened = spawned.then(() => { owner.assertNativeDispatch?.(); return channel.call("open", { ...clean, ...(nativeLifecycleFence ? { nativeLifecycleFence } : {}), ...(_store ? { daynightSessionMirror: true } : {}) }, undefined, 20_000); }); void opened.catch(fail);
   // The provider owns the 30 s initialization deadline. Keep the helper's
   // transport watchdog distinct so native startup retains one decision owner.
-  const call = async (method: string, args: unknown[] = []) => { await opened; return channel.call("call", { method, args }, undefined, method === "initializationResult" ? 45_000 : 30_000); };
+  const call = async (method: string, args: unknown[] = []) => { await opened; owner.assertNativeDispatch?.(); return channel.call("call", { method, args }, undefined, method === "initializationResult" ? 45_000 : 30_000); };
   const stopNative = (): Promise<void> => nativeStopped ??= (async () => {
     stopping = true; ended = true; wake?.();
     for (const event of events.splice(0)) { if (event.value && typeof event.value === "object") recordMedia.delete(event.value); event.resolve(); }
@@ -124,7 +146,7 @@ export const queryClaudeLive = (request: { prompt: AsyncIterable<SDKUserMessage>
   })().catch(error => { closing = null; throw error; });
   const facade = {
     get profile() { return profile; },
-    submit: async (value: ClaudeLiveInput) => { await opened; await channel.call("input", value); },
+    submit: async (value: ClaudeLiveInput) => { await opened; owner.assertNativeDispatch?.(); await channel.call("input", value); },
     close: () => { void stop().catch(fail); }, join: stop,
     async *[Symbol.asyncIterator]() {
       for (;;) {

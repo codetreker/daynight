@@ -56,7 +56,7 @@ func TestTaskHeaderReportsParentDeletion(t *testing.T) {
 	writer := task.NewWriter(f.tx, f.project)
 	goal := mustTask(t, writer, store.TaskWrite{Type: model.TaskTypeGoal, Title: "Goal"})
 	child := mustTask(t, writer, store.TaskWrite{Title: "Child", ParentID: &goal.ID})
-	if _, err := f.tx.Exec(ctx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, goal.ID); err != nil {
+	if _, err := f.tx.Exec(ctx, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := writer.Task(ctx, child.ID); !errors.Is(err, model.ErrTaskDeleted) {

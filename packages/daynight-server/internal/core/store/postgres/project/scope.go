@@ -20,6 +20,9 @@ func NewReader(tx pgx.Tx) store.ProjectReader { return &reader{tx: tx} }
 func NewWriter(tx pgx.Tx, projectID string) store.ProjectWriteDAO {
 	return &writer{tx: tx, projectID: projectID}
 }
+func NewDirectMemberDAO(tx pgx.Tx, projectID string) store.ProjectDirectMemberDAO {
+	return &writer{tx: tx, projectID: projectID}
+}
 func NewCreation(tx pgx.Tx, userID string) store.ProjectCreationDAO {
 	return &creator{tx: tx, userID: userID}
 }

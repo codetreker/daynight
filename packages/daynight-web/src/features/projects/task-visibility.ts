@@ -1,3 +1,4 @@
+import { timestampNanoseconds } from "../../time/timestamp.ts";
 import { taskEndedAt } from "../../api/task-status.ts";
 import type { GraphIndex } from "../task-graph/model";
 
@@ -6,10 +7,6 @@ export type RecentTaskWindow = {
   readonly start: bigint;
   readonly nextMidnight: bigint;
 };
-
-// Sub-millisecond facts must remain distinct at a local calendar boundary.
-export const timestampNanoseconds = (value: string): bigint => BigInt(Date.parse(`${value.slice(0, 19)}Z`)) * 1_000_000n +
-  BigInt((value[19] === "." ? value.slice(20, -1) : "").padEnd(9, "0"));
 
 export const recentTaskWindow = (now: bigint): RecentTaskWindow => {
   const date = new Date(Number(now / 1_000_000n));

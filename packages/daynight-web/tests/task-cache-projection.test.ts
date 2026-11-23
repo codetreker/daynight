@@ -6,7 +6,7 @@ import { GraphDataError, projectChain } from "../src/features/task-graph/model";
 const id = (value: number) => `00000000-0000-0000-0000-${value.toString(16).padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: id(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: id(n), version: 1n, properties: {}, tags: [], title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const projectTasks = (owner: Project, tasks: readonly TaskSummary[], observedAt: string) => {
   const states = new Map<string, TaskDependencyState>();
   for (const task of tasks) {
@@ -71,7 +71,7 @@ it("compares intrinsic facts including versions and preserves semantically equal
 });
 
 it("uses authoritative dependency states for hidden prerequisites and excludes Goals from the graph", () => {
-  const goal = task(1, { type: "goal", allowAgents: false });
+  const goal = task(1, { type: "goal", allowAgents: false, dependsOn: [id(10)] });
   const satisfied = task(2, { parentId: goal.id, dependsOn: [id(20)] });
   const blocked = task(3, { dependsOn: [id(21)], externalDependsOn: [id(21)] });
   const states = new Map<string, TaskDependencyState>([
@@ -84,6 +84,8 @@ it("uses authoritative dependency states for hidden prerequisites and excludes G
   expect(result.index.nodes.get(satisfied.id)).toMatchObject({ parentId: goal.id, ready: true, blockedBy: [] });
   expect(result.index.nodes.get(blocked.id)).toMatchObject({ ready: false, blockedBy: [id(21)] });
   expect(result.versions.get(goal.id)).toBe(1n);
+  expect(result.index.nodes.has(id(10))).toBe(false);
+  expect(sameSummary(goal, { ...goal, dependsOn: [] })).toBe(false);
   expect(projectChain(result.index, blocked.id).edges).toEqual([]);
   expect(() => projectSummaries(project, [satisfied], new Map(), time)).toThrow(GraphDataError);
   expect(() => projectSummaries(project, [satisfied], new Map([[satisfied.id, { taskVersion: 2n, blockedBy: [], ready: true }]]), time)).toThrow(GraphDataError);
@@ -100,6 +102,17 @@ it("compares complete property values while keeping properties out of graph node
   expect(projection.graph.tasks[0]).not.toHaveProperty("properties");
   expect(projection.index.nodes.get(left.id)).not.toHaveProperty("properties");
   expect(left.properties).toHaveProperty("future", { version: 42, first: 1, second: ["a", "b"] });
+});
+
+it("compares tag identities and names without adding them to graph nodes", () => {
+  const first = { id: id(10), name: "One" }, second = { id: id(11), name: "Two" };
+  const original = task(1, { tags: [first, second] });
+  expect(sameSummary(original, task(1, { tags: [second, first] }))).toBe(true);
+  expect(sameSummary(original, task(1, { tags: [{ ...first, name: "Renamed" }, second] }))).toBe(false);
+  expect(sameSummary(original, task(1, { tags: [first] }))).toBe(false);
+  const projection = projectTasks(project, [original], time);
+  expect(projection.graph.tasks[0]).not.toHaveProperty("tags");
+  expect(projection.index.nodes.get(original.id)).not.toHaveProperty("tags");
 });
 
 it("satisfies both edge kinds from cancelled predecessors without requiring the cancelled task's own inputs", () => {
@@ -122,4 +135,12 @@ it("counts proposed separately and keeps both dependency kinds blocked until con
   expect(projection.graph.tasks[1]).toMatchObject({ status: "proposed", ready: false, blockedBy: [id(1)] });
   for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ ready: false, blockedBy: [id(1)] });
   expect(projection.index.components.get(id(1))!.progress).toMatchObject({ total: 3, done: 0, ended: 0, status: "todo" });
+});
+
+it('distinguishes known ordinary Parent facts while accepting a legacy omitted field', () => {
+  const unknown = task(1), none = task(1, { parentTaskId: null }), parent = task(1, { parentTaskId: id(2) });
+  expect(sameSummary(unknown, none)).toBe(true);
+  expect(sameSummary(unknown, parent)).toBe(true);
+  expect(sameSummary(none, parent)).toBe(false);
+  expect(sameSummary(parent, task(1, { parentTaskId: id(3) }))).toBe(false);
 });

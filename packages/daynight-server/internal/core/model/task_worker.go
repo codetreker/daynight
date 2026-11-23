@@ -6,12 +6,11 @@ type WorkerState string
 
 const (
 	WorkerActive    WorkerState = "active"
-	WorkerReleased  WorkerState = "released"
 	WorkerCompleted WorkerState = "completed"
 )
 
 func (state WorkerState) Valid() bool {
-	return state == WorkerActive || state == WorkerReleased || state == WorkerCompleted
+	return state == WorkerActive || state == WorkerCompleted
 }
 
 type WorkerAgent string
@@ -35,6 +34,10 @@ const (
 
 func (mode WorkerAgentControlMode) Supports(agent WorkerAgent) bool {
 	return (mode == AgentControlModeHerdr || mode == AgentControlModeWeb) && agent.Valid()
+}
+
+func (mode WorkerAgentControlMode) SupportsNewClaim(agent WorkerAgent) bool {
+	return mode == AgentControlModeWeb && agent.Valid()
 }
 
 type WorkerPhase string

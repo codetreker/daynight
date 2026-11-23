@@ -36,8 +36,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return resolved;
 } });
 `);
-  const invoke = (args: readonly string[], blocked: readonly string[], options: { readonly cwd?: string; readonly nativeGit?: boolean } = {}) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", pathToFileURL(hook).href, executable, ...args], {
+  const invoke = (args: readonly string[], blocked: readonly string[], options: { readonly cwd?: string; readonly nativeGit?: boolean; readonly program?: readonly string[] } = {}) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", pathToFileURL(hook).href, ...(options.program ?? [executable]), ...args], {
       cwd: options.cwd ?? caller, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, HOME: home, USERPROFILE: home, ...(options.nativeGit ? {} : { PATH: emptyPath, Path: emptyPath }), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(root, "git-global"), GIT_CEILING_DIRECTORIES: root, DAYNIGHT_TEST_BLOCK_IMPORTS: JSON.stringify(blocked) },
     });
@@ -73,6 +73,7 @@ describe("compiled project commands", () => {
         const input = body === "" ? null : JSON.parse(body) as { name: string; repoUrl: string };
         requests.push({ method: request.method!, cursor, body: input });
         response.setHeader("Content-Type", "application/json");
+        response.setHeader("Daynight-User-ID", userId);
         if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); response.end(stringifyApiJson(user)); return; }
         if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { response.setHeader("Daynight-User-ID", userId); response.end(stringifyApiJson(personalTeam)); return; }
         if (input !== null) {
@@ -112,7 +113,7 @@ describe("compiled project commands", () => {
       expect(repeated.code, repeated.stderr).toBe(0);
       expect(repeated.stdout).toContain("Project already exists.");
       expect(repeated.stdout).toContain("Name: Original 名称");
-      expect(requests.slice(beforeRepeat).map(({ method, cursor }) => ({ method, cursor }))).toEqual([{ method: "GET", cursor: null }, { method: "GET", cursor: "later page" }]);
+      expect(requests.slice(beforeRepeat).map(({ method, cursor }) => ({ method, cursor }))).toEqual([{ method: "GET", cursor: null }, { method: "GET", cursor: null }, { method: "GET", cursor: "later page" }]);
       expect((await readdir(root)).sort()).toEqual([".git", "nested 中文"]);
       expect(await readdir(nested)).toEqual([]);
 
@@ -149,18 +150,59 @@ describe("compiled project commands", () => {
     const f = await fixture();
     const blocked = ["/api/", "/config/", "/repository/", "/commands/server/", "/commands/project/rendering.js", "better-sqlite3"];
     try {
-      for (const args of [[], ["--help"], ["create", "--help"], ["list", "--help"], ["show", "--help"]]) {
-        const result = await f.invoke(["project", ...args], blocked);
-        expect(result.code, result.stderr).toBe(0);
+      type Result = { code: number | null; stdout: string; stderr: string };
+      const checkHelp = (args: readonly string[], result: Result) => {
+        expect(result.code, `${JSON.stringify(args)}: ${result.stderr}`).toBe(0);
         expect(result.stdout).toContain("Usage: daynight project");
         expect(result.stderr).toBe("");
-      }
-      for (const args of [["create"], ["create", "--name", "Example", "--repo", "remote"], ["create", "Name", "extra", "--repo", "remote"], ["create", "--repo", "remote"], ["create", "--repo", "remote", "-leading"], ["create", "\u0085", "--repo", "git@git.example:Org/Repo"], ["list", "--unknown"]]) {
-        const result = await f.invoke(["project", ...args], blocked);
-        expect(result.code, result.stderr).toBe(2);
+      };
+      const checkInvalid = (args: readonly string[], result: Result) => {
+        expect(result.code, `${JSON.stringify(args)}: ${result.stderr}`).toBe(2);
         expect(result.stdout).toBe("");
         expect(result.stderr).not.toContain("Unexpected module import");
-      }
+      };
+      for (const args of [[], ["create", "--help"]]) checkHelp(args, await f.invoke(["project", ...args], blocked));
+      checkInvalid(["create"], await f.invoke(["project", "create"], blocked));
+
+      const helpArgs = [["--help"], ["list", "--help"], ["show", "--help"]];
+      const invalidArgs = [
+        ["create", "--name", "Example", "--repo", "remote"], ["create", "Name", "extra", "--repo", "remote"],
+        ["create", "--repo", "remote"], ["create", "--repo", "remote", "-leading"],
+        ["create", "\u0085", "--repo", "git@git.example:Org/Repo"], ["list", "--unknown"],
+      ];
+      const packageDirectory = new URL("../../", import.meta.url);
+      const runner = `
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { runCli } from ${JSON.stringify(new URL("dist/cli/application.js", packageDirectory).href)};
+import { createCliContext } from ${JSON.stringify(new URL("dist/cli/context.js", packageDirectory).href)};
+
+const { version } = JSON.parse(await readFile(new URL(${JSON.stringify(new URL("package.json", packageDirectory).href)}), "utf8"));
+const directory = fileURLToPath(${JSON.stringify(packageDirectory.href)});
+const argumentSets = JSON.parse(process.argv[1]);
+const results = [];
+for (const args of argumentSets) {
+  const output = [];
+  let stderr = "";
+  const code = await runCli(["project", ...args], {
+    ...createCliContext(version, directory),
+    stdout: text => output.push(Buffer.from(text)),
+    stdoutBytes: async bytes => { output.push(Buffer.from(bytes)); },
+    stderr: text => { stderr += text; },
+  });
+  results.push({ code, stdout: Buffer.concat(output).toString("utf8"), stderr });
+}
+process.stdout.write(JSON.stringify(results));
+`;
+      const batch = await f.invoke([JSON.stringify([...helpArgs, ...invalidArgs])], blocked, {
+        program: ["--input-type=module", "--eval", runner, "--"],
+      });
+      expect(batch.code, batch.stderr).toBe(0);
+      expect(batch.stderr).toBe("");
+      const results = JSON.parse(batch.stdout) as Result[];
+      expect(results).toHaveLength(helpArgs.length + invalidArgs.length);
+      helpArgs.forEach((args, index) => checkHelp(args, results[index]!));
+      invalidArgs.forEach((args, index) => checkInvalid(args, results[helpArgs.length + index]!));
       const invalidId = await f.invoke(["project", "show", "not-a-uuid"], ["/api/client.js", "/api/json.js", "/api/operation.js", "/config/", "/commands/server/", "/repository/", "better-sqlite3"]);
       expect(invalidId.code, invalidId.stderr).toBe(2);
       expect(invalidId.stderr).toContain("hyphenated UUID");
@@ -181,6 +223,7 @@ describe("compiled project commands", () => {
         const body = chunks.length === 0 ? null : JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
         requests.push({ method: request.method!, pathname: url.pathname, cursor: url.searchParams.get("cursor"), body });
         response.setHeader("Content-Type", "application/json");
+        response.setHeader("Daynight-User-ID", userId);
         if (request.method === "POST") {
           const input = body as { name: string; repoUrl: string };
           response.setHeader("Daynight-User-ID", userId);

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
@@ -15,7 +17,7 @@ type pullRequestDocument struct {
 }
 
 func Encode(properties model.TaskProperties) (string, error) {
-	normalized, err := Normalize(properties)
+	normalized, err := NormalizeStored(properties)
 	if err != nil {
 		return "", err
 	}
@@ -28,13 +30,43 @@ func Decode(data []byte) (model.TaskProperties, error) {
 	if err != nil {
 		return nil, validation("properties", err.Error(), err)
 	}
-	return Normalize(model.TaskProperties(fields))
+	return NormalizeStored(model.TaskProperties(fields))
 }
 
-func normalizePaused(raw json.RawMessage) (json.RawMessage, error) {
+// NormalizeStored applies the persisted document contract, which remains readable
+// independently of the rules used to admit newly created Worker claims.
+func NormalizeStored(properties model.TaskProperties) (model.TaskProperties, error) {
+	result := make(model.TaskProperties, len(properties))
+	for _, name := range slices.Sorted(maps.Keys(properties)) {
+		if name != "worker" {
+			value, err := NormalizeValue(name, properties[name])
+			if err != nil {
+				return nil, err
+			}
+			result[name] = value
+			continue
+		}
+		raw := properties[name]
+		if err := strictValue(raw); err != nil {
+			return nil, validation("properties.worker", "properties.worker must contain exactly one JSON value without duplicate fields", err)
+		}
+		worker, err := decodeStoredWorker(raw)
+		if err != nil {
+			return nil, validation("properties.worker", err.Error(), err)
+		}
+		value, err := json.Marshal(encodeWorker(worker))
+		if err != nil {
+			return nil, err
+		}
+		result[name] = value
+	}
+	return result, nil
+}
+
+func normalizeBlocked(raw json.RawMessage) (json.RawMessage, error) {
 	var value *bool
 	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
-		return nil, fmt.Errorf("properties.paused must be a boolean")
+		return nil, fmt.Errorf("properties.blocked must be a boolean")
 	}
 	return json.Marshal(*value)
 }

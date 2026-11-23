@@ -17,7 +17,7 @@ export type PromptState = {
   readonly readId: number | null;
   readonly readError: string | null;
   readonly submission: PromptSubmission | null;
-  readonly write: 'idle' | 'pending' | 'unknown';
+  readonly write: 'idle' | 'pending' | 'confirmed' | 'unknown';
   readonly writeError: string | null;
   readonly conflict: boolean;
   readonly conflictReady: boolean;
@@ -52,8 +52,12 @@ export type PromptAction =
   | { type: 'read/start'; id: number }
   | { type: 'read/success'; id: number; resource: PromptResource }
   | { type: 'read/error'; id: number; error: string }
+  | { type: 'read/cancel'; id: number }
   | { type: 'write/start'; submission: PromptSubmission }
+  | { type: 'write/confirmed'; id: number }
+  | { type: 'write/interrupted'; id: number }
   | { type: 'write/success'; id: number; resource: PromptResource }
+  | { type: 'write/settle'; id: number; outcome: 'confirmed' | 'unknown' | 'refused' | 'conflict' }
   | { type: 'write/conflict'; id: number; error: string }
   | { type: 'write/error'; id: number; error: string }
   | { type: 'write/unknown'; id: number; error: string }
@@ -71,6 +75,8 @@ export const promptReducer = (state: PromptState, action: PromptAction): PromptS
     case 'edit':
       return action.text === state.draft ? state : { ...state, draft: action.text, editGeneration: state.editGeneration + 1, reconciled: false, abandoned: false };
     case 'read/start': return { ...state, read: 'pending', readId: action.id, readError: null };
+    case 'read/cancel':
+      return state.readId !== action.id ? state : { ...state, read: 'idle', readId: null };
     case 'read/error':
     case 'reconcile/error':
       return state.readId !== action.id ? state : { ...state, read: 'error', readId: null, readError: action.error };
@@ -89,9 +95,22 @@ export const promptReducer = (state: PromptState, action: PromptAction): PromptS
       if (state.write !== 'idle' || state.conflict || !state.baseline || submission.revision !== state.baseline.revision || submission.text !== state.draft || submission.editGeneration !== state.editGeneration) return state;
       return { ...state, submission, write: 'pending', writeError: null, reconciled: false };
     }
+    case 'write/settle':
+      if (state.write !== 'pending' || state.submission?.id !== action.id) return state;
+      if (action.outcome === 'confirmed') return { ...state, write: 'confirmed', writeError: null };
+      if (action.outcome === 'unknown') return { ...state, write: 'unknown', writeError: 'write' };
+      if (state.abandoned && state.resource) return { ...state, baseline: state.resource, draft: state.resource.text, submission: null, write: 'idle', writeError: 'write', conflict: false, conflictReady: false, abandoned: false };
+      {
+        const newerRevision = state.baseline !== null && state.resource !== null && BigInt(state.resource.revision) > BigInt(state.baseline.revision);
+        return { ...state, write: 'idle', submission: null, writeError: 'write', conflict: action.outcome === 'conflict' || newerRevision, conflictReady: action.outcome === 'conflict' ? false : newerRevision };
+      }
+    case 'write/confirmed':
+      return state.write === 'pending' && state.submission?.id === action.id ? { ...state, write: 'confirmed' } : state;
+    case 'write/interrupted':
+      return state.write === 'pending' && state.submission?.id === action.id ? { ...state, submission: null, write: 'idle' } : state;
     case 'write/success': {
       const submission = state.submission;
-      if (state.write !== 'pending' || !submission || submission.id !== action.id) return state;
+      if ((state.write !== 'pending' && state.write !== 'confirmed') || !submission || submission.id !== action.id) return state;
       const resource = newer(state.resource, action.resource);
       const edited = state.editGeneration !== submission.editGeneration;
       const later = BigInt(resource.revision) > BigInt(action.resource.revision);
@@ -119,7 +138,7 @@ export const promptReducer = (state: PromptState, action: PromptAction): PromptS
         submission: null, write: 'idle', writeError: null, conflict: !matches && !state.abandoned, conflictReady: !matches && !state.abandoned, reconciled: true, abandoned: false };
     }
     case 'abandon':
-      if (state.write !== 'idle') return { ...state, draft: state.resource?.text ?? state.baseline?.text ?? '', abandoned: true };
+      if (state.write !== 'idle') return { ...state, draft: state.resource?.text ?? state.baseline?.text ?? '', editGeneration: state.editGeneration + 1, abandoned: true };
       return promptReducer(state, { type: 'discard' });
     case 'useLatest':
     case 'discard':

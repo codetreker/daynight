@@ -142,14 +142,14 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
     update(fence.ownerKey, previous => ({ ...(previous.authorizationKey === authorization.key ? previous : empty()), endpoint, endpointId: endpoint.id, detailError: null, authorizationKey: authorization.key }));
     return true;
   };
-  const readEndpoint = async (endpointId: string): Promise<{ readonly endpoint: WebhookEndpoint; readonly fence: WebhookReadFence } | null> => {
-    if (owner === null || !current.current.active || admission.isInvalidated) return null;
+  const readEndpoint = async (endpointId: string, operationSignal?: AbortSignal): Promise<{ readonly endpoint: WebhookEndpoint; readonly fence: WebhookReadFence } | null> => {
+    if (owner === null || !current.current.active || admission.isInvalidated || operationSignal?.aborted) return null;
     const authorization = current.current.getAuthorization(owner);
     if (!authorization.readable) return null;
     const ownerKey = webhookOwnerKey(owner), generation = (generations.current.get(ownerKey) ?? 0) + 1;
     generations.current.set(ownerKey, generation); requests.current.get(ownerKey)?.abort();
     const controller = new AbortController(); requests.current.set(ownerKey, controller);
-    const signal = AbortSignal.any([controller.signal, admission.signal]), fence = { ownerKey, generation, authorizationKey: authorization.key };
+    const signal = AbortSignal.any([controller.signal, admission.signal, ...(operationSignal ? [operationSignal] : [])]), fence = { ownerKey, generation, authorizationKey: authorization.key };
     try {
       await admission.ready(signal);
       const endpoint = await getWebhook(owner, endpointId, signal, { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: readySignal => admission.ready(readySignal) });

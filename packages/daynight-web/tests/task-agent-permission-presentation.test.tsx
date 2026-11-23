@@ -7,7 +7,7 @@ import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSe
 import { LanguageSelector } from '../src/i18n/LanguageSelector';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null,
   requiredPlatform: null, allowAgents: false, id: 'task', projectId: 'project', title: 'Deployment acceptance', description: '',
   properties: { pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
   startedAt: null, completedAt: null, cancelledAt: null, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z',

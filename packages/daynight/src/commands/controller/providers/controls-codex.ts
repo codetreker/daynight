@@ -1,9 +1,10 @@
+import { bindImageQualification, qualifiedImageLimits } from "./image-qualification.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, sameControlValue, type SessionSetting } from "./controls.js";
-import { record, string, NativeRpcError, type NativeRpc } from "./native-rpc.js";
+import { record, string, NativeRpcError, NativeDispatchRejectedError, type NativeRpc } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
 import { IMAGE_LIMITS, type ProviderImageCapabilities } from "../../../session/image-values.js";
 import { unknownCodexGeometry, type CodexImageProfile } from "./codex-image-profile.js";
@@ -20,21 +21,25 @@ export class CodexControls {
   private closed = false;
   private turnModel: string | null = null;
   private settingInFlight = false;
-  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
+  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
   beginTurn(): void { this.turnModel = string(this.native.model) || null; }
+  imageSelection(): { model: string | null; modelProvider: string | null; cwd: string | null } { return { model: string(this.native.model) || null, modelProvider: string(this.native.modelProvider) || null, cwd: string(this.native.cwd) || null }; }
   imageCapabilities(profile: CodexImageProfile | null): Omit<ProviderImageCapabilities, "revision"> {
     const model = string(this.native.model) || null;
     const matches = this.capabilityModels.filter(item => item.model === model || item.id === model);
     const modalities = matches.length === 1 && Array.isArray(matches[0]!.inputModalities) ? matches[0]!.inputModalities : null;
     const stable = !this.settingInFlight && this.pending.size === 0 && this.store.value.settingsError === null;
     const bound = profile !== null && profile.modelProvider !== null && profile.modelProvider === this.native.modelProvider && profile.modelId === model;
-    const geometry = bound ? profile.geometry : unknownCodexGeometry;
+    const qualification = bound && profile.qualification?.identity.modelId === model ? profile.qualification : null;
+    const geometry = qualification ? qualifiedImageLimits(qualification).geometry : unknownCodexGeometry;
     const support = !profile || !stable || !model || !modalities ? "unknown" : !modalities.includes("image") ? "unsupported" : geometry.known ? "supported" : "unknown";
     const activeUnknown = this.turn() !== null && this.turnModel !== model;
-    return { expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send: support, steer: activeUnknown ? "unknown" : support,
-      reasonCode: !profile ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
+    const send = support === "supported" && !qualification?.send ? "unsupported" : support;
+    const steer = activeUnknown ? "unknown" : support === "supported" && !qualification?.steer ? "unsupported" : support;
+    return bindImageQualification({ expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send, steer,
+      reasonCode: activeUnknown ? "capability_unknown" : send === "supported" || steer === "supported" ? null : !profile || qualification && !qualification.send && !qualification.steer ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
       inputMediaTypes: support === "supported" ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images,
-      geometry };
+      ...(qualification ? qualifiedImageLimits(qualification) : {}), geometry }, qualification);
   }
   seed(value: unknown) { const raw = record(value); this.observe({ ...raw, ...(raw.sandbox ? { sandboxPolicy: raw.sandbox } : {}), ...(raw.reasoningEffort ? { effort: raw.reasoningEffort } : {}) }); }
   observe(value: unknown) {
@@ -111,6 +116,7 @@ export class CodexControls {
     if (id === "model") { const selected = this.models.find(item => item.model === value), efforts = Array.isArray(selected?.supportedReasoningEfforts) ? selected.supportedReasoningEfforts.map(item => string(record(item).reasoningEffort)) : []; const effort = string(this.native.effort); if (!efforts.includes(effort) && selected?.defaultReasoningEffort) patch.effort = selected.defaultReasoningEffort; }
     const turnId = this.turn(); let liveApplied = false;
     if (turnId && ["model", "effort"].includes(id)) {
+      this.assertNativeDispatch?.();
       const result = record(await this.rpc.request("turn/settings/update", { threadId: this.session(), turnId, ...patch }));
       if (result.status !== "applied") throw new NativeRpcError(-32602, "Native live model switching is unavailable. Wait for the current turn to finish.");
       if (id === "model") this.turnModel = value;
@@ -118,8 +124,8 @@ export class CodexControls {
     }
     let resolve!: () => void, reject!: (error: Error) => void;
     const confirmation = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); void confirmation.catch(() => {}); this.pending.set(operationId, { patch, resolve, reject });
-    try { await this.rpc.request("thread/settings/update", { threadId: this.session(), ...patch }); }
-    catch (error) { if (error instanceof NativeRpcError) this.pending.delete(operationId); if (liveApplied) { const message = `Codex applied this setting to the current turn, but future-turn settings are unconfirmed: ${controlError(error)}`; this.store.update({ settingsError: message }); throw new Error(message); } throw error; }
+    try { this.assertNativeDispatch?.(); await this.rpc.request("thread/settings/update", { threadId: this.session(), ...patch }); }
+    catch (error) { if (error instanceof NativeRpcError || error instanceof NativeDispatchRejectedError) this.pending.delete(operationId); if (liveApplied) { const message = `Codex applied this setting to the current turn, but future-turn settings are unconfirmed: ${controlError(error)}`; this.store.update({ settingsError: message }); throw new Error(message); } throw error; }
     await controlDeadline(confirmation, "Codex setting confirmation");
   }
   private sandbox(type: string) {

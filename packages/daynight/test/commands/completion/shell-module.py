@@ -308,9 +308,7 @@ def scenarios():
         ("short worker setup", "dn worker se\t", ["worker", "setup"]),
         ("worker run", "daynight worker ru\t", ["worker", "run"]),
         ("short worker run", "dn worker ru\t", ["worker", "run"]),
-        ("worker attach", "daynight worker at\t", ["worker", "attach"]),
-        ("short worker attach", "dn worker at\t", ["worker", "attach"]),
-        ("worker repository group", "daynight worker rep\t", ["worker", "repo"]),
+        ("worker repository group", "daynight worker repo\t", ["worker", "repo"]),
         ("worker repository list", "daynight worker repo li\t", ["worker", "repo", "list"]),
         ("worker repository add", "dn worker repo ad\t", ["worker", "repo", "add"]),
         ("worker repository remove", "daynight worker repo rem\t", ["worker", "repo", "remove"]),
@@ -318,11 +316,8 @@ def scenarios():
         ("worker repository JSON", "daynight worker repo list --js\t", ["worker", "repo", "list", "--json"]),
         ("worker retry", "daynight worker ret\t", ["worker", "retry"]),
         ("worker release", "daynight worker rel\t", ["worker", "release"]),
-        ("worker resume", "daynight worker resu\t", ["worker", "resume"]),
         ("worker resources group", "daynight worker reso\t", ["worker", "resources"]),
-        ("worker resources list", "daynight worker resources li\t", ["worker", "resources", "list"]),
-        ("worker resources retry", "daynight worker resources ret\t", ["worker", "resources", "retry"]),
-        ("worker resources dispose", "dn worker resources dis\t", ["worker", "resources", "dispose"]),
+        ("worker resources recover", "daynight worker resources rec\t", ["worker", "resources", "recover"]),
         ("worker original claim", "daynight worker retry task-id --claim-i\t", ["worker", "retry", "task-id", "--claim-id"]),
         ("worker exact version", "daynight worker release task-id --if-ver\t", ["worker", "release", "task-id", "--if-version"]),
         ("root completion", "daynight comp\t", ["completion"]),
@@ -337,7 +332,7 @@ def scenarios():
         ("project repo after text name", 'daynight project create "Day Night" --re\t', ["project", "create", "Day Night", "--repo"]),
         ("project list JSON", "daynight project list --js\t", ["project", "list", "--json"]),
         ("project show JSON", "daynight project show project-id --js\t", ["project", "show", "project-id", "--json"]),
-        ("root task and local directory collision", "daynight ta\t", ["task"]),
+        ("root task and local directory collision", "daynight tas\t", ["task"]),
         ("task create", "daynight task cre\t", ["task", "create"]),
         ("task delete", "daynight task del\t", ["task", "delete"]),
         ("task delete dependency removal switch", "daynight task delete task-id --remove-dep\t", ["task", "delete", "task-id", "--remove-depends"]),
@@ -356,27 +351,6 @@ def scenarios():
         ("task show", "daynight task sh\t", ["task", "show"]),
         ("task update", "daynight task upd\t", ["task", "update"]),
         ("task graph", "daynight task gr\t", ["task", "graph"]),
-        ("task Step group", "daynight task ste\t", ["task", "step"]),
-        ("task Step Add", "daynight task step ad\t", ["task", "step", "add"]),
-        ("short Step Add title", "dn task step add task-id --ti\t", ["task", "step", "add", "task-id", "--title"]),
-        ("Step Add status", "daynight task step add task-id --status=sk\t", ["task", "step", "add", "task-id", "--status=skipped"]),
-        ("Step Add identity", "daynight task step add task-id --id\t", ["task", "step", "add", "task-id", "--id"]),
-        ("Step Add before", "daynight task step add task-id --bef\t", ["task", "step", "add", "task-id", "--before"]),
-        ("Step Add version", "daynight task step add task-id --if-v\t", ["task", "step", "add", "task-id", "--if-version"]),
-        ("task Step Update", "daynight task step upd\t", ["task", "step", "update"]),
-        ("Step Update title", "dn task step update task-id 00abcdef --ti\t", ["task", "step", "update", "task-id", "00abcdef", "--title"]),
-        ("Step Update description", "daynight task step update task-id 00abcdef --des\t", ["task", "step", "update", "task-id", "00abcdef", "--description"]),
-        ("Step Update exact version", "daynight task step update task-id 00abcdef --if-v\t", ["task", "step", "update", "task-id", "00abcdef", "--if-version"]),
-        ("Step Set-status", "daynight task step set-s\t", ["task", "step", "set-status"]),
-        ("Step Set-status skipped", "daynight task step set-status task-id 00abcdef sk\t", ["task", "step", "set-status", "task-id", "00abcdef", "skipped"]),
-        ("Step Set-status progress", "dn task step set-status task-id 00abcdef in\t", ["task", "step", "set-status", "task-id", "00abcdef", "in_progress"]),
-        ("task Step Delete", "daynight task step de\t", ["task", "step", "delete"]),
-        ("Step Delete version", "daynight task step delete task-id 00abcdef --if-v\t", ["task", "step", "delete", "task-id", "00abcdef", "--if-version"]),
-        ("short Step Delete JSON", "dn task step delete task-id 00abcdef --js\t", ["task", "step", "delete", "task-id", "00abcdef", "--json"]),
-        ("task Step list", "daynight task step li\t", ["task", "step", "list"]),
-        ("short Step show", "dn task step sh\t", ["task", "step", "show"]),
-        ("Step explicit project", "daynight task step list task-id --pro\t", ["task", "step", "list", "task-id", "--project"]),
-        ("Step JSON", "daynight task step show task-id 00abcdef --js\t", ["task", "step", "show", "task-id", "00abcdef", "--json"]),
         ("task attachment group", "daynight task att\t", ["task", "attachment"]),
         ("task attachment put", "daynight task attachment pu\t", ["task", "attachment", "put"]),
         ("task attachment list", "daynight task attachment li\t", ["task", "attachment", "list"]),
@@ -510,14 +484,6 @@ def scenarios():
         ("task title has no file fallback", "daynight task create --title nor"),
         ("search expression has no file fallback", "daynight task search nor"),
         ("search terminated expression stops options", "daynight task search -- --pro"),
-        ("Step task ID has no file fallback", "daynight task step list nor"),
-        ("Step Add ID has no file fallback", "daynight task step add task-id --id nor"),
-        ("Step Add anchor has no file fallback", "daynight task step add task-id --before nor"),
-        ("Step Update ID has no file fallback", "daynight task step update task-id nor"),
-        ("Step Set-status ID has no file fallback", "daynight task step set-status task-id nor"),
-        ("Step ID has no file fallback", "daynight task step show task-id nor"),
-        ("Step Delete ID has no file fallback", "daynight task step delete task-id nor"),
-        ("Step Delete version has no file fallback", "daynight task step delete task-id 00abcdef --if-version nor"),
         ("task attachment ID has no file fallback", "daynight task attachment list nor"),
         ("task attachment target has no file fallback", "daynight task attachment put task-id source --path nor"),
         ("task attachment path has no file fallback", "daynight task attachment read task-id nor"),
@@ -646,12 +612,16 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 path_index = expected.index(directory_option) + 1
                 if path_index < len(expected) and path_index < len(actual) and expected[path_index].endswith("/") and actual[path_index] == expected[path_index][:-1]:
                     native_expected[path_index] = expected[path_index][:-1]
-            result = {"name": name, "line": line, "cursor": cursor, "argv": actual, "passed": actual == native_expected}
+            task_collision = name == "root task and local directory collision"
+            task_line_valid = not task_collision or (line == "daynight task " and cursor == len(line))
+            result = {"name": name, "line": line, "cursor": cursor, "argv": actual, "passed": actual == native_expected and task_line_valid}
             receipt["scenarios"].append(result)
             if actual != native_expected:
                 raise AssertionError(f"{label}: {name}: expected {native_expected!r}, received {actual!r}, line={line!r}, terminal={output!r}")
             if name in ["root command and local directory collision", "short root command and local directory collision"] and line != keys.split()[0] + " review ":
                 raise AssertionError(f"{label}: command completion must append a space despite the local review directory: {line!r}")
+            if not task_line_valid:
+                raise AssertionError(f"{label}: task completion must append a space despite the local task directory: line={line!r}, cursor={cursor}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line in unchanged:
             actual, cursor, output = shell.complete(line + "\t")
@@ -662,6 +632,8 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 raise AssertionError(f"{label}: {name}: expected unchanged {line!r}, received {actual!r}, terminal={output!r}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
+            ("ambiguous root tag and task prefix", "daynight ta", ["tag", "task"]),
+            ("ambiguous worker repository prefix", "daynight worker rep", ["repo", "repair-markdown"]),
             ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
@@ -680,26 +652,29 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             ("empty team show options", "daynight team show ", ["--team", "--json"]),
             ("empty team projects options", "daynight team projects ", ["--team", "--json"]),
             ("empty task prefix", "daynight task ", ["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "attachment"]),
-            ("empty task Step prefix", "daynight task step ", ["list", "show", "add", "update", "set-status", "move", "delete"]),
-            ("empty task Step move options", "daynight task step move task-id 00000000 ", ["--before", "--after", "--first", "--last", "--if-version", "--project", "--json"]),
             ("empty task attachment prefix", "daynight task attachment ", ["put", "list", "read", "remove"]),
             ("empty separate task status", "daynight task list --status ", ["todo", "in_progress", "done"]),
             ("empty inline task status", "daynight task list --status=", ["todo", "in_progress", "done"]),
             ("short command empty task prefix", "dn task ", ["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "attachment"]),
             ("short command empty separate task status", "dn task list --status ", ["todo", "in_progress", "done"]),
             ("short command empty inline task status", "dn task list --status=", ["todo", "in_progress", "done"]),
-            ("empty Step positional status", "daynight task step set-status task-id 00abcdef ", ["todo", "in_progress", "done", "skipped"]),
-            ("short Step empty positional status", "dn task step set-status task-id 00abcdef ", ["todo", "in_progress", "done", "skipped"]),
             ("empty positional status", "daynight task set-status task-id ", ["todo", "in_progress", "done"]),
             ("short command empty positional status", "dn task set-status task-id ", ["todo", "in_progress", "done"]),
             ("empty shell prefix", "daynight completion ", ["bash", "zsh", "setup"]),
             ("empty setup shell choice", "daynight completion setup --shell ", ["bash", "zsh"]),
         ]:
             actual, cursor, output = shell.complete(line + "\t\t")
-            missing = [candidate for candidate in candidates if candidate not in output]
+            if name in ["ambiguous root tag and task prefix", "ambiguous worker repository prefix"]:
+                display = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+                missing = [candidate for candidate in candidates if re.search(r"(?<![\w/-])" + re.escape(candidate) + r"(?![\w/-])", display) is None]
+            else:
+                missing = [candidate for candidate in candidates if candidate not in output]
             removed_setup = name in ["empty root prefix", "empty short root prefix"] and re.search(r"(?<![\w-])setup(?![\w-])", output) is not None
-            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup})
+            ambiguous_changed = name in ["ambiguous root tag and task prefix", "ambiguous worker repository prefix"] and (actual != line or cursor != len(line))
+            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup and not ambiguous_changed})
             shell.clear()
+            if ambiguous_changed:
+                raise AssertionError(f"{label}: {name}: expected unchanged line and cursor, received line={actual!r}, cursor={cursor}")
             if removed_setup:
                 raise AssertionError(f"{label}: {name}: removed setup command is offered: {output!r}")
             if missing:

@@ -315,3 +315,42 @@ func TestTestSessionStopHTTPForwardsProofOwnerAndScope(t *testing.T) {
 		t.Fatal("normal stop response changed supplied snapshot")
 	}
 }
+
+func TestTestSessionCommandOriginIsValidatedAndForwarded(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin any
+		valid  bool
+	}{
+		{"legacy", nil, true}, {"user", "user", true}, {"daynight", "daynight", true},
+		{"null", nil, false}, {"unknown", "system", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTestSessionRouteFixture(t)
+			snapshot := suppliedTestSnapshot(f.handler.principal, independentRegistration("codex"))
+			payload := map[string]any{"content": []sp.TextPart{{Type: "text", Text: "notification"}}, "expectedTurnId": nil}
+			if tc.name != "legacy" {
+				payload["origin"] = tc.origin
+			}
+			command := sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: "origin", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(jsonBody(t, payload))}
+			if tc.valid {
+				f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+					c.Submit = func(ctx context.Context, principal model.Principal, project, task, id string, actual sp.Command) (sp.Operation, error) {
+						f.requestContext(ctx, principal, f.handler.principal)
+						f.argument(project == "" && task == "" && id == snapshot.SessionID && reflect.DeepEqual(actual, command), "notification command")
+						return sp.Operation{Fence: command.Fence, Protocol: sp.Protocol, OperationID: command.OperationID, Kind: command.Kind, State: "accepted"}, nil
+					}
+				})
+			}
+			response := f.request(http.MethodPost, "/api/v1/test-sessions/"+snapshot.SessionID+"/commands", jsonBody(t, command))
+			if tc.valid {
+				decodeResponse[map[string]any](t, response, http.StatusAccepted)
+			} else {
+				assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+				if f.calls.TotalCalls() != 0 {
+					t.Fatal("invalid origin reached business work")
+				}
+			}
+		})
+	}
+}

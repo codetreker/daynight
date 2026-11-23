@@ -21,6 +21,7 @@ import (
 const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
 
 func TestTaskSyncDependencyStatesCancellationReleasesBlockedQuery(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, _, project := membershipFixture(t)
 	root := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	owner := queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
@@ -145,7 +146,7 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 			return err
 		}
 		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		if err != nil || epoch != oldEpoch || storedProject != project || !reflect.DeepEqual(access, beforeAccess) || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Version != 1 || !slices.Equal(tasks[1].DependsOn, []string{a.ID}) {
+		if err != nil || epoch != oldEpoch || storedProject != project || !reflect.DeepEqual(access, beforeAccess) || len(tasks) != 2 || tasks[0].Title != a.Title || tasks[0].TitlePreview != a.Title || tasks[0].TitleTruncated || tasks[0].Version != 1 || !slices.Equal(tasks[1].DependsOn, []string{a.ID}) {
 			t.Fatalf("mixed project/access/epoch/task snapshot: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
 		}
 		states, err := snapshot.TaskDAO().TaskSyncDependencyStates(ctx, project.ID, nil)
@@ -170,7 +171,7 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 			return err
 		}
 		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		if err != nil || epoch == oldEpoch || storedProject.Settings.ExecutionWarningMinutes != 31 || access.Role != model.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.Version != 9007199254740993 || len(tasks) != 2 || tasks[0].TitlePreview != "After" || tasks[0].Version != 2 || tasks[1].ID != b.ID {
+		if err != nil || epoch == oldEpoch || storedProject.Settings.ExecutionWarningMinutes != 31 || access.Role != model.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.Version != 9007199254740993 || len(tasks) != 2 || tasks[0].Title != "After" || tasks[0].TitlePreview != "After" || tasks[0].TitleTruncated || tasks[0].Version != 2 || tasks[1].ID != b.ID {
 			t.Fatalf("fresh snapshot missed committed history: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
 		}
 		states, err := snapshot.TaskDAO().TaskSyncDependencyStates(ctx, project.ID, nil)
@@ -266,6 +267,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 }
 
 func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	fallback := emptyPool(t)
 	if _, err := fallback.Exec(ctx, `CREATE TABLE tasks(project_id integer, updated_at integer, id integer);

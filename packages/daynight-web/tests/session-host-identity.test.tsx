@@ -9,7 +9,7 @@ import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessionProvider } from '../src/features/task-detail/TaskDetailSession';
 import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
-import { FixedSessionRecording, TaskSessionHost, suspendStaticSessionMediaForAccountRefresh } from '../src/features/task-agent-session/TaskSessionHost';
+import { FixedSessionRecording, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
@@ -17,7 +17,6 @@ import { sessionImageBytes } from './helpers/sessionImages';
 import { fixtureTaskEpoch, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/terminal-sessions', async original => ({ ...await original<typeof import('../src/api/terminal-sessions')>(), createTerminalSessionApi: vi.fn() }));
-vi.mock('../src/features/task-agent-session/TerminalSessionView', () => ({ TerminalSessionView: ({ current }: { current: boolean }) => <span data-testid="live-session-current">{String(current)}</span> }));
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const claimId = '30000000-0000-4000-8000-000000000001';
@@ -36,7 +35,6 @@ function setup(completed = false, live = false) {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const fetcher = vi.fn(async () => resourceResponse(detailFixture(projectId, taskId), TEST_VIEWER_ID)); vi.stubGlobal('fetch', fetcher);
   const api = { history: vi.fn(async () => ({ items: [item], nextCursor: null })), archive: vi.fn(async () => ({ status: { payload: { state: 'ready' } }, archive: recording() })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
-  if (completed) api.current.mockResolvedValue({ status: 'registered', ...item } as never);
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
   let rerenderChecking!: (value: boolean) => void;
   function Harness() {
@@ -72,34 +70,36 @@ it('retains the selected fullscreen recording and playback position through a sa
     expect(screen.getByText('Second frame')).toBeVisible(); expect(screen.getByRole('combobox', { name: 'Text size' })).toHaveValue('150');
   } finally { resume?.(); view.unmount(); scope.dispose(); }
 });
-it('gates the live Session through same-account identity verification', async () => {
+it('gates an active legacy recording through same-account identity verification', async () => {
   const { scope, api, view, setChecking } = setup(false, true); let resume: (() => void) | undefined;
   try {
-    await waitFor(() => expect(screen.getByTestId('live-session-current')).toHaveTextContent('true'));
+    expect(await screen.findByText('First frame')).toBeVisible();
+    const histories = api.history.mock.calls.length, archives = api.archive.mock.calls.length;
     act(() => { resume = pauseAuthRequests(); setChecking(true); });
-    expect(screen.getByTestId('live-session-current')).toHaveTextContent('false');
-    expect(api.history).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
+    expect(screen.getByText('First frame')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(api.history).toHaveBeenCalledTimes(histories); expect(api.archive).toHaveBeenCalledTimes(archives); expect(api.command).not.toHaveBeenCalled();
     act(() => { resume?.(); resume = undefined; setChecking(false); });
-    expect(screen.getByTestId('live-session-current')).toHaveTextContent('true');
+    expect(screen.getByText('First frame')).toBeVisible();
   } finally { resume?.(); view.unmount(); scope.dispose(); }
 });
 it('revalidates a completed direct claim after a peer history denial before restoring its recording', async () => {
   const { scope, api, view } = setup(true);
-  let finish!: (value: { status: 'registered' } & typeof item) => void;
+  let finish!: (value: { items: typeof item[]; nextCursor: null }) => void;
   try {
     expect(await screen.findByText('First frame')).toBeVisible();
-    expect(api.history).not.toHaveBeenCalled();
-    api.current.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }) as never);
+    expect(api.history).toHaveBeenCalledOnce();
+    api.history.mockImplementationOnce(async () => ({ items: [item], nextCursor: null })).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const signal = new AbortController().signal;
     const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, signal);
     await act(async () => { expect(scope.reportDirectSessionDenied(fence, fixtureTaskEpoch(projectId))).toBe(true); });
     expect(await screen.findByRole('alert')).toBeVisible();
     expect(screen.queryByText('First frame')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(api.current).toHaveBeenCalledTimes(2));
-    expect(api.history).toHaveBeenCalledOnce();
+    await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
     expect(screen.queryByText('First frame')).toBeNull();
-    await act(async () => finish({ status: 'registered', ...item }));
+    await act(async () => finish({ items: [item], nextCursor: null }));
     expect(await screen.findByText('First frame')).toBeVisible();
   } finally { view.unmount(); scope.dispose(); }
 });
@@ -146,12 +146,13 @@ it('stops direct recorded media immediately while keeping the displayed image an
   const scopes = vi.spyOn(pageImageStore, 'createScope');
   const content = (current: boolean) => <TaskCacheProvider scope={scope}><FixedSessionRecording projectId={projectId} api={api as never} item={record} active current={current} /></TaskCacheProvider>;
   const view = render(content(true));
+  let resume = () => {};
   try {
     const image = await screen.findByRole('img', { name: first.name });
     await waitFor(() => expect(reader.readResource).toHaveBeenCalledTimes(2));
     const images = scopes.mock.results[0]!.value;
     const pending = reader.readResource.mock.calls.find(([value]) => value.resourceId === second.resourceId)!;
-    act(() => { suspendStaticSessionMediaForAccountRefresh(scope); suspendStaticSessionMediaForAccountRefresh(scope); });
+    act(() => { resume = pauseAuthRequests(); });
     expect(pending[1].aborted).toBe(true);
     expect(reader.close).toHaveBeenCalledOnce();
     expect(images.valid).toBe(true); expect(images.canRead()).toBe(false); expect(images.canDownload()).toBe(false);
@@ -163,6 +164,7 @@ it('stops direct recorded media immediately while keeping the displayed image an
     expect(reader.readResource).toHaveBeenCalledTimes(2);
     view.unmount(); expect(images.valid).toBe(false);
     expect(reader.close).toHaveBeenCalledOnce();
+    resume();
     const later = render(content(true));
     try {
       expect(await screen.findByText('Retained recording.')).toBeVisible();
@@ -170,5 +172,5 @@ it('stops direct recorded media immediately while keeping the displayed image an
       expect(api.resources).toHaveBeenCalledOnce();
       expect(scopes.mock.results[1]!.value.canRead()).toBe(false);
     } finally { later.unmount(); }
-  } finally { view.unmount(); scope.dispose(); scopes.mockRestore(); }
+  } finally { resume(); view.unmount(); scope.dispose(); scopes.mockRestore(); }
 });

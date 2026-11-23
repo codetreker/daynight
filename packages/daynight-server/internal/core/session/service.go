@@ -28,6 +28,8 @@ type Engine struct {
 	mediaWork             imageWorkRegistry
 	archiveSlots          chan struct{}
 	archivePreflightSlots chan struct{}
+	archiveOwnerLimit     int
+	archiveV2RegistrationEnabled bool
 	Origin                string
 	files                 filestorage.Storage
 	imageDecoder          ImageDecoder
@@ -38,10 +40,6 @@ type Engine struct {
 	live                  map[string]*liveCell
 	instance              string
 	content               contentBroker
-	terminalMutex         sync.Mutex
-	terminalPending       map[string]map[string]*terminalBodyWrite
-	terminalFrames        map[string]*terminalFrameWrite
-	terminalFrameWrites   map[string]*terminalFrameWrite
 	admissionMutex        sync.Mutex
 	closing               bool
 	activeOperations      int
@@ -50,8 +48,32 @@ type Engine struct {
 	workCanceled          bool
 }
 
-func NewEngine(files filestorage.Storage) *Engine {
-	return &Engine{archiveSlots: make(chan struct{}, 1), archivePreflightSlots: make(chan struct{}, 1), files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+// SetArchiveV2RegistrationEnabled controls creation of new streaming uploads.
+// Existing registrations remain available for recovery and completion.
+// Configure it before publishing the engine to concurrent callers.
+func (s *Engine) SetArchiveV2RegistrationEnabled(enabled bool) {
+	s.archiveV2RegistrationEnabled = enabled
+}
+
+// ArchiveLimits bounds archive operations per instance and original owner.
+type ArchiveLimits struct {
+	MaxConcurrent         int
+	MaxConcurrentPerOwner int
+}
+
+// NewEngine uses single-slot limits unless explicitly configured. Limits must be positive.
+func NewEngine(files filestorage.Storage, configured ...ArchiveLimits) *Engine {
+	limits := ArchiveLimits{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}
+	if len(configured) > 1 {
+		panic("multiple archive limits")
+	}
+	if len(configured) == 1 {
+		limits = configured[0]
+	}
+	if limits.MaxConcurrent <= 0 || limits.MaxConcurrentPerOwner <= 0 {
+		panic("archive limits must be positive")
+	}
+	return &Engine{archiveSlots: make(chan struct{}, limits.MaxConcurrent), archivePreflightSlots: make(chan struct{}, limits.MaxConcurrent), archiveOwnerLimit: limits.MaxConcurrentPerOwner, files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
 }
 func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {
@@ -64,6 +86,10 @@ func next(s string) string   { return decimal(number(s) + 1) }
 func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 
 type record struct {
+	// ExecutionWorkerID is derived from locked Task/Session or Bot ownership.
+	ExecutionWorkerID                                   string
+	OnlineMode                                          string
+	HistoryContentPolicy                                *string
 	BotID                                               *string
 	Live                                                *liveSession
 	ServerInstance                                      *string
@@ -88,9 +114,19 @@ func loadWithBot(ctx context.Context, tx *operationTx, id string, bot *model.Bot
 	if err != nil {
 		return nil, err
 	}
-	r := &record{BotID: persisted.BotID, ServerInstance: persisted.ServerInstance, FirstInputBlocked: persisted.FirstInputBlocked, DrainTimelineSeq: persisted.DrainTimelineSeq, Snapshot: persisted.Snapshot, Owner: persisted.Owner, Parent: persisted.Parent, ConnectionParent: persisted.ConnectionParent, Registration: persisted.Registration, StopProof: persisted.StopProof, SourceEpoch: persisted.SourceEpoch, SourceEpochs: persisted.SourceEpochs, SourceSeq: persisted.SourceSeq, OperationSeq: persisted.OperationSeq, GrantHash: persisted.GrantHash, GrantExpiry: persisted.GrantExpiry, ConnectionExpiry: persisted.ConnectionExpiry, LastSeen: persisted.LastSeen, DrainUntil: persisted.DrainUntil, GrantKind: persisted.GrantKind, Consumed: persisted.Consumed}
+	if persisted.OnlineMode != "" && persisted.OnlineMode != "legacy" && persisted.OnlineMode != "relay" {
+		return nil, errors.New("invalid persisted Session online mode")
+	}
+	r := &record{OnlineMode: persisted.OnlineMode, HistoryContentPolicy: persisted.HistoryContentPolicy, BotID: persisted.BotID, ServerInstance: persisted.ServerInstance, FirstInputBlocked: persisted.FirstInputBlocked, DrainTimelineSeq: persisted.DrainTimelineSeq, Snapshot: persisted.Snapshot, Owner: persisted.Owner, Parent: persisted.Parent, ConnectionParent: persisted.ConnectionParent, Registration: persisted.Registration, StopProof: persisted.StopProof, SourceEpoch: persisted.SourceEpoch, SourceEpochs: persisted.SourceEpochs, SourceSeq: persisted.SourceSeq, OperationSeq: persisted.OperationSeq, GrantHash: persisted.GrantHash, GrantExpiry: persisted.GrantExpiry, ConnectionExpiry: persisted.ConnectionExpiry, LastSeen: persisted.LastSeen, DrainUntil: persisted.DrainUntil, GrantKind: persisted.GrantKind, Consumed: persisted.Consumed}
 	if !validSessionBot(bot, r) {
 		return nil, conflict()
+	}
+	r.ExecutionWorkerID = r.Snapshot.Identity.WorkerID
+	if bot != nil {
+		r.ExecutionWorkerID = bot.WorkerID
+		if bot.Recovery != nil {
+			r.ExecutionWorkerID = bot.Recovery.WorkerID
+		}
 	}
 	r.Snapshot = durableSnapshot(r.Snapshot)
 	err = attachLive(tx, r)
@@ -105,7 +141,7 @@ func save(ctx context.Context, tx *operationTx, r *record) error {
 			return err
 		}
 	}
-	return tx.dao.SaveSession(ctx, store.SessionRecord{Snapshot: durableSnapshot(r.Snapshot), SourceEpoch: r.SourceEpoch, SourceEpochs: r.SourceEpochs, SourceSeq: r.SourceSeq, OperationSeq: r.OperationSeq})
+	return tx.dao.SaveSession(ctx, store.SessionRecord{OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy, Snapshot: durableSnapshot(r.Snapshot), SourceEpoch: r.SourceEpoch, SourceEpochs: r.SourceEpochs, SourceSeq: r.SourceSeq, OperationSeq: r.OperationSeq})
 }
 func credential(ctx context.Context, tx *operationTx, p model.Principal, now time.Time) error {
 	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
@@ -183,6 +219,12 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	if r.LastSeen == nil || now.Sub(*r.LastSeen) > HeartbeatTimeout {
 		v.ConnectionState = "disconnected"
 	}
+	// A recovery grant can revoke the durable lease without changing the
+	// Controller fence. A relay's retained cache cannot restore that authority.
+	if r.ConnectionExpiry == nil || !now.Before(*r.ConnectionExpiry) {
+		v.ConnectionState = "disconnected"
+		v.Synchronized = false
+	}
 	if v.Controls != nil && (!write || v.Lifecycle != "active" || v.ConnectionState != "connected" || !v.Synchronized || !controlActivity(v.Activity)) {
 		for i := range v.Controls.Settings {
 			v.Controls.Settings[i].Mutable = false
@@ -241,7 +283,8 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, t task, _ bool) error {
+	err := s.browserRun(ctx, p, project, taskID, id, ProducerAccess, func(a *Access) error {
+		tx, r, t := a.tx, a.record, a.task
 		if r.BotID != nil {
 			return denied()
 		}
@@ -256,9 +299,21 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 }
 
 func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
+	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "", r.ExecutionWorkerID)
+}
+
+func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token, executionWorkerID string) (GrantResult, error) {
 	var out GrantResult
 	id := r.Snapshot.SessionID
 	v := &r.Snapshot
+	// A grant for the same execution maintains the stop/upload channel. New
+	// execution generations and bootstrap grants require business admission on
+	// their destination Worker, which may differ from the old Bot host.
+	if g.Kind == "bootstrap" || g.PreviousGeneration != nil {
+		if err := RequireWorkerExecution(ctx, tx.scope, r.Owner, executionWorkerID); err != nil {
+			return out, err
+		}
+	}
 	if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
 		return out, conflict()
 	}
@@ -299,7 +354,10 @@ func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Pr
 	if g.Kind == "bootstrap" {
 		ttl = 120 * time.Second
 	}
-	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
+	if token == "" {
+		token = "dncontroller_" + rand.Text()
+	}
+	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: token, ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
 	h := sha256.Sum256([]byte(out.Token))
 	err := tx.dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id, Hash: h[:], ExpiresAt: out.ExpiresAt, Kind: g.Kind, ParentCredentialID: p.CredentialID})
 	if err != nil {
@@ -314,15 +372,54 @@ func (s *Execution) AuthenticateController(ctx context.Context, token string) er
 	hash := sha256.Sum256([]byte(token))
 	return s.grantRun(ctx, hash[:], func(*Access) error { return nil })
 }
+
+// AuthenticateControllerOnline refuses incompatible peers before upgrading the
+// authenticated channel. Connect repeats this decision in its write transaction.
+func (s *Execution) AuthenticateControllerOnline(ctx context.Context, token string, optedIn, taskBody bool) error {
+	hash := sha256.Sum256([]byte(token))
+	return s.grantRun(ctx, hash[:], func(a *Access) error {
+		return requireOnlineCapabilities(a.record, optedIn, taskBody)
+	})
+}
+
+func requireOnlineCapabilities(r *record, optedIn, taskBody bool) error {
+	if r.OnlineMode == "relay" && !optedIn {
+		return fault("upgrade_required", "This Session requires online relay version 1.")
+	}
+	if r.OnlineMode == "relay" && (r.HistoryContentPolicy == nil || (*r.HistoryContentPolicy != "legacy" && *r.HistoryContentPolicy != "task_body")) {
+		return errors.New("invalid persisted Session history policy")
+	}
+	if r.HistoryContentPolicy != nil && ((*r.HistoryContentPolicy == "task_body" && !taskBody) || (!optedIn && *r.HistoryContentPolicy == "legacy" && taskBody)) {
+		return fault("upgrade_required", "This Session requires its bound history content policy.")
+	}
+	return nil
+}
+
 func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMessage, instance string) (sp.Snapshot, error) {
 	return s.ConnectWithContentRead(ctx, token, h, instance, 0)
 }
 
 func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int) (sp.Snapshot, error) {
+	result, err := s.connectOnline(ctx, token, h, instance, contentReadVersion, false, false)
+	return result.Snapshot, err
+}
+
+// OnlineConnection keeps execution-level negotiation outside the public Snapshot.
+type OnlineConnection struct {
+	Snapshot             sp.Snapshot
+	OnlineMode           string
+	HistoryContentPolicy *string
+}
+
+func (s *Execution) ConnectWithOnlineMode(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int, optedIn, taskBody bool) (OnlineConnection, error) {
+	return s.connectOnline(ctx, token, h, instance, contentReadVersion, optedIn, taskBody)
+}
+
+func (s *Execution) connectOnline(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int, optedIn, taskBody bool) (OnlineConnection, error) {
 	if contentReadVersion != 0 && contentReadVersion != 1 {
-		return sp.Snapshot{}, fault("unsupported_protocol", "Unsupported content read version.")
+		return OnlineConnection{}, fault("unsupported_protocol", "Unsupported content read version.")
 	}
-	var out sp.Snapshot
+	var out OnlineConnection
 	hash := sha256.Sum256([]byte(token))
 	err := s.grantRun(ctx, hash[:], func(access *Access) error {
 		tx, r := access.tx, access.record
@@ -333,6 +430,22 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 		id := v.SessionID
 		if h.SessionID != id || h.ClaimID != v.ClaimID || h.TestExecutionID != v.TestExecutionID || h.ExecutionGeneration != v.ExecutionGeneration || h.ControllerID != v.Identity.ControllerID || h.ControllerInstanceID != v.Identity.ControllerInstanceID || h.Provider != v.Identity.Provider || h.SchemaVersion != 1 || h.ProjectionVersion != 1 {
 			return conflict()
+		}
+		// The first authorized connection fixes the choice for the entire execution.
+		// Migrated executions already have legacy mode and keep their old policy.
+		if r.OnlineMode == "" {
+			r.OnlineMode = "legacy"
+			if optedIn {
+				r.OnlineMode = "relay"
+			}
+			policy := "legacy"
+			if taskBody && v.ClaimID != "" {
+				policy = "task_body"
+			}
+			r.HistoryContentPolicy = &policy
+		}
+		if err := requireOnlineCapabilities(r, optedIn, taskBody); err != nil {
+			return err
 		}
 		if r.SourceEpoch == nil {
 			r.SourceEpoch = &h.SourceEpoch
@@ -374,7 +487,7 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 		if err := s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
 			return err
 		}
-		out = permissions(r, false, now)
+		out = OnlineConnection{Snapshot: permissions(r, false, now), OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy}
 		return save(ctx, tx, r)
 	})
 	return out, err

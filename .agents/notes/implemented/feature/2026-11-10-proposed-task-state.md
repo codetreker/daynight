@@ -33,16 +33,16 @@ fields after exact-version validation.
 
 The existing [cancellation decision](2026-11-06-task-cancellation-terminal.md)
 continues to own the irreversible cancelled outcome and readable retained data.
-Active claims still require controlled release; retained released history stays
-on todo or cancelled and does not permit ordinary status setting to bypass
-continuation rules.
+Active claims still require controlled release. The [release decision](../simplification/2026-11-12-release-clears-ownership.md) clears current ownership so ordinary status rules apply afterwards.
 
 A new migration expands the status constraint and changes the default without
 altering existing rows, versions, timestamps or materials. Historical migrations,
 including the original proposed-to-todo conversion, remain unchanged. Protocol
 readers, graph summaries, filters and progress explicitly recognize proposed.
 All-proposed ordinary components aggregate as proposed; unstarted proposed/todo
-mixtures aggregate as todo. Only done/cancelled contribute to ended progress.
+mixtures aggregate as todo. Only done/cancelled contribute to the ended count;
+the [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+separately excludes cancelled from completion presentation.
 
 The [status requirements](../../../../docs/spec/daynight-task-status.md) and
 [architecture](../../../../docs/design/daynight-task-status.md) own the complete
@@ -67,7 +67,9 @@ Existing producers that mean confirmed work must explicitly choose todo. Generic
 new tasks remain visible as unfinished suggestions while staying outside the
 automatic ready queue. The creation default does not change existing task rows.
 
-Adding a state requires coordinated service, MCP, CLI and Web readers. Graph
-summary includes a distinct proposed count; treating every residual state as
-cancelled would corrupt progress. Task Step states remain independent and do not
-acquire proposed.
+The service, MCP, CLI and Web readers of the five-state contract must agree on
+the meaning of proposed. The [component delivery decision](../process/2026-11-18-component-delivery-and-activation.md)
+governs how to stage those changes and verify supported version combinations.
+Graph summary includes a distinct proposed count; treating every residual state
+as cancelled would corrupt progress. Task Step states remain independent and do
+not acquire proposed.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -19,31 +21,48 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
-func (h *Routes) registerArchiveRoutes(mux *http.ServeMux) {
-	h.registerHistoryLedgerRoutes(mux)
+func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
+	h.registerHistoryLedgerRoutes(mux, observe)
 	for _, base := range []string{sessionBase + "/{sessionId}/archive", "/api/v1/test-sessions/{sessionId}/archive"} {
-		h.registerUnifiedArchiveRoutes(mux, base)
+		h.registerUnifiedArchiveRoutes(mux, base, observe)
 		for method, handler := range map[string]httpx.AuthenticatedHandler{"GET": h.archiveStatus, "POST": h.updateArchive, "PUT": h.putArchive} {
-			route := h.auth.Require(h.Parameters(handler))
+			route := h.auth.Require(h.Parameters(handler, method == http.MethodGet))
 			if method == http.MethodPut {
-				route = h.archivePreflight(route)
+				route = h.archivePreflight(route, archiveVersionNone)
 			}
-			mux.HandleFunc(method+" "+base, route)
+			if method == http.MethodPost || method == http.MethodPut {
+				registerProducerRoute(mux, method+" "+base, route, producerCredential, observe)
+			} else {
+				mux.HandleFunc(method+" "+base, route)
+			}
 		}
-		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent))))
+		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent, true)), archiveVersionRequested))
 		for path, methods := range map[string]string{base: "GET, POST, PUT", base + "/content": "GET"} {
 			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				httpx.MethodNotAllowed(h.logger, methods)(w, r)
 			})
-			mux.HandleFunc(path, fallback)
-			mux.HandleFunc("HEAD "+path, fallback)
+			if path == base {
+				registerProducerRoute(mux, path, fallback, producerFallback, observe)
+				registerProducerRoute(mux, "HEAD "+path, fallback, producerFallback, observe)
+			} else {
+				mux.HandleFunc(path, fallback)
+				mux.HandleFunc("HEAD "+path, fallback)
+			}
 		}
 	}
 }
 
 type archiveReservationKey struct{}
 
-func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
+type archiveVersionAdvertisement int
+
+const (
+	archiveVersionNone archiveVersionAdvertisement = iota
+	archiveVersionKnown
+	archiveVersionRequested
+)
+
+func (h *Routes) archivePreflight(next http.HandlerFunc, version archiveVersionAdvertisement) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Downloads do not consume request bodies. Prevent net/http from
 		// draining an incomplete body before writing the response or after it.
@@ -52,6 +71,15 @@ func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
 		}
 		reservation, err := h.service.TryReserveArchivePreflight()
 		if err != nil {
+			// These routes are v1 Task body capable; /content is shared with
+			// legacy and v2 archives, so it additionally requires the request's
+			// explicit Task body capability selector.
+			protocol, protocolErr := selectedSessionProtocol(r)
+			requested := r.Header.Values("Daynight-Task-Body-History-Version")
+			if httpx.ErrorKind(err) == "resource_busy" && protocolErr == nil && protocol == sp.Protocol &&
+				(version == archiveVersionKnown || version == archiveVersionRequested && len(requested) == 1 && requested[0] == "1") {
+				w.Header().Set("Daynight-Task-Body-History-Version", "1")
+			}
 			httpx.CloseUnreadBody(w, r)
 			h.Failure(w, r, err)
 			return
@@ -66,6 +94,7 @@ func archiveReservation(r *http.Request) io.Closer {
 	return reservation
 }
 func (h *Routes) archiveStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	w.Header().Set("Daynight-Task-Body-History-Version", "1")
 	if _, err := httpx.QueryValues(r); err != nil {
 		h.Failure(w, r, err)
 		return
@@ -86,7 +115,14 @@ func (h *Routes) archiveContent(w http.ResponseWriter, r *http.Request, p model.
 	// The archive is already validated JSON. Preserve its exact bytes inside
 	// the v1 envelope instead of letting the JSON encoder rewrite them.
 	data := make([]byte, 0, len(out.Data)+12)
-	if _, err := sp.DecodeArchiveManifest(out.Data); err == nil {
+	if manifest, err := sp.DecodeArchiveManifest(out.Data); err == nil {
+		versions := r.Header.Values("Daynight-Task-Body-History-Version")
+		if manifest.ContentPolicy == "task_body" && (len(versions) != 1 || versions[0] != "1") {
+			err = archiveCleanupError(&model.Fault{Code: "upgrade_required", Message: "This archive requires Task body history version 1."}, out.Close())
+			h.Failure(w, r, err)
+			return
+		}
+		w.Header().Set("Daynight-Task-Body-History-Version", "1")
 		h.sendArchive(w, r, out.Data, 120*time.Second, out)
 		return
 	}
@@ -119,6 +155,15 @@ func validateArchiveBody(r *http.Request) error {
 	}
 	return nil
 }
+func archiveReadRequest(r *http.Request, lease io.Closer) (*http.Request, func()) {
+	ctx, cancel := filestorage.GateContext(r.Context(), lease)
+	reading := r.WithContext(ctx)
+	return reading, func() {
+		r.Body = reading.Body
+		cancel()
+	}
+}
+
 func archiveBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return archiveBodyWithTimeout(w, r, transport.ArchiveBodyReadTimeout)
 }
@@ -178,7 +223,9 @@ func (h *Routes) putArchive(w http.ResponseWriter, r *http.Request, p model.Prin
 			h.closeArchive(r, op)
 		}
 	}()
-	body, err := archiveBody(w, r)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := archiveBody(w, readRequest)
+	finishRead()
 	if err != nil {
 		err = archiveCleanupError(err, op.Close())
 		op = nil
@@ -233,24 +280,38 @@ func (h *Routes) archiveResult(w http.ResponseWriter, r *http.Request, value any
 }
 
 func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte, timeout time.Duration, lease io.Closer) {
+	sendRetainedJSON(w, r, data, timeout, lease, h.logger, "archive_close", func(err error) { h.Failure(w, r, err) })
+}
+
+func sendRetainedJSON(w http.ResponseWriter, r *http.Request, data []byte, timeout time.Duration, lease io.Closer, logger *slog.Logger, closePhase string, fail func(error)) {
 	closed := false
 	defer func() {
 		if !closed {
-			h.closeArchive(r, lease)
+			if err := lease.Close(); err != nil {
+				httpx.LogFailure(logger, r.Context(), "session", closePhase, err)
+			}
 		}
 	}()
-	if r.Context().Err() != nil {
+	ctx, cancel := filestorage.GateContext(r.Context(), lease)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		if r.Context().Err() == nil {
+			closed = true
+			fail(archiveCleanupError(context.Cause(ctx), lease.Close()))
+		}
 		return
 	}
 	controller := http.NewResponseController(w)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		err = archiveCleanupError(err, lease.Close())
-		closed = true
-		h.Failure(w, r, err)
-		return
+	if timeout > 0 {
+		if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			err = archiveCleanupError(err, lease.Close())
+			closed = true
+			fail(err)
+			return
+		}
 	}
 	done := make(chan struct{})
-	stop := context.AfterFunc(r.Context(), func() { _ = controller.SetWriteDeadline(time.Now()); close(done) })
+	stop := context.AfterFunc(ctx, func() { _ = controller.SetWriteDeadline(time.Now()); close(done) })
 	stopped := false
 	defer func() {
 		if !stopped && !stop() {
@@ -274,18 +335,18 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 	}
 	stopped = true
 	if err == nil {
-		err = r.Context().Err()
+		err = context.Cause(ctx)
+	}
+	if err == nil && timeout > 0 {
+		err = controller.SetWriteDeadline(time.Time{})
+		if errors.Is(err, http.ErrNotSupported) {
+			err = nil
+		}
 	}
 	if err != nil {
 		err = errors.Join(err, lease.Close())
 		closed = true
-		httpx.LogFailure(h.logger, r.Context(), "session", "response", err)
-		panic(http.ErrAbortHandler)
-	}
-	if err = controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		err = errors.Join(err, lease.Close())
-		closed = true
-		httpx.LogFailure(h.logger, r.Context(), "session", "response", err)
+		httpx.LogFailure(logger, r.Context(), "session", "response", err)
 		panic(http.ErrAbortHandler)
 	}
 }

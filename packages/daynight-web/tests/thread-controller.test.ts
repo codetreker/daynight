@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../src/api/client';
+import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { ThreadPostError, type getThreadPage, type postThreadMessage } from '../src/features/task-thread/api';
 import { type ThreadMessage, type ThreadPage } from '../src/features/task-thread/contract';
 import { createThreadController, THREAD_LIMITS, type ThreadController, type ThreadControllerOptions } from '../src/features/task-thread/controller';
@@ -31,6 +31,25 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { for (const controller of controllers.splice(0)) controller.retire(); vi.useRealTimers(); });
 
 describe('Thread controller continuous reading', () => {
+  it('resets the message window and reply target on history change while retaining the draft', async () => {
+    const { controller, list } = make();
+    const old = message(10), stale = deferred<ThreadPage>(), fresh = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([old], true)); await start(controller);
+    controller.setDraft('unsent text'); controller.setReply(old.id); await controller.openDetails(old.id);
+    list.mockReturnValueOnce(stale.promise); const pending = controller.refresh(); await flush();
+    const oldCall = list.mock.calls.at(-1)!;
+    list.mockReturnValueOnce(fresh.promise); controller.resetHistory(); await flush();
+    expect(oldCall[2].aborted).toBe(true); expect(() => oldCall[3].assertCurrent()).toThrow();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(controller.snapshot()).toMatchObject({ visible: [], incomingCount: 0, consumedAfterId: null, hasMoreBefore: false, hasMoreAfter: false, initialized: false, draft: 'unsent text', replyTo: null, detailsMessage: null });
+    stale.resolve(page([message(11, 'old history')])); await pending;
+    expect(controller.snapshot().visible).toEqual([]);
+    controller.admitHistory(); await flush();
+    expect(list.mock.calls.at(-1)![1]).toEqual({ count: 50 });
+    fresh.resolve(page([message(20, 'new history')])); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ visible: [message(20, 'new history')], consumedAfterId: id(20), draft: 'unsent text', replyTo: null });
+    controller.retire(); expect(controller.snapshot()).toMatchObject({ visible: [], draft: '', replyTo: null });
+  });
   it('does not work while mounted inactive and cancels hidden reads before late publication', async () => {
     const { controller, list } = make();
     const pending = deferred<ThreadPage>(); list.mockReturnValueOnce(pending.promise);
@@ -225,6 +244,54 @@ describe('Thread scope and replies', () => {
 });
 
 describe('Thread sending', () => {
+  it.each(['confirmed', 'unknown', 'refused'] as const)('settles an old dispatched post as %s without publishing its receipt or replaying it', async outcome => {
+    const { controller, list, post } = make();
+    list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    const result = deferred<ThreadMessage>();
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => {
+      admission.onDispatch?.(); const item = await result.promise; admission.onConfirmed?.(item); return item;
+    });
+    controller.setDraft('submitted'); controller.setReply(id(10));
+    const sending = controller.send(); await flush();
+    list.mockResolvedValueOnce(page([message(20, 'fresh')]));
+    controller.resetHistory(); controller.admitHistory(); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ draft: 'submitted', replyTo: null, visible: [message(20, 'fresh')] });
+    if (outcome === 'confirmed') result.resolve({ ...message(11, 'submitted'), replyTo: id(10) });
+    else result.reject(new ThreadPostError(outcome, new ApiError(outcome === 'unknown' ? 'network' : 'server', outcome === 'unknown' ? null : 503)));
+    await sending; await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: outcome, postOutcome: outcome, sending: false, draft: 'submitted', replyTo: null, visible: [message(20, 'fresh')] });
+    expect(controller.snapshot().postError === null).toBe(outcome === 'confirmed');
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pre-dispatch post on history change and never sends its old reply target', async () => {
+    const entered = deferred<void>(); let hold = false;
+    const ready = async (signal: AbortSignal) => {
+      if (hold) { entered.resolve(); await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }
+    };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    controller.setDraft('draft'); controller.setReply(id(10)); hold = true;
+    const sending = controller.send(); await entered.promise;
+    controller.setActive(false); controller.resetHistory(); await sending;
+    expect(controller.snapshot()).toMatchObject({ draft: 'draft', replyTo: null, remoteOutcome: 'not_sent', sending: false });
+    expect(post).not.toHaveBeenCalled();
+    hold = false; controller.admitHistory(); controller.setActive(true); await controller.refresh();
+    post.mockImplementationOnce(async (_scope, input, _signal, admission) => { expect(input).toEqual({ body: 'draft' }); admission.onDispatch?.(); return message(20, 'draft'); });
+    await controller.send(); expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels pending publication of a previously confirmed receipt on history change', async () => {
+    const gate = deferred<void>(); let hold = false, signal: AbortSignal | undefined;
+    const ready = async (value: AbortSignal) => { if (hold) { signal = value; await gate.promise; } };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(message(11, 'submitted')); hold = true; return message(11, 'submitted'); });
+    controller.setDraft('submitted'); await controller.send(); await flush();
+    expect(controller.snapshot().remoteOutcome).toBe('confirmed');
+    controller.setActive(false); controller.resetHistory(); expect(signal?.aborted).toBe(true);
+    hold = false; gate.resolve(); await flush(); controller.admitHistory(); controller.setActive(true); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ visible: [], draft: 'submitted', remoteOutcome: 'confirmed', postOutcome: 'confirmed' });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
   it('keeps revisions edited during an in-flight POST and does not abort for a hidden tab', async () => {
     const { controller, list, post } = make(); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
     const pending = deferred<ThreadMessage>();
@@ -243,9 +310,10 @@ describe('Thread sending', () => {
     const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
     post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(message(11, 'submitted')); hold = true; controller.setAdmissionBlocked(true); return message(11, 'submitted'); });
     controller.setDraft('submitted'); const sending = controller.send(); await flush();
-    expect(controller.snapshot().remoteOutcome).toBe('confirmed'); expect(controller.snapshot().draft).toBe('submitted');
+    await sending;
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', sending: false, draft: 'submitted' });
     await vi.advanceTimersByTimeAsync(20_000); expect(controller.snapshot().remoteOutcome).toBe('confirmed');
-    controller.setAdmissionBlocked(false); hold = false; resume.resolve(); await sending;
+    hold = false; controller.setAdmissionBlocked(false); resume.resolve(); await flush();
     expect(controller.snapshot().draft).toBe(''); expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
   });
 
@@ -258,12 +326,107 @@ describe('Thread sending', () => {
     });
     controller.setDraft('submitted'); const sending = controller.send(); await flush();
     controller.setDocumentVisible(false); controller.setAdmissionBlocked(true); hold = true;
-    result.resolve(message(11, 'submitted')); await flush();
-    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', postOutcome: 'confirmed', draft: 'submitted' });
+    result.resolve(message(11, 'submitted')); await sending;
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', postOutcome: 'confirmed', sending: false, draft: 'submitted' });
     expect(controller.snapshot().visible.map(item => item.id)).not.toContain(id(11));
     await vi.advanceTimersByTimeAsync(20_000); expect(post).toHaveBeenCalledTimes(1);
-    controller.setDocumentVisible(true); controller.setAdmissionBlocked(false); hold = false; resume.resolve(); await sending; await flush();
+    controller.setDocumentVisible(true); hold = false; controller.setAdmissionBlocked(false); resume.resolve(); await flush();
     expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', draft: '' });
+    expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels preparation on auth pause before dispatch and does not retry', async () => {
+    const entered = deferred<void>(); let hold = false;
+    const ready = async (signal: AbortSignal) => {
+      if (hold) { entered.resolve(); await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }
+    };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    controller.setDraft('draft'); controller.setReply(id(10)); hold = true;
+    const sending = controller.send(); await entered.promise;
+    const resume = pauseAuthRequests(); await sending;
+    expect(controller.snapshot()).toMatchObject({ sending: false, remoteOutcome: 'not_sent', draft: 'draft', replyTo: id(10) });
+    expect(post).not.toHaveBeenCalled(); expect(list).toHaveBeenCalledTimes(1);
+    resume(); hold = false; await flush(); expect(post).not.toHaveBeenCalled();
+  });
+
+  it('refuses a send synchronously when the global gate pauses', async () => {
+    const { controller, post } = make(); await start(controller); controller.setDraft('draft');
+    expect(controller.snapshot().canSend).toBe(true);
+    const resume = pauseAuthRequests();
+    await controller.send();
+    expect(controller.snapshot()).toMatchObject({ sending: false, authPaused: true, draft: 'draft' });
+    expect(post).not.toHaveBeenCalled(); resume();
+  });
+
+  it('settles a cancelled dispatched post as unknown without reading or replaying', async () => {
+    const started = deferred<void>(), transport = deferred<ThreadMessage>();
+    const { controller, list, post } = make(); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); started.resolve(); return transport.promise; });
+    controller.setDraft('draft'); const sending = controller.send(); await started.promise;
+    controller.setAdmissionBlocked(true);
+    transport.reject(new ThreadPostError('unknown', new DOMException('cancelled', 'AbortError'))); await sending;
+    expect(controller.snapshot()).toMatchObject({ sending: false, remoteOutcome: 'unknown', draft: 'draft' });
+    expect(controller.snapshot().postError).toBeInstanceOf(ThreadPostError);
+    expect(post).toHaveBeenCalledTimes(1); expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retire retained content for a late principal mismatch during pause', async () => {
+    const pending = deferred<void>();
+    const { controller, list, post, principalMismatch } = make(); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => {
+      admission.onDispatch?.(); await pending.promise;
+      try { admission.onPrincipalMismatch(); } catch (error) { throw new ThreadPostError('unknown', error); }
+      throw new Error('unexpected admission');
+    });
+    controller.setDraft('draft'); controller.setReply(id(10)); const sending = controller.send(); await flush();
+    controller.setAdmissionBlocked(true); pending.resolve(); await sending;
+    expect(controller.snapshot()).toMatchObject({ retired: false, remoteOutcome: 'unknown', draft: 'draft', replyTo: id(10) });
+    expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10)]); expect(principalMismatch).not.toHaveBeenCalled();
+  });
+
+  it('owns delayed publication, protects newer editing and cancels it on retire', async () => {
+    const gate = deferred<void>(); let hold = false, publicationSignal: AbortSignal | undefined;
+    const ready = async (signal: AbortSignal) => {
+      if (hold) { publicationSignal = signal; await Promise.race([gate.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]); }
+    };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.({ ...message(11, 'submitted'), replyTo: id(10) }); hold = true; return { ...message(11, 'submitted'), replyTo: id(10) }; });
+    controller.setDraft('submitted'); controller.setReply(id(10)); await controller.send();
+    expect(publicationSignal).toBeDefined(); expect(controller.snapshot().sending).toBe(false);
+    controller.setDraft('new draft'); controller.setReply(null); await controller.send();
+    expect(post).toHaveBeenCalledTimes(1); expect(controller.snapshot().canSend).toBe(false);
+    gate.resolve(); await flush();
+    expect(controller.snapshot()).toMatchObject({ draft: 'new draft', replyTo: null, remoteOutcome: 'confirmed' });
+    expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11));
+
+    const gate2 = deferred<void>(); let signal2: AbortSignal | undefined;
+    const second = make({ ready: async signal => { if (hold) { signal2 = signal; await Promise.race([gate2.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]); } } });
+    hold = false; await start(second.controller);
+    second.post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(message(12, 'second')); hold = true; return message(12, 'second'); });
+    second.controller.setDraft('second'); await second.controller.send(); expect(signal2?.aborted).toBe(false);
+    second.controller.retire(); expect(signal2?.aborted).toBe(true); await flush();
+  });
+
+  it('retains the editor when its submission navigation context changes', async () => {
+    let context = 0;
+    const { controller, post } = make({ captureNavigation: () => { const captured = context; return () => captured === context; } });
+    await start(controller); const pending = deferred<ThreadMessage>();
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); const item = await pending.promise; admission.onConfirmed?.(item); return item; });
+    controller.setDraft('submitted'); const sending = controller.send(); await flush(); context++;
+    pending.resolve(message(11, 'submitted')); await sending; await flush();
+    expect(controller.snapshot().draft).toBe('submitted'); expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11));
+  });
+
+  it('retries retained publication after an explicit successful read recovers admission', async () => {
+    let failPublication = false;
+    const ready = async (_signal: AbortSignal) => { if (failPublication) { failPublication = false; throw new ApiError('network'); } };
+    const { controller, post } = make({ ready }); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(message(11, 'submitted')); failPublication = true; return message(11, 'submitted'); });
+    controller.setDraft('submitted'); await controller.send(); await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', sending: false, draft: 'submitted' });
+    expect(controller.snapshot().readError).toBeInstanceOf(ApiError); expect(controller.snapshot().canSend).toBe(false);
+    await controller.refresh(); await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', readError: null, draft: '' });
     expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
   });
 

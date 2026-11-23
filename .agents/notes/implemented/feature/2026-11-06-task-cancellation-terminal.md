@@ -29,11 +29,10 @@ rotate the project epoch or close PRs and branches.
 A database-generated cancelledAt records the cancellation independently of
 startedAt and completedAt. The current terminal time is derived by status.
 Protocol producers and first-party readers use the same five-state contract, including the later [proposed-state decision](2026-11-10-proposed-task-state.md),
-including released claim history on cancelled tasks. Persistent Web task caches
+with cancelled tasks retaining their ordinary materials. Persistent Web task caches
 use an explicit schema rebuild rather than missing-field fallback.
 
-Active ownership must be released before cancellation. Released and completed
-history is retained. All todo-producing or execution-restoring operations reject
+Active ownership must be released before cancellation. Completed records and Session/archive history are retained. Release removes current ownership as described by the [release decision](../simplification/2026-11-12-release-clears-ownership.md). All todo-producing or execution-restoring operations reject
 cancelled, including the separate withdrawal path. Existing Session freezing,
 complete-inventory ownership reconciliation and terminal cleanup continue to own
 stopping, archive gates, resource checks and retry state. Worker local lifecycle
@@ -67,18 +66,21 @@ clear refusal and retains existing stop confirmation.
 
 ## Consequences
 
-Dependency satisfaction and ended progress include done and cancelled; successful
-delivery counts only done. Cancellation can release successors without changing
+Dependency satisfaction and ended counts include done and cancelled; successful
+delivery counts only done. The [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+uses that distinction in Web presentation. Cancellation can release successors without changing
 their versions or states. Web consumes the server's retained dependency facts
 rather than inferring readiness from visible nodes; the [dependency-state
 decision](../architecture/2026-11-11-task-sync-dependency-states.md) records
 that projection and its ordering limit.
 
-The additional required nullable time field needs coordinated protocol readers
-and explicit persistent-cache migration. Distinct predicates prevent a broad
-replacement of done checks from weakening start, completion or reopen rules.
+Readers of the cancellation contract must understand the required nullable
+time field, and persistent caches need explicit migration. The
+[component delivery decision](../process/2026-11-18-component-delivery-and-activation.md)
+separates that reader requirement from PR and rollout timing. Distinct
+predicates prevent a broad replacement of done checks from weakening start,
+completion or reopen rules.
 
-Irreversibility must cover all restoration paths. In particular, retained released
-history cannot authorize withdrawal back to todo; a database constraint error is
+Irreversibility must cover all restoration paths. In particular, historical execution cannot authorize withdrawal back to todo; a database constraint error is
 not a substitute for an explicit domain refusal. Existing cleanup may remain
 pending independently of the business terminal result.

@@ -1,14 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { HerdrCommandCleanupError, HerdrCommandDeadlineError, type HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError, OwnedCommandDeadlineError, type OwnedSpawn } from "../../../src/commands/worker/owned-command.js";
 import { createHostProbeDiagnostic, hostProbeError } from "./host-capabilities-diagnostic.js";
 
 const child = () => Object.assign(new EventEmitter(), { pid: 4321 }) as unknown as ChildProcess;
 
 describe("native host cleanup failure diagnostics", () => {
   it("forwards the unchanged spawn and records command identity and event order without private data", () => {
-    const process = child(), spawn = vi.fn<HerdrSpawn>(() => process);
+    const process = child(), spawn = vi.fn<OwnedSpawn>(() => process);
     let now = 100;
     const diagnostic = createHostProbeDiagnostic(spawn, () => now);
     const args = ["--no-auto-update", "--version"];
@@ -41,14 +41,14 @@ describe("native host cleanup failure diagnostics", () => {
     const diagnostic = createHostProbeDiagnostic(() => child(), () => 100);
     const error = Object.assign(new Error("canary path"), { code: "EBUSY" });
     const remove = vi.fn(async () => { throw error; });
-    const issue = new HerdrCommandCleanupError([new Error("canary child content")], new HerdrCommandDeadlineError());
+    const issue = new OwnedCommandCleanupError([new Error("canary child content")], new OwnedCommandDeadlineError());
     let written = "";
     const emit = vi.fn((text: string) => { written = text; if (outputFails) throw new Error("output unavailable"); });
     await expect(diagnostic.cleanup(remove, [{ provider: "copilot", reason: "unavailable", error: issue }], emit)).rejects.toBe(error);
     expect(remove).toHaveBeenCalledOnce(); expect(emit).toHaveBeenCalledOnce();
     expect(JSON.parse(written)).toMatchObject({ kind: "assistant_host_cleanup_failure", cleanupError: { name: "Error", code: "EBUSY" },
       issues: [{ provider: "copilot", reason: "unavailable", cleanupFailure: true, cleanupUnconfirmed: true,
-        error: { name: "HerdrCommandCleanupError", cause: { name: "HerdrCommandDeadlineError" }, errors: [{ name: "Error" }] } }] });
+        error: { name: "OwnedCommandCleanupError", cause: { name: "OwnedCommandDeadlineError" }, errors: [{ name: "Error" }] } }] });
     expect(written).not.toContain("canary");
   });
 
@@ -66,7 +66,7 @@ describe("native host cleanup failure diagnostics", () => {
     for (let index = 0; index < 30; index++) deep = new AggregateError(Array.from({ length: 20 }, () => deep), "canary");
     const summary = JSON.stringify(hostProbeError(deep));
     expect(summary).toContain("truncated"); expect(summary.length).toBeLessThan(4000); expect(summary).not.toContain("canary");
-    const spawn = vi.fn<HerdrSpawn>(() => child()), diagnostic = createHostProbeDiagnostic(spawn);
+    const spawn = vi.fn<OwnedSpawn>(() => child()), diagnostic = createHostProbeDiagnostic(spawn);
     for (let index = 0; index < 8; index++) diagnostic.start("copilot.exe", Array.from({ length: 20 }, () => "--version"), {});
     expect(spawn).toHaveBeenCalledTimes(8);
     expect(diagnostic.snapshot([]).probes).toHaveLength(6);

@@ -20,11 +20,12 @@ func configuredTestConfig() configpkg.Config {
 	c := configpkg.Config{
 		Database: databaseconfig.Config{URL: "postgres://database"},
 		Storage:  storageconfig.Config{Root: "storage"},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example", PreviewOrigin: "https://preview.daynight.example"},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "configuration-test", AppSecret: "configuration-test", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 	c.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
+	c.Session = configpkg.DefaultConfig().Session
 	return c
 }
 
@@ -32,6 +33,7 @@ func configEnvironment(values map[string]string) func(string) string {
 	base := map[string]string{
 		"DAYNIGHT_DATABASE_URL": "postgres://database", "DAYNIGHT_STORAGE_ROOT": "storage",
 		"DAYNIGHT_PUBLIC_ORIGIN": "https://daynight.example", "DAYNIGHT_UNIAUTH_URL": "https://auth.example",
+		"DAYNIGHT_PREVIEW_ORIGIN": "https://preview.daynight.example",
 		"DAYNIGHT_UNIAUTH_APP_ID": "configuration-test", "DAYNIGHT_UNIAUTH_APP_SECRET": "configuration-test",
 		"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example/api/v1/auth/callback",
 	}
@@ -42,7 +44,7 @@ func configEnvironment(values map[string]string) func(string) string {
 }
 
 func TestPublicPageCallbackConflictsPreventRouteComposition(t *testing.T) {
-	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests", "/api/v1/webhook-event-types", "/api/v1/webhook-event-types/callback", "/api/v1/me/webhooks", "/api/v1/teams/x/webhooks", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
+	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests", "/api/v2/oauth", "/api/v2/oauth/grants", "/api/v1/webhook-event-types", "/api/v1/webhook-event-types/callback", "/api/v1/me/webhooks", "/api/v1/teams/x/webhooks", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
 			config.UniAuth.CallbackURL = config.Server.PublicOrigin + callbackPath
@@ -64,7 +66,7 @@ func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("distinct callback path rejected: %v", err)
 			}
-			handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, config, testLogger())
+			handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}, Files: attachmentTestFiles(t)}, config, testLogger())
 			if err != nil || handler == nil {
 				t.Fatalf("distinct callback path failed route composition: %v", err)
 			}

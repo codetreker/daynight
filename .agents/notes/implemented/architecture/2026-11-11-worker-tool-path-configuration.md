@@ -13,6 +13,8 @@ admits new work or which older selections still own running processes.
 
 ## Decision
 
+The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md) supersedes the three-tool and mode portions of this decision. The original trade-offs below describe the earlier contract.
+
 The existing desired resource stores one nullable choice per tool. Null means
 unadopted; explicit auto is a durable choice that never reimports an old local
 path. A complete local bootstrap fills only null entries under the Worker lock.
@@ -39,13 +41,18 @@ Strict bounded groups and explicit incomplete observations preserve ordinary
 heartbeats under report pressure. The existing request and resource limits remain
 in force alongside the tool sub-budget.
 
-Configuration cache schema 4 preserves prior mode, native, failure and removal
-history. Runtime tool proofs start unverified. Complete targets and optional
+The original tool-path cache seam used schema 4 to preserve mode, native, failure
+and removal history. Schema 5 now separates current and retained records while
+keeping those facts and their genuine provenance, as specified by the
+[fact separation decision](2026-11-12-worker-configuration-fact-separation.md).
+Runtime tool proofs start unverified. Per-tool targets and optional
 selection-key inputs connect the configuration owner to the selection manager
 without another application ledger or another probe. Incomplete cloud adoption
 does not relabel a local choice as a cloud fact. Matching native qualification
 includes the relevant choices and keys when the runtime adapter is present;
 unrelated tool changes do not revoke that qualification.
+The [per-tool readiness decision](2026-11-17-worker-per-tool-readiness.md)
+describes how unadopted choices affect preparation and telemetry.
 
 This decision extends the [shared resolution decision](2026-11-11-worker-tool-path-resolution.md)
 and the [cloud mode decision](2026-11-10-worker-cloud-control-mode.md).
@@ -87,8 +94,11 @@ Server validation proves representation and ownership, not executable behavior.
 Until both extensions are present, configuration reports incur an additional
 authenticated read to detect upgrades without restarting the Worker.
 
-The API and cache seams do not implement Worker Task/Bot/Herdr launch integration.
-The default collector emits no tool-path facts without a runtime snapshot source.
-Web configuration API tool support is opt-in until its form preserves and edits
-these fields; legacy saves remain safe. Real Provider startup and the tool-path
-form retain their own delivery and acceptance boundaries.
+The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
+connects Web Task/Bot launches and a snapshot source to these API and cache seams;
+Herdr instance mapping remains separate. The default collector emits no tool-path
+facts without that source. The [Web consumer](../feature/2026-11-12-worker-tool-path-web.md)
+negotiates the extension and preserves the three-state drafts and submitted
+projection. Legacy saves remain safe. Real Provider startup retains its own
+acceptance boundary; controlled browser results prove presentation and
+configuration handling only.

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -122,6 +123,7 @@ export const startAuthFixture = async (options: {
 export type AuthenticatedFixture = {
   readonly cookie: string;
   request(path: string, init?: RequestInit): Promise<Response>;
+  preview(taskId: string, path: string, init?: RequestInit): Promise<Response>;
   createPAT(name?: string, days?: number): Promise<string>;
 };
 
@@ -134,15 +136,42 @@ export const login = async (options: {
   options.signal?.throwIfAborted();
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin) throw new Error("Authentication fixture requires an exact product origin.");
+  if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port) throw new Error("Authentication fixture requires numeric loopback.");
+  const preview = new URL(origin);
+  const port = Number(origin.port);
+  preview.port = String(port === 65535 ? 65534 : port + 1);
   const cookies = new Map<string, { host: string; value: string; secure: boolean }>();
   const fetch = options.fetch ?? globalThis.fetch;
+  const virtualRequest = async (socketURL: URL, headers: Headers, signal: AbortSignal): Promise<Response> => {
+    return await new Promise((resolve, reject) => {
+      const request = httpRequest(socketURL, { method: "GET", headers: Object.fromEntries(headers), signal }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("error", reject);
+        response.on("end", () => {
+          const output = new Headers();
+          for (let i = 0; i < response.rawHeaders.length; i += 2) output.append(response.rawHeaders[i]!, response.rawHeaders[i + 1]!);
+          const status = response.statusCode ?? 500;
+          resolve(new Response([204, 205, 304].includes(status) ? null : Buffer.concat(chunks), { status, headers: output }));
+        });
+      });
+      request.on("error", reject);
+      request.end();
+    });
+  };
   const exchange = async (url: URL, init: RequestInit = {}): Promise<Response> => {
     options.signal?.throwIfAborted();
     const headers = new Headers(init.headers);
+    const virtual = url.origin === preview.origin;
     const values = [...cookies.values()].filter((cookie) => cookie.host === url.hostname && (!cookie.secure || url.protocol === "https:")).map((cookie) => cookie.value);
-    if (options.fetch === undefined && values.length !== 0) headers.set("Cookie", values.join("; "));
+    if (options.fetch === undefined && values.length !== 0 && !headers.has("Cookie")) headers.set("Cookie", values.join("; "));
+    if (virtual) headers.set("Host", url.host);
     const signals = [AbortSignal.timeout(10_000), ...(options.signal === undefined ? [] : [options.signal]), ...(init.signal == null ? [] : [init.signal])];
-    const response = await fetch(url, { ...init, headers, redirect: "manual", signal: AbortSignal.any(signals) });
+    const socketURL = virtual ? new URL(`${url.pathname}${url.search}`, origin) : url;
+    const signal = AbortSignal.any(signals);
+    const response = options.fetch === undefined && (virtual || headers.has("Host"))
+      ? await virtualRequest(socketURL, headers, signal)
+      : await fetch(socketURL, { ...init, headers, redirect: "manual", signal });
     for (const raw of response.headers.getSetCookie()) {
       const parts = raw.split(";");
       const value = parts[0]!;
@@ -171,7 +200,15 @@ export const login = async (options: {
   const productCallback = await redirect(callback, 302);
   if (productCallback.origin !== origin.origin) throw new Error("Gateway callback left its registered product origin.");
   const result = await redirect(productCallback, 303);
-  if (result.origin !== origin.origin) throw new Error("Product callback redirected outside its origin.");
+  if (result.origin !== preview.origin || result.pathname !== "/auth/sso/start") throw new Error("Product callback did not start preview SSO.");
+  const ssoAuthorize = await redirect(result, 303);
+  if (ssoAuthorize.origin !== origin.origin || ssoAuthorize.pathname !== "/api/v1/auth/preview/authorize") throw new Error("Preview SSO left its main authorization origin.");
+  const ssoCallback = await redirect(ssoAuthorize, 303);
+  if (ssoCallback.origin !== preview.origin || ssoCallback.pathname !== "/auth/sso/callback") throw new Error("Preview SSO callback origin changed.");
+  const ssoComplete = await redirect(ssoCallback, 303);
+  if (ssoComplete.origin !== preview.origin || ssoComplete.pathname !== "/auth/sso/complete") throw new Error("Preview SSO completion origin changed.");
+  const finish = await redirect(ssoComplete, 303);
+  if (finish.origin !== origin.origin || finish.pathname !== "/auth/complete" || finish.searchParams.get("returnPath") !== "/projects") throw new Error("Preview SSO lost the main completion target.");
   const session = [...cookies.values()].find((cookie) => cookie.host === origin.hostname && /^(?:__Host-)?daynight_session=/.test(cookie.value));
   if (session === undefined) throw new Error("Product login did not establish a session.");
   const request = async (path: string, init: RequestInit = {}): Promise<Response> => {
@@ -180,6 +217,17 @@ export const login = async (options: {
     const headers = new Headers(init.headers);
     if (!["GET", "HEAD", "OPTIONS"].includes(init.method ?? "GET")) headers.set("Origin", origin.origin);
     return await exchange(url, { ...init, headers });
+  };
+  const previewRequest = async (taskId: string, path: string, init: RequestInit = {}): Promise<Response> => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(taskId) || !path.startsWith("/")) throw new Error("Invalid preview address.");
+    const target = new URL(path, preview);
+    if (target.origin !== preview.origin) throw new Error("Preview request must remain on its configured origin.");
+    const headers = new Headers(init.headers);
+    headers.set("Host", `${taskId}.${preview.host}`);
+    const credential = [...cookies.values()].find((cookie) => cookie.host === preview.hostname && /^daynight_preview_session=/.test(cookie.value));
+    if (credential === undefined) throw new Error("Preview login did not establish its session.");
+    headers.set("Cookie", credential.value);
+    return await exchange(new URL(`${target.pathname}${target.search}`, origin), { ...init, headers });
   };
   const createPAT = async (name = "Acceptance fixture", days = 1): Promise<string> => {
     const response = await request("/api/v1/me/tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() }) });
@@ -190,5 +238,5 @@ export const login = async (options: {
     if (typeof value.token !== "string" || !value.token.startsWith("dnpat_")) throw new Error("Fixture PAT response is invalid.");
     return value.token;
   };
-  return { cookie: session.value, request, createPAT };
+  return { cookie: session.value, request, preview: previewRequest, createPAT };
 };

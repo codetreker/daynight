@@ -267,7 +267,7 @@ func grantDatabaseEnvironment(t *testing.T, storageRoot string, cleanupAllowed f
 	address := testAddress(t)
 	origin := "http://" + address
 	return map[string]string{"DAYNIGHT_DATABASE_URL": parsed.String(), "DAYNIGHT_STORAGE_ROOT": storageRoot, "DAYNIGHT_LISTEN_ADDR": address,
-		"DAYNIGHT_PUBLIC_ORIGIN": origin, "DAYNIGHT_UNIAUTH_CALLBACK_URL": origin + "/api/v1/auth/callback",
+		"DAYNIGHT_PUBLIC_ORIGIN": origin, "DAYNIGHT_PREVIEW_ORIGIN": testauth.PreviewOrigin(origin), "DAYNIGHT_UNIAUTH_CALLBACK_URL": origin + "/api/v1/auth/callback",
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1"}, schema
 }
 

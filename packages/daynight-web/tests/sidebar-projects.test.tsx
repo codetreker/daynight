@@ -1,7 +1,9 @@
 import { useRef, type ReactNode } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { WorkspaceSidebar } from "../src/app/WorkspaceSidebar";
+import { useWorkspaceDrawer } from "../src/app/sidebar/useWorkspaceDrawer";
+import { WorkspaceSidebar } from "../src/app/sidebar/WorkspaceSidebar";
+import type { AuthRoute } from "../src/app/router";
 import type { Project } from "../src/api/types";
 import { ProjectsProvider, useProjectList } from "../src/features/projects/ProjectsProvider";
 import { ProjectsPage } from "../src/features/projects/ProjectsPage";
@@ -20,9 +22,10 @@ const project = (index: number, name = `Project ${index}`): Project => ({ owners
 });
 const response = (items: readonly Project[], nextCursor: string | null = null) => new Response(stringifyWireJson({ items, nextCursor }), { headers: { "Content-Type": "application/json" } });
 const failure = () => new Response(JSON.stringify({ error: { code: "internal_error", message: "private server detail", requestId: "rq-projects" } }), { status: 500, headers: { "Content-Type": "application/json" } });
-const Harness = ({ activeProjectId = null, collapsed = false, onNavigate = () => {}, children }: { readonly activeProjectId?: string | null; readonly collapsed?: boolean; readonly onNavigate?: () => void; readonly children?: ReactNode }) => {
+const Harness = ({ activeProjectId = null, route, collapsed = false, onNavigate = () => {}, children }: { readonly activeProjectId?: string | null; readonly route?: AuthRoute; readonly collapsed?: boolean; readonly onNavigate?: () => void; readonly children?: ReactNode }) => {
   const workspace = useRef<HTMLDivElement>(null);
-  return <ProjectsProvider><WorkspaceSidebar collapsed={collapsed} onToggle={() => {}} routeKey={activeProjectId ?? "projects"} projectsActive={activeProjectId === null} sharedActive={false} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" activeProjectId={activeProjectId} blocked={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}>{children}</div></ProjectsProvider>;
+  const drawer = useWorkspaceDrawer(activeProjectId ?? "projects", false);
+  return <ProjectsProvider><WorkspaceSidebar drawer={drawer} collapsed={collapsed} onToggle={() => {}} route={route ?? (activeProjectId === null ? { kind: "projects" } : { kind: "project", projectId: activeProjectId, tab: null })} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: "00000000-0000-4000-8000-000000000701", visibilityTeamId: "00000000-0000-4000-8000-000000000701" }} webhooksAvailable={false} blocked={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}><button ref={drawer.openerRef} onClick={drawer.open} hidden={!drawer.narrow}>Open navigation</button>{children}</div></ProjectsProvider>;
 };
 const navigation = () => within(screen.getByRole("complementary", { name: "Workspace navigation" }));
 
@@ -38,7 +41,7 @@ describe("sidebar project navigation", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(nav.getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Project 2", "Project 1"]);
     expect(nav.getByRole("link", { name: "Project 1" })).toHaveAttribute("aria-current", "true");
-    expect(nav.getByRole("link", { name: "My projects" })).not.toHaveAttribute("aria-current");
+    expect(nav.getByRole("link", { name: "Projects" })).not.toHaveAttribute("aria-current");
     fireEvent.click(nav.getByRole("button", { name: "Load more" }));
     await screen.findByRole("heading", { name: "Project 3" });
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -48,6 +51,27 @@ describe("sidebar project navigation", () => {
     expect(nav.getByRole("link", { name: "Project 4" })).toBeInTheDocument();
     expect(nav.queryByRole("link", { name: "Project 1" })).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains the tree on shared pages and hides it when collapsed without reloading", async () => {
+    const fetch = vi.fn().mockResolvedValue(response([project(1)]));
+    vi.stubGlobal("fetch", fetch);
+    const view = render(<Harness activeProjectId={project(1).id} />);
+    const nav = navigation();
+    const link = await nav.findByRole("link", { name: "Project 1" });
+    expect(link).toHaveAttribute("aria-current", "true");
+    view.rerender(<Harness route={{ kind: "workers" }} />);
+    expect(nav.getByRole("link", { name: "Project 1" })).toBe(link);
+    expect(link).not.toHaveAttribute("aria-current");
+    view.rerender(<Harness route={{ kind: "sharedProjects" }} />);
+    expect(nav.getByRole("link", { name: "Project 1" })).toBe(link);
+    expect(link).not.toHaveAttribute("aria-current");
+    expect(nav.getByRole("link", { name: "Shared with me" })).toHaveAttribute("aria-current", "page");
+    view.rerender(<Harness collapsed />);
+    expect(nav.queryByRole("link", { name: "Project 1" })).toBeNull();
+    view.rerender(<Harness />);
+    expect(nav.getByRole("link", { name: "Project 1" })).toBe(link);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("exposes first-page errors and retries into an empty list", async () => {
@@ -87,8 +111,8 @@ describe("sidebar project navigation", () => {
     const onNavigate = vi.fn();
     render(<Harness collapsed onNavigate={onNavigate} />);
     await act(async () => {});
-    expect(navigation().queryByRole("link", { name })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(screen.queryByRole("link", { name })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const drawer = screen.getByRole("dialog");
     const link = within(drawer).getByRole("link", { name });
     expect(link).toHaveAttribute("title", name);

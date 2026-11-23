@@ -4,6 +4,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { parse as parseYaml } from "yaml";
 import { inspectInstalledSkill } from "../fixtures/skill-contract.js";
 import { loadSqliteSequence } from "../../src/platform/sqlite-sql.js";
@@ -16,17 +18,17 @@ const bundles = ["commands/review/skills/daynight-review", "commands/skill/skill
 const sqlDirectories = [
   "commands/review/sqlite",
   "commands/worker/sqlite",
+  "commands/worker/lifecycle-sqlite",
   "commands/worker/backends/sqlite",
-  "commands/worker/herdr/sqlite",
-  "commands/worker/herdr/input-sqlite",
   "commands/controller/sqlite/journal",
   "commands/controller/sqlite/resume-lease",
 ] as const;
 const resources = [...bundles, ...sqlDirectories];
 const standaloneManual = "commands/skill/usage.md" as const;
+const timelineSql = "commands/controller/sqlite/journal/010-timeline-content.sql" as const;
 const firstTopic = `commands/skill/skills/using-daynight/${manualTopicFiles[0]}`;
 const allResources = [...resources, standaloneManual];
-type Resource = typeof allResources[number];
+type Resource = typeof allResources[number] | typeof timelineSql;
 const directories: string[] = [];
 
 const files = (directory: string, prefix = ""): string[] => readdirSync(directory, { withFileTypes: true })
@@ -63,6 +65,10 @@ const fixture = (missing?: Resource) => {
     if (resource === missing) continue;
     mkdirSync(source(resource), { recursive: true });
     writeFileSync(path.join(source(resource), "001-baseline.sql"), "CREATE TABLE baseline (value TEXT NOT NULL);\n");
+  }
+  if (missing !== "commands/controller/sqlite/journal") {
+    mkdirSync(path.dirname(source(timelineSql)), { recursive: true });
+    cpSync(path.join(packageDirectory, "src", timelineSql), source(timelineSql));
   }
   const run = () => {
     const result = spawnSync(process.execPath, [path.join(scripts, "copy-resources.ts")], {
@@ -103,11 +109,18 @@ describe("packaged resource copy", () => {
     expect((metadata.description as string).trim()).not.toBe("");
     expect(manual).toContain("daynight task thread read");
     expect(manual).toContain("daynight task thread post");
-    const localLinks = [...manual.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)].map((match) => match[1]!)
+    const targets: string[] = [];
+    const collectLinks = (node: { type: string; url?: string; children?: unknown[] }): void => {
+      if ((node.type === "link" || node.type === "image" || node.type === "definition") && node.url !== undefined) targets.push(node.url);
+      for (const child of node.children ?? []) collectLinks(child as typeof node);
+    };
+    collectLinks(unified().use(remarkParse).parse(manual));
+    expect(manual).toContain("[Task details](task.md)");
+    const localLinks = targets
       .filter((target) => !target.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/iu.test(target));
     expect(localLinks).toEqual([]);
     const anchors = new Set([...manual.matchAll(/<a id="([^"]+)"><\/a>/gu)].map((match) => match[1]!));
-    for (const match of manual.matchAll(/\[[^\]]*\]\(#([^)]+)\)/gu)) expect(anchors.has(match[1]!), `Missing aggregate anchor ${match[1]}`).toBe(true);
+    for (const target of targets.filter((target) => target.startsWith("#"))) expect(anchors.has(target.slice(1)), `Missing aggregate anchor ${target.slice(1)}`).toBe(true);
   });
 
   it("rejects a directory at a required topic path before copying resources", () => {
@@ -161,6 +174,7 @@ describe("packaged resource copy", () => {
         writeFileSync(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
       }
     }
+    writeFileSync(f.source(timelineSql), readFileSync(f.source(timelineSql), "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
     const topics = new Map(manualTopicFiles.map((filename) => [filename, readFileSync(path.join(f.source(bundles[1]), filename))] as const));
@@ -172,6 +186,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(timelineSql))).toEqual(readFileSync(f.source(timelineSql)));
     await inspectInstalledSkill(f.destination(bundles[1]));
   });
 
@@ -224,6 +239,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(timelineSql))).toEqual(readFileSync(f.source(timelineSql)));
     expect(readFileSync(compiled, "utf8")).toBe("compiled module\n");
     expect(existsSync(path.join(f.directory, "dist/commands/skill/skills/private-development"))).toBe(false);
     expect(existsSync(path.join(f.directory, "dist/.agents"))).toBe(false);
@@ -237,6 +253,7 @@ describe("packaged resource copy", () => {
       resource,
       files: files(f.destination(resource)).map((relative) => ({ relative, content: readFileSync(path.join(f.destination(resource), relative)) })),
     }));
+    const originalTimelineSql = readFileSync(f.destination(timelineSql));
     const compiled = path.join(f.directory, "dist/commands/skill/command.js");
     writeFileSync(compiled, "installed compiled module\n");
     for (const resource of resources) {
@@ -245,6 +262,7 @@ describe("packaged resource copy", () => {
         writeFileSync(source, `${readFileSync(source, "utf8")}\nReplacement resource.\n`);
       }
     }
+    writeFileSync(f.source(timelineSql), `${readFileSync(f.source(timelineSql), "utf8")}\nReplacement resource.\n`);
 
     const repeated = f.run();
     expect(repeated.status).not.toBe(0);
@@ -254,6 +272,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(content), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(timelineSql))).toEqual(originalTimelineSql);
     expect(readFileSync(compiled, "utf8")).toBe("installed compiled module\n");
   });
 

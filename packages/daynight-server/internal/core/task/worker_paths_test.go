@@ -8,11 +8,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func validDescriptor() WorkerDescriptor {
-	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000004"}
+	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "00000000-0000-4000-8000-000000000004"}
 }
 func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 	t.Helper()
@@ -26,9 +27,8 @@ func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 }
 func TestWorkerClaimLifecycle(t *testing.T) {
 	d := validDescriptor()
-	d.AgentControlMode = ""
 	normal, err := CanonicalWorkerDescriptor(d)
-	if err != nil || normal.AgentControlMode != model.AgentControlModeHerdr {
+	if err != nil || normal.AgentControlMode != model.AgentControlModeWeb {
 		t.Fatal(normal, err)
 	}
 	bad := d
@@ -55,19 +55,16 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	if err = ValidateDelete(t.Context(), &mutationDAO{}, current, true); err == nil {
 		t.Fatal("deleted active claim")
 	}
-	values, err := ReleaseCandidate(current, worker)
+	values, err := ReleaseCandidate(current)
 	if err != nil || values.Status != model.TaskTodo {
 		t.Fatal(values, err)
 	}
 	released := current
 	released.Status = model.TaskTodo
 	released.Properties = values.Properties
-	if _, err = ReleasedWorker(released, worker.ClaimID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = ReleasedWorker(released, "other")
+	_, err = WithdrawableWorker(released, worker.ClaimID)
 	faultCode(t, err, "claim_conflict")
-	withdrawn, err := WithdrawCandidate(released)
+	withdrawn, err := WithdrawCandidate(current)
 	if err != nil || withdrawn.AllowAgents || withdrawn.Status != model.TaskTodo {
 		t.Fatal(withdrawn, err)
 	}
@@ -78,15 +75,91 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	if err != nil || fresh.Status != model.TaskInProgress {
 		t.Fatal(fresh, err)
 	}
+	assertWebWorkerOmitsHerdr(t, fresh.Properties)
+}
+
+func TestNewWorkerClaimsRequireExplicitWeb(t *testing.T) {
+	for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentClaude, model.AgentCopilot} {
+		for _, mode := range []model.WorkerAgentControlMode{"", model.AgentControlModeHerdr, model.AgentControlModeWeb} {
+			descriptor := validDescriptor()
+			descriptor.Agent, descriptor.AgentControlMode = agent, mode
+			_, err := CanonicalWorkerDescriptor(descriptor)
+			if (err == nil) != (mode == model.AgentControlModeWeb) {
+				t.Fatalf("claim %s/%s: %v", agent, mode, err)
+			}
+		}
+	}
+}
+
+func TestHistoricalWorkerCannotUpdateButCanBeManuallyReleased(t *testing.T) {
+	current, worker := activeFixture(t)
+	historical := *worker
+	historical.AgentControlMode = model.AgentControlModeHerdr
+	historical.Herdr = &model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}
+	raw, err := taskproperty.EncodeWorker(&historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Properties["worker"] = raw
+	current.Properties["blocked"] = json.RawMessage(`true`)
+	phase := model.WorkerExecuting
+	faultCode(t, WorkerUpdateAdmission(&historical, historical.UserID, historical.ClaimID, UpdateWorker{Phase: &phase}), "invalid_input")
+	faultCode(t, WorkerUpdateAdmission(&historical, "other", historical.ClaimID, UpdateWorker{Phase: &phase}), "forbidden")
+	candidate := CurrentWrite(current)
+	candidate.Title = "Updated title"
+	if err := AdmitCandidate(candidate); err != nil {
+		t.Fatalf("ordinary change to task with historical worker: %v", err)
+	}
+	encoded, err := taskproperty.Encode(candidate.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := taskproperty.Decode([]byte(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := taskproperty.Worker(decoded)
+	if err != nil || retained == nil || retained.AgentControlMode != model.AgentControlModeHerdr || retained.Herdr == nil || *retained.Herdr != *historical.Herdr {
+		t.Fatalf("historical worker changed: %#v %v", retained, err)
+	}
+	claim := historical.ClaimID
+	input := SetTaskStatus{Status: model.TaskDone, ClaimID: &claim}
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: "other"}, current, input, &historical)
+	faultCode(t, err, "forbidden")
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: historical.UserID}, current, input, &historical)
+	faultCode(t, err, "invalid_input")
+	completed := historical
+	completed.State = model.WorkerCompleted
+	current.Status = model.TaskDone
+	if _, changed, err := StatusCandidate(t.Context(), nil, model.Principal{UserID: historical.UserID}, current, input, &completed); err != nil || changed {
+		t.Fatalf("completed historical claim no-op: changed=%v err=%v", changed, err)
+	}
+	current.Status = model.TaskInProgress
+	for _, operation := range []struct {
+		name string
+		run  func(model.Task) (store.TaskWrite, error)
+	}{
+		{"release", ReleaseCandidate},
+		{"withdraw", WithdrawCandidate},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			values, err := operation.run(current)
+			if err != nil || values.Status != model.TaskTodo || string(values.Properties["blocked"]) != "true" {
+				t.Fatalf("%s: %#v %v", operation.name, values, err)
+			}
+			if _, present := values.Properties["worker"]; present {
+				t.Fatal("historical worker retained")
+			}
+		})
+	}
 }
 func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	current, worker := activeFixture(t)
 	claim := worker.ClaimID
 	invalidPhase := model.WorkerPhase("bad")
-	herdr := &model.WorkerHerdr{}
 	native := " "
 	badReport := &sp.StartupReport{}
-	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, Herdr: &herdr}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
+	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
 		if _, err := ValidateWorkerUpdate(in); err == nil {
 			t.Fatalf("accepted %+v", in)
 		}
@@ -100,16 +173,13 @@ func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)
 	}
+	assertWebWorkerOmitsHerdr(t, values.Properties)
 	next, err := taskproperty.Worker(values.Properties)
 	if err != nil || next.Phase != phase {
 		t.Fatal(next, err)
 	}
 	web := *worker
 	web.AgentControlMode = model.AgentControlModeWeb
-	herdr = &model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}
-	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{Herdr: &herdr}); err == nil {
-		t.Fatal("web herdr")
-	}
 	faultCode(t, WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{StartupReport: &sp.StartupReport{ClaimID: "other"}}), "claim_conflict")
 	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{}); err != nil {
 		t.Fatal(err)
@@ -133,41 +203,56 @@ func TestStatusClaimOwnershipAndTransitions(t *testing.T) {
 	if err != nil || !changed || values.Status != model.TaskDone {
 		t.Fatal(values, changed, err)
 	}
-	released := *worker
-	released.State = model.WorkerReleased
-	_, _, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskTodo}, &released)
-	faultCode(t, err, "invalid_transition")
+	_, changed, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskTodo}, nil)
+	if err != nil || !changed {
+		t.Fatal(changed, err)
+	}
 	current.BlockedBy = []string{"pre"}
 	_, _, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskDone}, nil)
 	faultCode(t, err, "dependency_unsatisfied")
 }
 
-func TestCancelledReleasedHistoryCannotRestoreExecution(t *testing.T) {
+func TestSameStatusCompletionChecksClaim(t *testing.T) {
+	current, worker := activeFixture(t)
+	current.Status = model.TaskDone
+	owner := model.Principal{UserID: worker.UserID}
+	input := SetTaskStatus{Status: model.TaskDone, ClaimID: &worker.ClaimID}
+
+	// An ordinary completion after release has no worker to authorize the old claim.
+	_, _, err := StatusCandidate(t.Context(), nil, owner, current, input, nil)
+	faultCode(t, err, "claim_conflict")
+	completed := *worker
+	completed.State = model.WorkerCompleted
+	_, changed, err := StatusCandidate(t.Context(), nil, owner, current, input, &completed)
+	if err != nil || changed {
+		t.Fatalf("matching completed claim: changed=%v err=%v", changed, err)
+	}
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: "other"}, current, input, &completed)
+	faultCode(t, err, "forbidden")
+	other := completed
+	other.ClaimID = "other"
+	_, _, err = StatusCandidate(t.Context(), nil, owner, current, input, &other)
+	faultCode(t, err, "claim_conflict")
+}
+
+func TestCancelledTaskCannotRestoreExecution(t *testing.T) {
 	current, worker := activeFixture(t)
 	owner := model.Principal{UserID: worker.UserID}
 	_, _, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, worker)
 	faultCode(t, err, "invalid_transition")
-	released := *worker
-	released.State = model.WorkerReleased
 	current.Status = model.TaskTodo
-	current.Properties, err = properties.WithWorker(current.Properties, &released)
+	current.Properties, err = properties.WithWorker(current.Properties, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, changed, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, &released)
+	values, changed, err := StatusCandidate(t.Context(), taskDAO{}, owner, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
 	if err != nil || !changed || values.Status != model.TaskCancelled {
 		t.Fatal(values, changed, err)
 	}
 	current.Status, current.Properties = values.Status, values.Properties
-	retained, err := taskproperty.Worker(current.Properties)
-	if err != nil || retained.State != model.WorkerReleased || retained.ClaimID != released.ClaimID {
-		t.Fatal(retained, err)
-	}
-	_, err = WithdrawableWorker(current, released.ClaimID)
+	_, err = WithdrawableWorker(current, worker.ClaimID)
 	faultCode(t, err, "invalid_transition")
 	_, err = WithdrawCandidate(current)
-	faultCode(t, err, "invalid_transition")
-	_, err = ReleasedWorker(current, released.ClaimID)
 	faultCode(t, err, "invalid_transition")
 	faultCode(t, WorkerReady(current), "invalid_transition")
 }
@@ -182,7 +267,7 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 		t.Fatal("active worker accepted")
 	}
 	current, worker = activeFixture(t)
-	input := UpdateWorker{Herdr: ptr(&model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}), NativeSessionID: ptr(ptr("native"))}
+	input := UpdateWorker{NativeSessionID: ptr(ptr("native"))}
 	values, changed, err := WorkerUpdateCandidate(current, worker, worker.ClaimID, input)
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)
@@ -196,5 +281,16 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 	values, changed, err = WorkerUpdateCandidate(current, worker, worker.ClaimID, UpdateWorker{StartupReport: report})
 	if err != nil || !changed || len(values.Properties["sessionStartup"]) == 0 {
 		t.Fatal(values, changed, err)
+	}
+}
+
+func assertWebWorkerOmitsHerdr(t *testing.T, properties model.TaskProperties) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(properties["worker"], &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["herdr"]; exists {
+		t.Fatal("Web worker write included herdr")
 	}
 }

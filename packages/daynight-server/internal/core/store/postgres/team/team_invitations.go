@@ -125,10 +125,3 @@ func (s *reader) InvitationTeamMember(ctx context.Context, team, user string) (m
 func (tx *writer) InvitationMember(ctx context.Context, user string) (model.TeamMember, error) {
 	return readTeamMember(ctx, tx.tx, tx.teamID, user, true)
 }
-func (tx *writer) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) SELECT $1,id,'member' FROM users WHERE id=$2`, tx.teamID, user)
-	if err != nil {
-		return model.TeamMember{}, pg.QueryError("add invited Team member", err)
-	}
-	return tx.InvitationMember(ctx, user)
-}

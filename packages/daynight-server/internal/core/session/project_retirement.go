@@ -2,11 +2,8 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"math"
 
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -35,32 +32,17 @@ func RetireProject(ctx context.Context, dao store.ProjectSessionRetirementDAO, p
 				p.SnapshotRemove = []string{"cleanupInteractionIds", "controls", "turnStartedAt", "currentTurnId"}
 				p.SnapshotPatch = map[string]any{"lifecycle": lifecycle, "synchronized": false, "connectionState": "disconnected", "activity": "unknown"}
 			case "herdr":
-				stale, unknown := "stale_fence", "input_unknown"
-				p.Receipts = []store.ProjectSessionReceiptTransition{{Previous: "queued", Next: "rejected", ErrorCode: &stale}, {Previous: "dispatching", Next: "unknown", ErrorCode: &unknown}}
-				var control *v2.ControlState
-				if len(fact.Control) > 0 && string(fact.Control) != "null" {
-					if err := json.Unmarshal(fact.Control, &control); err != nil {
-						return fmt.Errorf("decode terminal control: %w", err)
-					}
-				}
-				epoch := fact.ControlEpoch
-				if control != nil {
-					if number(epoch) == math.MaxInt64 {
-						control.State = "closed"
-					} else {
-						epoch = next(epoch)
-					}
-					control.ControlEpoch = epoch
-					r := terminalRecord{Control: control, ConnectionEpoch: control.ConnectionEpoch}
-					suspendTerminalState(&r)
-					control.UnavailableReason = nil
-				}
-				p.TerminalPatch = map[string]any{"Control": control, "ControlEpoch": epoch, "ControlActor": nil, "LastLeaseSeq": "0", "LastSeen": nil}
+				// Retain historical terminal state without initiating old execution cleanup.
+				after = fact.ID
+				continue
 			default:
 				return fmt.Errorf("unknown session backend %q", fact.Backend)
 			}
 			plans = append(plans, p)
 			after = fact.ID
+		}
+		if len(plans) == 0 {
+			continue
 		}
 		if err := dao.ApplyProjectSessionRetirement(ctx, plans); err != nil {
 			return err
@@ -77,22 +59,12 @@ type projectContentTicket struct {
 	id    string
 	value *pendingContent
 }
-type projectFrameTicket struct {
-	id    string
-	value *terminalFrameWrite
-}
-type projectBodyTicket struct {
-	session, id string
-	value       *terminalBodyWrite
-}
 
 // ProjectRetirementTicket holds only objects already resident in this engine.
 type ProjectRetirementTicket struct {
 	engine  *Engine
 	live    []projectLiveTicket
 	content []projectContentTicket
-	frames  []projectFrameTicket
-	bodies  []projectBodyTicket
 }
 
 // CaptureProjectRetirement must run before commit while all Task locks remain held.
@@ -115,25 +87,6 @@ func (s *Engine) CaptureProjectRetirement(project string) *ProjectRetirementTick
 		}
 	}
 	s.content.mu.Unlock()
-	s.terminalMutex.Lock()
-	for id, p := range s.terminalFrames {
-		if p.projectID == project {
-			t.frames = append(t.frames, projectFrameTicket{id, p})
-		}
-	}
-	for id, p := range s.terminalFrameWrites {
-		if p.projectID == project {
-			t.frames = append(t.frames, projectFrameTicket{id, p})
-		}
-	}
-	for id, entries := range s.terminalPending {
-		for key, p := range entries {
-			if p.projectID == project {
-				t.bodies = append(t.bodies, projectBodyTicket{id, key, p})
-			}
-		}
-	}
-	s.terminalMutex.Unlock()
 	return t
 }
 
@@ -166,22 +119,4 @@ func (t *ProjectRetirementTicket) Retire() {
 		}
 	}
 	s.content.mu.Unlock()
-	s.terminalMutex.Lock()
-	for _, item := range t.frames {
-		if s.terminalFrames[item.id] == item.value {
-			delete(s.terminalFrames, item.id)
-		}
-		if s.terminalFrameWrites[item.id] == item.value {
-			delete(s.terminalFrameWrites, item.id)
-		}
-	}
-	for _, item := range t.bodies {
-		if s.terminalPending[item.session][item.id] == item.value {
-			delete(s.terminalPending[item.session], item.id)
-			if len(s.terminalPending[item.session]) == 0 {
-				delete(s.terminalPending, item.session)
-			}
-		}
-	}
-	s.terminalMutex.Unlock()
 }

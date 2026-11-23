@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -8,12 +9,22 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src
 import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { parseSessionArchive } from "../../../src/session/archive.js";
+import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
+import { prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
 
+const errorCauses = (error: unknown): Error[] => {
+  const values: Error[] = [];
+  for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
+  return values;
+};
 const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 // Build each historical schema independently of the current lifecycle opener.
 const fixture = async (version: 1 | 2 | 3 | 4 | 5) => {
@@ -22,6 +33,10 @@ const fixture = async (version: 1 | 2 | 3 | 4 | 5) => {
   const home = await mkdtemp(path.join(base, "legacy-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const snapshot: ControllerSnapshot = { executionId: ticket.executionId, claimId: ticket.claimId, sessionId: ticket.sessionId, executionGeneration: "1", controllerInstanceId: ticket.controllerInstanceId, lifecycle: "stopped", nativeSessionId: randomUUID(), initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
+  if (process.platform === "win32") {
+    snapshot.controllerProcess = { pid: 2_000_000_000, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` };
+    snapshot.windowsJobStopProof = { version: 1, ticketHash: controllerPayloadHash(ticket), snapshotHash: controllerPayloadHash(snapshot) };
+  }
   const entry = { entryId: randomUUID(), revision: "3", kind: "assistant_message", content: [{ type: "text", text: "original legacy answer" }] };
   const operation = { executionGeneration: "1", operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt }, payloadHash: "original-hash", state: "confirmed", result: { completed: true }, error: null, createdAt: 1, updatedAt: 2 };
   const journalPath = path.join(home, "journal.sqlite"), db = new Database(journalPath);
@@ -57,7 +72,7 @@ const committedLegacySource = async (upgraded = false) => {
   inspect(f.journalPath, db => db.prepare("INSERT INTO resources VALUES(?,?,?)").run(resourceId, JSON.stringify(resource), bytes));
   const source = JSON.stringify(parseSessionArchive({ schemaVersion: 1, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, executionGeneration: f.ticket.executionGeneration, controllerId: f.ticket.controllerId, controllerInstanceId: f.ticket.controllerInstanceId, provider: f.ticket.provider, nativeSessionId: f.snapshot.nativeSessionId, entries: [{ ...f.entry, entrySeq: "1" }], resources: [{ resource, data: bytes.toString("base64") }] }));
   const current = { state: "ready", schemaVersion: 3, completeness: "complete", sha256: "2".repeat(64), byteLength: "96", errorCode: null, migration: { migrationId: randomUUID(), sourceSha256: createHash("sha256").update(source).digest("hex"), sourceByteLength: String(Buffer.byteLength(source)) } };
-  if (upgraded) openControllerLifecycleStore(f.journalPath, f.ticket).close();
+  if (upgraded) expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   return { ...f, current };
 };
 
@@ -78,7 +93,7 @@ test.each([false, true])("reconciles a committed legacy completion without a loc
 
 test("a committed legacy completion without a local receipt preserves its original undrained source and existing intent", async () => {
   const f = await committedLegacySource(true), intentPath = `${f.journalPath}.archive-intent-1.json`, intent = "An earlier unconfirmed competing intent";
-  inspect(f.journalPath, db => db.exec("UPDATE execution SET last_acknowledged=0,source_floor=last_sequence; DELETE FROM outbox"));
+  inspect(f.journalPath, db => db.exec("UPDATE execution SET last_acknowledged=0,source_floor=last_sequence; DELETE FROM outbox; UPDATE outbox_totals SET byte_length=0"));
   await writeFile(intentPath, intent);
   const before = inspect(f.journalPath, db => db.prepare("SELECT snapshot,last_sequence,last_acknowledged,source_floor FROM execution").get());
   const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => { expect(init?.method).toBe("GET"); return Response.json({ archive: f.current }); });
@@ -119,7 +134,7 @@ test("a legacy completion without a local receipt rejects resource bytes changed
     const file = path.join(directory, (await readdir(directory))[0]!); await writeFile(file, Buffer.alloc((await stat(file)).size));
     return Response.json({ archive: f.current });
   });
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("legacy resource content changed");
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("resource content changed");
   await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(`${f.journalPath}.archive-intent-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -160,9 +175,11 @@ test("invalid legacy schema is rejected before exporting and can retry after rep
 
 test.each(["active", "unknown"] as const)("archive migration rejects an %s writer before changing schema or exporting files", async owner => {
   const f = await fixture(2), bodies: string[] = [];
+  const request = vi.fn(receiver(bodies));
   inspect(f.journalPath, db => db.prepare("UPDATE execution SET owner_pid=?").run(process.pid));
   if (owner === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Owner status unavailable"), { code: "EPERM" }); });
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", connectionClosed: true });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "not-started", connectionClosed: true });
+  expect(request).not.toHaveBeenCalled();
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect(db.prepare("SELECT owner_pid,snapshot FROM execution").get()).toEqual({ owner_pid: process.pid, snapshot: JSON.stringify(f.snapshot) });
@@ -174,7 +191,7 @@ test.each(["active", "unknown"] as const)("archive migration rejects an %s write
 test("v6 DDL failure rolls back every intermediate version while preserving exported files for retry", async () => {
   const f = await fixture(2), bodies: string[] = [], original = Database.prototype.exec;
   const exec = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Injected content schema failure");
+    if (sqliteDisplayFilename(this.name) === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Injected content schema failure");
     return original.call(this, sql);
   });
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true });
@@ -203,24 +220,27 @@ test.each([2, 6] as const)("v%i archive rechecks stopped evidence after the rece
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version === 6 ? currentSqliteVersion(controllerJournalFormat) : version);
 });
 
-test("interrupted legacy export retains SQL originals and rejects a different source under the same migration", async () => {
+test("interrupted legacy export retains SQL originals and skips a conflicting candidate on retry", async () => {
   const f = await fixture(2), bodies: string[] = [];
   const second = { ...f.entry, entryId: randomUUID(), content: [{ type: "text", text: "second answer" }] };
-  inspect(f.journalPath, db => db.prepare("INSERT INTO projection VALUES(?,?,1,?)").run(second.entryId, "second", "{}"));
+  inspect(f.journalPath, db => db.prepare("INSERT INTO projection VALUES(?,?,1,?)").run(second.entryId, "second", JSON.stringify(second)));
+  const execute = Database.prototype.exec;
+  const interrupted = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (sqliteDisplayFilename(this.name) === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Legacy SQL transition interrupted after durable export");
+    return execute.call(this, sql);
+  });
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow();
+  interrupted.mockRestore();
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect(db.prepare("SELECT count(*) AS n FROM projection").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT snapshot FROM execution").get()).toEqual({ snapshot: JSON.stringify(f.snapshot) });
-    db.prepare("UPDATE projection SET value=? WHERE id=?").run(JSON.stringify(second), second.entryId);
+    db.prepare("UPDATE projection SET value=? WHERE id=?").run(JSON.stringify({ ...second, content: [{ type: "text", text: "changed after the interrupted export" }] }), second.entryId);
   });
-  expect(await readdir(`${f.journalPath}.pending-content/timeline`)).toHaveLength(1);
-  const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) }).then(() => null, error => error as Error & { kind: string });
-  expect(failure).toMatchObject({ kind: "migration-failed" });
-  let cause: unknown = failure;
-  while (cause instanceof Error && cause.message !== "Legacy migration source changed before verification.") cause = cause.cause;
-  expect(cause).toBeInstanceOf(Error);
-  expect(bodies).toEqual([]);expect(inspect(f.journalPath,db=>db.pragma("user_version",{simple:true}))).toBe(2);
+  expect(await readdir(`${f.journalPath}.pending-content/timeline`)).toHaveLength(2);
+  await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) });
+  expect(entries(bodies[0]!)).toEqual([{ ...f.entry, entrySeq: "1" }]);
+  expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
 });
 
 test("upload retries preserve identical bytes after upgrading a stopped v2 journal", async () => {
@@ -245,7 +265,8 @@ test("a migrated v6 journal cannot recreate a missing source manifest and publis
   const f = await fixture(2), bodies: string[] = [];
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies, () => true) })).rejects.toThrow("503");
   await rm(`${f.journalPath}.pending-content/manifest.json`);
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("Pending archive source is missing");
+  const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) }).then(() => null, (error: unknown) => error);
+  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Pending archive source is missing." })]));
   expect(bodies).toHaveLength(1);
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
   await expect(stat(`${f.journalPath}.pending-content/manifest.json`)).rejects.toMatchObject({ code: "ENOENT" });
@@ -279,40 +300,51 @@ test.each([1, 999] as const)("rejects archive journal version %i without changin
   expect(bodies).toEqual([]);
 });
 
-test.each([1, 2, 3, 4, 5] as const)("normal lifecycle opening retains v%i upgrade and writer-lease behavior", async version => {
+test.each([1, 2, 3, 4, 5] as const)("v%i read-only upgrade and stopped maintenance preserve data before the next writer lease", async version => {
   const f = await fixture(version);
-  const store = openControllerLifecycleStore(f.journalPath, f.ticket);
+  expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
+  expect(readControllerOperation(f.journalPath, f.operation.operationId)).toEqual(f.operation);
+  const permit = acquireControllerStoragePermit(f.journalPath);
+  try { expect(prepareControllerStorage({ journalFile: f.journalPath, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
+  finally { permit.release(); }
+  const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: f.snapshot.nativeSessionId };
+  const store = openControllerLifecycleStore(f.journalPath, next);
   try {
-    expect(store.getSnapshot()).toEqual(f.snapshot);
+    expect(store.getSnapshot()).toMatchObject({ executionId: f.snapshot.executionId, sessionId: f.snapshot.sessionId, executionGeneration: "2", nativeSessionId: f.snapshot.nativeSessionId, initialInputState: f.snapshot.initialInputState });
     expect(store.getOperation(f.operation.operationId)).toEqual(f.operation);
-    expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("writer is still running");
+    expect(() => openControllerLifecycleStore(f.journalPath, next)).toThrow("Cannot acquire instance lock");
     expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
   } finally { store.close(); }
 });
 
-test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypoint => [false, true].map(drained => [entrypoint, drained] as const)))("%s upgrade cannot turn a v1 source into a complete archive (outbox drained: %s)", async (entrypoint, drained) => {
+test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypoint => [false, true].flatMap(drained => fixturePlatforms.map(mode => [entrypoint, drained, mode] as const))))("%s upgrade cannot turn a v1 source into a complete archive (outbox drained: %s; %s)", async (entrypoint, drained, mode) => {
+  if (mode === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   const f = await fixture(1), bodies: string[] = [];
   if (drained) inspect(f.journalPath, db => db.exec("DELETE FROM outbox"));
   if (entrypoint === "snapshot") expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   else if (entrypoint === "operation") expect(readControllerOperation(f.journalPath, f.operation.operationId)).toEqual(f.operation);
   else if (entrypoint === "writer") {
-    const store = openControllerLifecycleStore(f.journalPath, f.ticket);
-    // Delivery may drain the old outbox without supplying a complete local history.
-    store.acknowledgeEvents("9");
-    store.close();
+    expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("maintenance must finish");
+    expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   }
-  const stopped = { ...f.snapshot, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: 2_000_000_000, startedAt: "original", commandHash: "a".repeat(64) } };
+  const { windowsJobStopProof: _stopProof, ...originalSnapshot } = f.snapshot;
+  const stopped = { ...originalSnapshot, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: 2_000_000_000, startedAt: "original", commandHash: "a".repeat(64) } };
   inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(stopped)));
   // Only process-tree inspection is substituted; stop reconciliation and both
   // database openings are real and preserve their migration transactions.
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  if (process.platform === "win32") {
+    // Historical records have no retained Job lease or durable stop proof.
+    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket, {  })).rejects.toThrow(/stop proof.*lease/);
+    expect(confirm).not.toHaveBeenCalled();
+    if (entrypoint === "stop") expect(readControllerSnapshot(f.journalPath)).toEqual(stopped);
+  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket, {  })).toEqual(stopped);
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
   expect(bodies).toEqual([]);
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
     expect(db.prepare("SELECT archive_incomplete FROM execution").get()).toEqual({ archive_incomplete: 1 });
-    expect(db.prepare("SELECT value FROM outbox").all()).toEqual(drained || entrypoint === "writer" ? [] : [{ value: JSON.stringify({ kind: "timeline_upsert", payload: f.entry }) }]);
+    expect(db.prepare("SELECT value FROM outbox").all()).toEqual(drained ? [] : [{ value: JSON.stringify({ kind: "timeline_upsert", payload: f.entry }) }]);
   });
 });
 
@@ -323,4 +355,24 @@ test.each([2, 3, 4, 5] as const)("probing legacy v%i leaves schema and original 
   expect(await readFile(f.journalPath)).toEqual(before);
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version);
   await expect(stat(`${f.journalPath}.pending-content`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+
+test.each([5, 6, 7, 8, 9] as const)("empty healthy v%i history remains available to stopped maintenance", async version => {
+  const f = await fixture(5);
+  inspect(f.journalPath, db => {
+    db.exec("DELETE FROM projection");
+    const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
+    for (const step of steps.filter(step => step.version > 5 && step.version <= version)) db.exec(step.sql);
+    db.pragma(`user_version=${version}`);
+  });
+  if (version >= 6) {
+    const pending = `${f.journalPath}.pending-content`;
+    await mkdir(pending, { mode: 0o700 });
+    await writeFile(path.join(pending, "manifest.json"), JSON.stringify({ schemaVersion: 1, sessionId: f.ticket.sessionId }), { mode: 0o600 });
+  }
+  expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
+  const permit = acquireControllerStoragePermit(f.journalPath);
+  try { expect(prepareControllerStorage({ journalFile: f.journalPath, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
+  finally { permit.release(); }
 });

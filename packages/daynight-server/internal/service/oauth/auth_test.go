@@ -27,10 +27,10 @@ type accessAdmissionDAO struct {
 	calls    int
 }
 
-func (d *accessAdmissionDAO) AuthenticateAccess(_ context.Context, hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *accessAdmissionDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	d.calls++
-	if !bytes.Equal(hash, secret.Hash(d.token)) || resource != d.resource || scope != core.Scope || now.IsZero() || now.Location() != time.UTC {
-		d.t.Errorf("access DAO arguments: hash=%x resource=%q scope=%q time=%v", hash, resource, scope, now)
+	if !bytes.Equal(hash, secret.Hash(d.token)) || len(bindings) != 1 || bindings[0] != (store.OAuthBinding{Resource: d.resource, Scope: core.Scope}) || now.IsZero() || now.Location() != time.UTC {
+		d.t.Errorf("access DAO arguments: hash=%x resource=%q scope=%q time=%v", hash, bindings[0].Resource, bindings[0].Scope, now)
 	}
 	if d.refused {
 		return store.OAuthAccessIdentity{}, model.ErrNotFound
@@ -87,7 +87,7 @@ func (d *authenticationCapability) RevokeFamily(context.Context, string, time.Ti
 	d.t.Fatal("unexpected RevokeFamily call")
 	return false, nil
 }
-func (d *authenticationCapability) AuthenticateAccess(context.Context, []byte, string, string, time.Time) (store.OAuthAccessIdentity, error) {
+func (d *authenticationCapability) AuthenticateAccess(context.Context, []byte, []store.OAuthBinding, time.Time) (store.OAuthAccessIdentity, error) {
 	d.t.Fatal("unexpected DAO authentication call")
 	return store.OAuthAccessIdentity{}, nil
 }
@@ -197,7 +197,7 @@ func (f *authenticationFixture) call() (store.OAuthAccessIdentity, error) {
 }
 
 func accessIdentity() store.OAuthAccessIdentity {
-	return store.OAuthAccessIdentity{GrantID: uuid.NewString(), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
+	return store.OAuthAccessIdentity{GrantID: uuid.NewString(), ExpiresAt: time.Now().Add(24 * time.Hour), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
 }
 
 func TestNewAuthenticatorBindsWriterAndCoreOperation(t *testing.T) {

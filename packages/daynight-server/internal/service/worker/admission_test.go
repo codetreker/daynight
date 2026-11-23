@@ -40,6 +40,15 @@ type admissionServiceFixture struct {
 	entered           chan struct{}
 }
 
+func (f *admissionServiceFixture) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	f.t.Fatal("unexpected alias read")
+	return model.WorkerAlias{}, nil
+}
+func (f *admissionServiceFixture) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	f.t.Fatal("unexpected alias write")
+	return nil
+}
+
 func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 	t.Helper()
 	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
@@ -261,6 +270,10 @@ func (f *admissionServiceFixture) SetWorkerConfiguration(context.Context, string
 	f.t.Error("service called the Core configuration dependency")
 	return model.WorkerDesiredConfiguration{}, errors.New("unexpected configuration write")
 }
+func (f *admissionServiceFixture) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	f.t.Error("service called the Core configuration dependency")
+	return model.WorkerDesiredConfiguration{}, errors.New("unexpected configuration write")
+}
 func (f *admissionServiceFixture) SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error {
 	f.t.Error("service called the Core configuration dependency")
 	return errors.New("unexpected observation write")
@@ -268,7 +281,8 @@ func (f *admissionServiceFixture) SetWorkerConfigurationObservation(context.Cont
 
 func admissionCompatibilityConfiguration() model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		PlatformTaskMode: model.PlatformTaskAll,
+		MaxConcurrent:    3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{},
 	}
@@ -484,4 +498,11 @@ func TestWorkerAdmissionConstructorsBindProductionOperations(t *testing.T) {
 			}
 		}
 	}
+}
+
+func (*admissionServiceFixture) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*admissionServiceFixture) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
 }

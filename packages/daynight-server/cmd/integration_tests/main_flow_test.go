@@ -4,8 +4,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,7 +43,79 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-history", "session-messages", "worker-operations", "overview"}
+	t.Run("MCP manuals without Projects", func(t *testing.T) {
+		// Read every published document over both supported protocols without a
+		// Project parameter, comparing the response to the candidate source.
+		projects := requestJSON[api.ProjectPage](t, f, http.MethodGet, "/api/v1/projects", nil, http.StatusOK)
+		if len(projects.Items) != 0 || projects.NextCursor != nil {
+			t.Fatalf("expected no Projects: %+v", projects)
+		}
+		for _, version := range []string{"2025-11-25", "2026-07-28"} {
+			client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
+			session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session.InitializeResult().ProtocolVersion != version || !strings.Contains(session.InitializeResult().Instructions, "daynight://manuals/overview.md") {
+				t.Fatalf("%s handshake: %+v", version, session.InitializeResult())
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			overviewBody, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "mcp", "manuals", "overview.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			direct, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: "daynight://manuals/overview.md"})
+			if err != nil || direct == nil || len(direct.Contents) != 1 || direct.Contents[0].Text != string(overviewBody) {
+				t.Fatalf("%s direct overview: %+v, %v", version, direct, err)
+			}
+			listing, err := session.ListResources(f.context, nil)
+			if err != nil || listing == nil || len(listing.Resources) != len(manualNames) || listing.NextCursor != "" {
+				t.Fatalf("%s catalog: %+v, %v", version, listing, err)
+			}
+			resources := make(map[string]*sdk.Resource, len(listing.Resources))
+			for _, resource := range listing.Resources {
+				resources[resource.URI] = resource
+			}
+			for _, name := range manualNames {
+				uri := "daynight://manuals/" + name + ".md"
+				resource := resources[uri]
+				body, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "mcp", "manuals", name+".md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: uri})
+				if err != nil || resource == nil || resource.Name != name || resource.MIMEType != "text/markdown" || resource.Size != int64(len(body)) || read == nil || len(read.Contents) != 1 || read.Contents[0].URI != uri || read.Contents[0].MIMEType != "text/markdown" || read.Contents[0].Text != string(body) {
+					t.Fatalf("%s %s: metadata=%+v read=%+v error=%v", version, name, resource, read, err)
+				}
+				t.Logf("%s %s bytes=%d sha256=%x", version, name, len(body), sha256.Sum256(body))
+			}
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	t.Run("MCP project repository", func(t *testing.T) { serverAPIMCPProjectRepositoryNormalFlow(t, f) })
+	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
+	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
+	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
+	t.Run("application Webhook management", func(t *testing.T) { serverAPIApplicationWebhookNormalFlow(t, f) })
+	t.Run("browser REST response headers", func(t *testing.T) { serverAPICORSNormalFlow(t, f) })
+	t.Run("worker readonly directory", func(t *testing.T) { serverAPIWorkerReadOnlyNormalFlow(t, f) })
+	t.Run("worker monitoring mixed protocols", func(t *testing.T) { serverAPIWorkerMonitoringFlow(t, f) })
+	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
+	t.Run("worker lifecycle", func(t *testing.T) { serverAPIWorkerLifecycleFlow(t, f) })
+	t.Run("worker task tag admission", func(t *testing.T) { serverAPIWorkerTaskTagAdmissionFlow(t, f) })
+	t.Run("worker platform task mode", func(t *testing.T) { serverAPIWorkerPlatformTaskModeFlow(t, f) })
+	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
+	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
+	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
+	t.Run("project member candidates", func(t *testing.T) { serverAPIProjectCandidatesNormalFlow(t, f) })
+	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
+	t.Run("task tags", func(t *testing.T) { serverAPITaskTagsNormalFlow(t, f) })
+	t.Run("Goal dependencies", func(t *testing.T) { serverAPIGoalDependenciesNormalFlow(t, f) })
+	t.Run("ordinary subtasks", func(t *testing.T) { serverAPIOrdinarySubtaskNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})
@@ -83,21 +158,42 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = session.Close() })
+		const overviewURI = "daynight://manuals/overview.md"
+		instructions := session.InitializeResult().Instructions
+		_, quoted, ok := strings.Cut(instructions, "`")
+		uriFromHandshake, _, closed := strings.Cut(quoted, "`")
+		if !ok || !closed || uriFromHandshake != overviewURI || !strings.Contains(instructions, "resources/read") {
+			t.Fatalf("handshake instructions = %q", instructions)
+		}
+		overview, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: uriFromHandshake})
+		if err != nil || overview == nil || len(overview.Contents) != 1 || overview.Contents[0].URI != overviewURI || overview.Contents[0].MIMEType != "text/markdown" || !strings.Contains(overview.Contents[0].Text, "daynight://manuals/concepts.md") || !strings.Contains(overview.Contents[0].Text, "project_resolve") {
+			t.Fatalf("overview = %+v, error=%v", overview, err)
+		}
+		tools, err := session.ListTools(f.context, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundTools := map[string]bool{"project_resolve": false, "task_show": false}
+		for _, tool := range tools.Tools {
+			if _, ok := foundTools[tool.Name]; ok && tool.InputSchema != nil {
+				foundTools[tool.Name] = true
+			}
+		}
+		if !foundTools["project_resolve"] || !foundTools["task_show"] {
+			t.Fatalf("tool definitions missing: %+v", foundTools)
+		}
 		listing, err := session.ListResources(f.context, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		const (
-			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 12
-		)
+		const uri = "daynight://manuals/concepts.md"
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {
 			if resource.URI == uri {
 				manual = resource
 			}
 		}
-		if len(listing.Resources) != expectedManualCount || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
+		if len(listing.Resources) != len(manualNames) || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
 			t.Fatalf("manual discovery differs: %+v", listing)
 		}
 		read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: manual.URI})
@@ -120,15 +216,90 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 			var envelope struct {
 				Data map[string]any `json:"data"`
+				Meta struct {
+					WriteOutcome string         `json:"writeOutcome"`
+					Refs         map[string]any `json:"refs"`
+				} `json:"meta"`
 			}
 			if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Data == nil {
 				t.Fatalf("%s structured content: %s (%v)", name, encoded, err)
+			}
+			if name == "tag_create" || name == "tag_rename" || name == "tag_update" || name == "tag_delete" {
+				if envelope.Meta.WriteOutcome != "confirmed" || envelope.Meta.Refs["projectId"] != project.ID || envelope.Meta.Refs["tagId"] != envelope.Data["id"] && envelope.Meta.Refs["tagId"] != envelope.Data["tagId"] {
+					t.Fatalf("%s receipt differs: %s", name, encoded)
+				}
 			}
 			return envelope.Data
 		}
 		resolved := call("project_resolve", map[string]any{"repoUrl": "git@github.com:example/manual-integration.git"})
 		if resolved["id"] != project.ID || resolved["repoUrl"] != repository {
 			t.Fatalf("resolved Project differs: %+v", resolved)
+		}
+		createdTag := call("tag_create", map[string]any{"projectId": project.ID, "name": " backend "})
+		tagID, ok := createdTag["id"].(string)
+		if !ok || tagID == "" || createdTag["name"] != "backend" || createdTag["version"] != "1" || createdTag["color"] != "#9AA3B2" {
+			t.Fatalf("created tag differs: %+v", createdTag)
+		}
+		conflict := func(name string, arguments map[string]any) {
+			t.Helper()
+			result, err := session.CallTool(f.context, &sdk.CallToolParams{Name: name, Arguments: arguments})
+			if err != nil || result == nil || !result.IsError {
+				t.Fatalf("%s conflict: result=%+v error=%v", name, result, err)
+			}
+			encoded, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Error struct {
+					Code         string `json:"code"`
+					WriteOutcome string `json:"writeOutcome"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Error.Code != "tag_name_conflict" || envelope.Error.WriteOutcome != "not_committed" {
+				t.Fatalf("%s conflict result: %s (%v)", name, encoded, err)
+			}
+		}
+		conflict("tag_create", map[string]any{"projectId": project.ID, "name": "BACKEND"})
+		other := call("tag_create", map[string]any{"projectId": project.ID, "name": "other", "color": "#a1b2c3"})
+		if other["color"] != "#A1B2C3" {
+			t.Fatalf("explicit tag color differs: %+v", other)
+		}
+		conflict("tag_rename", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "name": "BACKEND"})
+		call("tag_delete", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "confirm": true})
+		catalog := call("tag_list", map[string]any{"projectId": project.ID, "query": "back"})
+		tags, ok := catalog["items"].([]any)
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || tags[0].(map[string]any)["color"] != "#9AA3B2" || catalog["catalogEpoch"] == "" {
+			t.Fatalf("tag catalog differs: %+v", catalog)
+		}
+		shown := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
+		if shown["id"] != tagID || shown["version"] != "1" || shown["color"] != "#9AA3B2" {
+			t.Fatalf("tag read differs: %+v", shown)
+		}
+		colored := call("tag_update", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": shown["version"], "color": "#123abc"})
+		if colored["id"] != tagID || colored["name"] != "backend" || colored["version"] != "2" || colored["color"] != "#123ABC" {
+			t.Fatalf("tag color update differs: %+v", colored)
+		}
+		renamed := call("tag_rename", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": colored["version"], "name": "platform"})
+		if renamed["id"] != tagID || renamed["name"] != "platform" || renamed["version"] != "3" || renamed["color"] != "#123ABC" {
+			t.Fatalf("tag rename differs: %+v", renamed)
+		}
+		updated := call("tag_update", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": renamed["version"], "name": "release", "color": "#d85656"})
+		if updated["id"] != tagID || updated["name"] != "release" || updated["version"] != "4" || updated["color"] != "#D85656" {
+			t.Fatalf("combined tag update differs: %+v", updated)
+		}
+		persisted := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
+		if persisted["id"] != tagID || persisted["name"] != "release" || persisted["version"] != "4" || persisted["color"] != "#D85656" {
+			t.Fatalf("persisted tag differs: %+v", persisted)
+		}
+		catalog = call("tag_list", map[string]any{"projectId": project.ID, "query": "release"})
+		tags, ok = catalog["items"].([]any)
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || tags[0].(map[string]any)["color"] != "#D85656" {
+			t.Fatalf("updated tag catalog differs: %+v", catalog)
+		}
+		deleted := call("tag_delete", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": updated["version"], "confirm": true})
+		if deleted["projectId"] != project.ID || deleted["tagId"] != tagID || deleted["deleted"] != true {
+			t.Fatalf("tag deletion differs: %+v", deleted)
 		}
 		actual := call("task_show", map[string]any{"projectId": resolved["id"], "taskId": task.ID, "view": "full"})
 		assertOrdinaryType(t, actual)
@@ -229,6 +400,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if baseline.Project.ID != project.ID || baseline.Epoch == "" || baseline.ObservedAt.IsZero() {
 			t.Fatalf("snapshot identity differs: %+v", baseline)
 		}
+		initial := expectID(t, baseline.Tasks, task.ID, func(item api.TaskViewRecord) string { return item.ID })
+		if initial.Title != task.Title || initial.TitlePreview != task.Title || initial.TitleTruncated {
+			t.Fatalf("snapshot title differs: %+v", initial)
+		}
 		value := []api.PullRequestProperty{{URL: "https://github.com/example/tasks/pull/1", Title: "Normal evidence"}}
 		propertyPath := taskPath(task) + "/properties/pullRequests"
 		updated := requestJSON[api.PropertyResource](t, f, http.MethodPut, propertyPath, map[string]any{"version": task.Version, "valueText": `[{"url":"https://github.com/example/tasks/pull/1","title":"Normal evidence"}]`}, http.StatusOK)
@@ -243,7 +418,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 				t.Fatalf("sync identity differs: %+v", result)
 			}
 			actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
-			if actual.Version != resourceVersion(updated.Version) {
+			if actual.Version != resourceVersion(updated.Version) || actual.Title != task.Title || actual.TitlePreview != task.Title || actual.TitleTruncated {
 				t.Fatal("sync lost property mutation version")
 			}
 			requireProperty(t, actual.Properties, "pullRequests", value)
@@ -260,32 +435,6 @@ func TestServerAPINormalFlows(t *testing.T) {
 		actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
 		if _, exists := actual.Properties["pullRequests"]; exists || actual.Version != resourceVersion(removed.Version) {
 			t.Fatal("deleted property remained in Sync readback")
-		}
-	})
-	t.Run("step reads and writes", func(t *testing.T) {
-		project := createProject(t, f, "API Steps")
-		task := createTask(t, f, project, "Step parent", nil)
-		path := taskPath(task) + "/steps"
-		first := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": task.Version, "id": "abcdef01", "title": "First Step", "description": "Initial content"}, http.StatusCreated)
-		second := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": first.Version, "id": "12345678", "title": "Second Step"}, http.StatusCreated)
-		read := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if read.ProjectID != project.ID || read.TaskID != task.ID || read.Version != second.Version || !reflect.DeepEqual(read.Steps, second.Steps) {
-			t.Fatalf("Step list differs: %+v", read)
-		}
-		single := requestJSON[api.StepResource](t, f, http.MethodGet, path+"/abcdef01", nil, http.StatusOK)
-		if single.TaskID != task.ID || single.Step.ID != "abcdef01" || single.Step.Description != "Initial content" {
-			t.Fatalf("Step get differs: %+v", single)
-		}
-		changed := requestJSON[api.StepsResource](t, f, http.MethodPatch, path+"/abcdef01", map[string]any{"version": second.Version, "title": "Edited Step", "description": "Updated content"}, http.StatusOK)
-		active := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/abcdef01/status", map[string]any{"version": changed.Version, "status": "in_progress"}, http.StatusOK)
-		moved := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/12345678/position", map[string]any{"version": active.Version, "position": "first"}, http.StatusOK)
-		if len(moved.Steps) != 2 || moved.Steps[0].ID != "12345678" || moved.Steps[1].ID != "abcdef01" || moved.Steps[1].Title != "Edited Step" || moved.Steps[1].Description != "Updated content" || moved.Steps[1].Status != "in_progress" {
-			t.Fatalf("Step move/content differs: %+v", moved)
-		}
-		removed := requestJSON[api.StepsResource](t, f, http.MethodDelete, path+"/12345678", map[string]any{"version": moved.Version}, http.StatusOK)
-		current := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if current.ProjectID != project.ID || current.TaskID != task.ID || current.Version != removed.Version || len(current.Steps) != 1 || current.Steps[0].ID != "abcdef01" || !reflect.DeepEqual(current.Steps, removed.Steps) {
-			t.Fatalf("Step deletion readback differs: %+v", current)
 		}
 	})
 	t.Run("thread messages and replies", func(t *testing.T) {
@@ -340,11 +489,16 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 	})
 	t.Run("worker claim and Agent discussion", func(t *testing.T) {
+		fixtureCopy := *f
+		client := *f.client
+		client.Transport = sessionWorkerTransport{next: client.Transport}
+		fixtureCopy.client = &client
+		f := &fixtureCopy
 		project := createProject(t, f, "API Worker claim")
 		task := createTask(t, f, project, "Worker task", map[string]any{"assignedTo": f.userID, "status": "todo"})
 		task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
 		claimID, workerID := uuid.NewString(), uuid.NewString()
-		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}, http.StatusOK)
 		claim := workerClaim(t, claimed)
 		if claim.ClaimID != claimID || claim.WorkerID != workerID || claim.UserID != f.userID || claim.State != "active" || claimed.ID != task.ID || claimed.Status != "in_progress" {
 			t.Fatalf("Worker claim identity differs: %+v %+v", claimed, claim)
@@ -361,10 +515,24 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if actual.Body != message.Body || !actual.Author.Agent || actual.Author.UserID != f.userID || actual.Author.Execution == nil || actual.Author.Execution.ClaimID != claimID || actual.Author.Execution.WorkerID != workerID {
 			t.Fatalf("Agent attribution readback differs: %+v", actual)
 		}
-		done := setStatus(t, f, active, "done", &claimID)
+		released := requestJSON[api.Task](t, f, http.MethodPost, taskPath(active)+"/worker-claim/release", map[string]any{"version": active.Version, "claimId": claimID, "stoppedConfirmed": true}, http.StatusOK)
+		if released.Version != active.Version+1 || released.Status != "todo" || released.StartedAt != nil || released.CompletedAt != nil || released.Properties["worker"] != nil || released.Properties["sessionStartup"] != nil || !released.AllowAgents || released.AssignedTo == nil || *released.AssignedTo != f.userID {
+			t.Fatalf("release did not clear execution while preserving ordinary fields: %+v", released)
+		}
+		newClaimID, newWorkerID, newWorktreeID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		reclaimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(released)+"/worker-claim", map[string]any{"version": released.Version, "claimId": newClaimID, "workerId": newWorkerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Replacement machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": newWorktreeID}, http.StatusOK)
+		if next := workerClaim(t, reclaimed); next.ClaimID != newClaimID || next.WorkerID != newWorkerID || next.WorktreeID != newWorktreeID || next.ClaimID == claimID {
+			t.Fatalf("reclaim inherited previous execution: %+v", next)
+		}
+		page = requestJSON[api.ThreadPage](t, f, http.MethodGet, path+"?details=true", nil, http.StatusOK)
+		actual = expectID(t, page.Items, message.ID, func(message api.ThreadMessage) string { return message.ID })
+		if actual.Author.Execution == nil || actual.Author.Execution.ClaimID != claimID || actual.Author.Execution.WorkerID != workerID {
+			t.Fatalf("reclaim changed historical attribution: %+v", actual.Author)
+		}
+		done := setStatus(t, f, reclaimed, "done", &newClaimID)
 		read = requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK)
 		assertTaskContent(t, read, done)
-		if actual := workerClaim(t, read); actual.State != "completed" || actual.ClaimID != claimID {
+		if actual := workerClaim(t, read); actual.State != "completed" || actual.ClaimID != newClaimID {
 			t.Fatalf("completed Worker claim readback differs: %+v", actual)
 		}
 	})

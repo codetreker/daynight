@@ -26,8 +26,10 @@ principal's expected user ID. The entropy sentinel must still be discoverable
 through `errors.Is`, must not become a business Fault, and the UUID entropy hook
 is restored through test cleanup.
 
-Creation, database readback, keyset paging, operational database errors and
-transaction tests keep their PostgreSQL fixtures. The
+Creation, database readback, keyset paging and transaction tests exercise
+PostgreSQL. The [Project read error decision](2026-11-18-project-read-error-fixtures.md)
+assigns the physical error witnesses to Store tests and keeps error propagation
+in the Service suite. The
 [server test guide](../../../../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns the shared DAO mock and integration policy. The
 [fixture construction decision](2026-11-08-go-fixture-construction.md) records the

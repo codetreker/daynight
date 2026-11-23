@@ -70,3 +70,84 @@ func TestWorkerModeCodecRejectsInvalidModesAndWebHerdrBindings(t *testing.T) {
 		}
 	}
 }
+
+func TestStoredWorkerAcceptsWebWithoutHerdr(t *testing.T) {
+	worker := workerJSON(t)
+	worker["agentControlMode"] = json.RawMessage(`"web"`)
+	delete(worker, "herdr")
+	properties, err := taskproperty.Decode(workerPropertiesJSON(t, worker))
+	if err != nil {
+		t.Fatalf("stored web worker without herdr: %v", err)
+	}
+	claim, err := taskproperty.Worker(properties)
+	if err != nil || claim.AgentControlMode != model.AgentControlModeWeb || claim.Herdr != nil {
+		t.Fatalf("stored worker changed: %#v, %v", claim, err)
+	}
+	encoded, err := taskproperty.Encode(properties)
+	if err != nil {
+		t.Fatalf("re-encode stored worker: %v", err)
+	}
+	decoded, err := taskproperty.Decode([]byte(encoded))
+	if err != nil {
+		t.Fatalf("read re-encoded worker: %v", err)
+	}
+	claim, err = taskproperty.Worker(decoded)
+	if err != nil || claim.AgentControlMode != model.AgentControlModeWeb || claim.Herdr != nil {
+		t.Fatalf("worker changed on round trip: %#v, %v", claim, err)
+	}
+	raw, _ := json.Marshal(worker)
+	if _, err := taskproperty.NormalizeValue("worker", raw); err != nil {
+		t.Fatalf("new worker admission rejected omitted herdr: %v", err)
+	}
+	worker["herdr"] = json.RawMessage(`null`)
+	raw, _ = json.Marshal(worker)
+	if _, err := taskproperty.NormalizeValue("worker", raw); err == nil {
+		t.Fatal("new worker admission accepted herdr null")
+	}
+	worker["herdr"] = json.RawMessage(`{"session":"s","workspaceId":"w","paneId":"p"}`)
+	if _, err := taskproperty.Decode(workerPropertiesJSON(t, worker)); err == nil {
+		t.Fatal("stored web worker accepted a herdr binding")
+	}
+}
+
+func TestStoredHerdrWorkerRetainsResourcesAcrossEncoding(t *testing.T) {
+	worker := workerJSON(t)
+	worker["herdr"] = json.RawMessage(`{"session":"会话\n&","workspaceId":"workspace","paneId":"pane"}`)
+	properties, err := taskproperty.Decode(workerPropertiesJSON(t, worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := taskproperty.Encode(properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := taskproperty.Decode([]byte(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := taskproperty.Worker(decoded)
+	if err != nil || claim.Herdr == nil || claim.Herdr.Session != "会话\n&" || claim.Herdr.WorkspaceID != "workspace" || claim.Herdr.PaneID != "pane" {
+		t.Fatalf("historical resource changed: %#v, %v", claim, err)
+	}
+}
+
+func TestNewWorkerAdmissionOnlyAllowsWeb(t *testing.T) {
+	for _, mode := range []string{"herdr", "web"} {
+		for _, agent := range []string{"codex", "claude", "copilot"} {
+			t.Run(mode+"/"+agent, func(t *testing.T) {
+				worker := workerJSON(t)
+				worker["agentControlMode"] = json.RawMessage(`"` + mode + `"`)
+				worker["agent"] = json.RawMessage(`"` + agent + `"`)
+				delete(worker, "herdr")
+				raw, err := json.Marshal(worker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = taskproperty.NormalizeValue("worker", raw)
+				if (err == nil) != (mode == "web") {
+					t.Fatalf("admission: %v", err)
+				}
+			})
+		}
+	}
+}

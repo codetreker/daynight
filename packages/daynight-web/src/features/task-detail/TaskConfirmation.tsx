@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, type RefObject, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { acquireInert } from '../../app/inert';
@@ -70,7 +71,7 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   }, [owner, fallbackFocus]);
   return createPortal(<div className="auth-modal-backdrop task-confirmation-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section className="auth-dialog task-confirmation" ref={dialog} role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId}>
-      <header className="dialog-header"><h2 id={titleId}>{title}</h2><button className="close-button" type="button" aria-label={closeLabel} onClick={onCancel}>×</button></header>
+      <header className="dialog-header"><h2 id={titleId}>{title}</h2><AccountRefreshNotice /><button className="close-button" type="button" aria-label={closeLabel} onClick={onCancel}>×</button></header>
       <div className="dialog-body" id={descriptionId} tabIndex={0}><p>{question}</p><p className="task-confirmation-task">{taskTitle}</p>{content === undefined ? <p>{explanation}</p> : content}</div>
       <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{cancelLabel}</button><button className={`button ${destructive ? 'danger' : 'primary'}`} type="button" aria-disabled={confirmDisabled} onClick={() => { if (!confirmDisabled) { restoreOpener.current = false; onConfirm(); } }}>{confirmLabel}</button></footer>
     </section>

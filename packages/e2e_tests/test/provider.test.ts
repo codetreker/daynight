@@ -76,7 +76,7 @@ const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cle
   }
 };
 
-const authorize = async (provider: Provider, certificate: Buffer): Promise<{ code: string; verifier: string; callback: string }> => {
+const authorize = async (provider: Provider, certificate: Buffer, identity = "admin"): Promise<{ code: string; verifier: string; callback: string }> => {
   const verifier = randomBytes(32).toString("base64url");
   const callback = "http://127.0.0.1:12345/auth/callback";
   const state = randomBytes(16).toString("base64url");
@@ -85,7 +85,7 @@ const authorize = async (provider: Provider, certificate: Buffer): Promise<{ cod
   assert.equal(page.status, 200);
   assert.match(page.body, /Authorize local identity/);
   const requestId = page.body.match(/name="request" value="([^"]+)"/)![1]!;
-  const authorization = await request(provider, certificate, "github.com", "/login/oauth/authorize", { method: "POST", body: new URLSearchParams({ request: requestId }).toString() });
+  const authorization = await request(provider, certificate, "github.com", "/login/oauth/authorize", { method: "POST", body: new URLSearchParams({ request: requestId, identity }).toString() });
   assert.equal(authorization.status, 302);
   const location = new URL(authorization.headers.get("location")!);
   assert.equal(location.origin + location.pathname, callback);
@@ -114,6 +114,16 @@ test("local CONNECT and TLS complete OAuth, preserve state and return a verified
     assert.equal(emails.status, 200);
     assert.deepEqual(JSON.parse(emails.body), [{ email: "admin@example.test", primary: true, verified: true }]);
     assert.equal((await exchange(context.provider, context.certificate, authorization)).status, 400);
+    const member = await exchange(context.provider, context.certificate, await authorize(context.provider, context.certificate, "member"));
+    const memberToken = (JSON.parse(member.body) as { access_token: string }).access_token;
+    const memberProfile = await request(context.provider, context.certificate, "api.github.com", "/user", { token: memberToken });
+    assert.deepEqual(JSON.parse(memberProfile.body), { id: 2, login: "e2e-member", email: "member@example.test", name: "E2E Member", avatar_url: null });
+    const collaborator = await exchange(context.provider, context.certificate, await authorize(context.provider, context.certificate, "collaborator"));
+    const collaboratorToken = (JSON.parse(collaborator.body) as { access_token: string }).access_token;
+    const collaboratorProfile = await request(context.provider, context.certificate, "api.github.com", "/user", { token: collaboratorToken });
+    assert.deepEqual(JSON.parse(collaboratorProfile.body), { id: 3, login: "e2e-collaborator", email: "collaborator@example.test", name: "E2E Collaborator", avatar_url: null });
+    const collaboratorEmails = await request(context.provider, context.certificate, "api.github.com", "/user/emails?per_page=100&page=1", { token: collaboratorToken });
+    assert.deepEqual(JSON.parse(collaboratorEmails.body), [{ email: "collaborator@example.test", primary: true, verified: true }]);
   } finally { await context.cleanup(); }
 });
 
@@ -145,5 +155,70 @@ test("CONNECT rejects targets outside the local provider and cleanup closes upgr
     socket.resume();
     await context.provider.close();
     await closed;
+  } finally { await context.cleanup(); }
+});
+
+test("provider diagnostics correlate live CONNECT, TLS and HTTP while excluding request secrets", async () => {
+  const context = await fixture();
+  try {
+    const sentinel = "secret-code-state-token-cookie-csrf-client-secret";
+    assert.equal((await request(context.provider, context.certificate, "github.com", `/login/oauth/authorize?code=${sentinel}&state=${sentinel}`)).status, 400);
+    assert.equal((await request(context.provider, context.certificate, "github.com", `/${sentinel}?token=${sentinel}`, { token: sentinel })).status, 404);
+    assert.equal((await request(context.provider, context.certificate, `${sentinel}.example`, "/")).status, 403);
+    await context.provider.close();
+    const result = context.provider.diagnostics();
+    assert.equal(result.complete, true);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.events.map((event) => event.sequence), result.events.map((_, index) => index + 1));
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel));
+    const connect = result.events.find((event) => event.type === "connect" && event.accepted)!;
+    assert.equal(connect.target, "github.com:443");
+    assert.equal(connect.headPresent, false);
+    assert.ok(result.events.some((event) => event.type === "tls_ready" && event.connectionId === connect.connectionId));
+    assert.ok(result.events.some((event) => event.type === "http_request" && event.connectionId === connect.connectionId && event.method === "GET" && event.origin === "https://github.com" && event.path === "/login/oauth/authorize"));
+    assert.ok(result.events.some((event) => event.type === "http_finish" && event.connectionId === connect.connectionId && event.status === 400));
+    assert.ok(result.events.some((event) => event.type === "http_request" && event.origin === "other" && event.path === "other"));
+    assert.ok(result.events.some((event) => event.type === "connect" && !event.accepted && event.target === "other"));
+  } finally { await context.cleanup(); }
+});
+
+test("provider diagnostics report their bounded event limit", async () => {
+  const context = await fixture();
+  try {
+    for (let index = 0; index < 257; index++) {
+      assert.equal((await request(context.provider, context.certificate, "example.com", "/")).status, 403);
+    }
+    await context.provider.close();
+    const result = context.provider.diagnostics();
+    assert.equal(result.complete, true);
+    assert.equal(result.truncated, true);
+    assert.equal(result.events.length, 256);
+    assert.equal(result.events.at(-1)?.sequence, 256);
+  } finally { await context.cleanup(); }
+});
+
+test("provider records a restricted TLS error after a malformed handshake", async () => {
+  const context = await fixture();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tunnel = requestHTTP({ hostname: "127.0.0.1", port: context.provider.port, method: "CONNECT", path: "github.com:443" });
+      tunnel.once("error", reject);
+      tunnel.setTimeout(5000, () => tunnel.destroy(new Error("Provider tunnel timed out")));
+      tunnel.once("connect", (_response, socket) => {
+        socket.setTimeout(5000, () => socket.destroy(new Error("TLS error test timed out")));
+        socket.once("error", reject);
+        socket.once("close", () => resolve());
+        socket.resume();
+        socket.write("GET /secret-code-state-token HTTP/1.1\r\n\r\n");
+      });
+      tunnel.end();
+    });
+    await context.provider.close();
+    const result = context.provider.diagnostics();
+    const error = result.events.find((event) => event.type === "tls_error");
+    assert.ok(error);
+    assert.ok(error.connectionId === "unknown" || typeof error.connectionId === "number");
+    assert.ok(error.errorCode === "ERR_SSL_HTTP_REQUEST" || error.errorCode === "other");
+    assert.doesNotMatch(JSON.stringify(result), /secret-code-state-token/);
   } finally { await context.cleanup(); }
 });

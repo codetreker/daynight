@@ -14,31 +14,30 @@ every refusal as a failure can permanently stop an otherwise healthy run.
 
 ## Decision
 
-The [input arbitration design](../../../../docs/design/herdr-input-arbitration.md)
-separates original claim and run authorization from purpose-specific task pause
-policy. Automatic input and cleanup prompts remain subject to the pause gate;
-manual control and input retain their existing owner, lease, epoch and target
-checks without requiring the task to be unpaused. Explicit automation handback
-requires the task to be unpaused and independently satisfies its draft and native
-readiness checks. Resolving an unknown initial assignment remains separate from
-handback and does not change its original receipt.
+The former input arbitration separated original claim and run authorization from
+purpose-specific pause policy. Automatic input and cleanup prompts were subject
+to the pause gate; manual control retained owner, lease, epoch and target checks
+without requiring the task to be unpaused.
+Automation handback required an unpaused task and independent draft and native
+readiness checks. Resolving an unknown initial assignment did not change its
+original receipt.
 
-At a definitely unwritten boundary, task pause, legitimate manual or suspended
-control, and known native input blockers carry explicit internal waiting reasons.
-An admitted operation first records its rejected receipt; the lifecycle clears
-its admission and retains pending initial input. Execution preserves the input
-baseline and pending assignment, and the Coordinator does not charge waiting
-against its failure budget. Actual authorization, service, storage and transport
-errors remain failures. Once a write may have occurred, the original operation
-remains unknown and suspended; unpausing does not replay it or restore control.
+At a definitely unwritten boundary, pause, legitimate manual or suspended
+control, and known native blockers were explicit waiting reasons. An admitted
+operation recorded its rejected receipt before lifecycle admission was cleared;
+the pending initial input and baseline were retained without charging the failure
+budget. Authorization, service, storage and transport errors remained failures.
+Once a write might have occurred, the original operation remained unknown and
+suspended, without replay on unpause.
 
-This partially replaces the periodic-only macOS application of the
-[task pause decision](../../archived/feature/2026-11-02-task-paused-worker-pings.md), which
-originally isolated continuation from initial input and cleanup. The
-[input arbitration decision](../../archived/architecture/2026-11-04-herdr-input-arbitration.md)
-retains its immutable receipts and manual ownership; the
+This partially replaced the periodic-only macOS application of the
+[task pause decision](../../archived/feature/2026-11-02-task-paused-worker-pings.md).
+The [input arbitration decision](../../archived/architecture/2026-11-04-herdr-input-arbitration.md)
+recorded immutable receipts and manual ownership; the
 [lifecycle decision](../../archived/architecture/2026-11-04-herdr-worker-lifecycle.md)
-continues to own run identity and stopping.
+recorded run identity and stopping. The Herdr input execution path has since been
+removed; the [Web-only runtime decision](../architecture/2026-11-17-worker-web-runtime-composition.md)
+records the current boundary.
 
 ## Alternatives
 
@@ -56,9 +55,9 @@ waiting preserves the original budget and its meaning.
 
 ## Consequences
 
-The same native observation can resume its eligible automatic input after pause
-is removed, without replacing the claim or restarting the worker. Manual lease,
-suspended state, unknown input and genuine failure budgets retain their own
-recovery conditions. Per-frame authorization cannot retract a completed write;
-partial input remains an explicit human recovery responsibility. Legacy Herdr
-and the separate Web backend retain their own input and recovery policies.
+The original run could resume eligible automatic input after pause without
+replacing its claim. Manual lease, suspended state, unknown input and genuine
+failure budgets retained separate recovery conditions. Per-frame authorization
+could not retract a completed write, so partial input remained a human recovery
+responsibility. The separate Web backend retained its own input and recovery
+policies.

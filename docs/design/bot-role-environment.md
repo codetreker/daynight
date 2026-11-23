@@ -32,10 +32,28 @@ registration 与角色；服务端冻结值存在后，每一代都复用其原�
 证明调用者已持久化或已权威读取，这些顺序由托管层验证。Controller ticket 与
 Provider 传递沿用[共享角色机制](task-session-protocol.md#角色指令的共享传递)。
 
+## 助手任务协作角色
+
+当前模板版本为 `daynight-assistant/3`。用户请求涉及助手任务时，角色要求先通过
+`daynight assistant-task list/show` 查登记并读取相关工作记录，说明负责助手和已观察到的进展，
+避免重复处理。需要细节时使用 `ask`，如实转述回答、失效或无回应；不抢占有效认领，
+失去认领后停止负责助手专属动作。
+
+非负责助手受用户明确指示介入时，先知会负责助手，再执行授权范围内的操作，最后通过
+`record add` 写入实际行动与结果。角色不授予负责助手的自动处理权限，也不允许自行
+修改手册；长期行为变更转交负责助手提出修订并由用户决定。收到“Daynight 通知”时，
+按通知指引读取当前手册和记录，并遵守已有权限、暂停和认领边界。
+
+角色升级仅影响服务器角色与本地准备均不存在的新助手。网站详情侧栏根据冻结的
+`roleConfiguration.revision`，对 `daynight-assistant/1` 和 `daynight-assistant/2`
+显示“重建后可获得助手任务协作能力”。尚未冻结的空角色、未知格式和版本 3 及之后的角色
+不显示该提示。提示不触发重建或角色写入；已有助手继续依赖 CLI 手册和事件自带说明，
+直接提问时未必主动查询登记。
+
 ## 环境准备接口
 
 `prepareBotEnvironment` 接收真实 `homeDirectory`、Bot `cwd`、目标 Worker 的
-`workerPaths`（配置路径）、绑定 `serverOrigin`、`ownerUserId` 和取消 `signal`。
+`workerPaths`（配置路径）、绑定 `serverOrigin`、`ownerUserId`、自身 `botId` 和取消 `signal`。
 可显式提供继承 `environment`；缺省使用当前进程环境。返回准备后的
 `environment`、alias `bindings`、可空 `aliasDirectory` 和 `release()`。
 
@@ -44,8 +62,8 @@ Provider 传递沿用[共享角色机制](task-session-protocol.md#角色指令�
 或无认证，再用已有 API client 查询当前用户，并检查响应 principal 与目标 owner。
 不使用 Worker 缓存身份作为此次启动/恢复的认证证明。
 
-复制继承环境并无条件设置 `DN_CONFIG_DIR`，剔除 Controller relay token 环境值。
-`prepareAgentCliAliases` 继续解析真实目标并生成私有 shim；没有 alias 时 PATH
+复制继承环境并无条件设置 `DN_CONFIG_DIR`、该助手的 `DAYNIGHT_BOT_ID` 和 `DAYNIGHT_BOT_STATE_DIR`，剔除 Controller relay token 环境值。Bot ID 必须是非零规范 UUID；私有状态固定为配置根下 `bots/<botId>/state`，沿现有私有文件机制验证归属、权限及路径。它在普通停止和恢复期间保留，用于 CLI 与 [Worker 助手任务维护](worker-bot-runtime.md#助手任务维护)共享认领和原操作身份；只有精确删除该 Bot 时才清理。
+`prepareAgentCliAliases` 在 `bots/<botId>/agent-cli-aliases/` 下解析真实目标并生成私有 shim；没有 alias 时 PATH
 原样保留，有 alias 时只按现有规则前置目录。HOME、CODEX_HOME 和其他原生账户
 目录不替换；Provider 的 native PATH 合并逻辑仍由其已有适配器负责。
 

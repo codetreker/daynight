@@ -1,3 +1,4 @@
+import { sqliteFilename, sqliteDisplayFilename } from "./sqlite-filename.js";
 import { randomUUID } from "node:crypto";
 import { lstatSync, statSync } from "node:fs";
 import path from "node:path";
@@ -11,11 +12,13 @@ export type SqliteMigrationEvent = {
   readonly kind: "started" | "completed" | "failed"; readonly phase: string;
   readonly fromVersion: number; readonly toVersion: number; readonly stepVersion?: number;
   readonly durationMs: number; readonly outcome: SqliteOutcome;
+  readonly storage?: Readonly<Record<string, number | string | boolean>>;
+  readonly error?: ReturnType<typeof serializeSqliteError>;
 };
 export type SqliteMigrationReporter = (event: SqliteMigrationEvent) => undefined;
 export type SqliteDatabaseSource = string | Database.Database;
 type CommonOptions = { file: SqliteDatabaseSource; format: SqliteFormat; timeoutMs?: number; onMigration?: SqliteMigrationReporter; assertMigrationAllowed?: (db: Database.Database, source: SqliteSource) => void };
-export type OpenSqliteOptions = CommonOptions & { allowCreate: boolean; onReady?: (db: Database.Database) => void };
+export type OpenSqliteOptions = CommonOptions & { allowCreate: boolean };
 export type ReadSqliteOptions<T> = CommonOptions & { onMissing: () => T; acquireMaintenance?: () => MaintenancePermit };
 const outcomes = new WeakMap<object, SqliteOutcome>();
 const phases = new WeakMap<object, string>();
@@ -70,8 +73,8 @@ const validateOptions = (options: CommonOptions): number => {
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
   return timeout;
 };
-const stderrReporter: SqliteMigrationReporter = (event) => { process.stderr.write(`${JSON.stringify({ kind: `sqlite-migration-${event.kind}`, sqlite: event })}\n`); };
-const databaseName = (source: SqliteDatabaseSource): string => typeof source === "string" ? source : source.name;
+export const reportSqliteMigrationEvent: SqliteMigrationReporter = (event) => { process.stderr.write(`${JSON.stringify({ kind: `sqlite-migration-${event.kind}`, sqlite: event })}\n`); };
+const databaseName = (source: SqliteDatabaseSource): string => typeof source === "string" ? source : sqliteDisplayFilename(source.name);
 const context = (options: CommonOptions, phase: string, fromVersion?: number) => ({ database: options.format.name, file: databaseName(options.file), phase, ...(fromVersion === undefined ? {} : { fromVersion }), toVersion: currentSqliteVersion(options.format) });
 const accessContext = (error: unknown, depth = 0): SqliteAccessError | undefined => {
   if (error instanceof SqliteAccessError) return error;
@@ -90,9 +93,9 @@ export const closeSqliteDatabase = (db: Database.Database, options: Pick<CommonO
 };
 
 const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boolean): Database.Database => {
-  const timeout = validateOptions(options), report = options.onMigration === undefined ? stderrReporter : options.onMigration;
+  const timeout = validateOptions(options), report = options.onMigration === undefined ? reportSqliteMigrationEvent : options.onMigration;
   let db: Database.Database;
-  try { db = typeof options.file === "string" ? new Database(options.file, { timeout, fileMustExist: !options.allowCreate }) : options.file; }
+  try { db = typeof options.file === "string" ? new Database(sqliteFilename(options.file), { timeout, fileMustExist: !options.allowCreate }) : options.file; }
   catch (cause) { throw wrap(options, "open", cause, true, "not-started"); }
   let phase = "inspect", source: SqliteSource | undefined, migrationId: string | undefined, started = 0, committed = false;
   let restoreForeignKeys: (() => void) | undefined;
@@ -134,7 +137,6 @@ const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boole
         }
         if (fresh.kind !== "current") { phase = "admission"; options.assertMigrationAllowed?.(db, fresh); }
         phase = "migrate"; const upgraded = upgradeSqlite(db, options.format);
-        phase = "startup"; options.onReady?.(db);
         if (upgraded?.reset === true) {
           phase = "foreign-key-check";
           const violations = db.pragma("foreign_key_check") as unknown[];
@@ -165,10 +167,9 @@ const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boole
     }
     const wrapped = wrap(options, failedPhase, failure, closed, phase === "inspect" && transactionPhase === undefined || phase === "configure" || phase === "report" && !committed ? "not-started" : outcome, source?.version);
     if (migrationId !== undefined) {
-      try { report({ ...event("failed", failedPhase, wrapped.outcome), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
+      try { report({ ...event("failed", failedPhase, wrapped.outcome), error: serializeSqliteError(wrapped), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
       catch (reportError) { throw wrap(options, "report", new AggregateError([wrapped, reportError], "SQLite operation and failure reporting failed."), closed, wrapped.outcome, source?.version); }
     }
-    if (phase === "startup" && transactionPhase === "action" && closed && failure === primary && primary instanceof Error && primary.constructor === Error && !(primary instanceof SqliteAccessError) && !("code" in primary && typeof primary.code === "string" && primary.code.startsWith("SQLITE_"))) throw primary;
     throw wrapped;
   }
 };
@@ -184,7 +185,7 @@ const readAttempt = <T>(options: FileReadOptions<T>, read: (db: Database.Databas
   catch (cause) { throw wrap(options, "inspect-path", cause, true, "not-started"); }
   if (missing) return { kind: "value", value: options.onMissing() };
   let db: Database.Database;
-  try { db = new Database(options.file, { readonly: true, fileMustExist: true, timeout: validateOptions(options) }); }
+  try { db = new Database(sqliteFilename(options.file), { readonly: true, fileMustExist: true, timeout: validateOptions(options) }); }
   catch (cause) {
     try { missing = sqliteDatabaseIsMissing(options.file); }
     catch (probe) { throw wrap(options, "open-read", new AggregateError([cause, probe], "SQLite open and missing-path verification failed."), true, "not-started"); }

@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false, interruptUser = null, pendingSteer = null;
 const interruptCase = process.env.CODEX_TEST_INTERRUPT;
+const userItemId = process.env.CODEX_TEST_USER_ITEM_ID ?? 'user';
 const interruptedHistory = id => ({ id, status: 'interrupted', error: null, items: [], itemsView: 'full', rootTurnId: id, startedAt: 1, completedAt: 2, durationMs: 1000 });
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
 const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
@@ -15,7 +16,7 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='initialize') {
   if(process.env.CODEX_TEST_INITIALIZE==='timeout')continue;
   if(process.env.CODEX_TEST_INITIALIZE==='reject') {out({id:m.id,error:{code:-32602,message:'Fixture initialization rejected /private/profile token=private-value'}});continue;}
-  out({id:m.id,result:{}});
+  out({id:m.id,result:JSON.parse(process.env.CODEX_TEST_INITIALIZED ?? "{}")});
  }
  if(m.method==='config/read')out({id:m.id,result:{config:JSON.parse(process.env.CODEX_TEST_EFFECTIVE_CONFIG ?? '{}')}});
  if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
@@ -40,7 +41,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if(process.env.CODEX_TEST_MARKDOWN_HISTORY_STATUS) {out({id:m.id,result:{data:[{turnId:'markdown-history',item:{type:'agentMessage',id:'history-body',text:'![image](local)'},completedAtMs:null}],nextCursor:null}});continue;}
   if(interruptCase) {
    if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
-   const user={type:'userMessage',id:'user',clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
+   const user={type:'userMessage',id:userItemId,clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
    let data=['missing-user','history-delayed'].includes(interruptCase)||interruptCase==='paged-history'&&m.params.turnId==='first-turn'?[]:[user];
    let nextCursor=null;
    if(interruptCase==='large-history') {
@@ -58,7 +59,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if(interruptCase==='history-delayed'){setTimeout(()=>out({id:m.id,result:{data:[{...interruptedHistory('native-turn'),items:[]}],nextCursor:null}}),200);continue;}
   if(!interruptCase){out({id:m.id,error:{code:-32601,message:'Method unavailable'}});continue;}
   const turn = interruptedHistory('native-turn');
-  const user = { type: 'userMessage', id: 'user', clientId: interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111', content: [{type: 'text', text: 'cancel'}] };
+  const user = { type: 'userMessage', id: userItemId, clientId: interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111', content: [{type: 'text', text: 'cancel'}] };
   if(interruptCase==='paged-history') {
    const next = m.params.cursor !== null;
    out({id:m.id,result:{data:[{...interruptedHistory(next ? 'second-turn' : 'first-turn'),items:next?[user]:[]}],nextCursor:next?null:'second',backwardsCursor:null}});
@@ -86,7 +87,18 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
-  interruptUser={id:'user',type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
+  if(process.env.CODEX_TEST_EXIT_BURST) {
+   const messages=Array.from({length:1000},()=>({method:'item/agentMessage/delta',params:{threadId:'native-thread',turnId:turn.id,itemId:'final-answer',delta:'received output '}}));
+   if(process.env.CODEX_TEST_EXIT_BURST==='unsupported request')messages.push({id:42,method:'unsupported/request',params:{threadId:'native-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='foreign request')messages.push({id:42,method:'unsupported/request',params:{threadId:'other-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='invalid form')messages.push({id:42,method:'mcpServer/elicitation/request',params:{threadId:'native-thread',mode:'form',requestedSchema:{type:'array'}}});
+   messages.push({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'final-answer',type:'agentMessage',text:'final answer before exit'}}});
+   messages.push({method:'turn/completed',params:{threadId:'native-thread',turn:{...turn,status:'completed'}}});
+   messages.push({id:m.id,result:{turn}});
+   await new Promise((resolve,reject)=>process.stdout.write(messages.map(value=>JSON.stringify(value)+'\n').join(''),error=>error?reject(error):resolve()));
+   break;
+  }
+  interruptUser={id:userItemId,type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
   if(!['missing-user','completion-items','history-user','history-read-failure','history-delayed'].includes(interruptCase)) out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:interruptUser}});
   const approvalCase=JSON.parse(process.env.CODEX_TEST_APPROVAL_CASES ?? '{}')[text];
   if(approvalCase){
@@ -136,3 +148,4 @@ for await (const line of createInterface({input:process.stdin})) {
   out({method:'turn/completed',params:{threadId:'native-thread',turn:{id:'native-turn',status:'completed'}}});
  }
 }
+process.stdin.destroy();

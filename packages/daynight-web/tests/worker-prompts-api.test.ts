@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { getWorkerPrompt, isPromptText, parsePromptResource, PROMPT_REQUEST_BYTES, PROMPT_RESPONSE_BYTES, promptSubmissionBytes, saveWorkerPrompt, type PromptResource, type PromptTarget } from '../src/api/worker-prompts';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -48,6 +48,37 @@ describe('principal-admitted prompt API', () => {
     expect(JSON.parse(fetch.mock.calls[3]![1].body)).toEqual({ expectedUserId: userId, revision: '0', text: 'line\r\n' });
     expect(gate.onDispatch).toHaveBeenCalledOnce();
   });
+  it('uses reviewer routes for all three scopes for reads and writes', async () => {
+    const targets: PromptTarget[] = [{ scope: 'user', purpose: 'reviewer' }, { scope: 'project', projectId, purpose: 'reviewer' }, { scope: 'worker', workerId, purpose: 'reviewer' }];
+    const resources = [resource(), resource('project', projectId), resource('worker', workerId)];
+    const fetch = vi.fn().mockImplementation(async (url: string, options: RequestInit) => {
+      const index = url.includes('/projects/') ? 1 : url.includes('/workers/') ? 2 : 0;
+      const current = resources[index]!;
+      return response(options.method === 'PUT' ? { ...current, revision: '1', text: 'review', updatedAt: at } : current);
+    });
+    vi.stubGlobal('fetch', fetch);
+    for (const target of targets) {
+      await getWorkerPrompt(target, signal(), admission());
+      await saveWorkerPrompt(target, { expectedUserId: userId, revision: '0', text: 'review' }, signal(), admission());
+    }
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/me/reviewer-prompt', '/api/v1/me/reviewer-prompt',
+      `/api/v1/me/projects/${projectId}/reviewer-prompt`, `/api/v1/me/projects/${projectId}/reviewer-prompt`,
+      `/api/v1/me/workers/${workerId}/reviewer-prompt`, `/api/v1/me/workers/${workerId}/reviewer-prompt`,
+    ]);
+  });
+  it('bounds reviewer raw UTF-8 bytes independently of JSON escaping and worker limits', async () => {
+    const reviewer: PromptTarget = { scope: 'user', purpose: 'reviewer' };
+    const exact = '界'.repeat(10922) + '\n"';
+    const over = exact + 'a';
+    const fetch = vi.fn().mockResolvedValue(response(resource('user', userId, '1', exact, at)));
+    vi.stubGlobal('fetch', fetch);
+    expect(await saveWorkerPrompt(reviewer, { expectedUserId: userId, revision: '0', text: exact }, signal(), admission())).toEqual(resource('user', userId, '1', exact, at));
+    await expect(saveWorkerPrompt(reviewer, { expectedUserId: userId, revision: '0', text: over }, signal(), admission())).rejects.toMatchObject({ code: 'payload_too_large' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(() => parsePromptResource(resource('user', userId, '1', over, at), reviewer, userId)).toThrow();
+    expect(parsePromptResource(resource('user', userId, '1', over, at), user, userId).text).toBe(over);
+  });
   it('waits for identity admission before dispatch and binds the principal on every response', async () => {
     const resume = pauseAuthRequests(), gate = admission(), fetch = vi.fn().mockResolvedValue(response(resource(), 200, projectId));
     vi.stubGlobal('fetch', fetch);
@@ -67,6 +98,26 @@ describe('principal-admitted prompt API', () => {
     await expect(saveWorkerPrompt(user, input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
     await expect(saveWorkerPrompt(user, input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
   });
+  it('reports a receipt only after principal, body and submission validation', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response(resource('user', userId, '1', 'wrong', at)))
+      .mockResolvedValueOnce(response(resource('user', userId, '1', 'new', at), 200, projectId))
+      .mockResolvedValueOnce(response(resource('user', userId, '1', 'new', at)));
+    vi.stubGlobal('fetch', fetch);
+    const onReceipt = vi.fn(), gate = { ...admission(), onReceipt }, input = { expectedUserId: userId, revision: '0', text: 'new' };
+    await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(onReceipt).not.toHaveBeenCalled();
+    const saved = await saveWorkerPrompt(user, input, signal(), gate);
+    expect(onReceipt).toHaveBeenCalledOnce(); expect(onReceipt).toHaveBeenCalledWith(saved);
+  });
+  it('reports only a validated server refusal as a known rejection', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response({ error: { code: 'version_conflict', message: 'changed', requestId: 'save-1' } }, 409))
+      .mockResolvedValueOnce(response({ invalid: true }, 409)).mockRejectedValueOnce(new Error('offline'));
+    vi.stubGlobal('fetch', fetch);
+    const onRejection = vi.fn(), gate = { ...admission(), onRejection }, input = { expectedUserId: userId, revision: '0', text: 'new' };
+    for (let i = 0; i < 3; i++) await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toBeDefined();
+    expect(onRejection).toHaveBeenCalledOnce(); expect(onRejection).toHaveBeenCalledWith(expect.objectContaining({ code: 'version_conflict' }));
+  });
   it('counts the complete escaped JSON bytes and refuses invalid or oversized writes before dispatch', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const gate = admission(), base = { expectedUserId: userId, revision: '0', text: '\n' };
@@ -85,6 +136,48 @@ describe('principal-admitted prompt API', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array(PROMPT_RESPONSE_BYTES + 1), { headers }));
     vi.stubGlobal('fetch', fetch);
     for (let i = 0; i < 3; i++) await expect(getWorkerPrompt(user, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+  });
+  it('cancels the response reader once and retains the network cancellation reason', async () => {
+    let started!: () => void, dispatched!: AbortSignal, cancelReader!: ReturnType<typeof vi.spyOn>;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    const stream = new ReadableStream<Uint8Array>({ pull() { started(); } }, { highWaterMark: 0 });
+    const getReader = stream.getReader.bind(stream);
+    vi.spyOn(stream, 'getReader').mockImplementation(() => { const reader = getReader(); cancelReader = vi.spyOn(reader, 'cancel'); return reader; });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      dispatched = init.signal as AbortSignal;
+      return new Response(stream, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    }));
+    const pending = getWorkerPrompt(user, signal(), admission());
+    await reading;
+    cancelAuthNetworkRequests();
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(cancelReader).toHaveBeenCalledOnce();
+    expect(cancelReader).toHaveBeenCalledWith(dispatched.reason);
+  });
+  it('does not wait for reader cleanup after cancellation', async () => {
+    let cleanupStarted!: () => void, failCleanup!: (cause: Error) => void, dispatched!: AbortSignal;
+    const cleaning = new Promise<void>(resolve => { cleanupStarted = resolve; });
+    const stream = new ReadableStream<Uint8Array>({ start(body) { body.enqueue(new TextEncoder().encode(JSON.stringify(resource()))); body.close(); } });
+    const getReader = stream.getReader.bind(stream);
+    vi.spyOn(stream, 'getReader').mockImplementation(() => {
+      const reader = getReader();
+      vi.spyOn(reader, 'cancel').mockImplementation(() => {
+        cleanupStarted();
+        return new Promise<void>((_resolve, reject) => { failCleanup = reject; });
+      });
+      return reader;
+    });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      dispatched = init.signal as AbortSignal;
+      return new Response(stream, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    }));
+    const pending = getWorkerPrompt(user, signal(), admission());
+    await cleaning;
+    cancelAuthNetworkRequests();
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(stream.locked).toBe(false);
+    failCleanup(new Error('late cleanup failure'));
+    await Promise.resolve();
   });
   it('accepts a large legal escaped resource without truncation', async () => {
     const text = '<'.repeat(800_000), value = resource('user', userId, '1', text, at);

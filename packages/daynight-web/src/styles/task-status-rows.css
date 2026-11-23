@@ -1,49 +1,49 @@
 [data-task-status="proposed"] {
-  --row-background: #edf6f6;
-  --row-hover: #e0eeee;
-  --row-border: #c4dcdc;
-  --row-status: #43757e;
+  --row-background: var(--task-proposed-background);
+  --row-hover: var(--task-proposed-hover);
+  --row-border: var(--task-proposed-border);
+  --row-status: var(--task-proposed-ink);
 }
 
 [data-task-status="todo"] {
-  --row-background: #f1f3f6;
-  --row-hover: #e8ecf1;
-  --row-border: #d8dfe8;
-  --row-status: #596579;
+  --row-background: var(--task-todo-background);
+  --row-hover: var(--task-todo-hover);
+  --row-border: var(--task-todo-border);
+  --row-status: var(--task-todo-ink);
 }
 
 [data-task-status="in_progress"] {
-  --row-background: #ebf2ff;
-  --row-hover: #dfeaff;
-  --row-border: #bbcff2;
-  --row-status: #305fa8;
+  --row-background: var(--task-in_progress-background);
+  --row-hover: var(--task-in_progress-hover);
+  --row-border: var(--task-in_progress-border);
+  --row-status: var(--task-in_progress-ink);
 }
 
 [data-task-status="done"] {
-  --row-background: #eaf6ef;
-  --row-hover: #ddefe5;
-  --row-border: #bfdcc9;
-  --row-status: #246d4a;
+  --row-background: var(--task-done-background);
+  --row-hover: var(--task-done-hover);
+  --row-border: var(--task-done-border);
+  --row-status: var(--task-done-ink);
 }
 
 [data-task-status="cancelled"] {
-  --row-background: #f3eff7;
-  --row-hover: #ebe5f1;
-  --row-border: #d6cbdf;
-  --row-status: #705c80;
+  --row-background: var(--task-cancelled-background);
+  --row-hover: var(--task-cancelled-hover);
+  --row-border: var(--task-cancelled-border);
+  --row-status: var(--task-cancelled-ink);
 }
 
 [data-task-status="ended"] {
-  --row-background: #eef4f2;
-  --row-hover: #e3ece8;
-  --row-border: #cadbd3;
-  --row-status: #4b6f60;
+  --row-background: var(--task-ended-background);
+  --row-hover: var(--task-ended-hover);
+  --row-border: var(--task-ended-border);
+  --row-status: var(--task-ended-ink);
 }
 
 .task-status-surface[data-task-status] {
   background: var(--row-background);
   border-color: var(--row-border);
-  color: #172132;
+  color: var(--task-title);
 }
 
 .task-status-surface[data-task-status]:hover {
@@ -54,6 +54,8 @@
 .goal-row[data-task-status] { border-color: var(--row-border); }
 .goal-header.task-status-surface > .goal-toggle { background: transparent; }
 .task-status-surface[data-task-status]:focus-visible { outline-offset: -3px; }
+.task-status-surface[data-task-status]:focus-visible,
+.task-status-surface[data-task-status] :focus-visible { outline-color: var(--task-focus); }
 
 .task-status-surface .root-meta,
 .task-status-surface .root-progress-label,
@@ -61,18 +63,17 @@
 .task-status-surface .overview-progress-scope,
 .task-status-surface .overview-progress-metric,
 .task-status-surface .task-platform,
-.task-status-surface .task-agent-permission:not(.task-agent-permission-on),
 .task-status-surface .task-duration {
-  color: #5c687b;
+  color: var(--task-helper);
 }
 
 .task-status-surface .root-status { color: var(--row-status); }
 
 .standalone-row-stuck[data-task-status],
 .task-node-stuck[data-task-status] {
-  --row-background: #fff7e8;
-  --row-hover: #fff0d6;
-  --row-border: #d4a04a;
+  --row-background: var(--task-attention-background);
+  --row-hover: var(--task-attention-hover);
+  --row-border: var(--task-attention-border);
 }
 
-.task-status-surface.standalone-row-stuck .task-duration { color: #805b27; }
+.task-status-surface.standalone-row-stuck .task-duration { color: var(--task-attention-ink); }

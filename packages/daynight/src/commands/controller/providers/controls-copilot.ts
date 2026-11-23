@@ -1,3 +1,4 @@
+import { bindImageQualification, qualifiedImageLimits } from "./image-qualification.js";
 import type { CopilotSession } from "@github/copilot-sdk";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
@@ -13,32 +14,39 @@ export class CopilotControls {
   private currentModel: string | null = null;
   private unconfirmed = false;
   private unsettled: { id: string; value: string } | null = null;
-  constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null) { this.store = new ProviderControls(changed, revisionFloor); }
+  constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null, private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
+  imageModelId(): string | null { return this.currentModel; }
   imageCapabilities(profile: CopilotImageProfile | null, sessionId: string | null): Omit<ProviderImageCapabilities, "revision"> {
     const matches = this.capabilityModels.filter(item => item.id === this.currentModel), model = matches.length === 1 ? matches[0] : undefined;
     const vision = record(record(model?.capabilities).supports).vision, limits = record(record(record(model?.capabilities).limits).vision);
     const mime = limits.supported_media_types;
     const valid = Array.isArray(mime) && mime.every(value => typeof value === "string" && value.length > 0) && new Set(mime).size === mime.length && Number.isSafeInteger(limits.max_prompt_images) && Number(limits.max_prompt_images) > 0 && Number.isSafeInteger(limits.max_prompt_image_size) && Number(limits.max_prompt_image_size) > 0;
-    const media = valid ? ["image/png", "image/jpeg", "image/webp"].filter(type => (mime as string[]).includes(type)) as InputMime[] : [];
+    const qualification = profile?.modelId === this.currentModel && profile.qualification?.identity.modelId === this.currentModel ? profile?.qualification ?? null : null;
+    const media = valid ? ["image/png", "image/jpeg", "image/webp"].filter(type => (mime as string[]).includes(type) && (!qualification || qualification.inputMediaTypes.includes(type as InputMime))) as InputMime[] : [];
     const stable = !this.closed && !this.unconfirmed && this.pending.size === 0 && this.store.value.settingsError === null;
-    const geometry = profile?.geometry ?? unknownCopilotGeometry;
+    const geometry = qualification ? qualifiedImageLimits(qualification).geometry : unknownCopilotGeometry;
     const send = !profile || !sessionId || !stable || !model || typeof vision !== "boolean" ? "unknown" : !vision ? "unsupported" : !valid ? "unknown" : !media.length ? "unsupported" : geometry.known ? "supported" : "unknown";
-    return { expectedNativeSessionId: sessionId, modelId: this.currentModel, controlsRevision: this.store.value.revision, send, steer: send === "unsupported" ? "unsupported" : "unknown",
-      reasonCode: !profile ? "profile_disabled" : send === "unsupported" ? "model_unsupported" : "capability_unknown",
-      inputMediaTypes: send === "supported" ? media : [], maxImageBytes: String(valid ? Math.min(Number(limits.max_prompt_image_size), IMAGE_LIMITS.imageBytes) : IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: valid ? Math.min(Number(limits.max_prompt_images), IMAGE_LIMITS.images) : IMAGE_LIMITS.images,
-      geometry };
+    const envelope = qualification ? qualifiedImageLimits(qualification) : null;
+    const sendSupport = send === "supported" && !qualification?.send ? "unsupported" : send;
+    const steerSupport = send === "supported" ? qualification?.steer ? "supported" : "unsupported" : send;
+    return bindImageQualification({ expectedNativeSessionId: sessionId, modelId: this.currentModel, controlsRevision: this.store.value.revision, send: sendSupport, steer: steerSupport,
+      reasonCode: sendSupport === "supported" || steerSupport === "supported" ? null : !profile || qualification && !qualification.send && !qualification.steer ? "profile_disabled" : send === "unsupported" ? "model_unsupported" : "capability_unknown",
+      inputMediaTypes: send === "supported" ? media.filter(mime => envelope!.inputMediaTypes.includes(mime)) : [], maxImageBytes: String(valid ? Math.min(Number(limits.max_prompt_image_size), Number(envelope?.maxImageBytes ?? IMAGE_LIMITS.imageBytes)) : IMAGE_LIMITS.imageBytes), maxMessageImageBytes: envelope?.maxMessageImageBytes ?? String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: valid ? Math.min(Number(limits.max_prompt_images), envelope?.maxImagesPerMessage ?? IMAGE_LIMITS.images) : IMAGE_LIMITS.images,
+      geometry }, qualification);
   }
   invalidateImages(): void { this.unconfirmed = true; }
   private permissions(): SessionSetting { return { id: "tool_approval", category: "permission", label: "Tool approvals", value: this.toolApproval, mutable: typeof this.native.rpc.permissions.setApproveAll === "function", scope: "session", description: "Native tool approval policy. Existing grants, path and network permissions are independent.", options: [{ value: "ask", label: "Ask for approval" }, { value: "allow", label: "Allow tools" }] }; }
   async initialize(resume: boolean, unattended = false) {
     if (!resume && unattended) {
       if (typeof this.native.rpc.permissions.configure !== "function") throw new Error("Native Copilot cannot configure unattended full access.");
+      this.assertNativeDispatch?.();
       // SDK sessions have independent path and URL managers; runtime flags and
       // setApproveAll alone do not authorize access outside the task worktree.
       const result = await controlDeadline(this.native.rpc.permissions.configure({ approveAllToolPermissionRequests: true, approveAllReadPermissionRequests: true, paths: { unrestricted: true }, urls: { unrestricted: true } }), "Copilot full access initialization");
       if (!result.success) throw new Error("Copilot did not confirm unattended full access.");
       this.toolApproval = "allow";
     } else if (!resume && typeof this.native.rpc.permissions.setApproveAll === "function") {
+      this.assertNativeDispatch?.();
       try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: false }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = "ask"; }
       catch (error) { this.store.update({ settingsError: controlError(error) }); }
     }
@@ -81,6 +89,7 @@ export class CopilotControls {
   async set(id: string, value: string, operationId: string, revision: string) {
     this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
     this.invalidateImages(); this.unsettled = { id, value };
+    this.assertNativeDispatch?.();
     if (id === "tool_approval") {
       const operation = this.native.rpc.permissions.setApproveAll({ enabled: value === "allow" }).then(result => { if (!result.success) throw new Error("Copilot did not confirm tool permission update."); if (this.closed) throw new Error("Native session closed."); this.toolApproval = value; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()] }); this.confirmed?.(operationId); });
       try { await controlDeadline(operation, "Copilot permission update"); } catch (error) { this.toolApproval = null; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()], settingsError: controlError(error) }); throw error; }
@@ -100,6 +109,6 @@ export class CopilotControls {
     }
     await controlDeadline(confirmation, "Copilot queued model confirmation");
   }
-  async invoke(id: string, args: string, revision: string): ReturnType<CopilotSession["rpc"]["commands"]["invoke"]> { const command = this.store.command(id, revision); if (this.closed) throw new NativeRpcError(-32602, "Native session closed."); const result = await controlDeadline(this.native.rpc.commands.invoke({ name: command.name, input: args }), "Copilot command"); if (result.runtimeSettingsChanged) await this.refresh(); return result; }
+  async invoke(id: string, args: string, revision: string): ReturnType<CopilotSession["rpc"]["commands"]["invoke"]> { const command = this.store.command(id, revision); if (this.closed) throw new NativeRpcError(-32602, "Native session closed."); this.assertNativeDispatch?.(); const result = await controlDeadline(this.native.rpc.commands.invoke({ name: command.name, input: args }), "Copilot command"); if (result.runtimeSettingsChanged) await this.refresh(); return result; }
   close() { this.closed = true; if (this.pollTimer) clearInterval(this.pollTimer); for (const item of this.pending.values()) item.reject(new Error("Native Copilot closed before model confirmation.")); this.pending.clear(); }
 }

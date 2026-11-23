@@ -28,7 +28,9 @@ const (
 	operationTimeout = 200 * time.Millisecond
 	headerLimit      = 2 * 1024
 	bodyLimit        = 256 * 1024
-	valueLimit       = headerLimit + bodyLimit
+	// The direct protocol adds a UUID runId and sequence="1" solely for legacy readers.
+	storedBodyLimit = bodyLimit + 62
+	valueLimit      = headerLimit + storedBodyLimit
 )
 
 var ErrInvalidFrame = errors.New("invalid monitoring frame")
@@ -75,16 +77,25 @@ func options(rawURL string) (*redisclient.Options, error) {
 	return opts, nil
 }
 
-// ValidateURL validates a nonempty monitoring Redis URL without connecting.
+// ValidateURL validates a nonempty Daynight Redis URL without connecting.
 func ValidateURL(rawURL string) error { _, err := options(rawURL); return err }
 
-// New creates a monitoring-only connection; availability is checked by operations.
-func New(rawURL string) (*Store, error) {
+// NewClient creates a Redis client with bounded operations and no automatic retries.
+func NewClient(rawURL string) (*redisclient.Client, error) {
 	opts, err := options(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{client: redisclient.NewClient(opts), ttl: TTL}, nil
+	return redisclient.NewClient(opts), nil
+}
+
+// New creates a monitoring connection; availability is checked by operations.
+func New(rawURL string) (*Store, error) {
+	client, err := NewClient(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{client: client, ttl: TTL}, nil
 }
 
 func (s *Store) Close() error { return s.client.Close() }
@@ -167,7 +178,7 @@ func parseValue(frame []byte, full bool) (*store.MonitoringValue, error) {
 	v := &store.MonitoringValue{Receipt: h.receipt(), Summary: h.Summary}
 	if full {
 		body := frame[start:]
-		if len(frame) > valueLimit || len(body) > bodyLimit || !validObject(body) {
+		if len(frame) > valueLimit || len(body) > storedBodyLimit || !validObject(body) {
 			return nil, ErrInvalidFrame
 		}
 		digest := sha256.Sum256(body)
@@ -254,6 +265,53 @@ func classifyFailure(err error) error {
 		kind = "network"
 	}
 	return &store.MonitoringError{Kind: kind, Cause: err}
+}
+
+// Direct saves never consult the previous key. A single SET publishes the
+// frame and its expiry together, including when the old value is corrupt.
+const saveScript = `
+local now=redis.call('TIME')
+local received=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)
+local expires=received+tonumber(ARGV[7])*1000
+local head='{"formatVersion":2,"revision":"'..ARGV[1]..'","runId":"'..ARGV[2]..'","sequence":"'..ARGV[3]..'","bodyDigest":"'..ARGV[4]..'","receivedAtMs":'..string.format('%.0f',received)..',"expiresAtMs":'..string.format('%.0f',expires)..',"summary":'..ARGV[5]..'}\n'
+if #head>2048 or #ARGV[6]>262206 or #head+#ARGV[6]>264254 then return redis.error_reply('monitoring frame too large') end
+redis.call('SET',KEYS[1],head..ARGV[6],'EX',ARGV[7])
+return {ARGV[1],ARGV[2],ARGV[3],string.format('%.0f',received),string.format('%.0f',expires)}
+`
+
+func (s *Store) Save(ctx context.Context, id store.MonitoringIdentity, c store.MonitoringCandidate) (result store.MonitoringReceipt, failure error) {
+	defer func() { failure = classifyFailure(failure) }()
+	k, err := key(id)
+	if err != nil {
+		return result, err
+	}
+	if !validUUID(c.RunID) || c.Sequence != "1" || !validObject(c.Body) || len(c.Body) > storedBodyLimit || !validObject(c.Summary) || len(c.Summary) > headerLimit {
+		return result, errors.New("invalid monitoring candidate")
+	}
+	if _, err := monitoring.ParseStoredSummary(c.Summary); err != nil {
+		return result, fmt.Errorf("invalid monitoring summary: %w", err)
+	}
+	digest := sha256.Sum256(c.Body)
+	revision := uuid.NewString()
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	v, err := s.client.Eval(ctx, saveScript, []string{k}, revision, c.RunID, c.Sequence, hex.EncodeToString(digest[:]), string(c.Summary), string(c.Body), int64(s.ttl/time.Second)).StringSlice()
+	if err != nil {
+		var redisErr redisclient.Error
+		if !errors.As(err, &redisErr) {
+			return result, errors.Join(store.ErrMonitoringWriteOutcomeUnknown, fmt.Errorf("monitoring save: %w", err))
+		}
+		return result, fmt.Errorf("monitoring save: %w", err)
+	}
+	if len(v) != 5 || v[0] != revision || v[1] != c.RunID || v[2] != c.Sequence {
+		return result, errors.Join(store.ErrMonitoringWriteOutcomeUnknown, ErrInvalidFrame)
+	}
+	received, e1 := strconv.ParseInt(v[3], 10, 64)
+	expires, e2 := strconv.ParseInt(v[4], 10, 64)
+	if e1 != nil || e2 != nil || received <= 0 || expires > 9007199254740991 || expires-received != int64(s.ttl/time.Millisecond) {
+		return result, errors.Join(store.ErrMonitoringWriteOutcomeUnknown, ErrInvalidFrame)
+	}
+	return store.MonitoringReceipt{Revision: revision, RunID: c.RunID, Sequence: c.Sequence, ReceivedAt: time.UnixMilli(received).UTC(), ExpiresAt: time.UnixMilli(expires).UTC()}, nil
 }
 
 func (s *Store) CompareAndSet(ctx context.Context, id store.MonitoringIdentity, expected *string, c store.MonitoringCandidate) (result store.MonitoringCASResult, failure error) {

@@ -1,8 +1,11 @@
+import { ProjectTaskObservationsProvider } from "../task-session-summary/ProjectTaskObservationsProvider";
+import type { ProjectTaskObservationsStore } from "../task-session-summary/project-observations";
 import { TaskSessionSummaryProvider } from "../task-session-summary/TaskSessionSummaryProvider";
-import { TaskPauseCount, TaskPauseProvider } from "../task-pause/TaskPause";
+import { TaskPauseProvider } from "../task-pause/TaskPause";
+import { ProjectPausedTasks } from "./ProjectPausedTasks";
+import type { GraphTask } from "../../api/types";
 import type { ComponentProps, ReactNode } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
-import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { ChainList } from "../task-graph/ChainList";
 import { ProjectTaskTabs } from "./ProjectTaskTabs";
 import { StandaloneList } from "./StandaloneList";
@@ -10,39 +13,42 @@ import { GoalList } from "./GoalList";
 import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 import type { TaskSessionSummaryStore } from "../task-session-summary/store";
+import { UsageActivityProvider } from '../usage/useTaskUsage';
 
-export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active = true, activeView, pausedTaskCount, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, goalCount, onViewChange, filter, chains, standalone, goals }: {
-  readonly projectId: string;
+export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange, filter, chains, standalone, goals }: {
   readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
   readonly sessionStore: TaskSessionSummaryStore;
+  readonly observationStore: ProjectTaskObservationsStore;
   readonly activeView: TaskView;
-  readonly pausedTaskCount: number;
+  readonly pausedTasks: readonly GraphTask[];
+  readonly onOpenPausedTask: (id: string, trigger: HTMLElement) => void;
+  readonly onPausedFocusFallback: () => void;
   readonly unfinishedStandaloneTaskCount: number;
-  readonly unfinishedChainTaskCount: number;
-  readonly goalCount: number;
+  readonly unfinishedChainCount: number;
+  readonly unfinishedGoalCount: number;
   readonly onViewChange: (view: TaskView) => void;
-  readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines">;
-  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index">;
-  readonly goals: Omit<ComponentProps<typeof GoalList>, "index">;
+  readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines" | "summaries">;
+  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index" | "summaries" | "workerMachines">;
+  readonly goals: Omit<ComponentProps<typeof GoalList>, "index" | "workerMachines" | "summaries">;
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
-  return <>
-    <div className="project-section-heading"><h2>{sections.tasks}</h2><TaskPauseCount count={pausedTaskCount} /></div>
-      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
+  return <UsageActivityProvider active={active}>
+    <div className="project-section-heading"><h2>{sections.tasks}</h2><ProjectPausedTasks tasks={pausedTasks} active={active} onOpenTask={onOpenPausedTask} onFocusFallback={onPausedFocusFallback} /></div>
+      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}><ProjectTaskObservationsProvider store={observationStore} active={active}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
-          unfinishedChainTaskCount={unfinishedChainTaskCount} goalCount={goalCount} onViewChange={onViewChange} />
+          unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-          {activeView === "chains" && <TaskSessionSummaryProvider store={sessionStore} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section></TaskSessionSummaryProvider>}
+          {activeView === "chains" && <section aria-label={m.chains}><ChainList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
-          {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}
+          {activeView === "standalone" && <StandaloneList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...standalone} />}
         </div>
         <div role="tabpanel" id="project-task-panel-goals" aria-labelledby="project-task-tab-goals" hidden={activeView !== "goals"} tabIndex={-1}>
-          {activeView === "goals" && <GoalList index={snapshot.index} {...goals} />}
+          {activeView === "goals" && <GoalList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
         </div>
-      </TaskExecutionClockProvider></TaskPauseProvider>
-  </>;
+      </ProjectTaskObservationsProvider></TaskSessionSummaryProvider></TaskPauseProvider>
+  </UsageActivityProvider>;
 };

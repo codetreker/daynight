@@ -80,6 +80,22 @@ func TestDAOFailuresPreserveCauseAndPhase(t *testing.T) {
 		name, phase string
 		run         func(pgx.Tx) error
 	}{
+		{"repository create occupancy", "read Team repository occupancy", func(tx pgx.Tx) error {
+			_, err := project.NewCreation(tx, "user").RepositoryOccupied(t.Context(), "team", "identity")
+			return err
+		}},
+		{"repository transfer occupancy", "read Team repository occupancy", func(tx pgx.Tx) error {
+			_, err := project.NewWriter(tx, "project").RepositoryOccupied(t.Context(), "team", "identity")
+			return err
+		}},
+		{"repository identity", "read locked Project repository identity", func(tx pgx.Tx) error {
+			_, err := project.NewWriter(tx, "project").RepositoryIdentity(t.Context())
+			return err
+		}},
+		{"visible repository", "find visible Team repository", func(tx pgx.Tx) error {
+			_, err := project.NewReader(tx).FindVisibleRepositoryForCreation(t.Context(), principal("user"), "team", "identity")
+			return err
+		}},
 		{"project", "read project", func(tx pgx.Tx) error { _, err := project.NewReader(tx).Project(t.Context(), "project"); return err }},
 		{"projects", "list projects", func(tx pgx.Tx) error {
 			_, err := project.NewReader(tx).Projects(t.Context(), store.Page{Limit: 2})
@@ -107,7 +123,7 @@ func TestDAOFailuresPreserveCauseAndPhase(t *testing.T) {
 			return err
 		}},
 		{"insert project", "insert project", func(tx pgx.Tx) error {
-			_, _, err := project.NewCreation(tx, "user").InsertProject(t.Context(), "project", "Project", "host:repo", "team")
+			_, _, err := project.NewCreation(tx, "user").InsertProject(t.Context(), "project", "Project", "host:repo", "scp://host:repo", "team")
 			return err
 		}},
 		{"participants", "list project participants", func(tx pgx.Tx) error {
@@ -183,7 +199,7 @@ func TestDAOFailuresPreserveCauseAndPhase(t *testing.T) {
 	for _, mode := range []string{"scan", "iteration"} {
 		for _, tc := range cases {
 			switch tc.name {
-			case "projects", "participants", "invitations", "scoped projects":
+			case "projects", "participants", "invitations", "scoped projects", "visible repository":
 				t.Run(tc.name+"/"+mode, func(t *testing.T) { err := tc.run(failingTx{cause: cause, rowMode: mode}); checkError(t, err, cause) })
 			}
 		}
@@ -202,7 +218,7 @@ func TestDAOLateFailuresPreserveOperationResultContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wrapped := failingTx{Tx: f.tx, fragment: tc.fragment, cause: cause}
-			result, access, err := project.NewCreation(wrapped, f.owner).InsertProject(ctx, uuid.NewString(), "New Project", "host:new", f.team)
+			result, access, err := project.NewCreation(wrapped, f.owner).InsertProject(ctx, uuid.NewString(), "New Project", "host:new", "scp://host:new", f.team)
 			var failure *store.Error
 			if !errors.Is(err, cause) || !errors.As(err, &failure) || failure.Phase != tc.phase || access.ProjectID != "" {
 				t.Fatalf("result = %+v, access = %+v, failure = %+v, %v", result, access, failure, err)

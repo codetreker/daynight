@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { NativeRpcTimeoutError } from "./native-rpc.js";
+import { NativeRpcTimeoutError, NativeDispatchRejectedError } from "./native-rpc.js";
 type Wire = Record<string, unknown>;
 export type ClaudeIpc = { readonly connected?: boolean; send?(value: unknown, callback?: (error: Error | null) => void): unknown; on(event: "message", callback: (value: unknown) => void): unknown; off(event: "message", callback: (value: unknown) => void): unknown };
 const object = (value: unknown): Wire => value && typeof value === "object" && !Array.isArray(value) ? value as Wire : {};
@@ -37,7 +37,7 @@ export class ClaudeLiveChannel {
     if (message.kind === "cancel") { this.running.get(id)?.abort(); return; }
     if (message.kind === "response") {
       const waiter = this.waiting.get(id); if (!waiter) return; this.waiting.delete(id); clearTimeout(waiter.timer);
-      if (message.error) { const value = object(message.error), error = new Error(typeof value.message === "string" ? value.message : "Claude helper operation failed."); Object.assign(error, value); waiter.reject(error); }
+      if (message.error) { const value = object(message.error), error = value.errorClass === "native_dispatch_rejected" ? new NativeDispatchRejectedError(String(value.message)) : new Error(typeof value.message === "string" ? value.message : "Claude helper operation failed."); Object.assign(error, value); waiter.reject(error); }
       else waiter.resolve(message.value);
       return;
     }

@@ -69,8 +69,7 @@ screen across missing observations.
 Unknown initial disposition is a separate durable control action from automation
 resumption. The protocol advertises the supported action, preserves the original
 unknown outcome and records the human decision while remaining suspended.
-The [input arbitration design](../../../../docs/design/herdr-input-arbitration.md)
-owns that state transition. The [Web design](../../../../docs/design/herdr-session-web.md)
+The Herdr input execution path has since been removed. The [Web design](../../../../docs/design/herdr-session-web.md)
 owns page and archive loading mechanisms.
 
 ## Alternatives

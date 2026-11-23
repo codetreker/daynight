@@ -19,32 +19,33 @@ it("cancels through both installed native launchers and reconciles an unknown re
   const temporary = path.join(fixture, "temporary");
   const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
   const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
+  const parentTaskId = "eeeeeeee-5555-4555-8555-555555555555";
   const claimId = "dddddddd-4444-4444-8444-444444444444";
   const principal = "cccccccc-3333-4333-8333-333333333333";
   const time = "2026-11-06T00:00:00.123456789Z";
   const cancelledAt = "2026-11-07T00:00:00.987654321Z";
   const original: Task = { type: "task", parentId: null,
     id: taskId, projectId, title: "  Existing <result&> 中文😀  ", description: "# Preserved\n\nTask materials",
-    properties: { pullRequests: [{ url: "opaque", title: "Existing result" }] }, status: "done", allowAgents: true,
+    tags: [], properties: { pullRequests: [{ url: "opaque", title: "Existing result" }] }, status: "done", allowAgents: true,
     requiredPlatform: "windows", assignedTo: principal, version: 9_007_199_254_740_993n,
     startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
   };
   const worker: WorkerClaim = {
-    claimId, state: "released", userId: principal, workerId: taskId, machine: { id: claimId, name: "Native fixture" },
+    claimId, state: "active", userId: principal, workerId: taskId, machine: { id: claimId, name: "Native fixture" },
     platform: "windows", agent: "codex", agentControlMode: "web", worktreeId: projectId, phase: "executing",
     herdr: null, nativeSessionId: null, claimedAt: time,
   };
   const resourcePath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
   let current = original;
-  let mode: "write" | "active" | "unknown" = "write";
-  const requests: { method: string; path: string; body: unknown }[] = [];
+  let mode: "write" | "active" | "unknown" | "old-service" = "write";
+  const requests: { method: string; path: string; body: unknown; relations: string | undefined }[] = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => { chunks.push(chunk); });
     request.on("end", () => {
       const body = chunks.length === 0 ? null : parseApiJson(Buffer.concat(chunks).toString("utf8"));
-      requests.push({ method: request.method!, path: request.url!, body });
+      requests.push({ method: request.method!, path: request.url!, body, relations: request.headers["daynight-task-relations"] as string | undefined });
       response.setHeader("Content-Type", "application/json");
       response.setHeader("Daynight-User-ID", principal);
       if (request.method === "GET" && request.url === `/api/v1/projects/${projectId}`) {
@@ -52,6 +53,11 @@ it("cancels through both installed native launchers and reconciles an unknown re
       } else if (request.method === "GET" && request.url === resourcePath) response.end(stringifyApiJson(current));
       else if (request.method === "GET" && request.url === `${resourcePath}?include=session`) response.end(stringifyApiJson(withTaskObservation(current)));
       else if (request.method === "PUT" && request.url === `${resourcePath}/status`) {
+        if (mode === "old-service") {
+          response.writeHead(400);
+          response.end(stringifyApiJson({ error: { code: "invalid_request", message: "Unknown field cancelDescendants.", requestId: "old-cancel" } }));
+          return;
+        }
         if (mode === "active") {
           response.writeHead(409);
           response.end(stringifyApiJson({ error: { code: "invalid_transition", message: "Release the active worker before cancellation.", requestId: "active-cancel" } }));
@@ -128,6 +134,27 @@ it("cancels through both installed native launchers and reconciles an unknown re
     }
     for (const launcher of [receipt.launcherPath, alias]) {
       mode = "write";
+      current = { ...original, parentTaskId, status: "todo", startedAt: null, completedAt: null, ready: true };
+      const before = requests.length;
+      const confirmed = await invoke(launcher, [...cancel(current.version), "--confirm"]);
+      expect(confirmed.code, confirmed.stderr).toBe(0);
+      expect(confirmed.stdout).toContain(parentTaskId);
+      const sent = requests.slice(before);
+      expect(sent.filter(({ method }) => method === "PUT")).toHaveLength(1);
+      expect(sent.at(-1)!.body).toEqual({ version: original.version, status: "cancelled", cancelDescendants: true });
+      expect(sent.filter(({ path }) => path === resourcePath || path === `${resourcePath}/status`).every(({ relations }) => relations === "task-parent-v1")).toBe(true);
+    }
+    mode = "old-service";
+    current = original;
+    const beforeOld = requests.length;
+    const unsupported = await invoke(alias, [...cancel(current.version), "--confirm"]);
+    expect(unsupported.code).toBe(1);
+    expect(unsupported.stderr).toContain("cancelDescendants");
+    expect(requests.slice(beforeOld).filter(({ method }) => method === "PUT")).toHaveLength(1);
+    expect(requests.at(-1)!.body).toEqual({ version: original.version, status: "cancelled", cancelDescendants: true });
+    expect(current).toBe(original);
+    for (const launcher of [receipt.launcherPath, alias]) {
+      mode = "write";
       current = { ...original, type: "goal", status: "todo", allowAgents: false, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, ready: false, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
       const before = requests.length;
       const refused = await invoke(launcher, cancel(current.version));
@@ -139,9 +166,13 @@ it("cancels through both installed native launchers and reconciles an unknown re
       expect(requests.at(-1)!.body).toEqual({ version: original.version, status: "cancelled" });
     }
     mode = "write";
-    current = { ...original, status: "todo", startedAt: null, completedAt: null, cancelledAt: null, ready: true, properties: { ...original.properties, worker } };
-    const released = await invoke(receipt.launcherPath, cancel(current.version));
-    expect(released.code, released.stderr).toBe(0); expect(current.properties.worker).toEqual(worker);
+    current = { ...original, status: "todo", startedAt: null, completedAt: null, cancelledAt: null, ready: true };
+    const cancelledUnowned = await invoke(receipt.launcherPath, cancel(current.version));
+    expect(cancelledUnowned.code, cancelledUnowned.stderr).toBe(0);
+    expect(current).toMatchObject({ status: "cancelled", cancelledAt, properties: original.properties });
+    expect(current.properties.worker).toBeUndefined();
+    const cancelledRead = await invoke(receipt.launcherPath, ["show", taskId, "--json"]);
+    expect(cancelledRead.code, cancelledRead.stderr).toBe(0); expect(parseApiJson(cancelledRead.stdout)).toEqual(withTaskObservation(current));
     mode = "unknown"; current = original;
     const beforeUnknown = requests.length;
     const unknown = await invoke(receipt.launcherPath, cancel(current.version));
@@ -153,7 +184,6 @@ it("cancels through both installed native launchers and reconciles an unknown re
       { method: "GET", path: `/api/v1/projects/${projectId}` },
       { method: "GET", path: resourcePath },
       { method: "PUT", path: `${resourcePath}/status` },
-      { method: "GET", path: `/api/v1/projects/${projectId}` },
       { method: "GET", path: `${resourcePath}?include=session` },
     ]);
   } catch (cause) { failure = cause; }

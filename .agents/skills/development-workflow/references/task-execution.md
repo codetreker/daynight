@@ -26,25 +26,9 @@ If the PR is associated with a Daynight task, include the task's ID and title.
 
 Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in their owning resource: Goal-wide shared material on the Goal and Task-specific material on the Task; keep session execution steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
 
-## Maintain Steps
-
-Read the current Steps and applicable project rules when executing a task. Follow
-those rules for naming, granularity, order, completion conditions and when to
-maintain records. Known work can be listed before execution and new work appended
-as it emerges; both can coexist. Steps are not a fixed workflow, a Session todo
-sync or a separate execution mode.
-
-When project rules call for distinct iterations, add independent Steps for each
-round and retain earlier identities, states and results rather than overwriting
-them. For example, a completed review may record issues in its description;
-`done` means that review ended, not that it passed. Append correction and further
-review records as appropriate under the project rules. Overwriting or deleting a
-record loses its public prior content; it is not an audit history. Maintain status
-and results as work progresses without inferring authorization or Task completion
-from a Step. See [content ownership](task-content.md#task-steps-and-session-content),
-[operations](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/steps.md) and [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md).
-
 ## Completion conditions
+
+Requirements-discussion and research Tasks are nonterminal in the work chain by default. They require registered and verified successors before completion, unless the user explicitly confirms that the current result ends the work.
 
 | Task type | Completion conditions |
 | --- | --- |

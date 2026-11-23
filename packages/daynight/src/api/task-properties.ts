@@ -1,4 +1,3 @@
-import { validateWorkerAgentMode } from "./worker-mode.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "../session/startup.js";
 import { array, fields, id, malformed, record, resourceVersion, text, timestamp } from "./validation.js";
 import type { JsonValue, PullRequestProperty, TaskProperties, TaskPropertyResource, TaskPropertySchema, TaskPlatform, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
@@ -13,9 +12,9 @@ const jsonValue = (value: unknown): JsonValue => {
 export const parseTaskProperties = (value: unknown): TaskProperties =>
   Object.fromEntries(Object.entries(record(value)).map(([name, item]) => [name, jsonValue(item)]));
 
-export const readTaskPaused = (properties: TaskProperties): boolean | undefined => {
-  if (!Object.hasOwn(properties, "paused")) return undefined;
-  return typeof properties.paused === "boolean" ? properties.paused : malformed();
+export const readTaskBlocked = (properties: TaskProperties): boolean | undefined => {
+  if (!Object.hasOwn(properties, "blocked")) return undefined;
+  return typeof properties.blocked === "boolean" ? properties.blocked : malformed();
 };
 
 export const readSessionStartupReport = (properties: TaskProperties): SessionStartupReport | undefined =>
@@ -43,14 +42,13 @@ export const readWorkerClaim = (properties: TaskProperties): WorkerClaim | undef
   const machine = fields(data.machine, ["id", "name"]);
   const platform: TaskPlatform = data.platform === "windows" || data.platform === "linux" || data.platform === "macos" ? data.platform : malformed();
   const agentControlMode = data.agentControlMode === "herdr" || data.agentControlMode === "web" ? data.agentControlMode : malformed();
-  let agent;
-  try { agent = validateWorkerAgentMode(data.agent, agentControlMode); } catch { return malformed(); }
-  if (agentControlMode === "web" && data.herdr !== null) return malformed();
+  const agent = data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed();
+  if (agentControlMode === "web" && data.herdr !== null && data.herdr !== undefined) return malformed();
   return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
     agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
-    herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
+    herdr: workerHerdr(agentControlMode === "web" && data.herdr === undefined ? null : data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
   };
 };
 

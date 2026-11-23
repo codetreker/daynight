@@ -113,9 +113,9 @@ describe('Session fullscreen inside task details', () => {
     expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   });
 
-  it.each(['released', 'completed'])('reads the retained %s claim archive after returning to todo', async state => {
+  it('reads the retained completed claim archive after returning to todo', async () => {
     const snapshot = initial();
-    const worker = { claimId: snapshot.claimId, state, userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' };
+    const worker = { claimId: snapshot.claimId, state: 'completed', userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' };
     const detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { properties: { worker }, status: 'todo' });
     vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     const current = vi.fn(async () => ({ status: 'registered' as const, session: snapshot }));
@@ -136,11 +136,12 @@ describe('Session fullscreen inside task details', () => {
   it.each([{ modal: true, outer: false }, { modal: true, outer: true }, { modal: false, outer: false }, { modal: false, outer: true }])('restores the original task surface (modal=$modal, fullscreen=$outer)', async ({ modal, outer }) => {
     const f = await fixture(modal, outer);
     const input = screen.getByRole('textbox', { name: 'Message' }), message = screen.getByText('Retained message');
+    await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
     fireEvent.change(input, { target: { value: 'Unsent draft' } });
     const toggle = screen.getByRole('button', { name: 'Enter Session fullscreen' }); fireEvent.click(toggle);
     expect(f.surface).toHaveClass('task-detail-session-fullscreen');
     expect(f.surface.classList.contains('task-detail-fullscreen')).toBe(outer);
-    for (const selector of ['.task-detail-header', '.task-detail-heading', '.task-detail-tabs', '.task-detail-notifications']) expect(f.surface.querySelector(selector)).toHaveAttribute('inert');
+    for (const selector of ['.task-detail-header', '.task-detail-heading', '.task-detail-tabs', '.task-detail-notifications']) expect(f.surface.querySelector(selector)?.closest('[inert]')).not.toBeNull();
     expect(document.body.style.overflow).toBe('hidden');
     expect(screen.getByRole('textbox', { name: 'Message' })).toBe(input);
     expect(screen.getByText('Retained message')).toBe(message);

@@ -3,7 +3,6 @@ package bot_test
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,9 +11,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -28,7 +26,8 @@ func reportBotHostHTTP(t *testing.T, handler http.Handler, id string) {
 }
 
 func TestBotDefaultsHTTPNameOnlyCreate(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
 	workerID := uuid.NewString()
 	reportBotHostHTTP(t, handler, workerID)
 	id := uuid.NewString()
@@ -47,40 +46,81 @@ func TestBotDefaultsHTTPNameOnlyCreate(t *testing.T) {
 		t.Fatal("response-loss reconciliation changed the frozen Bot")
 	}
 	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{"id":"`+id+`","name":"changed"}`), 409, "resource_conflict")
+	t.Run("revoked PAT", func(t *testing.T) {
+		if _, err := database.Pool.Exec(t.Context(), "DELETE FROM personal_access_tokens WHERE id=$1", handler.principal.CredentialID); err != nil {
+			t.Fatal(err)
+		}
+		assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults", ""), 401, "unauthenticated")
+		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{"id":"`+uuid.NewString()+`","name":"denied"}`), 401, "unauthenticated")
+	})
+}
+
+const botDefaultsPath = botDefinitionsBase + "/defaults"
+
+func botCreateRefusal(input botcore.CreateBot, code, message string) *botDefinitionCall {
+	return &botDefinitionCall{method: "CreateResolved", input: input, err: &model.Fault{Code: code, Message: message}}
+}
+
+func botDefaultsResult(overrides model.BotOverrides, result botcore.BotDefaults, err error) *botDefinitionCall {
+	return &botDefinitionCall{method: "DefaultsFor", input: overrides, result: result, err: err}
 }
 
 func TestBotDefaultsHTTPStrictCreateAndDefaultsInputs(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	id := uuid.NewString()
+	f := newBotDefinitionsFixture(t, io.Discard)
+	const id = botDefinitionsID
 	valid := `"id":"` + id + `","name":"assistant"`
 	for _, body := range []string{
 		`{}`, `null`, `[]`, `{"id":null,"name":"assistant"}`, `{"id":"` + id + `","name":null}`,
-		`{"id":"bad","name":"assistant"}`, `{` + valid + `,"extra":true}`, `{` + valid + `,"id":"` + id + `"}`,
+		`{` + valid + `,"extra":true}`, `{` + valid + `,"id":"` + id + `"}`,
 		`{` + valid + `,"resolvedConfiguration":{}}`, `{` + valid + `,"overrides":null}`, `{` + valid + `,"overrides":[]}`,
 		`{` + valid + `,"overrides":{"workerId":null}}`, `{` + valid + `,"overrides":{"cwd":null}}`, `{` + valid + `,"overrides":{"provider":null}}`,
 		`{` + valid + `,"overrides":{"workerId":42}}`, `{` + valid + `,"overrides":{"cwd":false}}`, `{` + valid + `,"overrides":{"provider":{}}}`,
-		`{` + valid + `,"overrides":{"unknown":"ignored"}}`,
-		`{` + valid + `,"overrides":{"model":null}}`, `{` + valid + `,"overrides":{"model":" "}}`, `{` + valid + `,"overrides":{"reasoningEffort":null}}`, `{` + valid + `,"overrides":{"reasoningEffort":42}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
+		`{` + valid + `,"overrides":{"unknown":"ignored"}}`, `{` + valid + `,"overrides":{"model":null}}`,
+		`{` + valid + `,"overrides":{"reasoningEffort":null}}`, `{` + valid + `,"overrides":{"reasoningEffort":42}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
 	} {
-		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 400, "invalid_input")
+		assertProjectError(t, f.request("POST", botDefinitionsBase, body, nil), 400, "invalid_input")
 	}
-	for _, overrides := range []string{`{"model":"model-a"}`, `{"reasoningEffort":"high"}`, `{"model":"model-a","reasoningEffort":"high"}`} {
-		// Valid native fields reach configuration resolution; this owner has no Worker.
-		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{`+valid+`,"overrides":`+overrides+`}`), 409, "resource_conflict")
+	assertProjectError(t, f.request("POST", botDefinitionsBase, `{"id":"bad","name":"assistant"}`,
+		botCreateRefusal(botcore.CreateBot{ID: "bad", Name: "assistant"}, "invalid_input", "Invalid Bot ID.")), 400, "invalid_input")
+	space := " "
+	assertProjectError(t, f.request("POST", botDefinitionsBase, `{`+valid+`,"overrides":{"model":" "}}`,
+		botCreateRefusal(botcore.CreateBot{ID: id, Name: "assistant", Overrides: model.BotOverrides{Model: &space}},
+			"invalid_input", "Bot model must be nonempty Unicode without control characters and at most 256 UTF-8 bytes.")), 400, "invalid_input")
+
+	modelID, effort := "model-a", "high"
+	for _, test := range []struct {
+		wire string
+		want model.BotOverrides
+	}{
+		{`{"model":"model-a"}`, model.BotOverrides{Model: &modelID}},
+		{`{"reasoningEffort":"high"}`, model.BotOverrides{ReasoningEffort: &effort}},
+		{`{"model":"model-a","reasoningEffort":"high"}`, model.BotOverrides{Model: &modelID, ReasoningEffort: &effort}},
+	} {
+		assertProjectError(t, f.request("POST", botDefinitionsBase, `{`+valid+`,"overrides":`+test.wire+`}`,
+			botCreateRefusal(botcore.CreateBot{ID: id, Name: "assistant", Overrides: test.want},
+				"resource_conflict", "No Worker is available.")), 409, "resource_conflict")
 	}
-	for _, query := range []string{"?x=1", "?workerId=", "?workerId=bad", "?workerId=" + id + "&workerId=" + id, "?workerId=%zz"} {
-		assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults"+query, ""), 400, "invalid_input")
+	for _, query := range []string{"?x=1", "?workerId=", "?workerId=" + id + "&workerId=" + id, "?workerId=%zz"} {
+		assertProjectError(t, f.request("GET", botDefaultsPath+query, "", nil), 400, "invalid_input")
 	}
+	bad := "bad"
+	assertProjectError(t, f.request("GET", botDefaultsPath+"?workerId=bad", "",
+		botDefaultsResult(model.BotOverrides{WorkerID: &bad}, botcore.BotDefaults{},
+			&model.Fault{Code: "invalid_input", Message: "Invalid Worker ID."})), 400, "invalid_input")
 	for _, query := range []string{"?", "?workerId=" + id} {
-		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots"+query, `{`+valid+`}`), 400, "invalid_input")
+		assertProjectError(t, f.request("POST", botDefinitionsBase+query, `{`+valid+`}`, nil), 400, "invalid_input")
 	}
 	for _, method := range []string{"POST", "PUT", "DELETE"} {
-		assertProjectError(t, projectRequest(handler, method, "/api/v1/me/bots/defaults", `{}`), 405, "method_not_allowed")
+		response := f.request(method, botDefaultsPath, `{}`, nil)
+		assertProjectError(t, response, 405, "method_not_allowed")
+		if response.Header().Get("Allow") != "GET, HEAD" {
+			t.Fatalf("unexpected defaults methods: %v", response.Header())
+		}
 	}
-	for _, path := range []string{"/api/v1/me/bots/defaults", "/api/v1/me/bots"} {
-		assertProjectError(t, projectRequest(handler.Handler, "GET", path, ""), 401, "unauthenticated")
+	for _, path := range []string{botDefaultsPath, botDefinitionsBase} {
+		assertProjectError(t, f.dispatch("GET", path, "", botDefinitionAnonymous, nil), 401, "unauthenticated")
 	}
-	assertProjectError(t, projectRequest(handler.Handler, "POST", "/api/v1/me/bots", `{`+valid+`}`), 401, "unauthenticated")
+	assertProjectError(t, f.dispatch("POST", botDefinitionsBase, `{`+valid+`}`, botDefinitionAnonymous, nil), 401, "unauthenticated")
 }
 
 func TestBotDefaultsHTTPExplicitOverridesAndOfflineReplay(t *testing.T) {
@@ -107,55 +147,80 @@ func TestBotDefaultsHTTPExplicitOverridesAndOfflineReplay(t *testing.T) {
 }
 
 func TestBotDefaultsHTTPReadableEmptyDefaults(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	response := projectRequest(handler, "GET", "/api/v1/me/bots/defaults", "")
-	value := decodeResponse[struct {
-		ObservedAt    time.Time `json:"observedAt"`
-		Workers       []any     `json:"workers"`
-		Configuration any       `json:"configuration"`
-		Reason        *string   `json:"reason"`
-	}](t, response, http.StatusOK)
-	if value.ObservedAt.IsZero() || value.Workers == nil || len(value.Workers) != 0 || value.Configuration != nil || value.Reason == nil {
+	f := newBotDefinitionsFixture(t, io.Discard)
+	observedAt := time.Date(2026, 11, 8, 8, 0, 0, 0, time.FixedZone("fixture", 7*60*60))
+	reason := "no_available_worker"
+	response := f.request("GET", botDefaultsPath, "", botDefaultsResult(model.BotOverrides{}, botcore.BotDefaults{
+		ObservedAt: observedAt, Reason: &reason,
+	}, nil))
+	value := decodeResponse[api.BotDefaults](t, response, http.StatusOK)
+	want := api.BotDefaults{ObservedAt: observedAt.UTC(), Workers: []api.BotWorkerDefaults{}, Reason: &reason}
+	if !reflect.DeepEqual(value, want) || response.Body.String() != jsonBody(t, want)+"\n" {
 		t.Fatalf("empty defaults lost the unavailable result: %s", response.Body)
 	}
 }
 
 func TestBotDefaultsHTTPCandidatesAndExplicitOfflineChoice(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	legacy, usable := uuid.NewString(), uuid.NewString()
-	legacyReport := reportSnapshotHTTP(t, handler, legacy, workerSnapshotReportBody())
-	reportBotHostHTTP(t, handler, usable)
-	response := projectRequest(handler, "GET", "/api/v1/me/bots/defaults", "")
+	f := newBotDefinitionsFixture(t, io.Discard)
+	legacy := "b0000000-0000-4000-8000-000000000003"
+	usable := botDefinitionsWorker
+	observedAt := time.Date(2026, 11, 8, 8, 0, 0, 0, time.FixedZone("fixture", 7*60*60))
+	machineID, machineName := "c0000000-0000-4000-8000-000000000003", "Usable Worker"
+	modelID, missing := "gpt-5", "not_found"
+	unsupported, offlineReason := "unsupported", "offline"
+	configuration := func() *model.BotConfiguration {
+		return &model.BotConfiguration{WorkerID: usable, Cwd: "/workspace", Provider: "copilot",
+			Model: &modelID, Args: []string{"--effort", "high"}}
+	}
+	candidates := func(state string, reason *string, selected *model.BotConfiguration) []botcore.BotWorkerDefaults {
+		return []botcore.BotWorkerDefaults{
+			{WorkerID: legacy, State: "unsupported", Reason: &unsupported},
+			{WorkerID: usable, Machine: model.WorkerMachine{ID: machineID, Name: machineName}, Platform: model.PlatformLinux,
+				State: state, Reason: reason, Configuration: selected,
+				Providers: []model.WorkerAssistantProvider{
+					{Provider: model.AgentCodex, Available: true},
+					{Provider: model.AgentClaude, Reason: &missing},
+					{Provider: model.AgentCopilot, Available: true, Model: &modelID, Args: []string{"--effort", "high"}},
+				}},
+		}
+	}
+	response := f.request("GET", botDefaultsPath, "", botDefaultsResult(model.BotOverrides{}, botcore.BotDefaults{
+		ObservedAt: observedAt, WorkerID: &usable, Configuration: configuration(), Workers: candidates("available", nil, configuration()),
+	}, nil))
 	defaults := decodeResponse[api.BotDefaults](t, response, 200)
-	if age := defaults.ObservedAt.Sub(legacyReport.LastReportedAt); age < 0 || age >= 120*time.Second {
-		t.Fatalf("legacy worker was not online at selection: report=%s observed=%s", legacyReport.LastReportedAt, defaults.ObservedAt)
+	if defaults.ObservedAt != observedAt.UTC() || defaults.WorkerID == nil || *defaults.WorkerID != usable ||
+		defaults.Configuration == nil || defaults.Configuration.WorkerID != usable || defaults.Reason != nil || len(defaults.Workers) != 2 {
+		t.Fatalf("usable host projection: %+v", defaults)
 	}
-	if defaults.WorkerID == nil || *defaults.WorkerID != usable || defaults.Configuration == nil || defaults.Configuration.WorkerID != usable || defaults.Reason != nil || len(defaults.Workers) != 2 {
-		t.Fatalf("usable host not selected: %+v", defaults)
+	wantLegacy := api.BotWorkerDefaults{WorkerID: legacy, State: "unsupported", Reason: &unsupported, Providers: []api.WorkerAssistantProvider{}}
+	wantConfig := &api.BotConfiguration{WorkerID: usable, Cwd: "/workspace", Provider: "copilot",
+		Model: &modelID, Args: []string{"--effort", "high"}}
+	wantUsable := api.BotWorkerDefaults{WorkerID: usable, Machine: api.WorkerMachine{ID: machineID, Name: machineName}, Platform: "linux", State: "available", Configuration: wantConfig,
+		Providers: []api.WorkerAssistantProvider{
+			{Provider: "codex", Available: true, Args: []string{}},
+			{Provider: "claude", Reason: &missing, Args: []string{}},
+			{Provider: "copilot", Available: true, Model: &modelID, Args: []string{"--effort", "high"}},
+		}}
+	if !reflect.DeepEqual(defaults.Workers, []api.BotWorkerDefaults{wantLegacy, wantUsable}) ||
+		!reflect.DeepEqual(defaults.Configuration, wantConfig) {
+		t.Fatalf("candidate facts or effective provider defaults were lost: %s", response.Body)
 	}
-	if defaults.Workers[0].WorkerID != legacy || defaults.Workers[0].State != "unsupported" || defaults.Workers[0].Providers == nil || defaults.Workers[0].Configuration != nil || defaults.Workers[1].State != "available" || len(defaults.Workers[1].Providers) != 3 || defaults.Workers[1].Machine.ID == "" || defaults.Workers[1].Platform == "" {
-		t.Fatalf("candidate facts were lost: %+v", defaults.Workers)
-	}
-	if defaults.Configuration.Model == nil || *defaults.Configuration.Model != "gpt-5" || !reflect.DeepEqual(defaults.Configuration.Args, []string{"--effort", "high"}) {
-		t.Fatalf("effective provider defaults were lost: %+v", defaults.Configuration)
-	}
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
-		t.Fatal("defaults lacks private identity headers")
-	}
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE workers SET last_seen_at=statement_timestamp()-interval '10 minutes' WHERE user_id=$1 AND worker_id=$2", handler.principal.UserID, usable); err != nil {
-		t.Fatal(err)
-	}
-	offline := decodeResponse[api.BotDefaults](t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults?workerId="+strings.ToUpper(usable), ""), 200)
+
+	uppercase := strings.ToUpper(usable)
+	offline := decodeResponse[api.BotDefaults](t, f.request("GET", botDefaultsPath+"?workerId="+uppercase, "",
+		botDefaultsResult(model.BotOverrides{WorkerID: &uppercase}, botcore.BotDefaults{
+			ObservedAt: observedAt, WorkerID: &usable, Reason: &offlineReason, Workers: candidates("offline", &offlineReason, nil),
+		}, nil)), 200)
 	if offline.WorkerID == nil || *offline.WorkerID != usable || offline.Configuration != nil || offline.Reason == nil || *offline.Reason != "offline" {
 		t.Fatalf("explicit offline host was replaced: %+v", offline)
 	}
-	assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults?workerId="+uuid.NewString(), ""), 403, "forbidden")
-	if _, err := database.Pool.Exec(context.Background(), "DELETE FROM personal_access_tokens WHERE id=$1", handler.principal.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults", ""), 401, "unauthenticated")
-	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{"id":"`+uuid.NewString()+`","name":"denied"}`), 401, "unauthenticated")
+	foreign := botDefinitionsOtherID
+	assertProjectError(t, f.request("GET", botDefaultsPath+"?workerId="+foreign, "",
+		botDefaultsResult(model.BotOverrides{WorkerID: &foreign}, botcore.BotDefaults{},
+			&model.Fault{Code: "forbidden", Message: "Bot and Worker must belong to the authenticated user."})), 403, "forbidden")
+	assertProjectError(t, f.dispatch("GET", botDefaultsPath, "", botDefinitionRevoked, nil), 401, "unauthenticated")
+	assertProjectError(t, f.dispatch("POST", botDefinitionsBase,
+		`{"id":"`+botDefinitionsID+`","name":"denied"}`, botDefinitionRevoked, nil), 401, "unauthenticated")
 }
 
 func TestBotDefaultsHTTPCreateLostResponseReconcilesOriginalID(t *testing.T) {
@@ -180,34 +245,30 @@ func TestBotDefaultsHTTPCreateLostResponseReconcilesOriginalID(t *testing.T) {
 }
 
 func TestBotDefaultsHTTPBrowserCreationRequiresOrigin(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "bot-owner")
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	bothttp.RegisterRoutes(mux, botservice.New(h.Database), botservice.NewDeletions(h.Database, nil, nil), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	body := `{"id":"` + uuid.NewString() + `","name":"browser"}`
+	f := newBotDefinitionsFixtureForCredential(t, io.Discard, model.SessionCredential)
+	body := `{"id":"` + botDefinitionsID + `","name":"browser"}`
 	for _, origin := range []string{"", "https://another.example"} {
-		assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, origin), 403, "forbidden")
+		assertProjectError(t, f.dispatchWithOrigin("POST", botDefinitionsBase, body, origin, botDefinitionOriginRefused, nil), 403, "forbidden")
 	}
-	assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, h.Origin), 409, "resource_conflict")
-	decodeResponse[api.BotDefaults](t, h.Request("GET", "/api/v1/me/bots/defaults", "", []*http.Cookie{cookie}, nil, ""), 200)
+	assertProjectError(t, f.dispatchWithOrigin("POST", botDefinitionsBase, body, botExpiryOrigin, botDefinitionAdmitted,
+		botCreateRefusal(botcore.CreateBot{ID: botDefinitionsID, Name: "browser"}, "resource_conflict", "No Worker is available.")), 409, "resource_conflict")
+	reason := "no_available_worker"
+	decodeResponse[api.BotDefaults](t, f.request("GET", botDefaultsPath, "",
+		botDefaultsResult(model.BotOverrides{}, botcore.BotDefaults{
+			ObservedAt: time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC), Reason: &reason,
+		}, nil)), 200)
 }
 
 func TestBotCreationHTTPSelectionRefusals(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	worker := uuid.NewString()
-	reportBotHostHTTP(t, handler, worker)
-	foreign := uuid.NewString()
-	body := `{"id":"` + uuid.NewString() + `","name":"foreign","overrides":{"workerId":"` + foreign + `"}}`
-	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 403, "forbidden")
-	_, err := database.Pool.Exec(context.Background(), `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
- SELECT user_id,gen_random_uuid(),created_at,last_seen_at,telemetry,task_snapshot FROM workers CROSS JOIN generate_series(1,100)
- WHERE user_id=$1 AND worker_id=$2`, handler.principal.UserID, worker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body = `{"id":"` + uuid.NewString() + `","name":"overflow"}`
-	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 409, "active_worker_limit_exceeded")
+	f := newBotDefinitionsFixture(t, io.Discard)
+	foreign := botDefinitionsOtherID
+	body := `{"id":"` + botDefinitionsID + `","name":"foreign","overrides":{"workerId":"` + foreign + `"}}`
+	assertProjectError(t, f.request("POST", botDefinitionsBase, body,
+		botCreateRefusal(botcore.CreateBot{ID: botDefinitionsID, Name: "foreign", Overrides: model.BotOverrides{WorkerID: &foreign}},
+			"forbidden", "Bot and Worker must belong to the authenticated user.")), 403, "forbidden")
+
+	body = `{"id":"` + botDefinitionsID + `","name":"overflow"}`
+	assertProjectError(t, f.request("POST", botDefinitionsBase, body,
+		botCreateRefusal(botcore.CreateBot{ID: botDefinitionsID, Name: "overflow"},
+			"active_worker_limit_exceeded", "Active worker limit exceeded.")), 409, "active_worker_limit_exceeded")
 }

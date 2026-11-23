@@ -18,3 +18,16 @@ func contentReadVersion(request *http.Request) (int, error) {
 	}
 	return 1, nil
 }
+
+// onlineRelayCapabilities selects the new execution mode only on explicit opt-in.
+func onlineRelayCapabilities(request *http.Request) (bool, bool, error) {
+	versions := request.Header.Values("Daynight-Online-Relay-Version")
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != "1" {
+		return false, false, httpx.InvalidInput("Daynight-Online-Relay-Version must be a single supported version: 1.")
+	}
+	body := request.Header.Values("Daynight-Task-Body-History-Version")
+	if len(body) > 1 || len(body) == 1 && body[0] != "1" {
+		return false, false, httpx.InvalidInput("Daynight-Task-Body-History-Version must be a single supported version: 1.")
+	}
+	return len(versions) == 1, len(body) == 1, nil
+}

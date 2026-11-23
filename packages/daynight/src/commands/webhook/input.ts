@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { jsonContainerSources } from "../../api/json-source.js";
 import { canonicalId } from "../../api/parse.js";
+import { isWebhookClientKey } from "../../api/webhook.js";
 
 const limit = 256 * 1024;
 const events = new Set(["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"]);
@@ -40,7 +41,9 @@ export const parseWebhookInput = (bytes: Uint8Array, kind: "create" | "update" |
   } catch { return invalid(); }
   if (kind === "subscriptions") { subscriptions(value); return value; }
   if (!object(value)) return invalid();
-  keys(value, ["name", "enabled", "destination", "subscriptions"], kind === "create" ? ["name", "enabled", "destination", "subscriptions"] : []);
+  // clientKey is set only on creation; the server keeps it immutable afterwards.
+  keys(value, kind === "create" ? ["clientKey", "name", "enabled", "destination", "subscriptions"] : ["name", "enabled", "destination", "subscriptions"], kind === "create" ? ["name", "enabled", "destination", "subscriptions"] : []);
+  if (Object.hasOwn(value, "clientKey") && !isWebhookClientKey(value.clientKey)) invalid();
   if (Object.keys(value).length === 0) invalid();
   if (Object.hasOwn(value, "name") && typeof value.name !== "string") invalid();
   if (Object.hasOwn(value, "enabled") && typeof value.enabled !== "boolean") invalid();

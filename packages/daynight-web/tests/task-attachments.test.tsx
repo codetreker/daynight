@@ -3,9 +3,10 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
+import { browserNavigation } from '../src/app/navigation';
 import type { Attachment, AttachmentPage } from '../src/api/types';
-import { TaskAttachments } from '../src/features/task-detail/attachments/TaskAttachments';
-import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
+import { TaskAttachments, TaskAttachmentsPanel } from '../src/features/task-detail/attachments/TaskAttachments';
+import { useAttachments, type AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 
 const render = createLocaleRender('zh-CN');
 
@@ -22,7 +23,6 @@ const fixture = (initial: readonly Attachment[] = []) => {
   const api: AttachmentApi = {
     list: vi.fn(async () => ({ items: [...files.values()], nextCursor: null })),
     readText: vi.fn(async (_project, _task, path) => `Contents of ${path}`),
-    checkPreview: vi.fn(async () => {}),
     put: vi.fn(async (_project, _task, path, source) => {
       const item = { ...file(path, source.type), sizeBytes: source.size, updatedAt: new Date(Date.now() + ++revision).toISOString() };
       files.set(path, item);
@@ -57,6 +57,90 @@ const showDeleteConfirmation = (path: string) => {
 
 
 describe('task attachments', () => {
+  it.each([false, true])('reconciles stale ancestor and descendant files after a successful upload (complete inventory %s)', async (requireCompleteInventory) => {
+    for (const { stale, target } of [
+      { stale: ['docs'], target: 'docs/index.html' },
+      { stale: ['docs/index.html', 'docs/nested/other.txt'], target: 'docs' },
+    ]) {
+      const unrelated = [file('docs2'), file('docs-extra/keep.txt'), file('Docs')];
+      const original = [...stale.map(path => file(path)), ...unrelated];
+      const updated = file(target, 'text/plain');
+      const pending = deferred<AttachmentPage>();
+      const api = fixture(original);
+      vi.mocked(api.list).mockResolvedValueOnce({ items: original, nextCursor: null }).mockReturnValueOnce(pending.promise);
+      vi.mocked(api.put).mockResolvedValueOnce(updated);
+      const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+      const Panel = () => {
+        const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
+        return <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={attachments} />;
+      };
+      const view = render(<Panel />);
+      await findFileButton(/^docs2/);
+      for (const path of stale) expect(screen.getByRole('button', { name: `更多操作：${path}`, hidden: true })).toBeInTheDocument();
+      const user = userEvent.setup();
+      await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+      await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'upload.txt', { type: 'text/plain' }));
+      const input = screen.getByRole('textbox', { name: '目标相对路径' });
+      await user.clear(input);
+      await user.type(input, target);
+      await user.click(screen.getByRole('button', { name: '上传文件' }));
+      await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+      for (const path of stale) expect(screen.queryByRole('button', { name: `更多操作：${path}`, hidden: true })).not.toBeInTheDocument();
+      for (const item of unrelated) expect(screen.getByRole('button', { name: `更多操作：${item.path}`, hidden: true })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `更多操作：${target}`, hidden: true })).toBeInTheDocument();
+      if (requireCompleteInventory) expect(screen.queryByRole('heading', { name: target })).not.toBeInTheDocument();
+      else expect(await screen.findByRole('heading', { name: target })).toBeVisible();
+      await act(async () => { pending.resolve({ items: [...unrelated, updated], nextCursor: null }); });
+      expect(await screen.findByRole('heading', { name: target })).toBeVisible();
+      for (const item of unrelated) expect(screen.getByRole('button', { name: `更多操作：${item.path}`, hidden: true })).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it('binds localized timestamps to the selected metadata through refresh, failures and pause', async () => {
+    const first = { ...file('one.txt'), updatedAt: '2026-10-22T01:02:03Z' };
+    const second = { ...file('two.txt'), createdAt: '2026-10-23T04:05:06Z', updatedAt: '2026-10-23T04:05:06Z' };
+    const refresh = deferred<AttachmentPage>();
+    const api = fixture([first, second]);
+    vi.mocked(api.list).mockReturnValueOnce(Promise.resolve({ items: [first, second], nextCursor: null })).mockReturnValueOnce(refresh.promise);
+    vi.mocked(api.readText).mockRejectedValueOnce(new Error('preview failed'));
+    const view = open(api);
+    expect(document.querySelectorAll('.attachment-timestamps time')).toHaveLength(0);
+    fireEvent.click(await findFileButton(/^one\.txt/));
+    await screen.findByText('无法读取文件预览，请重试或下载文件。');
+    const times = () => [...document.querySelectorAll('.attachment-timestamps time')];
+    const expectTimes = (created: string, modified: string) => {
+      expect(times().map((time) => time.getAttribute('datetime'))).toEqual([created, modified]);
+      const formatter = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false });
+      expect(times().map((time) => time.textContent)).toEqual([formatter.format(new Date(created)), formatter.format(new Date(modified))]);
+    };
+    expect(screen.getByText('创建时间')).toBeVisible();
+    expect(screen.getByText('最后修改时间')).toBeVisible();
+    expectTimes(first.createdAt, first.updatedAt);
+    fireEvent.click(fileButton(/^two\.txt/));
+    await screen.findByText('Contents of two.txt');
+    expectTimes(second.createdAt, second.updatedAt);
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    expectTimes(second.createdAt, second.updatedAt);
+    const updated = { ...second, updatedAt: '2026-10-24T05:06:07Z' };
+    await act(async () => { refresh.resolve({ items: [first, updated], nextCursor: null }); });
+    await waitFor(() => expectTimes(updated.createdAt, updated.updatedAt));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新附件' })).toBeEnabled());
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expectTimes(updated.createdAt, updated.updatedAt);
+      view.setLocale('en');
+      expect(screen.getByText('Created')).toBeVisible();
+      expect(screen.getByText('Last modified')).toBeVisible();
+      expect(times().map((time) => time.getAttribute('datetime'))).toEqual([updated.createdAt, updated.updatedAt]);
+    } finally { await act(async () => { resume(); }); }
+    vi.mocked(api.list).mockResolvedValue({ items: [first], nextCursor: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh attachments' }));
+    await screen.findByText('This attachment was not found. It may have been deleted.');
+    expect(times()).toHaveLength(0);
+  });
+
   it('preserves displayed content and upload drafts while blocking remote actions until resume', async () => {
     const api = fixture([file('one.txt'), file('two.txt')]);
     open(api);
@@ -140,6 +224,52 @@ describe('task attachments', () => {
       expect(screen.getByRole('img', { name: 'image.png' })).toBe(image);
       expect(image).toBeVisible();
     } finally { act(() => resume()); }
+  });
+
+  it('keeps the native frame through pause selection changes and blocks reload in the render/click race', async () => {
+    const api = fixture([file('site.html', 'text/html'), file('other.txt')]);
+    open(api);
+    fireEvent.click(await findFileButton(/^site\.html/));
+    const frame = await screen.findByTitle('HTML 预览：site.html');
+    const reload = screen.getByRole('button', { name: '重新加载' });
+    fireEvent.load(frame);
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); fireEvent.click(reload); });
+      expect(reload).toBeDisabled();
+      expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+      fireEvent.click(fileButton(/^other\.txt/));
+      fireEvent.click(fileButton(/^site\.html/));
+      expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+    } finally { await act(async () => { resume(); }); }
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+    expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled();
+  });
+
+  it('rebuilds the native document on same-timestamp overwrite and real metadata change, but not a failed write or identical refresh', async () => {
+    const item = file('site.html', 'text/html');
+    const api = fixture([item]);
+    vi.mocked(api.put).mockResolvedValueOnce(item).mockRejectedValueOnce(new Error('unknown write'));
+    open(api);
+    fireEvent.click(await findFileButton(/^site\.html/));
+    const original = await screen.findByTitle('HTML 预览：site.html');
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(original);
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'site.html', { type: 'text/html' }));
+    fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+    await waitFor(() => expect(screen.getByTitle('HTML 预览：site.html')).not.toBe(original));
+    const replaced = screen.getByTitle('HTML 预览：site.html');
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['failed'], 'site.html', { type: 'text/html' }));
+    fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    await screen.findByRole('alert');
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(replaced);
+    vi.mocked(api.list).mockResolvedValueOnce({ items: [{ ...item, updatedAt: '2026-10-22T00:00:00Z' }], nextCursor: null });
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(screen.getByTitle('HTML 预览：site.html')).not.toBe(replaced));
   });
 
   it('cancels a preview and resumes it even when pause and resume share a render', async () => {
@@ -257,7 +387,7 @@ describe('task attachments', () => {
     expect(screen.getByText('spec.md')).toBeVisible();
   });
 
-  it('keeps a newly uploaded nested file selected while its new directories remain collapsed', async () => {
+  it('reveals and focuses a successfully uploaded nested file', async () => {
     const api = fixture();
     open(api);
     await screen.findByText('暂无附件，上传文件后即可在这里浏览。');
@@ -269,14 +399,15 @@ describe('task attachments', () => {
     await user.type(path, 'docs/design/new.txt');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'docs/design/new.txt' });
-    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.txt', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toHaveFocus();
     expect(screen.getByText('Contents of docs/design/new.txt')).toBeVisible();
   });
 
   it('keeps embedded file selection local without writing address or browser history', async () => {
     window.history.replaceState(null, '', '/projects/embedded');
+    browserNavigation();
     const initialLength = window.history.length;
     const push = vi.spyOn(window.history, 'pushState');
     const replace = vi.spyOn(window.history, 'replaceState');
@@ -381,6 +512,7 @@ describe('task attachments', () => {
     await user.type(path, 'docs/readme.md');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'docs/readme.md' });
+    expect([...document.querySelectorAll('.attachment-timestamps time')].map((time) => time.getAttribute('datetime'))).toEqual([timestamp, expect.not.stringMatching(timestamp)]);
     expect(api.put).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000100', '00000000-0000-4000-8000-000000000001', 'docs/readme.md', source, expect.any(AbortSignal));
     expect(path).toHaveValue('');
     expect(input.files).toHaveLength(0);
@@ -392,6 +524,7 @@ describe('task attachments', () => {
     expect(api.remove).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000100', '00000000-0000-4000-8000-000000000001', 'docs/readme.md', expect.any(AbortSignal));
     expect(api.list).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
+    expect(document.querySelectorAll('.attachment-timestamps time')).toHaveLength(0);
   });
 
   it('retains upload form and current preview after failed writes and exposes request IDs without private details', async () => {
@@ -456,17 +589,15 @@ describe('task attachments', () => {
     expect(screen.getByText(/image\/svg\+xml/)).toHaveAttribute('title', expect.stringContaining('image/svg+xml'));
   });
 
-  it('retries HTML availability failures before mounting its native frame and reloads successful overwrites', async () => {
+  it('reloads only the native document on request and successful overwrite', async () => {
     const api = fixture([file('site/index.html', 'text/html')]);
-    const checkPreview = vi.fn().mockRejectedValueOnce(new Error('private native preview')).mockResolvedValue(undefined);
-    open({ ...api, checkPreview });
+    open(api);
     fireEvent.click(await findFileButton(/index.html/));
-    expect(await screen.findByRole('alert')).toHaveTextContent('无法读取文件预览');
-    expect(screen.queryByTitle('HTML 预览：site/index.html')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '重试预览' }));
-    const oldFrame = await screen.findByTitle('HTML 预览：site/index.html');
-    fireEvent.load(oldFrame);
-    expect(checkPreview).toHaveBeenCalledTimes(2);
+    const first = await screen.findByTitle('HTML 预览：site/index.html');
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    const oldFrame = screen.getByTitle('HTML 预览：site/index.html');
+    expect(oldFrame).not.toBe(first);
+    expect(api.list).toHaveBeenCalledTimes(1);
     const user = userEvent.setup();
     await user.click(screen.getByText('上传文件', { selector: 'summary' }));
     await user.upload(screen.getByLabelText('选择一个文件'), new File(['<p>new</p>'], 'index.html', { type: 'text/html' }));
@@ -475,8 +606,7 @@ describe('task attachments', () => {
     await user.type(path, 'site/index.html');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await waitFor(() => expect(screen.getByTitle('HTML 预览：site/index.html')).not.toBe(oldFrame));
-    expect(screen.getByTitle('HTML 预览：site/index.html')).toHaveAttribute('src', '/api/v1/projects/00000000-0000-4000-8000-000000000100/tasks/00000000-0000-4000-8000-000000000001/preview/site/index.html');
-    expect(checkPreview).toHaveBeenCalledTimes(3);
+    expect(screen.getByTitle('HTML 预览：site/index.html')).toHaveAttribute('src', 'https://00000000-0000-4000-8000-000000000001.preview.daynight.test/api/v1/projects/00000000-0000-4000-8000-000000000100/tasks/00000000-0000-4000-8000-000000000001/preview/site/index.html');
   });
 
   it('requires a full-path menu and confirmation, defaults to Cancel, and sends no mutation on dismissal', async () => {

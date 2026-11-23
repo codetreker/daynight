@@ -18,7 +18,8 @@ export const createReconcileWake = () => {
       const wake = pending.signal;
       try { await delay(delayMs, undefined, { signal: AbortSignal.any([signal, wake]) }); }
       catch (error) {
-        if (signal.aborted || !wake.aborted) throw error;
+        signal.throwIfAborted();
+        if (!wake.aborted) throw error;
       }
     },
   };

@@ -6,13 +6,68 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+type optionalBackupFailure struct {
+	openErr, readErr, closeErr error
+}
+
+func (f optionalBackupFailure) Open(context.Context, string, string) (filestorage.Object, error) {
+	if f.openErr != nil {
+		return filestorage.Object{}, f.openErr
+	}
+	return filestorage.Object{Body: optionalBackupBody{Reader: bytes.NewReader([]byte("original")), readErr: f.readErr, closeErr: f.closeErr}}, nil
+}
+
+type optionalBackupBody struct {
+	io.Reader
+	readErr, closeErr error
+}
+
+func (b optionalBackupBody) Read(p []byte) (int, error) {
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return b.Reader.Read(p)
+}
+func (b optionalBackupBody) Close() error { return b.closeErr }
+
+func TestOptionalBackupObjectOnlyAllowsMissingOpen(t *testing.T) {
+	id, owner := uuid.NewString(), uuid.NewString()
+	namespace, err := archiveNamespace("", owner, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := store.StorageInventory{SessionID: id, OwnerID: owner, Objects: []store.StorageObject{{Bucket: "session-resources", Path: namespace.Directory() + "/uploads/original/0", ByteLength: 8, SHA256: archiveDigest([]byte("original")), Optional: true}}}
+	for _, tc := range []struct {
+		name  string
+		files optionalBackupFailure
+		want  error
+	}{
+		{"missing at open", optionalBackupFailure{openErr: fs.ErrNotExist}, nil},
+		{"only missing causes at open", optionalBackupFailure{openErr: errors.Join(fs.ErrNotExist, fs.ErrNotExist)}, nil},
+		{"missing and permission denied at open", optionalBackupFailure{openErr: errors.Join(fs.ErrNotExist, fs.ErrPermission)}, fs.ErrPermission},
+		{"permission denied at open", optionalBackupFailure{openErr: fs.ErrPermission}, fs.ErrPermission},
+		{"missing during read", optionalBackupFailure{readErr: fs.ErrNotExist}, fs.ErrNotExist},
+		{"missing during close", optionalBackupFailure{closeErr: fs.ErrNotExist}, fs.ErrNotExist},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifyStorageBackup(t.Context(), tc.files, inventory)
+			if tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("optional object failure = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestBackupClosureRejectsInvalidMetadataAndRetainsInlineOriginals(t *testing.T) {
 	for _, kind := range []string{"inline-original", "inline-corrupt", "blob-identity", "object-bucket", "object-owner", "object-missing", "archive-hash", "archive-length", "archive-missing", "legacy-original", "legacy-terminal-invalid", "unknown-reader", "wrong-record"} {

@@ -3,6 +3,7 @@ package project_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -46,19 +47,71 @@ func TestInvalidateTaskCacheUsesProjectTransaction(t *testing.T) {
 	}
 }
 
-func TestProjectReadMissingRelationPreservesDatabaseCause(t *testing.T) {
+// The epoch writer must reject missing Projects and propagate an expired transaction.
+func TestRotateTagCatalogEpochFailurePaths(t *testing.T) {
 	database := testutil.OpenStore(t, postgres.Open)
+	ctx := t.Context()
 	project := testutil.QueryProject(t, database.Pool, database, 1)
-	testutil.MustExec(t, database.Pool, "DROP TABLE projects")
-	raw, err := database.Pool.Begin(t.Context())
+	var before, after string
+	if err := database.Pool.QueryRow(ctx, `SELECT tag_catalog_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Rollback(context.Background())
-	_, err = pgproject.NewReader(raw).Project(t.Context(), project.ID)
-	var cause *pgconn.PgError
-	if !errors.As(err, &cause) || cause.Code != "42P01" {
-		t.Fatalf("missing Project relation lost its driver cause: %v", err)
+	defer tx.Rollback(context.Background())
+	missing := pgproject.NewWriter(tx, testutil.QueryID(999))
+	if err := missing.RotateTagCatalogEpoch(ctx); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing Project epoch rotation: %v", err)
+	}
+	writer := pgproject.NewWriter(tx, project.ID)
+	if err := writer.RotateTagCatalogEpoch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.RotateTagCatalogEpoch(ctx); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed transaction epoch rotation: %v", err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT tag_catalog_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&after); err != nil || before != after {
+		t.Fatalf("rollback changed epoch: %q %q %v", before, after, err)
+	}
+}
+
+func TestProjectReadMissingRelationPreservesDatabaseCause(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
+	ctx := t.Context()
+	_, principal, _ := testutil.AuthRecords(t, database)
+	project, err := testutil.CreatePrivateProject(ctx, database, principal, testutil.QueryID(1), "Project", "host:repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, database.Pool, "DROP TABLE projects")
+	for _, read := range []struct {
+		name string
+		run  func(context.Context, ProjectReader) error
+	}{
+		{"project", func(ctx context.Context, dao ProjectReader) error {
+			_, err := dao.Project(ctx, project.ID)
+			return err
+		}},
+		{"access", func(ctx context.Context, dao ProjectReader) error {
+			_, err := dao.ProjectAccess(ctx, principal, project.ID)
+			return err
+		}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			ctx := t.Context()
+			err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				return read.run(ctx, snapshot.ProjectDAO())
+			})
+			var cause *pgconn.PgError
+			if !errors.As(err, &cause) || cause.Code != "42P01" || errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("missing Project relation lost its driver cause: %v", err)
+			}
+		})
 	}
 }
 
@@ -68,14 +121,19 @@ func TestProjectQueryKeysets(t *testing.T) {
 	for _, n := range []int{1, 3, 2, 4} {
 		testutil.QueryProject(t, s.Pool, s, n)
 	}
-	instant := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	instant := time.Date(10000, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	testutil.MustExec(t, s.Pool, "UPDATE projects SET created_at=$1", instant)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		first, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2})
 		if err != nil || !first.HasMore || len(first.Items) != 2 || first.Items[0].ID != testutil.QueryID(1) || first.Items[1].ID != testutil.QueryID(2) {
 			t.Fatalf("first project page: %#v, %v", first, err)
 		}
-		second, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2, After: &Position{CreatedAt: instant, ID: first.Items[1].ID}})
+		for _, project := range first.Items {
+			if project.CreatedAt != instant {
+				t.Fatalf("project timestamp outside the JSON year range did not round-trip: %v, want %v", project.CreatedAt, instant)
+			}
+		}
+		second, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2, After: &Position{CreatedAt: first.Items[1].CreatedAt, ID: first.Items[1].ID}})
 		if err != nil || second.HasMore || len(second.Items) != 2 || second.Items[0].ID != testutil.QueryID(3) || second.Items[1].ID != testutil.QueryID(4) {
 			t.Fatalf("second project page: %#v, %v", second, err)
 		}
@@ -156,7 +214,7 @@ func TestProjectContinuationRecoversAfterRelationRestored(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for _, n := range []int{1, 2} {
-		if _, err := testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(n), "Project", "host:repo"); err != nil {
+		if _, err := testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(n), "Project", fmt.Sprintf("host:repo-%d", n)); err != nil {
 			t.Fatal(err)
 		}
 	}

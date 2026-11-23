@@ -107,7 +107,7 @@ until a suitable browser or device is available. Topic skills such as
 
 ## Find the project and fixture
 
-1. Open My Projects (`我的项目`) at `/projects`. Select the intended personal or
+1. Open Projects (`项目`) at `/projects`. Select the intended personal or
    team context when the sidebar provides that choice.
 2. Open the project whose repository and full ID match the CLI readback. Its
    address is `/projects/<projectId>`.

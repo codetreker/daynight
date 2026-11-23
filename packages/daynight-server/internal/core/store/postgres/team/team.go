@@ -10,6 +10,7 @@ import (
 )
 
 type reader struct{ tx pgx.Tx }
+
 type writer struct {
 	tx     pgx.Tx
 	teamID string

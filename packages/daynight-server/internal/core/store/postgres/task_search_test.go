@@ -54,6 +54,7 @@ func searchTestStore(t *testing.T) *Store {
 }
 
 func TestTaskSearchSnapshotAndFilters(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := searchTestStore(t)
 	ctx := context.Background()
 	project, owner := uuid.NewString(), uuid.NewString()

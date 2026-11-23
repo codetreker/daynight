@@ -1,4 +1,5 @@
 import { readWorkerClaim } from "../../api/task-properties";
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import type { RefObject } from 'react';
 import { ApiError } from '../../api/client';
 import type { ProjectParticipant, ProjectRole } from '../../api/auth-types';
@@ -15,7 +16,7 @@ export const matchesWithdrawalReview = (confirmation: WithdrawalConfirmation, de
   detail !== null && readWorkerClaim(detail.properties)?.claimId === confirmation.claimId && taskReviewKey(confirmation.detail) === taskReviewKey(detail);
 
 export const mayWithdrawClaim = (worker: WorkerClaim, viewerId: string, role: ProjectRole | null): boolean => {
-  return worker.state !== 'completed' && role !== null && (worker.userId === viewerId || role === 'admin');
+  return worker.state === 'active' && role !== null && (worker.userId === viewerId || role === 'admin');
 };
 
 export const TaskClaimSummary = ({ worker, members, membershipStatus, membershipError, onRetryMembers, profileRecoveryUrl, canWithdraw, onWithdraw }: {
@@ -30,12 +31,13 @@ export const TaskClaimSummary = ({ worker, members, membershipStatus, membership
 }) => {
   const { messages: { inspection: { claim: m }, common } } = useI18n();
   const member = members.find((item) => item.userId === worker.userId);
+  const names = useWorkerNames([worker]);
   const label = member === undefined ? worker.userId : identityName({ ...member.profile, userId: member.userId });
   const unreadable = membershipError instanceof ApiError && membershipError.kind === 'protocol';
-  return <section className={`task-claim task-claim-${worker.state}`} aria-label={worker.state === 'active' ? m.active : m.released}>
+  return <section className={`task-claim task-claim-${worker.state}`} aria-label={m.active}>
     <div className="task-claim-summary">
-      <div className="task-claim-owner"><span className="task-claim-label">{worker.state === 'active' ? m.active : m.released}</span><strong title={worker.userId}>{label}</strong>{member !== undefined && member.profile.email !== null && member.profile.email !== label && <span className="task-claim-account">{member.profile.email}</span>}{member === undefined && membershipStatus === 'ready' && <span className="task-claim-account">{m.formerMember}</span>}</div>
-      <div className="task-claim-execution"><span><span className="task-claim-label">{m.machine}</span> {worker.machine.name}</span><span><span className="task-claim-label">{m.agent}</span> {worker.agent === 'codex' ? 'Codex' : worker.agent === 'claude' ? 'Claude Code' : 'Copilot'}</span><span className="task-claim-phase">{m.phase[worker.phase]}</span></div>
+      <div className="task-claim-owner"><span className="task-claim-label">{m.active}</span><strong title={worker.userId}>{label}</strong>{member !== undefined && member.profile.email !== null && member.profile.email !== label && <span className="task-claim-account">{member.profile.email}</span>}{member === undefined && membershipStatus === 'ready' && <span className="task-claim-account">{m.formerMember}</span>}</div>
+      <div className="task-claim-execution"><span><span className="task-claim-label">{m.machine}</span> <bdi>{names.name(worker.userId, worker.workerId, worker.machine.name, true)}</bdi></span><span><span className="task-claim-label">{m.agent}</span> {worker.agent === 'codex' ? 'Codex' : worker.agent === 'claude' ? 'Claude Code' : 'Copilot'}</span><span className="task-claim-phase">{m.phase[worker.phase]}</span></div>
       {membershipStatus === 'loading' && <p className="task-claim-members" role="status">{m.membersLoading}</p>}
       {membershipStatus === 'error' && <div className="task-claim-members" role="alert">
         <p>{unreadable ? m.membersProtocolError : m.membersError}</p>

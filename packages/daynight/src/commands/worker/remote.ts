@@ -1,17 +1,17 @@
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId, ProtocolError } from "../../api/parse.js";
-import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WorkerReport, WorkerReportReceipt } from "../../api/types.js";
+import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, WorkerReport, WorkerReportReceipt } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import type { ProjectIdentity } from "./types.js";
-import type { MonitoringRead, MonitoringReceipt } from "../../api/worker-monitoring.js";
-import type { Observation } from "./monitoring/types.js";
+import type { DirectReceipt } from "../../api/worker-monitoring.js";
+import type { DirectObservation } from "./monitoring/types.js";
 
 export type WorkerInventory = {
   readonly tasks: readonly Task[];
@@ -26,19 +26,17 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
-  readMonitoring(workerId: string, operation: Operation, requestId: string): Promise<MonitoringRead>;
-  writeMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, operation: Operation, requestId: string): Promise<MonitoringReceipt>;
-  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
-  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  writeMonitoring(workerId: string, observation: DirectObservation, operation: Operation, requestId: string): Promise<DirectReceipt>;
+  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<ReceivedWorkerConfigurationResource>;
+  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
-  resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void, onFailure?: (projectId: string, error: unknown) => void): Promise<WorkerInventory>;
-  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean): AsyncGenerator<Task>;
-  claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
+  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean, candidateWorkerId?: string): AsyncGenerator<Task>;
+  claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal, taskTagFilterKey?: string): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
 };
 
@@ -49,11 +47,13 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
   let principal: string | null = null;
   const workerControlMode = { supported: false };
   const workerToolPaths = { supported: false };
+  const workerArchiveSessions = { supported: false };
+  const workerPlatformTaskMode = { supported: false };
 
   const query = async <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>, expectedUserId?: string): Promise<T> => {
     const operation = createOperation({ signal });
     try {
-      return await action(createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
+      return await action(createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
     } finally { operation.dispose(); }
   };
   const verifiedUserId = (): string => {
@@ -101,22 +101,18 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     report: (workerId, input, operation) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
-    readMonitoring: (workerId, operation, requestId) => {
+    writeMonitoring: (workerId, observation, operation, requestId) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
-    },
-    writeMonitoring: (workerId, revision, observation, operation, requestId) => {
-      operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, observation, requestId);
     },
     configuration: (workerId, signal, operation) => operation === undefined
       ? request(signal, api => api.getWorkerConfiguration(workerId))
-      : createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
+      : createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
     reportConfiguration: (workerId, input, configuration, operation, selectors) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {
@@ -124,7 +120,6 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       if (verifiedUserId() !== originalUserId && access.effectiveRole !== "admin") throw new Error("Source management requires its original owner or a current project administrator.");
     },
     release: (projectId, taskId, input, signal) => request(signal, (api) => api.releaseWorkerClaim(projectId, taskId, input)),
-    resume: (projectId, taskId, input, signal) => request(signal, (api) => api.resumeWorkerTask(projectId, taskId, input)),
     project: (projectId, signal) => request(signal, api => api.getProject(projectId)),
     resolveProject: async (repository, signal) => {
       const expected = repositoryIdentity(repository.repoUrl);
@@ -156,7 +151,9 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
         const projectTasks: Task[] = [];
         try {
           for await (const task of taskPages(projectId, { workerId }, signal)) {
-            if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+            const claim = readWorkerClaim(task.properties);
+            if (claim?.agentControlMode !== "web") continue;
+            if (claim.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
             projectTasks.push(task);
           }
         } catch (error) {
@@ -171,15 +168,14 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
-    candidates: async function* (projectId, platform, signal, platformSpecific) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, automaticCandidate: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
-        if (readWorkerClaim(task.properties)?.state === "released") continue;
+    candidates: async function* (projectId, platform, signal, platformSpecific, candidateWorkerId) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, automaticCandidate: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;
       }
     },
-    claim: async (candidate, descriptor, signal) => {
-      const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version }));
+    claim: async (candidate, descriptor, signal, taskTagFilterKey) => {
+      const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version, ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }) }));
       if (readWorkerClaim(claimed.properties)?.userId !== verifiedUserId()) throw new ApiError({ operation: "worker.claim", projectId: candidate.projectId, taskId: candidate.id }, "protocol", {
         cause: new ProtocolError("The granted worker claim belongs to a different authenticated user."), outcomeUnconfirmed: true,
       });

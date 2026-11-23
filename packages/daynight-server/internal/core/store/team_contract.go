@@ -18,6 +18,8 @@ type TeamWriter interface {
 type TeamWriteScope interface {
 	TeamDAO() TeamWriteDAO
 	EligibilityDAO() WebhookEligibilityDAO
+	IdentityDAO() IdentityDAO
+	CredentialFamilyDAO() CredentialFamilyDAO
 }
 
 type TeamCreationDAO interface {
@@ -30,6 +32,10 @@ type TeamWriteDAO interface {
 	HasProjects(context.Context) (bool, error)
 	Delete(context.Context) error
 	Member(context.Context, string) (model.TeamMember, error)
+	// MemberCandidate reads the current profile of an existing local account.
+	MemberCandidate(context.Context, string) (model.UserCandidate, error)
+	// MemberByExternalID finds only an existing membership in this scoped Team.
+	MemberByExternalID(context.Context, string) (model.TeamMember, error)
 	AdminCount(context.Context) (int64, error)
 	SetMemberRole(context.Context, string, model.ProjectRole) (model.TeamMember, error)
 	RemoveMember(context.Context, string) error
@@ -39,5 +45,5 @@ type TeamWriteDAO interface {
 	ConsumeInvitation(context.Context, string, string, time.Time) error
 	InvitationTeam(context.Context) (model.TeamRef, error)
 	InvitationMember(context.Context, string) (model.TeamMember, error)
-	AddInvitedMember(context.Context, string) (model.TeamMember, error)
+	AddMember(context.Context, string, model.ProjectRole) (model.TeamMember, error)
 }

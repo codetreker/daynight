@@ -14,7 +14,7 @@ const digest = (data: Uint8Array): string => createHash("sha256").update(data).d
 const secret = (prefix: string): string => prefix + randomBytes(32).toString("base64url");
 const database = process.env.DAYNIGHT_TEST_DATABASE_URL;
 
-it.skipIf(database === undefined)("preserves secret rotation receipts, Team receipt access and Step history through installed CLI", async () => {
+it.skipIf(database === undefined)("preserves secret rotation receipts, Team receipt access and delivery history through installed CLI", async () => {
   const installed = await createAcceptanceCli();
   const { receipt } = installed;
   const root = path.join(receipt.root, "webhook-history");
@@ -92,7 +92,7 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
     const address = proxy.address(); if (address === null || typeof address === "string") throw new Error("Missing proxy address.");
     const setActor = (value: string) => writeFile(path.join(config, "config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: ${value}\n`, { mode: 0o600 });
     await setActor(admin);
-    const definition = { name: "History and signing", enabled: true, destination: { kind: "http", adapterVersion: "1", configuration: { url: info.receiverUrl } }, subscriptions: [{ id: null, projectId: info.projectId, eventTypes: ["task.created", "task.step_updated"] }] };
+    const definition = { name: "History and signing", enabled: true, destination: { kind: "http", adapterVersion: "1", configuration: { url: info.receiverUrl } }, subscriptions: [{ id: null, projectId: info.projectId, eventTypes: ["task.created", "task.status_changed"] }] };
     const created = await call(["create", "--team", info.teamId, "--stdin", "--confirm"], JSON.stringify(definition));
     const id = created.endpoint.id as string;
     const initial = await call(["secret", "show", id, "--team", info.teamId, "--reveal"]); sensitive.push(initial.secret);
@@ -146,25 +146,25 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
     expect(memberOther.status).toBe(1); expect(memberOther.stdout.length).toBe(0);
     await setActor(admin);
     const since = new Date(Date.now() - 60_000).toISOString();
-    const task = await control("POST", `/api/v1/projects/${info.projectId}/tasks`, { title: "Parent retained" });
-    const added = await control("POST", `/api/v1/projects/${info.projectId}/tasks/${task.id}/steps`, { version: task.version, id: "00000001", title: "Step retained" });
-    const stepPage = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated"]);
-    expect(stepPage.items).toHaveLength(1);
-    const stepDelivery = stepPage.items[0].id as string;
-    const beforePayload = await call(["delivery", "payload", id, stepDelivery, "--team", info.teamId]);
-    await control("DELETE", `/api/v1/projects/${info.projectId}/tasks/${task.id}/steps/00000001`, { version: added.version });
-    const afterPayload = await call(["delivery", "payload", id, stepDelivery, "--team", info.teamId]);
+    const task = await control("POST", `/api/v1/projects/${info.projectId}/tasks`, { title: "Task retained", status: "todo" });
+    const active = await control("PUT", `/api/v1/projects/${info.projectId}/tasks/${task.id}/status`, { version: task.version, status: "in_progress" });
+    const statusPage = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.status_changed"]);
+    expect(statusPage.items).toHaveLength(1);
+    const statusDelivery = statusPage.items[0].id as string;
+    const beforePayload = await call(["delivery", "payload", id, statusDelivery, "--team", info.teamId]);
+    await control("PUT", `/api/v1/projects/${info.projectId}/tasks/${task.id}/status`, { version: active.version, status: "done" });
+    const afterPayload = await call(["delivery", "payload", id, statusDelivery, "--team", info.teamId]);
     expect(afterPayload.body).toBe(beforePayload.body); expect(afterPayload.sha256).toBe(beforePayload.sha256);
     const until = new Date(Date.now() + 60_000).toISOString();
     const beforeFilters = wire.length;
-    const filtered = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated", "--state", "pending", "--project", info.projectId, "--from", since, "--to", until, "--limit", "1"]);
+    const filtered = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.status_changed", "--state", "pending", "--project", info.projectId, "--from", since, "--to", until, "--limit", "1"]);
     expect(filtered.items).toHaveLength(1); expect(filtered.nextCursor).toBeTruthy(); expect(filtered.historyMayBeIncomplete).toBe(true);
     const queries = wire.slice(beforeFilters).filter(record => record.path.includes("/deliveries?")); expect(queries).toHaveLength(1);
     const params = new URL(queries[0]!.path, "http://127.0.0.1").searchParams;
-    expect(params.get("state")).toBe("pending"); expect(params.get("from")).toBe(since); expect(params.get("to")).toBe(until); expect(params.get("eventType")).toBe("task.step_updated"); expect(params.get("projectId")).toBe(info.projectId);
+    expect(params.get("state")).toBe("pending"); expect(params.get("from")).toBe(since); expect(params.get("to")).toBe(until); expect(params.get("eventType")).toBe("task.status_changed"); expect(params.get("projectId")).toBe(info.projectId);
     const longFrom = `${since.slice(0, -1)}000000001Z`, longTo = `${until.slice(0, -1)}000000009Z`;
     const beforeLongFilters = wire.length;
-    const longFiltered = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated", "--from", longFrom, "--to", longTo]);
+    const longFiltered = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.status_changed", "--from", longFrom, "--to", longTo]);
     expect(longFiltered.items.length).toBeGreaterThan(0);
     const longRequests = wire.slice(beforeLongFilters).filter(record => record.path.includes("/deliveries?"));
     expect(longRequests).toHaveLength(1); expect(longRequests[0]!.status).toBe(200);
@@ -187,7 +187,7 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
       expect(result.status).toBe(2); expect(result.stdout.length).toBe(0); expect(wire.slice(beforeInvalid)).toEqual([]);
     }
     const delivered = await call(["delivery", "list", id, "--team", info.teamId, "--state", "delivered"]); expect(delivered.items).toEqual([]);
-    const human = await invoke(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated", "--limit", "1"]);
+    const human = await invoke(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.status_changed", "--limit", "1"]);
     expect(human.status).toBe(0); expect(human.stderr.length).toBe(0);
     expect(human.stdout.toString()).toContain("nextCursor"); expect(human.stdout.toString()).toContain("historyMayBeIncomplete");
     expect(human.stdout.toString()).not.toContain(info.receiverUrl);

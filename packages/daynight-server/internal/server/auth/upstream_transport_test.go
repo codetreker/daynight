@@ -100,7 +100,7 @@ func TestCallbackBoundsDecompressedGatewayResponse(t *testing.T) {
 				before := calls.Load()
 				response := h.Request(http.MethodGet, path, "", []*http.Cookie{binding}, nil, "")
 				if extra == 0 {
-					if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/projects" {
+					if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
 						t.Fatalf("boundary response: %d %s", response.Code, response.Body)
 					}
 				} else {

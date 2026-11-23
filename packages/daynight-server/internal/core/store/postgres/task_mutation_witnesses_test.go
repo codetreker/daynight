@@ -301,6 +301,7 @@ func TestTaskDependencyReadScopeRefusalPreservesFacts(t *testing.T) {
 }
 
 func TestTaskReadOnlyScopePreservesExactLargeVersionAndHistory(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -360,6 +361,7 @@ func taskMutationWaitForWriters(t *testing.T, ctx context.Context, database *Sto
 }
 
 func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	for index, kind := range []string{"metadata", "status", "permission", "platform", "assignment"} {
 		if !t.Run(kind, func(t *testing.T) {
@@ -426,6 +428,7 @@ func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) 
 }
 
 func TestProjectWriteScopeRechecksMemberRemovalAfterLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, removeActor := range []bool{false, true} {
 		t.Run(fmt.Sprintf("actor=%t", removeActor), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -466,6 +469,7 @@ func TestProjectWriteScopeRechecksMemberRemovalAfterLockWait(t *testing.T) {
 }
 
 func TestTaskAssignmentTargetQueryFailureKeepsSafeDriverCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := storeAssigneeUser(t, database, project.ID, 51, true)
@@ -489,6 +493,7 @@ func TestTaskAssignmentTargetQueryFailureKeepsSafeDriverCause(t *testing.T) {
 }
 
 func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
@@ -517,24 +522,63 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 			t.Fatalf("missing Project relation lost its driver cause: %v", err)
 		}
 	}
-	database = closedStore(t)
-	if err := database.ReadSnapshot(context.Background(), func(SnapshotScope) error { t.Error("closed pool entered snapshot callback"); return nil }); err == nil {
-		t.Fatal("closed snapshot pool hid failure")
+	closed := closedStore(t)
+	connection, closedPoolError := closed.Pool.Acquire(ctx)
+	if closedPoolError == nil {
+		connection.Release()
+		t.Fatal("closed pool allowed acquiring a connection")
+	}
+	err := closed.ReadSnapshot(ctx, func(SnapshotScope) error {
+		t.Fatal("closed pool entered snapshot callback")
+		return nil
+	})
+	var databaseError *Error
+	if !errors.As(err, &databaseError) || !errors.Is(err, closedPoolError) {
+		t.Fatalf("closed snapshot pool lost its cause: %v", err)
+	}
+	completion, err := closed.WriteProjectCreation(ctx, queryID(1), func(ProjectCreationDAO) error {
+		t.Fatal("closed pool entered project creation callback")
+		return nil
+	})
+	if completion.Outcome != TransactionNotCommitted || !errors.As(err, &databaseError) || !errors.Is(err, closedPoolError) {
+		t.Fatalf("closed project creation pool lost its outcome or cause: %+v %v", completion, err)
 	}
 }
 
 func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
-	for _, external := range []bool{false, true} {
-		t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
-			successor := queryTask(t, database, project.ID, 12, model.TaskTodo)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	for index, external := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			predecessor := queryTask(t, database, project.ID, offset+11, model.TaskDone)
+			successor := queryTask(t, database, project.ID, offset+12, model.TaskTodo)
+			var wantExternal []string
+			if external {
+				wantExternal = []string{predecessor.ID}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			var waiterDone <-chan struct{}
+			defer func() {
+				cancel()
+				if waiterDone == nil {
+					return
+				}
+				cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stop()
+				select {
+				case <-waiterDone:
+				case <-cleanup.Done():
+					t.Errorf("dependency decision waiter did not drain: %v", cleanup.Err())
+				}
+			}()
 			results := make(chan error, 1)
 			if err := writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
+				finished := make(chan struct{})
+				waiterDone = finished
 				go func() {
+					defer close(finished)
 					results <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
 						current, err := waiter.TaskDAO().Task(ctx, successor.ID)
 						if err != nil {
@@ -542,6 +586,9 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 						}
 						if current.Status != model.TaskInProgress || current.Version != successor.Version+1 || !slices.Equal(current.DependsOn, []string{predecessor.ID}) {
 							return errors.New("post-lock target read lost the preceding dependency/status write")
+						}
+						if !slices.Equal(current.ExternalDependsOn, wantExternal) {
+							return fmt.Errorf("post-lock external dependencies = %v, want %v", current.ExternalDependsOn, wantExternal)
 						}
 						prerequisites, err := waiter.TaskDAO().TasksByID(ctx, current.DependsOn)
 						if err != nil {
@@ -570,9 +617,7 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 				taskMutationWaitForWriters(t, ctx, database, 1)
 				values := taskMutationValues(successor)
 				values.Status, values.DependsOn = model.TaskInProgress, []string{predecessor.ID}
-				if external {
-					values.ExternalDependsOn = []string{predecessor.ID}
-				}
+				values.ExternalDependsOn = slices.Clone(wantExternal)
 				_, err := holder.TaskDAO().UpdateTask(ctx, successor.ID, values)
 				return err
 			}); err != nil {
@@ -584,77 +629,73 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 			if after := snapshotTask(t, database, project.ID, predecessor.ID); !reflect.DeepEqual(after, predecessor) {
 				t.Fatalf("decision reads mutated their prerequisite: %#v", after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
 func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
-	for _, scenario := range []struct {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	for index, scenario := range []struct {
 		sourceKind    string
 		removeDepends bool
 	}{{"existing source", true}, {"new source", true}, {"new source", false}} {
-		t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			project := queryProject(t, database, 1)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+		if !t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
+			ctx := t.Context()
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			target := queryTask(t, database, project.ID, offset+11, model.TaskTodo)
+			sourceNumber := offset + 12
 			var source model.Task
 			if scenario.sourceKind == "existing source" {
-				source = queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID)
+				source = queryTask(t, database, project.ID, sourceNumber, model.TaskTodo, target.ID)
 			}
 			refused := errors.New("preceding source/deletion changed the visible facts")
-			results := make(chan error, 2)
-			if err := writeProjectForTest(database, ctx, project.ID, func(ProjectWriteScope) error {
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if !scenario.removeDepends {
-							incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
-							if err != nil {
-								return err
-							}
-							if len(incoming) > 0 {
-								return refused
-							}
-						}
-						_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
-						return err
-					})
-				}()
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if scenario.sourceKind == "existing source" {
-							current, err := scope.TaskDAO().Task(ctx, source.ID)
-							if err != nil {
-								return err
-							}
-							if current.Version != source.Version {
-								return refused
-							}
-							values := taskMutationValues(current)
-							values.Title = "Changed"
-							_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
-							return err
-						}
-						prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+			results := taskMutationRace(t, database, project.ID,
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if !scenario.removeDepends {
+						incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
 						if err != nil {
 							return err
 						}
-						if len(prerequisites) == 0 {
+						if len(incoming) > 0 {
 							return refused
 						}
-						_, err = scope.TaskDAO().CreateTask(ctx, queryID(12), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					}
+					_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
+					return err
+				},
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if scenario.sourceKind == "existing source" {
+						current, err := scope.TaskDAO().Task(ctx, source.ID)
+						if err != nil {
+							return err
+						}
+						if current.Version != source.Version {
+							return refused
+						}
+						values := taskMutationValues(current)
+						values.Title = "Changed"
+						_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
 						return err
-					})
-				}()
-				taskMutationWaitForWriters(t, ctx, database, 2)
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
+					}
+					prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+					if err != nil {
+						return err
+					}
+					if len(prerequisites) == 0 {
+						return refused
+					}
+					_, err = scope.TaskDAO().CreateTask(ctx, queryID(sourceNumber), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					return err
+				},
+			)
+			testutil.AssertPoolReusable(t, database.Pool)
 			success := 0
-			for range 2 {
-				err := receiveQueryResult(t, ctx, results)
+			for _, err := range results {
 				if err == nil {
 					success++
 				} else if !errors.Is(err, refused) {
@@ -685,12 +726,14 @@ func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 					t.Fatalf("serialized existing source lost CAS or removal version: %#v success=%d", current, success)
 				}
 			} else if success == 2 {
-				current := snapshotTask(t, database, project.ID, queryID(12))
+				current := snapshotTask(t, database, project.ID, queryID(sourceNumber))
 				if current.Version != 2 || len(current.DependsOn) != 0 || !current.Ready {
 					t.Fatalf("new source committed before deletion retained a dangling edge: %#v", current)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -747,6 +790,7 @@ func taskMutationOneWinner(t *testing.T, results []error, refusal error) {
 }
 
 func TestTaskProjectSerializationSuppliesFreshReachabilityToCompetingWriters(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	a := queryTask(t, database, project.ID, 11, model.TaskTodo)
@@ -780,6 +824,7 @@ func TestTaskProjectSerializationSuppliesFreshReachabilityToCompetingWriters(t *
 }
 
 func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	caseNumber := 0
 	for _, edgeWrite := range []bool{false, true} {

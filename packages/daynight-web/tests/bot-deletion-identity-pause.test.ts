@@ -33,7 +33,7 @@ it.each(['409', '500', 'network'] as const)('preserves a %s DELETE outcome throu
   expect(stored[0]).toMatchObject({ phase: 'unknown', request: original, rejected: outcome === '409' });
   expect(f.cache.unblockBot).not.toHaveBeenCalled(); expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('blocked');
   expect(f.fetcher).toHaveBeenCalledOnce();
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe(outcome === '409' ? 'rejected' : 'unknown');
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe(outcome === '409' ? 'allowed' : 'blocked');
   expect(f.cache.unblockBot.mock.calls.length > 0).toBe(outcome === '409');
@@ -49,7 +49,7 @@ it('retains an authenticated successful DELETE while identity is paused', async 
   await operation;
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('revoked'); expect(f.cache.invalidateBot).toHaveBeenCalled();
   expect(f.fetcher).toHaveBeenCalledOnce();
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe('completed'); expect(f.cache.unblockBot).not.toHaveBeenCalled();
 });
 
@@ -84,12 +84,16 @@ it.each(['403', '404', 'completed', 'active'] as const)('retains an authenticate
   resume = pauseAuthRequests();
   read.resolve(outcome === 'active' ? botResponse(f.bot) : outcome === 'completed' ? botResponse(f.deleted()) : botError(Number(outcome), 'not_found'));
   if (outcome !== 'active') await vi.waitFor(() => expect(f.record().phase).toBe(outcome === 'completed' ? 'completed' : 'unavailable'));
-  else await new Promise(resolve => setTimeout(resolve, 0));
-  expect(f.cache.unblockBot).not.toHaveBeenCalled();
-  resume(); await operation;
+  await operation;
+  expect(f.record().busy).toBe(false); expect(f.cache.unblockBot).not.toHaveBeenCalled();
+  resume();
+  if (outcome === 'active') {
+    expect(f.record().phase).toBe('unknown'); expect(f.fetcher).toHaveBeenCalledTimes(2);
+    f.fetcher.mockResolvedValue(botResponse(f.bot)); await f.coordinator.check(f.bot.id, new AbortController().signal);
+  }
   expect(f.record().phase).toBe(outcome === 'active' ? 'rejected' : outcome === 'completed' ? 'completed' : 'unavailable');
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe(outcome === 'active' ? 'allowed' : 'revoked');
-  expect(f.fetcher).toHaveBeenCalledTimes(2);
+  expect(f.fetcher).toHaveBeenCalledTimes(outcome === 'active' ? 3 : 2);
 });
 
 it('does not classify a lifecycle failure before dispatch as an authenticated rejection', async () => {
@@ -107,8 +111,70 @@ it('does not let a rejected retry during identity pause resolve an earlier unkno
   const retry = f.coordinator.retry(f.bot.id);
   await vi.waitFor(() => expect(f.fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2));
   resume = pauseAuthRequests(); retryResponse.resolve(botError(409, 'version_conflict')); await retry;
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe('unknown'); expect(f.record().request).toEqual(original);
   expect(f.cache.unblockBot).not.toHaveBeenCalled(); expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('blocked');
   expect(f.fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2);
+});
+
+
+it('cancels the original preparation and releases busy without dispatch or a waiter', async () => {
+  const f = fixture(), entered = Promise.withResolvers<void>();
+  vi.spyOn(f.scope, 'ready').mockImplementationOnce(signal => new Promise((_resolve, reject) => {
+    entered.resolve();
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }));
+  const operation = f.coordinator.begin(f.bot); await entered.promise;
+  resume = pauseAuthRequests(); await operation;
+  expect(f.fetcher).not.toHaveBeenCalled();
+  expect(f.record()).toMatchObject({ phase: 'rejected', busy: false });
+  expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('allowed');
+  resume(); await Promise.resolve(); expect(f.fetcher).not.toHaveBeenCalled();
+});
+
+it('ends an operation when a listener pauses during its initial synchronous publication', async () => {
+  const f = fixture();
+  const unsubscribe = f.coordinator.subscribe(() => { if (!resume) resume = pauseAuthRequests(); });
+  const operation = f.coordinator.begin(f.bot); await operation; unsubscribe();
+  expect(f.fetcher).not.toHaveBeenCalled(); expect(f.record()).toMatchObject({ phase: 'rejected', busy: false });
+  resume?.();
+});
+
+it('does not replay a different deletion observed during retry', async () => {
+  const f = fixture(); f.response.resolve(botError(500, 'failure')); await f.coordinator.begin(f.bot);
+  const read = Promise.withResolvers<Response>();
+  f.fetcher.mockImplementation(async (_url, init) => init?.method === 'DELETE' ? botError(500, 'failure') : read.promise);
+  const retry = f.coordinator.retry(f.bot.id);
+  await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(3));
+  const other = { ...f.deleted(), deletion: { ...f.deleted().deletion, deletionId: botId(95), workerCleanup: { state: 'failed' as const, code: 'failed' }, serverCleanup: { state: 'pending' as const, code: null } } };
+  f.coordinator.observe(other); read.resolve(botResponse(other)); await retry;
+  expect(f.record().request?.deletionId).toBe(botId(95));
+  expect(f.record().busy).toBe(false); expect(f.fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+});
+
+it('retires a superseded DELETE without changing the new operation or starting reconciliation', async () => {
+  const f = fixture(), old = f.coordinator.begin(f.bot);
+  await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledOnce());
+  const other = { ...f.deleted(), deletion: { ...f.deleted().deletion, deletionId: botId(95), workerCleanup: { state: 'pending' as const, code: null }, serverCleanup: { state: 'pending' as const, code: null } } };
+  f.coordinator.observe(other);
+  const read = Promise.withResolvers<Response>();
+  f.fetcher.mockImplementation(async () => read.promise);
+  const next = f.coordinator.check(f.bot.id, new AbortController().signal);
+  await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(2));
+  f.response.reject(new Error('old response lost')); await old;
+  expect(f.record()).toMatchObject({ request: { deletionId: botId(95) }, phase: 'pending', busy: true, error: null });
+  expect(f.fetcher).toHaveBeenCalledTimes(2);
+  read.resolve(botResponse(other)); await next;
+  expect(f.record()).toMatchObject({ request: { deletionId: botId(95) }, phase: 'pending', busy: false, error: null });
+});
+
+it.each(['check', 'retry'] as const)('does not make the replacement busy when %s is superseded before it starts', async action => {
+  const f = fixture(); f.response.resolve(botError(500, 'failure')); await f.coordinator.begin(f.bot);
+  const old = action === 'check' ? f.coordinator.check(f.bot.id, new AbortController().signal) : f.coordinator.retry(f.bot.id);
+  const other = { ...f.deleted(), deletion: { ...f.deleted().deletion, deletionId: botId(95), workerCleanup: { state: 'pending' as const, code: null }, serverCleanup: { state: 'pending' as const, code: null } } };
+  f.coordinator.observe(other); await old;
+  expect(f.record()).toMatchObject({ request: { deletionId: botId(95) }, phase: 'pending', busy: false });
+  const calls = f.fetcher.mock.calls.length;
+  f.fetcher.mockResolvedValue(botResponse(other)); await f.coordinator.check(f.bot.id, new AbortController().signal);
+  expect(f.fetcher).toHaveBeenCalledTimes(calls + 1); expect(f.record().busy).toBe(false);
 });

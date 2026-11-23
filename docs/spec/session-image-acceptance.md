@@ -8,25 +8,25 @@
 
 - 单图 10 MiB 的输入上限必须贯穿上传、Provider 输入、在线资源读取和归档。不能出现前端接受，而后续层仍按 8 MiB 无法读取或保存的状态。
 - 大图片使用有界的传输和内存，不阻塞已有命令、回执与时间线读取；一次传输失败不破坏文本会话。服务器、Controller、浏览器和持久化格式需要有明确兼容行为。
-- 现有单归档 64 MiB JSON 限制包含 Base64 膨胀，不能直接视作 64 MiB 图片容量。图片存储不得因图片内容大小而轻易使仍符合已发布会话容量要求的记录无法归档。方案需要给出会话图片预算、超限可见结果和归档存储方式，使“已接受图片可历史回看”的要求成立。
+- 旧 schema1 归档的 64 MiB JSON 上限包含 Base64 膨胀；schema3 将图片原件外置。已接受图片须可历史回看，超过 Session 实际内容总量或真实磁盘不足时明确拒绝新增内容。
 - 老版本 Controller 或客户端不具备图片能力时，明确阻止图片操作并保留文本能力；不能通过严格协议拒绝造成整个 Session 无法读取。具体版本协商与发布顺序由方案定义。
 - 原型中的模拟上传和回显仅用于界面评审，不能证明真实 Provider、网络、存储、权限或平台验收。
 
 ## 容量与边界计量
 
-所有 MiB 使用二进制单位：1 MiB = 1,048,576 bytes；1 GiB = 1,073,741,824 bytes。图片按原字节、JSON 按完整 UTF-8 编码计量，不用声明 Content-Length、压缩大小、浏览器 size 或取整后的数字替代。格式和大小合格之外仍须完整解码及几何资格；更小的已证明原生 profile 限制优先，并由前端到最终派发一致执行。
+所有 MiB 使用二进制单位：1 MiB = 1,048,576 bytes；1 GiB = 1,073,741,824 bytes。Daynight 图片按保存与交付的原字节、JSON 按完整 UTF-8 编码计量，不用声明 Content-Length、原生压缩后的大小、浏览器 size 或取整后的数字替代。格式和大小合格之外仍须完整解码及原始输入几何资格；更小的已确认原生接口限制优先，并由前端到最终派发一致执行。
 
 | 对象 | 必须满足的容量与可观察结果 |
 | --- | --- |
 | 单条输入 | 最多 8 张，每图 10,485,760 bytes，全部图片合计 20,971,520 bytes；任一图片失败整条拒绝，无截断、剩余子集或仅文字发送。 |
-| 输入与显示格式 | 输入 PNG/JPEG/WebP；显示保留 PNG/JPEG/GIF/WebP/AVIF。SVG、HTML、空、伪装、截断和损坏内容明确拒绝，不转码替换原件。 |
-| Session 原件 | committed + reserved 不超过 1,073,741,824 bytes 且不超过 1000 resource；未知长度先预留单图上限。同 resourceId 多引用计一次，不同 resourceId 即使相同摘要仍分别计量；出现数不等于资源数。超限拒绝新接纳，已有图片仍可读。 |
-| 完整历史 | 现行 timeline 与旧数据边界的 schema1 envelope 各自不超过 67,108,864 bytes，最多 100,000 entries；全部文本、reasoning、工具、失败图片、bindings、retained 和撤回容器计入。预留后并发文字不能挤占已承诺空间。 |
-| 归档 | manifest 不超过 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。完整同步最多 67,125,248 bytes，不放宽其中 timeline 的 64 MiB 上限；大单条正文可完整同步，不能用显示分页截短代替。 |
-| 服务存储准入 | 覆盖暂存与原件最坏两份空间，空闲高于 max(1 GiB, 卷容量 5%)；每图片 Session 另计 132 MiB 归档元数据和最坏暂存增量。实占与预留不双计，跨卷复制计峰值；ENOSPC 明确失败，不删除历史原件腾空间。 |
-| 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。最多 10,000 个上传身份 tombstone，达到限制拒绝新身份但保留查询、释放、文本和历史。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
+| 输入与显示格式 | 输入 PNG/JPEG/WebP；显示保留 PNG/JPEG/GIF/WebP/AVIF。SVG、HTML、空、伪装、截断和损坏内容明确拒绝；Daynight 不转码替换原件。原生接口之后的正常转换不改变保存与交付原件的要求。 |
+| Session 实际内容 | 旧在线模式及最终归档的正文、完整索引、不同已提交 resourceId 的原件、已提交 descriptor 与已发布 manifest 合计不超过 134,217,728 bytes；relay 在线模式的 available 原件不超过 1 GiB、1000 项。同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同分别计量。临时副本、数据库内部空间和无内容控制记录不计入；旧大记录保持可读，已确认重放不重复计量。 |
+| 完整历史 | schema3 timeline 的完整 UTF-8 编码最多 134,217,728 bytes、100,000 entries；全部文字、reasoning、工具、失败图片、bindings、retained 和撤回容器计入 Session 总量。旧 schema1/2 保持 67,108,864 bytes 边界。 |
+| 归档 | manifest 最多 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。schema3 完整同步 envelope 最多 134,234,112 bytes，其 timeline 和整个 Session 仍须满足实际内容总量。显示分页截短不能代替完整历史。 |
+| 服务存储准入 | 不为未来原件、正文、索引、归档或暂存预留额度，也不按卷空闲水位拒绝旧容量申请。实际存储不足或写入失败必须明确返回，保留原身份和清理责任，不删除历史原件腾空间。 |
+| 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。身份 tombstone 保留原查询和去重职责，不以累计数量作为容量申请拒绝条件。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
 | 服务传输 | 图片块最多 524,288 原字节；同 Session 全方向和全部连接代次合计最多 2 个媒体块在途，账户最多 8、部署最多 64。归档文件块 1–1,048,576 bytes，同 Session 最多 1 个，仍占公共媒体额度。控制、查询、删除和回执在块边界可进展。 |
-| Controller | 每 execution 媒体 2200 MiB，stateDirectory 媒体 8 GiB，卷空闲 512 MiB；元数据 128 MiB 加 8 MiB 结算余量。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
+| Controller | 不设媒体或元数据累计额度，也不按卷剩余空间或未来写入峰值拒绝操作；实际文件系统与 SQLite 写入决定是否成功。单条内容和协议限制、运行时并发与背压仍生效。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
 | 通用完整解码 | 单轴最多 16,384，画布最多 33,554,432 像素，最多 256 帧，累计最多 67,108,864 像素，RGBA8 输出最多 268,435,456 bytes，单图最多 15 秒。完整遍历所有帧；静态为 1 帧。每解码子进程 512 MiB RSS 为监控目标，不能称为硬内存隔离。 |
 | 浏览器持久草稿 | 每账户 256 MiB，总量 512 MiB；editable 和 frozen 引用不因淘汰页面缓存而被删除。配额、事务或 Blob 错误明确阻止含图发送并保留实际编辑状态。 |
 | 浏览器页面原件 | 页面 128 MiB/32 项、owner 64 MiB/16 项；前景保留 40 MiB/2 槽，后台 88 MiB/30 项、owner 后台 24 MiB/14 项；在途缓冲计入。背景满时一个 10 MiB 预览和一个下载仍有前景准入。 |
@@ -78,7 +78,7 @@ Provider 验收应分别注明原生版本、模型和运行平台；受控测�
 | A2/A4 原生 | Codex、Copilot 分别测试纯图、混合、不同图顺序与重复同图；第二图不可读时零次原生调用，派发后丢回执时最多一次调用且仅查询原操作。无图片模型、能力 unknown、模型/权限/上下文变化及回合中输入保持一致拒绝。 |
 | A5 草稿与上传 | 上传各阶段响应丢失、连续块确认与精确重传、100% 仍验证中、事务 abort、缺 Blob、quota、多标签竞争、冻结/派发/接受/清理间崩溃。接受仅清原版本；后继草稿保留，unknown 不重发、不被新 draftId 绕过。 |
 | A6/A7 来源与显示 | 用户、Agent、工具、Markdown 本地与外部图及五种显示格式；真实 AST 节点、引用式和链接图片，代码/raw JSON/HTML 不触发读取。路径越界、符号链接替换、损坏图、重定向、DNS 变化、私网和凭据隔离须观察源打开/HTTP 请求与字节数。 |
-| A8 历史 | 原图 A 保存后路径/URL 改为 B 或删除、Controller 停止，历史、预览及下载仍为 A 的完整摘要，源请求为零。完整分页、原生恢复、正文撤回与迟到关联、归档提交丢回执、备份恢复、已保存原件损坏分别验证；unknown 或损坏不能冒充 partial。 |
+| A8 历史 | 原图 A 保存后路径/URL 改为 B 或删除、Controller 停止，历史、预览及下载仍为 A 的完整摘要，源请求为零。完整分页、页外 coverage、跨 revision 的完整条目 content_changed、原生恢复、正文撤回与迟到关联、归档提交丢回执、备份恢复、已保存原件损坏分别验证。正文/totals/Markdown/图片/outbox 写入及提交故障只暴露完整旧或新视图；活动同步、stopped source-tail、schema3 与旧 ready receipt 保持原字节和身份，网络阶段无 SQL 快照或已关闭连接访问；unknown 或损坏不能冒充 partial。 |
 | A9 全入口 | Task 弹窗、独立页、Test、Bot、每个 live 全屏及 Task 双层全屏；历史选择器与附件原生记录只读。核对实际 resolver、目标 fence、草稿/operation 身份及网络次数，不以同样外观代替接线证据。 |
 | A10 阅读与交互 | 桌面及 390px、多图、大图四边、长名、流式更新、工具折叠、权限无变化复核、真实键盘/触屏/滚轮、软键盘、旋转和缩放；媒体锚点偏差≤2 CSS px、原文字 prepend≤1 CSS px，关键触控≥44 CSS px。 |
 | A11 身份与清理 | 换账户、Task generation、native 身份、Team/项目撤权、Bot 父凭据失效、删除与迟到写入竞争、冷 pane 淘汰、缓存命中及排队下载撤权。旧回执不误投，敏感预览撤下，有效消息/归档/native/unknown 引用不误删，取消实际结束后才清理。 |
@@ -92,7 +92,13 @@ Provider 验收应分别注明原生版本、模型和运行平台；受控测�
 | L2 集成与故障 | 真实隔离数据库/文件系统、Controller 传输、真实浏览器与受控 Provider | 验证权限、原子提交、持久恢复、DOM/网络与生命周期；fake SDK 不构成原生能力证据。 |
 | L3 原生与整链 | 固定真实 Provider/model/profile、真实服务/Controller/浏览器和保存文件 | 验证原生输入、精确接受、识图、消息关联与 Controller 离线归档；结论限于实际平台与版本。 |
 
-每个 Provider 的样本须独立覆盖纯图、图文、两张不同图顺序及重复同图身份。图片内含随机颜色、几何位置、短码或任务；答案不能泄露在文件名、prompt、displayName 或之前的会话文本。证据同时包含真实 native payload 形状、逐图摘要、唯一调用数、精确接受关联和模型答案；“看到了图片”或缺少 payload/身份链的正确答案均不足。
+每个 Provider 的样本须独立覆盖纯图、图文、两张不同图顺序及重复同图身份；更小接口图数限制导致的拒绝与尚不支持的多图组合分别记录，不绕过接口限制。图片内含随机颜色、几何位置、短码或任务；答案不能泄露在文件名、prompt、displayName 或之前的会话文本。固定实际源码、原生组合、样本生成方法、输入原件和 oracle 后执行盲测，逐例保存实际答案，不以事后修改预期或重试挑选正确结果。
+
+传输与视觉结果分别记录。传输证据包括 Daynight 保存原件和提交到原生图片接口的逐图摘要、完整有序 payload、唯一调用数及精确接受关联；视觉证据包括模型对随机图像内容的实际回答。原生内部转换允许产生不同 MIME、尺寸或字节摘要，观察到的模型请求应单独记录，不把它当作 Daynight 保存原件或要求二者逐字节相同。正常历史压缩不要求永久保留旧图；本次输入被静默省略、以文字占位或部分图片替代仍为失败。HTTP 200、SDK 回执或单独一句“看到了图片”不能证明每图消费。
+
+资格按实际 executable、SDK、backend、精确模型、平台、send/steer 及明确输入限制和使用条件判定。证据须覆盖该组合的接口边界、原件交付、接受、视觉及适用历史、工具、恢复与压缩场景；不要求取得全部不可观测内部算法，也不能把未测条件、另一组合或单个成功样本当作已验证。资格说明保留证据来源及限制，运行时身份或可观测条件变化后重新核验。
+
+历史 failed、unknown 和 not_run 记录不可覆盖，但单次历史识别失败也不是该 Provider 永久不得取得资格的结论。重新评估须保留原失败的样本、组合和原因，将传输失败与视觉错误分开；修复或明确新的适用条件后，使用固定方法、原失败复验及独立新图盲测记录新的结果。未解释或仍可复现的静默省略不能作为受支持条件，后续正例不追溯更改旧结果。
 
 Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的精确 expectedTurnId；clientUserMessageId 不提供自动重发幂等性。Claude 不在当前图片验收矩阵内；若将来开放其图片资格，须先有已证明原生 profile 下 root user_message_uuid/command_uuid 的精确投递关联；SDK 消费、user 落盘、hook-blocked 或下一条 assistant 的位置关系不能代替。Copilot 须持久保存唯一 send Promise 返回的非空 messageId 与原 operation/有序图片关联，不猜测其恒等于 user event ID。历史可展示与原生已接受是不同事实。
 
@@ -104,8 +110,14 @@ Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的�
 
 ## 性能、证据记录与完成条件
 
-容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入 1 GiB 原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
+容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入图片原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
 
-正式结果记录 caseId、requirementIds、layer、result、reason、productionCommit、testCommit、combinedTree、platform、nativeVersion、sdkVersion、backend、effectiveModel、capabilityProfile、fixtureSha256、byteLength、mediaType、dimensions、imageOrder、nativeCallCount、receiptEvidence、historyEvidence、archiveHashes、measuredLimits 和 limitations。未知事实写 null 并解释；稳定脱敏身份须保持关联，不能记录认证令牌、全量 Base64、敏感路径或未授权正文。此为验收结果格式，不是产品 API。
+Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 128 MiB/100000 上界、+1 拒绝和替换不累计，同时保留单条和协议限制。准备、上传/封存、历史同步和维护须在模拟卷空闲低于 512 MiB 或预计峰值不足、实际写入仍可成功时继续，并确认没有容量预测 `statfs` 调用。真实 ENOSPC、权限、SQLite 写入/提交/关闭故障保留原确定或未知结果、原身份和待清理源；reader busy、lock busy、原 writer 未停止和身份不匹配仍按其原机制拒绝或等待。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
 
-检查使用实际文件对应的[开发验证命令](../development.md)和组件说明，保留现有覆盖、权限、兼容和失败断言。文档发布只证明规范、链接和决策记录的一致性，不替代 L1/L2/L3。图片功能完成要求所有必需行为与失败恢复通过，实际生产/测试版本及组合明确，全部必需交付已合入并有可读证据。新写入和来源采集在完整链路验收前保持关闭；启用时重新核对实时有效能力，不能仅凭上游设计完成或测试文件存在宣称可用。
+正式结果记录 caseId、requirementIds、layer、result、reason、productionCommit、testCommit、combinedTree、platform、nativeVersion、sdkVersion、backend、effectiveModel、capabilityProfile、fixtureSha256、byteLength、mediaType、dimensions、imageOrder、nativeCallCount、receiptEvidence、historyEvidence、archiveHashes、measuredLimits 和 limitations。输入样本字段指向 Daynight 原件，原生内部转换结果另附观察；传输、接受和视觉结论分别说明，未观察到转换结果不能填为原件摘要相同。未知事实写 null 并解释；稳定脱敏身份须保持关联，不能记录认证令牌、全量 Base64、敏感路径或未授权正文。此为验收结果格式，不是产品 API。
+
+检查使用实际文件对应的[开发验证命令](../development.md)和组件说明，保留现有覆盖、权限、兼容和失败断言。文档发布只证明规范、链接和决策记录的一致性，不替代 L1/L2/L3。
+
+局部发布以明确组合和路径为单位：该路径的原件上传、验证、完整原生交付、接受、保存、读取、归档和权限证据满足后，可以独立启用相应图片操作；来源采集按其来源权限、安全和保存读取链路分别准入。未验证组合或必要组件不满足时继续关闭，既有原件读取不因新输入关闭而失效。启用时重新核对实时有效能力，不能仅凭上游设计完成或测试文件存在宣称可用。当前生产资格目录只为 Codex 0.170.0 macOS arm64 上 `gpt-6-astra`、`gpt-6.2-astra` 两个精确组合开放图片 send，steer 与其他组合保持关闭；这两行的发布同样以本节要求的产品链路证据为前提，资格行引用的原生证据只确定身份与限额，不替代该证据；组合身份、限额和证据绑定见[已发布资格](../design/session-image-providers.md#已发布资格)。
+
+整项图片功能完成仍要求所有必需行为与失败恢复通过，实际生产/测试版本及组合明确，全部必需交付已合入并有可读证据。局部资格、其他平台通过或部分路径启用不等于 A6 完成；完整验收报告继续保留未完成项和历史失败。[资格边界决策](../../.agents/notes/implemented/architecture/2026-11-16-image-qualification-boundaries.md)记录原件责任与组合发布的取舍。

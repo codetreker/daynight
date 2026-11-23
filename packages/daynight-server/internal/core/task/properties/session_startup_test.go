@@ -9,7 +9,7 @@ import (
 
 func TestRemovingWorkerClearsStartupWithoutMutatingSource(t *testing.T) {
 	worker := workerFixture()
-	original, err := WithWorker(model.TaskProperties{"sessionStartup": json.RawMessage(`{"retained":true}`), "paused": json.RawMessage(`true`)}, &worker)
+	original, err := WithWorker(model.TaskProperties{"sessionStartup": json.RawMessage(`{"retained":true}`), "blocked": json.RawMessage(`true`)}, &worker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,11 +23,11 @@ func TestRemovingWorkerClearsStartupWithoutMutatingSource(t *testing.T) {
 	if _, ok := result["sessionStartup"]; ok {
 		t.Fatal("startup evidence survived worker removal")
 	}
-	if _, ok := original["worker"]; !ok || string(original["sessionStartup"]) != `{"retained":true}` || string(result["paused"]) != `true` {
+	if _, ok := original["worker"]; !ok || string(original["sessionStartup"]) != `{"retained":true}` || string(result["blocked"]) != `true` {
 		t.Fatal("worker removal changed the input or unrelated values")
 	}
-	result["paused"][0] = 'X'
-	if string(original["paused"]) != `true` {
+	result["blocked"][0] = 'X'
+	if string(original["blocked"]) != `true` {
 		t.Fatal("worker removal shared property bytes")
 	}
 }

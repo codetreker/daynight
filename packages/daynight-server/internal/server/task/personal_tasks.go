@@ -1,0 +1,109 @@
+package task
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	protocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+)
+
+type PersonalTasksOperation func(context.Context, model.Principal, int, *string) (service.PersonalTaskPage, error)
+
+func PersonalTaskRoutes(mux httpx.RouteRegistrar, run PersonalTasksOperation, auth RouteAuthentication, logger *slog.Logger) {
+	h := personalTaskHandler{run: run, logger: logger}
+	mux.HandleFunc("GET /api/v1/me/in-progress-tasks", auth.Require(h.list))
+	mux.HandleFunc("/api/v1/me/in-progress-tasks", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+}
+
+type personalTaskHandler struct {
+	run    PersonalTasksOperation
+	logger *slog.Logger
+}
+
+func personalTaskResponse(page service.PersonalTaskPage, identity bool) protocol.PersonalTaskPage {
+	out := protocol.PersonalTaskPage{ObservedAt: page.ObservedAt, ResponseTaskAt: page.ResponseTaskAt, ResponseSessionAt: page.ResponseSessionAt, InventoryRevision: page.InventoryRevision, TotalTaskCount: page.TotalTaskCount, TotalProjectCount: page.TotalProjectCount, SessionPartial: page.SessionPartial, Items: make([]protocol.PersonalTaskItem, 0, len(page.Items)), NextCursor: page.NextCursor}
+	for _, item := range page.Items {
+		var goal *protocol.PersonalTaskGoal
+		if item.Task.GoalID != nil && item.Task.GoalTitle != nil {
+			goal = &protocol.PersonalTaskGoal{ID: *item.Task.GoalID, Title: *item.Task.GoalTitle}
+		}
+		var worker *protocol.PersonalTaskWorker
+		if item.Worker != nil {
+			worker = &protocol.PersonalTaskWorker{WorkerID: item.Worker.WorkerID, State: string(item.Worker.State), Machine: protocol.PersonalTaskMachine{ID: item.Worker.Machine.ID, Name: item.Worker.Machine.Name}}
+		}
+		if worker != nil && identity {
+			worker.UserID = &item.Worker.UserID
+		}
+		var platform *string
+		if item.Task.RequiredPlatform != nil {
+			value := string(*item.Task.RequiredPlatform)
+			platform = &value
+		}
+		tags := make([]protocol.RESTTagReference, 0, len(item.Task.Tags))
+		for _, tag := range item.Task.Tags {
+			tags = append(tags, protocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
+		}
+		out.Items = append(out.Items, protocol.PersonalTaskItem{
+			Project: protocol.PersonalTaskProject{ID: item.Project.ID, Name: item.Project.Name, OwnerTeam: protocol.PersonalTaskTeam{ID: item.Project.OwnerTeamID, Kind: item.Project.OwnerTeamKind, Name: item.Project.OwnerTeamName}, ExecutionWarningMinutes: int64(item.Project.ExecutionWarningMinutes), MatchedTaskCount: item.MatchedTaskCount},
+			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", CreatedAt: item.Task.CreatedAt, StartedAt: item.Task.StartedAt, RequiredPlatform: platform, Tags: tags, BlockedBy: append([]string{}, item.Task.BlockedBy...), Ready: item.Task.Ready, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session, SessionRow: protocol.SessionRowResponse(item.SessionRow),
+		})
+	}
+	return out
+}
+
+func (h personalTaskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+	w.Header().Set("Cache-Control", "no-store")
+	logger := h.logger.With("user_id", principal.UserID)
+	identity, err := httpx.WorkerIdentityProtocol(request.Header)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "personal_tasks", "parse", err)
+		return
+	}
+	page, err := httpx.PageRequest(request)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "personal_tasks", "parse", err)
+		return
+	}
+	result, err := h.run(request.Context(), principal, page.Limit, page.Cursor)
+	if err != nil {
+		phase := "select"
+		var stage *service.PersonalTaskError
+		if errors.As(err, &stage) {
+			phase = stage.Phase
+		}
+		httpx.WriteError(w, request, logger, "personal_tasks", phase, err)
+		return
+	}
+	if request.Context().Err() != nil {
+		return
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(personalTaskResponse(result, identity)); err != nil {
+		httpx.WriteError(w, request, logger, "personal_tasks", "encode", err)
+		return
+	}
+	if request.Context().Err() != nil {
+		return
+	}
+	if identity {
+		w.Header().Set(httpx.WorkerIdentityHeader, "1")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	n, err := w.Write(body.Bytes())
+	if err == nil && n != body.Len() {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		httpx.LogFailure(logger, request.Context(), "personal_tasks", "encode", err)
+	}
+}

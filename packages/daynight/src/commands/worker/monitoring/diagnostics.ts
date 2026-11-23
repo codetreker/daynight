@@ -1,17 +1,20 @@
-import { ArchiveRepairRequiredError } from "../../controller/archive-error.js";
+import { ArchiveFileFailedError, ArchiveRepairRequiredError } from "../../controller/archive-error.js";
 import { ApiError } from "../../../api/client.js";
 import { OperationError } from "../../../api/operation.js";
 import { ProtocolError } from "../../../api/parse.js";
 import { RepositoryGitError } from "../../../repository/git.js";
+import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { WorkerCleanupError } from "../cleanup-error.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../configuration-failure.js";
 import { WorktreePreconditionError } from "../worktrees.js";
-import { NativeVersionOutputError } from "../herdr/version-probe.js";
-import { HerdrCommandDeadlineError, HerdrCommandError } from "../herdr/command.js";
+import { NativeVersionOutputError } from "../native-version.js";
+import { OwnedCommandDeadlineError, OwnedCommandError } from "../owned-command.js";
 import type { DiagnosticCode, StructuredCause } from "./types.js";
 
 const messages: Record<DiagnosticCode, string> = {
   cancelled: "The operation was cancelled.", timeout: "The operation timed out.",
   "authentication-required": "Authentication is required.", "limit-exceeded": "An operation limit was exceeded.",
+  "archive-quota-exceeded": "Session archive capacity was exceeded (quota_exceeded).",
   "rate-limited": "The operation was rate limited.", "permission-denied": "Permission was denied.",
   "not-found-or-inaccessible": "A required resource was not found or is inaccessible.", "not-found": "A required resource was not found.",
   conflict: "The operation encountered a conflict.", unavailable: "A required service or resource is unavailable.",
@@ -21,8 +24,14 @@ const messages: Record<DiagnosticCode, string> = {
   "invalid-output": "A required operation produced invalid output.", "recovery-limit": "The recovery limit was reached.",
   "native-identity-missing": "The original native execution identity is missing.",
   "worktree-validation-failed": "The worktree failed ownership validation.", "branch-mismatch": "The worktree branch does not match the recorded owner.",
+  "ownership-unconfirmed": "Retained resource ownership is unconfirmed; automatic cleanup is unsafe.",
   "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
+  "markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.",
   unknown: "The operation failed; inspect local Worker diagnostics for details.",
+};
+const configurationCodes: Readonly<Record<ReturnType<typeof classifyConfigurationFailure>["code"], DiagnosticCode>> = {
+  not_found: "not-found", permission_denied: "permission-denied", timeout: "timeout", command_failed: "command-failed",
+  invalid_output: "invalid-output", invalid_configuration: "configuration-invalid", io_error: "io-error", unavailable: "unavailable",
 };
 
 // Only a caller that has read the typed Web recovery state may construct this evidence.
@@ -33,6 +42,11 @@ export class MonitoringRecoveryEvidence extends Error {
 // Construct only after an archive request confirms resource_busy and a short retry is scheduled.
 export class MonitoringArchiveBusyEvidence extends Error {
   constructor(cause: unknown) { super("Archive busy, short retry.", { cause }); }
+}
+
+// Construct only when resource enumeration found an owner without independent execution evidence.
+export class MonitoringOwnershipUnconfirmedEvidence extends Error {
+  constructor() { super("Retained resource ownership is unconfirmed."); }
 }
 
 /** Construct a fixed summary only from a fact established by the caller's operation boundary. */
@@ -63,8 +77,10 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
     if (error.phase === "protocol" || error.phase === "pagination") return diagnostic("invalid-response");
     return diagnostic("unknown");
   }
-  if (error instanceof ArchiveRepairRequiredError) return diagnostic("recovery-blocked");
+  if (error instanceof ArchiveRepairRequiredError) return diagnostic(error.code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked");
+  if (error instanceof ArchiveFileFailedError && error.code === "quota_exceeded") return diagnostic("archive-quota-exceeded");
   if (error instanceof MonitoringArchiveBusyEvidence) return diagnostic("rate-limited");
+  if (error instanceof MonitoringOwnershipUnconfirmedEvidence) return diagnostic("ownership-unconfirmed");
   if (error instanceof MonitoringRecoveryEvidence) {
     switch (error.reasonCode) {
       case "native_identity_missing": return diagnostic("native-identity-missing");
@@ -75,8 +91,12 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   if (error instanceof ProtocolError) return diagnostic("invalid-response");
   if (error instanceof WorktreePreconditionError) return diagnostic(error.code === "branch_mismatch" ? "branch-mismatch" : "worktree-validation-failed");
   if (error instanceof NativeVersionOutputError) return diagnostic("invalid-output");
-  if (error instanceof HerdrCommandDeadlineError) return diagnostic("timeout");
-  if (error instanceof HerdrCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
+  if (error instanceof OwnedCommandDeadlineError) return diagnostic("timeout");
+  if (error instanceof OwnedCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
   if (error instanceof RepositoryGitError && Number.isSafeInteger(error.exitCode) && error.exitCode !== null && error.exitCode > 0) return diagnostic("command-failed");
+  if (error instanceof ToolSelectionError || error instanceof ConfigurationFileOperationError || error instanceof WorkerConfigurationSourceError) {
+    if (error instanceof ToolSelectionError && error.code === "cancelled") return diagnostic("cancelled");
+    return diagnostic(configurationCodes[classifyConfigurationFailure(error).code]);
+  }
   return diagnostic("unknown");
 };

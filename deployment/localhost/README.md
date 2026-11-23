@@ -10,6 +10,25 @@ repositories. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
 and its server-side credentials are required.
 
+## Preview SSO routing
+
+Prepare the bare preview hostname and wildcard DNS/TLS before deployment, and
+forward their original Host to the same server. The bare host serves explicit
+SSO navigation; canonical Task and Goal UUID subdomains serve their matching
+attachment preview GET/HEAD. Invalid preview hosts cannot reach the main API.
+Before switching traffic, verify bare and wildcard DNS, TLS/SNI, Host forwarding,
+SSO return and readiness of every replica. Do not mix old replicas that serve
+inline previews on the main origin. Roll back to an isolated build, or disable
+old main-site preview GET before restoring an older build.
+See the [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
+Proxy access logs must omit code/state queries, Cookie headers and credentials.
+The bundled stream proxy does not produce HTTP request access logs. Startup
+validates configured origins without probing external DNS or certificates.
+Readiness probes connect to numeric loopback URLs with `Host: localhost`, so
+internal and published ports can differ. The local browser must resolve the main
+hostname, bare preview hostname and Task/Goal UUID preview subdomains to the
+gateway. A local HTTP test does not prove the production DNS or TLS configuration.
+
 ## Configure and start
 
 From the repository root, copy the local configuration template:
@@ -22,11 +41,12 @@ Set the following values in `deployment/localhost/.env` before starting:
 
 | Variable | Required value |
 |---|---|
-| `DAYNIGHT_PUBLIC_ORIGIN` | Exact browser-visible origin, without a trailing slash, path, query or fragment |
+| `DAYNIGHT_PUBLIC_ORIGIN` | Exact HTTPS browser-visible origin, without a trailing slash, path, query or fragment |
+| `DAYNIGHT_PREVIEW_ORIGIN` | Exact HTTPS same-site preview origin on an independent hostname |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway URL |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth application ID |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Registered UniAuth application secret; keep this file private |
-| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `http://127.0.0.1:8787/auth/callback` |
+| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `https://daynight.example.com/auth/callback` |
 | `DAYNIGHT_REDIS_URL` | Server connection URL for monitoring; the template uses `redis://redis:6379/0` on the Compose network |
 | `DAYNIGHT_REDIS_MAXMEMORY` | Positive Redis memory budget, such as the template's `128mb` |
 
@@ -38,6 +58,17 @@ server loads `config.yml`, then optional `config.local.yml`, then explicitly
 set environment variables. Restart the server after changing files. Keep the
 public directory at mode `0755` and its file at `0644` so UID 10001 can read
 them. Protect any local override and do not commit secrets.
+Optional `DAYNIGHT_S2S_SHARED_KEY` enables trusted application issuance when set
+to 32–256 visible ASCII bytes; its empty template value disables issuance.
+`DAYNIGHT_S2S_ALLOWED_ORIGIN` separately enables exact application browser CORS
+and user WebSocket Origin admission. Keep the key private. Both optional Compose
+entries preserve absence, explicit empty and nonempty values: absence from the
+host and private `.env` retains YAML, empty overrides YAML with the disabled
+value, and nonempty overrides it. The host environment takes precedence over
+`.env`. Restart after changing either setting; replacing the key does not revoke
+existing application grants. The [authentication contract](../../docs/spec/daynight-auth.md#用户应用授权-api)
+owns issuance, refresh and revocation behavior.
+
 Required authentication environment bindings remain mandatory even when a
 local YAML override is present. The image sets the three image tool paths and
 the root-relative staging path `storage/.image-validation` through environment
@@ -61,13 +92,38 @@ callback URL in UniAuth before restarting. The example application values are
 placeholders; supply credentials for the intended
 UniAuth deployment.
 
-Production public origins require HTTPS. The template explicitly enables
-`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` for the loopback HTTP deployment. This setting
-permits an HTTP main-site origin and its test Cookie policy.
-`DAYNIGHT_ALLOW_LOOPBACK_HTTP` controls a separate UniAuth SDK rule: set it to `1`
-only when the UniAuth gateway itself uses HTTP on a literal loopback address.
-It defaults to `0` in the template because the example gateway uses HTTPS.
+Production requires explicit same-site HTTPS public and preview origins. Provide
+DNS and certificates for the main hostname, bare preview hostname and wildcard
+Task/Goal subdomains, and terminate TLS in a proxy that forwards their original Host to
+the single loopback business gateway. Register the exact public callback in
+UniAuth. Configure client trust for the issuing CA where necessary. Numeric
+loopback preview origins are for controlled HTTP fixtures and cannot provide
+browser Task subdomains. `DAYNIGHT_ALLOW_LOOPBACK_HTTP` controls a separate UniAuth
+SDK rule: set it to `1` only when the UniAuth gateway itself uses HTTP on a literal
+loopback address; the template leaves it disabled.
 Neither setting disables authentication or project authorization.
+
+For explicit local HTTP testing, set these values in the private `.env`:
+
+```dotenv
+DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
+DAYNIGHT_PUBLIC_ORIGIN=http://app.daynight.localhost:8787
+DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787
+DAYNIGHT_UNIAUTH_CALLBACK_URL=http://app.daynight.localhost:8787/auth/callback
+```
+
+Register that exact callback URL in UniAuth and supply the application credentials
+above. Main and preview may share the proxy and port, but must use different
+hostnames. Both hostnames must be lowercase dotted DNS names, without a trailing
+dot; `localhost` alone is invalid for this pair. Different ports on the same DNS
+hostname do not isolate preview Cookies. The HTTP exception accepts local
+`.localhost` or `.test` names; keep it disabled in production.
+Ensure the main host, bare `preview.daynight.localhost` and
+`<task-or-goal-uuid>.preview.daynight.localhost` resolve to loopback through the
+browser's resolver or local wildcard DNS. Startup does not check resolution.
+Forward the original Host for all of them to the gateway; an explicit local HTTP
+setup needs no TLS termination. Numeric loopback origins on different ports
+remain controlled socket fixtures and cannot provide browser preview subdomains.
 
 `DAYNIGHT_TASK_SYNC_OVERLAP` defaults to `10s` in the template and Compose
 configuration. It sets the server's task-sync lookback window and must be a
@@ -119,8 +175,7 @@ privileged startup process.
 If `storage.root` is changed, update the attachment volume mount and the fixed
 storage paths in the backup and restore commands below to match it before use.
 
-Open the configured public origin, `http://127.0.0.1:8787/` with the template,
-and sign in through UniAuth. The dashboard provides project creation, member and
+Open the configured public origin and sign in through UniAuth. The dashboard provides project creation, member and
 invitation management, personal access token management and task browsing.
 Selecting a project opens `/projects/<projectId>`, with statistics, expandable
 dependency graphs and task details. The shared task-title header offers a
@@ -145,9 +200,12 @@ All members can read/write tasks and set status; administrators additionally
 manage members and invitations. Existing projects need member records prepared
 manually. Status does not grant execution, deployment or delivery authority.
 
-To select a different host port, update `DAYNIGHT_PORT`,
-`DAYNIGHT_PUBLIC_ORIGIN` and `DAYNIGHT_UNIAUTH_CALLBACK_URL` together in `.env`,
-and update the callback registration in UniAuth. The equivalent Compose command,
+For direct access through the shared published port, change `DAYNIGHT_PORT`,
+`DAYNIGHT_PUBLIC_ORIGIN`, `DAYNIGHT_PREVIEW_ORIGIN` and
+`DAYNIGHT_UNIAUTH_CALLBACK_URL` together in `.env`, and register the updated exact
+callback in UniAuth. With an external proxy, the origins and callback describe
+its browser-visible ports; update its gateway upstream when the published port
+changes. The equivalent Compose command,
 and the remaining commands below, run from `deployment/localhost/` and load
 that directory's `.env`:
 
@@ -169,7 +227,7 @@ Set `DAYNIGHT_BASE_URL` to the configured public origin and read the current
 user. Copy its `id` into `DAYNIGHT_USER_ID`, then create a project in Personal:
 
 ```bash
-DAYNIGHT_BASE_URL=http://127.0.0.1:8787
+DAYNIGHT_BASE_URL=https://daynight.example.com
 curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
   "$DAYNIGHT_BASE_URL/api/v1/me"
 DAYNIGHT_USER_ID=YOUR_USER_ID
@@ -191,21 +249,25 @@ curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
   "$DAYNIGHT_BASE_URL/api/v1/projects/$PROJECT_ID/tasks"
 ```
 
-Creation produces todo with version 1 and nullable execution endpoints. Creation
-and metadata PATCH omit status. Status writes use only
-`PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` with exact positive int64
-version and one of todo/in_progress/done. All nine pairs are supported. Version
-is checked first; matching same-state preserves version/update time/timing,
-actual change increments once. Entering active/done requires every direct
-prerequisite done; reopening done refuses direct active/done dependents, including
-external edges. Materials and unrelated fields remain unchanged.
+Ordinary Task creation defaults to `proposed` at version 1 with null execution
+timestamps. Creation can also explicitly select `todo`; metadata edits do not
+set status. Use `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` with the
+exact positive int64 version and one of `proposed`, `todo`, `in_progress`, `done`
+or `cancelled`. A valid same-state request preserves the version, update time
+and timing; a real transition increments the version once. Entering
+`in_progress` or `done` requires all direct prerequisites, including external
+ones, to be `done` or `cancelled`. Reopening a `done` task is refused when a
+direct dependent is `in_progress` or `done`. Cancellation is irreversible and
+preserves materials and execution history. Release any active Worker claim
+before cancelling its task.
 
-Entering in_progress starts a new interval, return to todo clears both endpoints,
-in-progress to done preserves a nullable start and writes the real end, and
-todo to done records only an end. Migration 014 converts legacy proposed rows to
-todo once, changing only their state/version/update time and preserving historical
-timing and other fields. Default, data, CHECK and ledger change atomically.
-Coordinate service/Web deployment and CLI upgrades; old action routes have no aliases.
+Entering `in_progress` starts a new interval. Returning to `proposed` or `todo`
+clears both execution endpoints. Completing from `in_progress` records the end
+and preserves a nullable start; direct completion from `proposed` or `todo`
+records only the end. Cancellation records `cancelledAt` without replacing the
+execution interval. See the [Task status contract](../../docs/spec/daynight-task-status.md)
+for transition and timing details and the [development guide](../../docs/development.md#component-delivery-and-activation)
+for component delivery and activation.
 
 Copy the created task ID into TASK_ID. With no intervening changes, the following
 starts execution at version 1 and completes it at version 2. Both are real changes.
@@ -311,8 +373,16 @@ valid pending transactions; retry after they are consumed or expired. Do not run
 old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
 the epoch and both data volumes. Retain the private deployment configuration and the
-corresponding UniAuth application registration separately from the application
-data. Stop the stack and retain all application data:
+corresponding UniAuth application registration separately from the application data.
+
+Before upgrading across GitHub synchronization migration 073, stop and drain all
+old server replicas and replace every replica with the new version before starting
+service. Startup applies the migration before accepting requests. Do not mix old
+and new servers: old code ignores the Project synchronization setting. Existing
+Projects retain their connection, PRs and history but synchronization defaults to
+off; an administrator must enable it again. See the [server upgrade guidance](../../packages/daynight-server/README.md).
+
+Stop the stack and retain all application data:
 
 ```bash
 docker compose down
@@ -404,6 +474,43 @@ owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.
 
+## Offline local-to-Azure switch
+
+Stop and drain all application instances, maintenance executors and direct
+writers before taking the PostgreSQL/local-volume pair described above. Keep
+that original pair unchanged and restore its database into an isolated target.
+Use a dedicated Azure container and a separate scratch directory. The candidate
+binary must match the restored schema ledger; the offline command applies no DDL.
+
+Create the target root's `config/config.yml` with `database.url` pointing to that
+restored target and `storage.backend: azure-blob`, `storage.root` pointing to
+separate scratch, and the ordinary `storage.azure` settings documented in the
+[Server README](../../packages/daynight-server/README.md). Protect connection
+strings and logs as deployment configuration. Run the candidate binary with the
+original local volume mounted read-only:
+
+```bash
+daynight-server migrate-storage --root /isolated/target \
+  --source-storage-root /paired/source-storage 2> /isolated/migration-report.log
+```
+
+Keep all writers stopped until the entire command exits 0. The report identifies
+retained objects, source/target integrity, conflicts, unresolved publication and
+in-flight settlement by run and resource. An early object success does not prove
+the whole cut. Resolve differences against the same original pair and isolated
+target before rerunning. Equal verified Azure objects are reused; conflicts are
+preserved. Start one Azure Server only after successful migration, then check
+retained downloads, ordinary reuploads and restart behavior. The
+[migration design](../../docs/design/offline-storage-migration.md) owns the
+inventory, receipt and state-transition rules.
+
+To restore the pre-cut point, stop Azure writers, restore the untouched original
+PostgreSQL/local pair, configure `local`, and rotate affected project cache epochs
+before restarting as described above. This returns to the old backup time;
+subsequent writes and external effects require separate reconciliation. Paired
+backup after Azure begins accepting writes and automatic rollback have their own
+scope.
+
 ## Exposure
 
 The authenticated dashboard and API are published only on host `127.0.0.1`.
@@ -411,16 +518,16 @@ PostgreSQL and Redis have no published host port. The stack uses fixed
 development-only database credentials (`daynight` / `daynight-local`, database `daynight`). The
 gateway forwards TCP to the server's strict `127.0.0.1:8787` listener inside
 their shared container network namespace, preserving the server's HTTP handling.
-TLS termination for an HTTPS public origin belongs to the deployment's external
-proxy.
+Production TLS termination for the configured public and preview origins belongs
+to the deployment's external proxy, which forwards original Host to that gateway.
 
 UniAuth login, Daynight browser sessions and personal access tokens use the
 [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md). Project authorization covers
-tasks, graphs, attachment downloads and previews. Trusted same-origin executable
-HTML previews retain their iframe, relative-resource and keyboard behavior;
-their scripts execute with the signed-in user's same-origin authority. There is
-no separate preview domain.
+tasks, graphs, attachment downloads and previews. Web previews use a separate
+Task Host and preview Cookie; each Task shares an origin across its own files,
+separate from the main site and other Tasks. Old main-site preview GET redirects
+to that Host while HEAD and downloads remain on the main site.
 
 The review CLI has its own
 [review configuration and startup](../../README.md#review-configuration-and-startup).

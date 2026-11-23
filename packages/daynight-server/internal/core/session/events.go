@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -24,7 +25,7 @@ func (s *Execution) SourceSeq(ctx context.Context, f sp.ControllerFence) (int64,
 	return n, err
 }
 func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[string]any, result error) {
-	prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
+	ctx, prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +34,8 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 	}
 	m = prepared
 	var out map[string]any
+	var captureError *CaptureRequestError
+	cleanupHistory := false
 	err = s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
 		if check != nil {
 			if err := check(tx, r); err != nil {
@@ -65,6 +68,9 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 			out = envelope(r, "sync_ack")
 		case "image_capture":
 			out, err = s.captureMessage(ctx, tx, r, m)
+			if refusal, ok := err.(*CaptureRequestError); ok {
+				captureError, err = refusal, nil
+			}
 		case "image_response":
 			out, err = s.acceptMediaResponse(ctx, tx, r, m)
 		case "content_response":
@@ -72,12 +78,16 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 		case "events":
 			out, err = s.events(ctx, tx, r, m)
 		case "source_reset":
+			_, cleanupHistory = tx.dao.(store.SessionArchiveDAO)
 			if r.SourceEpoch == nil {
 				return conflict()
 			}
 			if *r.SourceEpoch != m.NewSourceEpoch {
 				if *r.SourceEpoch != m.PreviousSourceEpoch || slices.Contains(r.SourceEpochs, m.NewSourceEpoch) {
 					return conflict()
+				}
+				if err = handoffHistorySource(ctx, tx, r, *r.SourceEpoch, m.NewSourceEpoch); err != nil {
+					return err
 				}
 				r.SourceEpoch = &m.NewSourceEpoch
 				if len(r.SourceEpochs) >= 64 {
@@ -111,7 +121,37 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 		}
 		return save(ctx, tx, r)
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if cleanupHistory && s.files != nil {
+		access := func(ctx context.Context, fn func(*operationTx, *record, store.SessionArchiveDAO, store.ArchiveBundle) error) error {
+			return s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, _ task) error {
+				if sourceEpoch(r) != m.NewSourceEpoch {
+					return conflict()
+				}
+				dao, ok := tx.dao.(store.SessionArchiveDAO)
+				if !ok {
+					return nil
+				}
+				bundle, e := dao.SessionArchiveBundle(ctx, r.Snapshot.SessionID)
+				if errors.Is(e, model.ErrNotFound) {
+					return nil
+				}
+				if e != nil {
+					return e
+				}
+				return fn(tx, r, dao, bundle)
+			})
+		}
+		if cleanupErr := s.cleanupRetiredHistory(ctx, m.SessionID, access); cleanupErr != nil {
+			slog.ErrorContext(ctx, "Retired Session history cleanup failed", "session_id", m.SessionID, "error", cleanupErr)
+		}
+	}
+	if captureError != nil {
+		return nil, captureError
+	}
+	return out, nil
 }
 func (s *Execution) applyState(ctx context.Context, tx *operationTx, r *record, state sp.State) error {
 	v := &r.Snapshot
@@ -131,11 +171,14 @@ func (s *Execution) applyState(ctx context.Context, tx *operationTx, r *record, 
 	v.InitialInputState = state.InitialInputState
 	v.Activity = state.Activity
 	v.CurrentTurnID = state.CurrentTurnID
+	images := v.Capabilities.Images
 	v.Capabilities = state.Capabilities
+	// Effective image revisions belong to the service, not the Controller frame.
+	v.Capabilities.Images = images
+	v.Controls = state.Controls
 	if err := s.refreshImageState(ctx, tx, r, state.ProviderImages); err != nil {
 		return err
 	}
-	v.Controls = state.Controls
 	v.TurnStartedAt = state.TurnStartedAt
 	v.CleanupInteractionIDs = state.CleanupInteractionIDs
 	for _, id := range state.CleanupInteractionIDs {

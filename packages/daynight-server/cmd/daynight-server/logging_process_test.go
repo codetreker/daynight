@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -274,6 +275,77 @@ func TestLoggingProcessConfigurationFailureAndVerifyBoundary(t *testing.T) {
 	}
 }
 
+func TestLoggingProcessRejectsApplicationOriginBeforeStartup(t *testing.T) {
+	root := testStorageRoot(t)
+	server := startLoggingProcess(t, root, "server", map[string]string{"DAYNIGHT_S2S_ALLOWED_ORIGIN": "https://private-origin-marker.example/path"})
+	if err := server.wait(t); err == nil {
+		t.Fatal("invalid application Origin started the server")
+	}
+	file := loggingBytes(t, filepath.Join(root, "logs", "daynight-server.log"))
+	var event struct {
+		Component string `json:"component"`
+		Phase     string `json:"phase"`
+		Field     string `json:"field"`
+		Env       string `json:"env_name"`
+	}
+	if err := json.Unmarshal(file, &event); err != nil || event.Component != "configuration" || event.Phase != "validate" || !bytes.Contains(file, []byte("s2s.allowed_origin")) || !bytes.Contains(file, []byte("DAYNIGHT_S2S_ALLOWED_ORIGIN")) {
+		t.Fatalf("application Origin startup diagnostic: %s", file)
+	}
+	if bytes.Contains(file, []byte("private-origin-marker")) || !bytes.Equal(file, []byte(server.logs.String())) {
+		t.Fatal("application Origin diagnostic exposed the value or differed between sinks")
+	}
+}
+
+func TestLoggingProcessRejectsS2SKeyBeforeStartup(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	root := testStorageRoot(t)
+	values := testEnvironment(t)
+	key := "private-s2s-shared-key-marker invalid"
+	values["DAYNIGHT_S2S_SHARED_KEY"] = key
+	values["DAYNIGHT_DATABASE_URL"] = "postgres://private-user:private-password@" + listener.Addr().String() + "/daynight?sslmode=disable"
+	values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT"] = "13"
+	values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT_PER_OWNER"] = "4"
+	server := startLoggingProcess(t, root, "server", values)
+	if err := server.wait(t); err == nil {
+		t.Fatal("invalid S2S shared key started the server")
+	}
+	file := loggingBytes(t, filepath.Join(root, "logs", "daynight-server.log"))
+	var event struct {
+		Component  string `json:"component"`
+		Phase      string `json:"phase"`
+		Field      string `json:"field"`
+		Env        string `json:"env_name"`
+		Diagnostic string `json:"diagnostic"`
+	}
+	if err := json.Unmarshal(file, &event); err != nil || event.Component != "configuration" || event.Phase != "validate" || event.Field != "s2s.shared_key" || event.Env != "DAYNIGHT_S2S_SHARED_KEY" || event.Diagnostic != "s2s.shared_key must be empty or contain 32 through 256 visible ASCII bytes" {
+		t.Fatalf("S2S shared key startup diagnostic differs: %s", file)
+	}
+	if !bytes.Equal(file, []byte(server.logs.String())) {
+		t.Fatal("S2S shared key startup diagnostic differs between sinks")
+	}
+	hash := sha256.Sum256([]byte(key))
+	for _, secret := range []string{key, "private-s2s-shared-key-marker", fmt.Sprintf("%x", hash), "private-user", "private-password"} {
+		if bytes.Contains(file, []byte(secret)) {
+			t.Fatal("S2S shared key diagnostic exposed private configuration")
+		}
+	}
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := listener.Accept()
+	if err == nil {
+		connection.Close()
+		t.Fatal("database was contacted after S2S shared key validation failed")
+	}
+	if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatalf("database connection observation failed: %v", err)
+	}
+}
+
 // failingStartupStderr cancels before reporting the first write error when
 // requested, modeling a signal racing with a logging failure.
 type failingStartupStderr struct {
@@ -308,6 +380,8 @@ func TestLoggingStartupFailureStopsBeforeDatabaseAndSurvivesCancellation(t *test
 			root := filepath.Join(testStorageRoot(t), "private-root-marker")
 			values := testEnvironment(t)
 			values["DAYNIGHT_DATABASE_URL"] = "postgres://private-user:private-password@" + listener.Addr().String() + "/daynight?sslmode=disable"
+			values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT"] = "13"
+			values["DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT_PER_OWNER"] = "4"
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			stderr := &failingStartupStderr{}
@@ -330,13 +404,15 @@ func TestLoggingStartupFailureStopsBeforeDatabaseAndSurvivesCancellation(t *test
 			}
 			file := loggingBytes(t, filepath.Join(root, "logs", "daynight-server.log"))
 			var startup, failure struct {
-				RunID    string `json:"run_id"`
-				Event    string `json:"event"`
-				Phase    string `json:"phase"`
-				Sink     string `json:"sink"`
-				Resource string `json:"resource"`
+				RunID           string `json:"run_id"`
+				Event           string `json:"event"`
+				Phase           string `json:"phase"`
+				Sink            string `json:"sink"`
+				Resource        string `json:"resource"`
+				ArchiveMax      int    `json:"session_archive_max_concurrent"`
+				ArchiveOwnerMax int    `json:"session_archive_max_concurrent_per_owner"`
 			}
-			if err := json.Unmarshal(file, &startup); err != nil || startup.Event != "configuration_loaded" {
+			if err := json.Unmarshal(file, &startup); err != nil || startup.Event != "configuration_loaded" || startup.ArchiveMax != 13 || startup.ArchiveOwnerMax != 4 {
 				t.Fatalf("file did not receive startup record after stderr failure: %s", file)
 			}
 			if err := json.Unmarshal(stderr.output.Bytes(), &failure); err != nil || failure.Event != "logging_failed" || failure.Phase != "write" || failure.Sink != "stderr" || failure.Resource != "stderr" || startup.RunID == "" || startup.RunID != failure.RunID {

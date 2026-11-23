@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -45,7 +44,7 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 	user := testsupport.FixtureIdentitySession(t, f.db, model.User{ID: otherID, UniAuthID: uuid.NewString()}, model.Session{ID: uuid.NewString(), TokenHash: tokenHash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'archive owner',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'archive owner',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	other := model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: pat}
@@ -119,41 +118,6 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = retained.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestTerminalArchiveReadbackWithSingleConnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	f := newServiceFixture(t)
-	id, data := readyTerminalArchive(t, f)
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = files.Close() })
-	config := f.db.Pool.Config().Copy()
-	config.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	engine := core.NewEngine(files)
-	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
-	service := New(&postgres.Store{Pool: pool}, engine)
-	if _, err = service.PutTerminalArchive(ctx, f.owner, f.project, f.task, id, data); err != nil {
-		t.Fatalf("upload and nested readback: %v", err)
-	}
-	content, err := service.TerminalArchiveContent(ctx, f.owner, f.project, f.task, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(content.Data, data) {
-		t.Fatal("archive bytes changed")
-	}
-	if err = content.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

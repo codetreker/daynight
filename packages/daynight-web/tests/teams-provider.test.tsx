@@ -6,6 +6,7 @@ import { TeamSelector } from "../src/features/teams/TeamSelector";
 import type { TeamPreference } from "../src/features/teams/useTeamPreference";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { stringifyWireJson } from "./helpers/wireJson";
+import * as teamsApi from "../src/api/teams";
 
 const userId = "00000000-0000-4000-8000-000000000001", personal = "00000000-0000-4000-8000-000000000002", a = "00000000-0000-4000-8000-000000000003", b = "00000000-0000-4000-8000-000000000004", c = "00000000-0000-4000-8000-000000000005";
 const time = "2026-10-20T09:00:00Z";
@@ -15,7 +16,7 @@ const page = (items: unknown[], nextCursor: string | null) => json({ items, next
 const preference = { detail: { id: personal, status: "ready", team: { id: personal, kind: "personal", name: null } } } as TeamPreference;
 const render = createLocaleRender("en");
 let snapshot: ReturnType<typeof useTeams>["list"];
-const View = () => { const teams = useTeams(); snapshot = teams.list; return <><TeamSelector personalId={personal} selectedId={personal} onNavigate={() => {}} /><button onClick={teams.refreshList}>Refresh list</button></>; };
+const View = () => { const teams = useTeams(); snapshot = teams.list; return <><TeamSelector personalId={personal} selectedId={personal} visibilityTeamId={personal} onNavigate={() => {}} /><button onClick={teams.refreshList}>Refresh list</button></>; };
 const setup = (fetcher: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
   vi.stubGlobal("fetch", vi.fn(fetcher));
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { throw new Error("principal mismatch"); } });
@@ -29,9 +30,14 @@ const setup = (fetcher: (url: string, init?: RequestInit) => Response | Promise<
 it("retains the loaded prefix and focused links until every revalidation page succeeds", async () => {
   const first = Promise.withResolvers<Response>(), second = Promise.withResolvers<Response>(), tail = Promise.withResolvers<Response>(); let firstReads = 0, secondReads = 0, tailReads = 0;
   let revalidationSignal: AbortSignal | undefined;
-  const view = setup((url, init) => {
+  const listTeams = teamsApi.listTeams;
+  vi.spyOn(teamsApi, "listTeams").mockImplementation((cursor, userId, signal, mismatch) => {
+    if (cursor === "next" && secondReads === 1) revalidationSignal = signal;
+    return listTeams(cursor, userId, signal, mismatch);
+  });
+  const view = setup((url) => {
     if (url === "/api/v1/teams?limit=50") return ++firstReads === 1 ? page([team(a, "Alpha")], "next") : first.promise;
-    if (url.endsWith("cursor=next")) { if (++secondReads === 1) return page([team(b, "Beta")], "tail"); revalidationSignal = init?.signal ?? undefined; return second.promise; }
+    if (url.endsWith("cursor=next")) return ++secondReads === 1 ? page([team(b, "Beta")], "tail") : second.promise;
     if (url.endsWith("cursor=tail")) { tailReads++; return tail.promise; }
     throw new Error(url);
   });

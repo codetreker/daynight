@@ -7,7 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
-	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +141,7 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				t.Fatal(err)
 			}
 			client := f.client(t, version, "alice")
+			assertNoDiscoveredOutputSchemas(t, client, "task_session_current", "task_session_list", "task_session_show", "task_session_read", "task_session_entry")
 			for _, name := range []string{"current", "list", "show", "read", "entry"} {
 				args := sessionReadArgs()
 				if name == "current" || name == "list" {
@@ -160,9 +161,90 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				if err != nil || result.IsError {
 					t.Fatalf("%s: %+v %v", name, result, err)
 				}
-				validateDiscoveredResult(t, client, "task_session_"+name, result)
-				if object(t, structured(t, result)["meta"])["writeOutcome"] != nil {
-					t.Fatal("read invented write outcome")
+				env := structured(t, result)
+				meta := object(t, env["meta"])
+				if meta["requestId"] != "test-request" || meta["writeOutcome"] != nil {
+					t.Fatalf("read metadata: %#v", meta)
+				}
+				var expected any
+				switch name {
+				case "current":
+					expected = sp.TaskSessionCurrent{Status: "not_applicable"}
+				case "list":
+					expected = sp.TaskSessionList{Items: []sp.TaskSessionDirectoryItem{{SessionID: testUserID, ClaimID: testTargetID, ExecutionGeneration: "1", AgentControlMode: "web", ContentKind: "native_timeline", CreatedAt: "2026-11-10T01:02:03Z", Archive: sp.SessionDirectoryArchive{State: "unavailable"}}}}
+				case "show":
+					expected = sessionReadInspection()
+				case "read":
+					expected = sessionReadPage()
+				case "entry":
+					expected = sp.EntryChunk{SessionID: testUserID, HistoryEpoch: testTargetID, Source: "live", EntryID: testTargetID, Revision: "1", SHA256: strings.Repeat("a", 64), ByteLength: "4", Offset: "0", Fragment: "🙂", EOF: true, ObservedAt: sessionReadPage().ObservedAt}
+				}
+				// Compare every field from the controlled producer, including explicit nulls.
+				raw, err := json.Marshal(expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want any
+				if err := json.Unmarshal(raw, &want); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(env["data"], want) {
+					t.Fatalf("%s data changed: got=%#v want=%#v", name, env["data"], want)
+				}
+				data := object(t, env["data"])
+				switch name {
+				case "current":
+					if len(data) != 4 || data["status"] != "not_applicable" || data["claimId"] != nil || data["agentControlMode"] != nil || data["session"] != nil {
+						t.Fatalf("current fields: %#v", data)
+					}
+					for _, key := range []string{"claimId", "agentControlMode", "session"} {
+						if _, ok := data[key]; !ok {
+							t.Fatalf("current missing %s: %#v", key, data)
+						}
+					}
+				case "list":
+					items, ok := data["items"].([]any)
+					if !ok || len(items) != 1 || data["nextCursor"] != nil {
+						t.Fatalf("list pagination: %#v", data)
+					}
+					if _, ok := data["nextCursor"]; !ok {
+						t.Fatalf("missing null cursor: %#v", data)
+					}
+					item := object(t, items[0])
+					archive := object(t, item["archive"])
+					if item["sessionId"] != testUserID || item["claimId"] != testTargetID || item["executionGeneration"] != "1" || item["endedAt"] != nil || archive["state"] != "unavailable" || archive["sha256"] != nil || archive["byteLength"] != nil || archive["completeness"] != nil {
+						t.Fatalf("directory item: %#v", item)
+					}
+					for _, key := range []string{"sha256", "byteLength", "completeness"} {
+						if _, ok := archive[key]; !ok {
+							t.Fatalf("archive missing %s: %#v", key, archive)
+						}
+					}
+				case "show":
+					fence := object(t, data["fence"])
+					observation := object(t, data["session"])
+					if data["schemaVersion"] != float64(1) || data["contentReadVersion"] != float64(1) || data["projectId"] != testProjectID || data["taskId"] != testTargetID || data["sessionId"] != testUserID || data["source"] != "live" || fence["claimId"] != testTargetID || fence["executionGeneration"] != "1" || observation["reason"] != "idle" || object(t, observation["send"])["allowed"] != true {
+						t.Fatalf("inspection: %#v", data)
+					}
+				case "read":
+					items, ok := data["items"].([]any)
+					coverage := object(t, data["coverage"])
+					if !ok || len(items) != 0 || data["sessionId"] != testUserID || data["historyEpoch"] != testTargetID || data["source"] != "live" || data["beforeCursor"] != nil || data["hasMoreBefore"] != false || coverage["state"] != "complete" || coverage["reason"] != nil || data["observedAt"] != "2026-11-10T01:02:03.123456789Z" {
+						t.Fatalf("history page: %#v", data)
+					}
+					if _, ok := data["beforeCursor"]; !ok {
+						t.Fatal("missing null beforeCursor")
+					}
+					if _, ok := coverage["reason"]; !ok {
+						t.Fatal("missing null coverage reason")
+					}
+				case "entry":
+					if data["sessionId"] != testUserID || data["entryId"] != testTargetID || data["revision"] != "1" || data["sha256"] != strings.Repeat("a", 64) || data["byteLength"] != "4" || data["offset"] != "0" || data["fragment"] != "🙂" || data["eof"] != true || data["nextCursor"] != nil {
+						t.Fatalf("entry chunk: %#v", data)
+					}
+					if _, ok := data["nextCursor"]; !ok {
+						t.Fatal("missing null nextCursor")
+					}
 				}
 			}
 			if calls != 5 {
@@ -177,7 +259,6 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				if err != nil || !result.IsError || calls != 5 {
 					t.Fatalf("invalid reached service: %+v %v calls=%d", patch, err, calls)
 				}
-				validateDiscoveredResult(t, client, "task_session_read", result)
 			}
 		})
 	}
@@ -202,7 +283,6 @@ func TestSessionReadErrorsPreserveReferencesWithoutWriteReceipts(t *testing.T) {
 		if err != nil || !result.IsError {
 			t.Fatalf("%+v %v", result, err)
 		}
-		validateDiscoveredResult(t, client, "task_session_read", result)
 		e := object(t, structured(t, result)["error"])
 		if e["code"] != code || e["writeOutcome"] != nil || object(t, e["refs"])["sessionId"] != testUserID {
 			t.Fatalf("read error lost facts: %+v", e)
@@ -243,7 +323,6 @@ func TestSessionReadPagesPreserveCoverageInBothProtocols(t *testing.T) {
 					if err != nil || result.IsError || calls != 1 {
 						t.Fatalf("read: %+v %v calls=%d", result, err, calls)
 					}
-					validateDiscoveredResult(t, client, "task_session_read", result)
 					value := structured(t, result)
 					data, meta := object(t, value["data"]), object(t, value["meta"])
 					coverage := object(t, data["coverage"])
@@ -251,44 +330,6 @@ func TestSessionReadPagesPreserveCoverageInBothProtocols(t *testing.T) {
 						t.Fatalf("coverage or continuation lost: %+v", value)
 					}
 				})
-			}
-		}
-	}
-}
-
-func TestSessionReadSchemasRejectMalformedHistory(t *testing.T) {
-	f := newSessionReadFixture(t)
-	mock := sessionReadMock{t: t}
-	if err := RegisterSessionReadTools(f.entry, mock, mock); err != nil {
-		t.Fatal(err)
-	}
-	client := f.client(t, "2026-07-28", "alice")
-	listed, err := client.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range listed.Tools {
-		if tool.Name != "task_session_read" {
-			continue
-		}
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Fatal("readOnlyHint missing")
-		}
-		schema, err := resolveSchema(tool.OutputSchema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		page := sessionReadPage()
-		page.Items = []sp.MessageItem{{EntryID: testTargetID, EntrySeq: "1", Revision: "1", Kind: "reasoning", Body: json.RawMessage(`{"entryId":"` + testTargetID + `","entrySeq":"1","revision":"1","kind":"reasoning","text":"valid"}`), Resources: []sp.InspectionResource{}}}
-		raw, _ := json.Marshal(envelope{Data: page, Meta: &envelopeMeta{RequestID: "r"}})
-		if err := validateJSON(schema, raw); err != nil {
-			t.Fatalf("valid body rejected: %v", err)
-		}
-		for _, body := range []string{`{"kind":"reasoning"}`, `{"entryId":"` + testTargetID + `","entrySeq":"1","revision":"1","kind":"reasoning","text":"valid","extra":true}`} {
-			page.Items[0].Body = json.RawMessage(body)
-			raw, _ := json.Marshal(envelope{Data: page, Meta: &envelopeMeta{RequestID: "r"}})
-			if validateJSON(schema, raw) == nil {
-				t.Fatal("malformed timeline body accepted")
 			}
 		}
 	}
@@ -315,13 +356,11 @@ func TestSessionReadCurrentKeepsPartialInspectionAndNoRuntimeOutputAdmission(t *
 	if err != nil || result.IsError {
 		t.Fatalf("current: %+v %v", result, err)
 	}
-	validateDiscoveredResult(t, client, "task_session_current", result)
 	meta := object(t, structured(t, result)["meta"])
 	if meta["partial"] != true || meta["observedAt"] != value.Session.ObservedAt.Format(time.RFC3339Nano) {
 		t.Fatalf("observation lost: %+v", meta)
 	}
-	// The published schema is strict; success validation belongs to contract
-	// tests and the producer, rather than a second runtime MCP admission pass.
+	// Read results preserve the producer projection without output admission.
 	result, err = client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_read", Arguments: sessionReadArgs()})
 	if err != nil || result.IsError || object(t, structured(t, result)["data"])["source"] != "schema-drift-probe" {
 		t.Fatalf("success validation was restored: %+v %v", result, err)
@@ -345,26 +384,6 @@ func TestSessionReadEntryNilResultAndRegistrationDependencies(t *testing.T) {
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_entry", Arguments: args})
 	if err != nil || !result.IsError || object(t, structured(t, result)["error"])["code"] != "internal_error" {
 		t.Fatalf("missing result: %+v %v", result, err)
-	}
-}
-
-func TestSessionReadBodySchemaAcceptsSharedCanonicalFixture(t *testing.T) {
-	raw, err := os.ReadFile("../../../../daynight/test/session/fixtures/history-canonical.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Entry json.RawMessage `json:"entry"`
-	}
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := resolveSchema(sessionReadBodySchema())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateJSON(schema, fixture.Entry); err != nil {
-		t.Fatalf("fractional form and exact decimal sequences: %v", err)
 	}
 }
 
@@ -397,6 +416,45 @@ func TestSessionReadCleanupFailuresRemainObservableAfterDelivery(t *testing.T) {
 			var record map[string]any
 			if lease.calls != 1 || json.Unmarshal([]byte(logs.String()), &record) != nil || record["phase"] != "session_read_cleanup" || record["error_code"] != "internal_error" || record["level"] != "ERROR" || strings.Contains(logs.String(), "archive close failed") {
 				t.Fatalf("cleanup failure lost or repeated: calls=%d logs=%s", lease.calls, logs.String())
+			}
+		})
+	}
+}
+
+func TestSessionReadPreservesHistoryEntryAcrossProtocols(t *testing.T) {
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		t.Run(version, func(t *testing.T) {
+			f := newSessionReadFixture(t)
+			page := sessionReadPage()
+			before := "older"
+			page.BeforeCursor, page.HasMoreBefore = &before, true
+			page.Items = []sp.MessageItem{{EntryID: testTargetID, EntrySeq: "9007199254740993", Revision: "2", Kind: "reasoning", Body: json.RawMessage(`{"entryId":"` + testTargetID + `","entrySeq":"9007199254740993","revision":"2","kind":"reasoning","text":"完整 😀"}`), Resources: []sp.InspectionResource{}}}
+			calls := 0
+			mock := sessionReadMock{t: t, read: func(context.Context, model.Principal, string, string, string, ss.ReadRequest) (*ss.ReadResult[sp.MessagePage], error) {
+				calls++
+				return ss.NewReadResult(page, nil), nil
+			}}
+			if err := RegisterSessionReadTools(f.entry, mock, mock); err != nil {
+				t.Fatal(err)
+			}
+			result, err := f.client(t, version, "alice").CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_read", Arguments: sessionReadArgs()})
+			if err != nil || result.IsError || calls != 1 {
+				t.Fatalf("read: %#v %v calls=%d", result, err, calls)
+			}
+			env := structured(t, result)
+			want := map[string]any{
+				"sessionId": testUserID, "historyEpoch": testTargetID, "source": "live", "beforeCursor": "older", "hasMoreBefore": true,
+				"coverage": map[string]any{"state": "complete", "reason": nil}, "observedAt": "2026-11-10T01:02:03.123456789Z",
+				"items": []any{map[string]any{"entryId": testTargetID, "entrySeq": "9007199254740993", "revision": "2", "kind": "reasoning", "role": nil, "timestamp": nil,
+					"body":      map[string]any{"entryId": testTargetID, "entrySeq": "9007199254740993", "revision": "2", "kind": "reasoning", "text": "完整 😀"},
+					"truncated": false, "contentRef": nil, "resources": []any{}, "resourcesTruncated": false}},
+			}
+			if !reflect.DeepEqual(env["data"], want) {
+				t.Fatalf("history changed: got=%#v want=%#v", env["data"], want)
+			}
+			meta := object(t, env["meta"])
+			if meta["requestId"] != "test-request" || meta["partial"] != false || meta["observedAt"] != "2026-11-10T01:02:03.123456789Z" || object(t, meta["refs"])["sessionId"] != testUserID {
+				t.Fatalf("metadata: %#v", meta)
 			}
 		})
 	}

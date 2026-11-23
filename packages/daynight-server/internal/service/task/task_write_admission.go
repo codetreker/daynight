@@ -1,11 +1,9 @@
 package task
 
 import (
-	"context"
-	"errors"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
@@ -27,23 +25,6 @@ func taskWriteIdentity(principal model.Principal, projectID, taskID string, vers
 	return projectID, taskID, nil
 }
 
-func taskWriteHeader(ctx context.Context, tx store.ProjectWriteScope, taskID string, version int64) (model.TaskHeader, error) {
-	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.TaskHeader{}, taskcore.NotFound(err)
-	}
-	if err != nil {
-		return model.TaskHeader{}, err
-	}
-	if header.DeletedAt != nil {
-		return model.TaskHeader{}, taskcore.NotFound(model.ErrTaskDeleted)
-	}
-	if err := taskcore.CheckStepsForType(header.Type); err != nil {
-		return model.TaskHeader{}, err
-	}
-	return header, taskcore.RequireVersion(header.Version, version)
-}
-
 // PartitionDependencies combines the MCP ordinary and external sets only after
 // enforcing the single complete-set limit. Core validates identities and edges.
 func PartitionDependencies(ordinary, external *[]string) (*[]string, *[]string, error) {
@@ -57,7 +38,7 @@ func PartitionDependencies(ordinary, external *[]string) (*[]string, *[]string, 
 		}
 	}
 	if count > taskcore.MaxDependencies {
-		return nil, nil, invalidInput("Task dependencies must contain at most 15 items.")
+		return nil, nil, invalidInput(fmt.Sprintf("Task dependencies contain %d items; at most %d items are allowed.", count, taskcore.MaxDependencies))
 	}
 	all := make([]string, 0, count)
 	ext := []string{}

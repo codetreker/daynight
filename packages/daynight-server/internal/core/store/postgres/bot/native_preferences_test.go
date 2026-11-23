@@ -109,25 +109,25 @@ func TestNativePreferencesJoinLifecycleRollback(t *testing.T) {
 }
 
 func TestNativePreferenceStorageFailuresRemainObservableAndRollbackTogether(t *testing.T) {
+	database := openFixtureStore(t)
 	for _, table := range []string{"bot_model_preferences", "bot_effort_preferences"} {
-		t.Run(table, func(t *testing.T) {
-			f := newFixture(t)
+		if !t.Run(table, func(t *testing.T) {
+			f := newFixtureInStore(t, database)
 			current := f.ready(t, nativeCandidate(f, "model-a", "high", true, true))
 			exec(t, f.tx, `SAVEPOINT unavailable_native_preferences`)
 			exec(t, f.tx, `DROP TABLE `+table)
-			if _, err := f.reader.BotDefaults(t.Context(), f.candidate.OwnerUserID); err == nil || errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("unavailable native preferences became an empty result: %v", err)
-			}
+			_, err := f.reader.BotDefaults(t.Context(), f.candidate.OwnerUserID)
+			requireMissingBotRelation(t, err)
 			exec(t, f.tx, `ROLLBACK TO SAVEPOINT unavailable_native_preferences`)
 			exec(t, f.tx, `DROP TABLE `+table)
-			if err := f.writer.CommitBotPreferences(t.Context(), current.ID); err == nil || errors.Is(err, model.ErrNotFound) || errors.Is(err, botpg.ErrBotPreferencesNotReady) {
-				t.Fatalf("native preference write failure was hidden: %v", err)
-			}
+			requireMissingBotRelation(t, f.writer.CommitBotPreferences(t.Context(), current.ID))
 			exec(t, f.tx, `ROLLBACK TO SAVEPOINT unavailable_native_preferences`)
 			after, err := f.reader.BotDefaults(t.Context(), f.candidate.OwnerUserID)
 			if err != nil || len(after.WorkerPreferences) != 0 {
 				t.Fatalf("partial model/effort write escaped rollback: %+v %v", after, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }

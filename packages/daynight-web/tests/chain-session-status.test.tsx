@@ -1,4 +1,11 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { summariesForIndex } from "./helpers/taskSync";
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
+import { fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphTask, TaskGraph } from '../src/api/types';
@@ -10,6 +17,11 @@ const summaries = vi.hoisted(() => ({
   tasks: new Map<string, { sessionId: string; claimId: string; indicator: 'working' | 'notice' | 'warning' | null }>(),
   indicator: null as 'working' | 'notice' | 'warning' | null,
   observedMembers: [] as string[],
+}));
+vi.mock('../src/features/task-session-summary/ProjectTaskObservationsProvider', () => ({
+  useProjectTaskObservation: (task: GraphTask) => task.status !== 'in_progress' ? null : summaries.tasks.has(task.id)
+    ? { state: summaries.tasks.get(task.id)!.indicator, needsAttention: null, canOpen: true }
+    : { state: 'unavailable', needsAttention: null, canOpen: false },
 }));
 vi.mock('../src/features/task-session-summary/TaskSessionSummaryProvider', () => ({
   useTaskSessionSummary: (id: string) => summaries.tasks.get(id) ?? null,
@@ -31,10 +43,10 @@ const graph: TaskGraph = {
 };
 const index = buildGraphIndex(graph);
 const noop = () => {};
-const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
-  representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null} onOpenChain={noop} onCloseChain={noop}
+const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
+  representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop}
   onOpenTask={onOpenTask} onOpenSession={onOpenSession} />;
-const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.goal-task-row')!;
+const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.task-row')!;
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 beforeEach(() => {
   summaries.tasks.clear(); summaries.observedMembers = []; summaries.indicator = 'warning';
@@ -52,7 +64,7 @@ describe('chain Session status controls', () => {
       await user.click(button);
       expect(session).toHaveBeenLastCalledWith(id, button);
       expect(overview).not.toHaveBeenCalled();
-      expect(button.querySelector('.session-status-annotation')?.textContent ?? null).toBe(summaries.tasks.get(id)!.indicator);
+      expect(button.getAttribute('data-session-state')).toBe(summaries.tasks.get(id)!.indicator);
     }
     const title = document.getElementById('chain-task-Goal-Working')!;
     await user.click(title); expect(overview).toHaveBeenLastCalledWith('Working', title);
@@ -64,11 +76,9 @@ describe('chain Session status controls', () => {
   it('exposes keyboard status hints and opens the working Session on Enter', async () => {
     const user = userEvent.setup(); const session = vi.fn();
     renderWithLocale(content(session), { locale: 'zh-CN', taskCache: true }); expand();
-    const button = within(child('Working') as HTMLElement).getByRole('button', { name: /Working.*进行中.*会话工作中.*打开 Session/ });
+    const button = within(child('Working') as HTMLElement).getByRole('button', { name: /Working.*进行中.*工作中.*打开 Session/ });
     button.focus();
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('会话工作中');
     await user.keyboard('{Enter}'); expect(session).toHaveBeenCalledWith('Working', button);
-    await user.keyboard('{Escape}'); expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
   it('uses the entire chain while collapsed and only expands from every aggregate status entry', () => {

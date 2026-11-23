@@ -1,0 +1,60 @@
+import { describe, expect, it } from 'vitest';
+import { allToolPathsApplied, toolPathApplicationState, toolPathSummaryStates, toolSoftwareEntries } from '../src/features/workers/tool-path-presentation';
+import { automaticToolPaths, toolPathActual, toolPathConfiguration, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
+
+describe('tool path application evidence', () => {
+  it('requires the current cloud revision, target and actual choice before confirming application', () => {
+    const desired = toolPathConfiguration().desired;
+    const entry = toolPathObservation();
+    expect(toolPathApplicationState(entry, desired, true)).toBe('applied');
+    expect(toolPathApplicationState({ ...entry, targetRevision: '2' }, desired, true)).toBe('pending');
+    expect(toolPathApplicationState({ ...entry, configurationSource: 'local', targetRevision: null }, desired, true)).toBe('pending');
+    expect(toolPathApplicationState({ ...entry, actual: toolPathActual('codex', { selection: { kind: 'path', path: '/old/codex' } }) }, desired, true)).toBe('pending');
+    expect(toolPathApplicationState(entry, toolPathConfiguration('1', { ...automaticToolPaths(), codex: null }).desired, true)).toBe('not_checked');
+    expect(toolPathApplicationState(entry, toolPathConfiguration('1', { ...automaticToolPaths(), codex: { kind: 'path', path: '/new/codex' } }).desired, true)).toBe('pending');
+    expect(toolPathApplicationState({ ...entry, actual: null }, desired, true)).toBe('pending');
+  });
+
+  it('requires both editable tool observations before confirming application', () => {
+    const resource = toolPathConfiguration();
+    expect(allToolPathsApplied(resource, toolPathTelemetry(), true)).toBe(true);
+    expect(allToolPathsApplied(resource, toolPathTelemetry([toolPathObservation()]), true)).toBe(false);
+  });
+
+  it('does not present offline, stale, unavailable or unchecked observations as current application', () => {
+    const desired = toolPathConfiguration().desired, entry = toolPathObservation();
+    expect(toolPathApplicationState(entry, desired, false)).toBe('offline');
+    expect(toolPathApplicationState(entry, desired, null)).toBe('unconfirmed');
+    expect(toolPathApplicationState(entry, undefined, true)).toBe('unconfirmed');
+    expect(toolPathApplicationState(undefined, desired, true)).toBe('not_checked');
+    expect(toolPathApplicationState({ ...entry, state: 'checking' }, desired, true)).toBe('checking');
+  });
+
+  it('includes missing contexts in the configuration summary without promoting unused auto failures to Worker failure', () => {
+    const resource = toolPathConfiguration();
+    const failing = toolPathObservation('copilot', 'web', { state: 'error', error: { code: 'not_found', occurredAt: '2026-10-25T10:00:00Z' } });
+    expect(toolPathSummaryStates(resource, toolPathTelemetry(), true)).toEqual(['applied', 'applied']);
+    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation()]), true)).toEqual(['applied', 'not_checked']);
+    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation(), failing]), true)).not.toContain('error');
+    expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, native: { agent: 'copilot', model: null, args: [] } } } }, toolPathTelemetry([failing]), true)).toContain('error');
+    expect(toolPathSummaryStates(resource, undefined, true)).toEqual(['not_checked']);
+  });
+});
+
+describe('software summary entries', () => {
+  it('omits only a completely empty unchecked context and preserves order and tool identity', () => {
+    const empty = toolPathObservation('codex', 'web', { state: 'not_checked', actual: null });
+    const actual = toolPathActual();
+    const informative = [
+      { ...empty, state: 'checking' as const }, { ...empty, actual }, { ...empty, candidate: actual },
+      { ...empty, reason: 'active_instance' as const }, { ...empty, error: { code: 'not_found' as const, occurredAt: actual.checkedAt } },
+      { ...empty, activeSelectionCount: 1 }, { ...empty, activeSelectionCount: null }, { ...empty, activeSelectionsComplete: false },
+      { ...empty, activeObservationError: 'inventory_unavailable' as const },
+      { ...empty, activeSelections: [{ actual, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] },
+    ];
+    const web = toolPathObservation();
+    expect(toolSoftwareEntries(toolPathTelemetry([empty, web, toolPathObservation('copilot')]), 'codex')).toEqual([web]);
+    for (const entry of informative) expect(toolSoftwareEntries(toolPathTelemetry([entry]), 'codex')).toEqual([entry]);
+    expect(toolSoftwareEntries(toolPathTelemetry([empty]), 'codex')).toEqual([]);
+  });
+});

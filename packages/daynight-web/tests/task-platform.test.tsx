@@ -19,7 +19,7 @@ const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Platform tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, requiredPlatform: null, status: 'todo', version: 9007199254740993n,
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, requiredPlatform: null, status: 'todo', version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graphTask = (value: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
@@ -64,7 +64,7 @@ describe('confirmed status-row platform selection', () => {
     expect(within(confirmation()).getByText('Current platform: Any platform. New platform: Linux.')).toBeVisible();
     expect(within(confirmation()).getByText(detail.title)).toBeVisible();
     confirm();
-    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'linux', detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'linux', detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function), onWriteRejected: expect.any(Function) }));
     expect(select()).toHaveValue(''); expect(select()).toBeDisabled(); expect(screen.getByRole('switch')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'To do' })).toBeDisabled();
     expect(screen.queryByRole('alertdialog')).toBeNull();
@@ -81,7 +81,7 @@ describe('confirmed status-row platform selection', () => {
     await open({ ...detail, requiredPlatform: from });
     writes.mockResolvedValueOnce({ ...detail, requiredPlatform: to, version: detail.version + 1n });
     review(to === null ? '' : to); expect(select()).toHaveValue(from === null ? '' : from); expect(writes).not.toHaveBeenCalled();
-    confirm(); await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    confirm(); await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function), onWriteRejected: expect.any(Function) }));
     await screen.findByText('Execution platform updated.'); expect(select()).toHaveValue(to === null ? '' : to);
   });
   it.each([null, 'windows', 'linux', 'macos'] as const)('does not review or write the current value %s', async (value) => {
@@ -115,7 +115,7 @@ describe('confirmed status-row platform selection', () => {
     await waitFor(() => expect(select()).toHaveValue('windows')); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(writes).not.toHaveBeenCalled();
     review('macos'); writes.mockResolvedValueOnce({ ...changed, requiredPlatform: 'macos', version: changed.version + 1n });
     expect(within(confirmation()).getByText('Current platform: Windows. New platform: macOS.')).toBeVisible();
-    confirm(); await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'macos', changed.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    confirm(); await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'macos', changed.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function), onWriteRejected: expect.any(Function) }));
     await screen.findByText('Execution platform updated.');
   });
   it('keeps platform, permission and status confirmation mutually exclusive', async () => {

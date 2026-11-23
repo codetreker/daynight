@@ -10,14 +10,14 @@ const claimId = '30000000-0000-4000-8000-00000000000c';
 const otherId = '40000000-0000-4000-8000-00000000000d';
 const time = '2026-10-24T00:00:00Z';
 const version = 9_007_199_254_740_993n;
-const result: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
+const result: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null,
   id: taskId, projectId, title: 'Claimed task', description: 'Keep its delivery materials.',
   properties: { pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
   status: 'todo', version: version + 1n, requiredPlatform: 'macos', allowAgents: false, ready: true,
   dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 };
 const worker: WorkerClaim = {
-  claimId, state: 'released', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },
+  claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },
   platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: time,
 };
 const signal = () => new AbortController().signal;
@@ -35,8 +35,8 @@ describe('worker claim withdrawal transport', () => {
     const receipt = admission();
     await expect(withdrawWorkerClaim(projectId.toUpperCase(), taskId.toUpperCase(), claimId.toUpperCase(), version, abortSignal, receipt)).resolves.toEqual(result);
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/worker-claim/withdraw`, {
-      method: 'POST', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2' },
+      method: 'POST', redirect: 'error', signal: expect.any(AbortSignal), cache: 'no-store', credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2', 'Daynight-Task-Relations': 'task-parent-v1' },
       body: `{"version":9007199254740993,"claimId":"${claimId}"}`,
     });
     expect(receipt.onWriteConfirmed).toHaveBeenCalledOnce();

@@ -18,8 +18,8 @@ it('creates Goals and Tasks with explicit nullable and omitted fields intact', a
   const fetcher = vi.fn().mockResolvedValueOnce(response(goalDetail, 201)).mockResolvedValueOnce(response(child, 201)); vi.stubGlobal('fetch', fetcher);
   await expect(createTask(project, { type: 'goal', title: 'Release', assignedTo: null }, signal(), admission)).resolves.toMatchObject({ id: goal, type: 'goal' });
   await expect(createTask(project, { title: 'Child', parentId: goal }, signal(), admission)).resolves.toMatchObject({ id: task, parentId: goal });
-  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ type: 'goal', title: 'Release', assignedTo: null });
-  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({ title: 'Child', parentId: goal });
+  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ type: 'goal', title: 'Release', assignedTo: null, tagIds: [] });
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({ title: 'Child', parentId: goal, tagIds: [] });
   expect(admission.onWriteConfirmed).toHaveBeenCalledTimes(2);
 });
 
@@ -34,4 +34,45 @@ it('reports a confirmed receipt even when a successful response body is invalid'
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: task }, 201)));
   await expect(createTask(project, { title: 'Child' }, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
   expect(admission.onWriteConfirmed).toHaveBeenCalledOnce();
+});
+
+it.each(['task', 'goal'] as const)('creates a %s with the complete selected tag set or no tags in one request', async type => {
+  const first = '40000000-0000-4000-8000-000000000001';
+  const second = '40000000-0000-4000-8000-000000000002';
+  const id = type === 'goal' ? goal : task;
+  const saved = detailFixture(project, id, { type, title: 'Release', status: type === 'goal' ? 'todo' : 'proposed', ready: false, tags: [{ id: second, name: 'Two' }, { id: first, name: 'One' }] });
+  const empty = { ...saved, tags: [] };
+  const fetcher = vi.fn().mockResolvedValueOnce(response(saved, 201)).mockResolvedValueOnce(response(empty, 201));
+  vi.stubGlobal('fetch', fetcher);
+  await expect(createTask(project, { type, title: 'Release', tagIds: [first, second] }, signal(), admission)).resolves.toMatchObject({ id, tags: saved.tags });
+  await expect(createTask(project, { type, title: 'Release', tagIds: [] }, signal(), admission)).resolves.toMatchObject({ id, tags: [] });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ type, title: 'Release', tagIds: [first, second] });
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({ type, title: 'Release', tagIds: [] });
+});
+
+it.each(['task', 'goal'] as const)('rejects mismatched %s create receipts and duplicate requested tags', async type => {
+  const tag = '40000000-0000-4000-8000-000000000001';
+  const other = '40000000-0000-4000-8000-000000000002';
+  const id = type === 'goal' ? goal : task;
+  const saved = detailFixture(project, id, { type, title: 'Release', status: type === 'goal' ? 'todo' : 'proposed', ready: false, tags: [{ id: other, name: 'Other' }] });
+  const fetcher = vi.fn().mockResolvedValue(response(saved, 201)); vi.stubGlobal('fetch', fetcher);
+  await expect(createTask(project, { type, title: 'Release', tagIds: [tag] }, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  expect(admission.onWriteConfirmed).toHaveBeenCalledOnce();
+  await expect(createTask(project, { type, title: 'Release', tagIds: [tag, tag] }, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  expect(fetcher).toHaveBeenCalledOnce();
+});
+
+it('PATCHes the complete tag set including an explicit empty set and qualifies receipts', async () => {
+  const tag = '40000000-0000-4000-8000-000000000001';
+  const saved = detailFixture(project, task, { version: 9007199254740994n, tags: [{ id: tag, name: 'Tag' }] });
+  const empty = detailFixture(project, task, { version: 9007199254740995n, tags: [] });
+  const fetcher = vi.fn().mockResolvedValueOnce(response(saved, 200)).mockResolvedValueOnce(response(empty, 200)).mockResolvedValueOnce(response(empty, 200)); vi.stubGlobal('fetch', fetcher);
+  await expect(updateTaskFields(project, task, { tagIds: [tag] }, 9007199254740993n, signal(), admission)).resolves.toMatchObject({ tags: [{ id: tag }] });
+  await expect(updateTaskFields(project, task, { tagIds: [] }, 9007199254740994n, signal(), admission)).resolves.toMatchObject({ tags: [] });
+  expect(fetcher.mock.calls[0]![1].body).toBe(`{"version":9007199254740993,"tagIds":["${tag}"]}`);
+  expect(fetcher.mock.calls[1]![1].body).toBe('{"version":9007199254740994,"tagIds":[]}');
+  await expect(updateTaskFields(project, task, { tagIds: [tag] }, 9007199254740994n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  await expect(updateTaskFields(project, task, { tagIds: [tag, tag] }, 9007199254740994n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  expect(fetcher).toHaveBeenCalledTimes(3);
 });

@@ -1,3 +1,4 @@
+import { parseTagFilter } from "./tag-filter.js";
 import { ApiError } from "../../api/client.js";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskFilters, TaskSearchItem } from "../../api/types.js";
@@ -8,13 +9,14 @@ import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import { isNonemptyText } from "../../platform/text.js";
 import type { TaskCommandDependencies } from "./command.js";
-import { parseParent } from "./parent.js";
+import { parseParent, parseParentTask } from "./parent.js";
 
 type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 
 // Both renderers consume the same explicit projection, independently of wire additions.
 const projectResults = (items: readonly TaskSearchItem[]): TaskSearchItem[] => items.map((item) => ({
-  id: item.id, type: item.type, parentId: item.parentId, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
+  id: item.id, type: item.type, parentId: item.parentId, ...(item.parentTaskId === undefined ? {} : { parentTaskId: item.parentTaskId }), ...(item.parentTaskContext === undefined ? {} : { parentTaskContext: item.parentTaskContext }), projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
+  tags: item.tags.map(({ id, name }) => ({ id, name })),
   context: item.context === null ? null : { taskId: item.context.taskId, title: item.context.title },
   match: { fields: [...item.match.fields], descriptionSnippet: item.match.descriptionSnippet },
 }));
@@ -25,8 +27,9 @@ const renderText = (project: string, items: readonly TaskSearchItem[]): string =
   return `${header}Found ${items.length} matching ${items.length === 1 ? "task" : "tasks"}.\n\n${items.map((item) => [
     `ID: ${terminalText(item.id)}`,
     `Type: ${item.type}`,
-    `Parent: ${item.parentId === null ? "none" : terminalText(item.parentId)}`,
+    `Parent: ${item.parentTaskId != null ? `Task ${terminalText(item.parentTaskId)}` : item.parentId === null ? "none" : terminalText(item.parentId)}`,
     `Title: ${terminalText(item.title)}`,
+    ...(item.tags.length === 0 ? ["Tags: none"] : ["Tags:", ...item.tags.map(({ name }) => `  ${terminalText(name)}`)]),
     `Status: ${terminalText(item.status)}`,
     `Goal: ${item.context === null ? "none" : `${terminalText(item.context.taskId)}  ${terminalText(item.context.title)}`}`,
     `Match: ${item.match.fields.length === 0 ? "negative condition" : item.match.fields.join(", ")}`,
@@ -50,8 +53,10 @@ export const runTaskSearchCommand = async (command: Command, context: CliContext
   const allowAgents = command.options.get("--allow-agents") as string | undefined;
   const type = command.options.get("--type") as "task" | "goal" | undefined;
   const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
+  const parentTaskId = await parseParentTask(command.options.get("--parent-task") as string | undefined, parentId, help);
   const filters: TaskFilters = {
-    ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }),
+    ...parseTagFilter(command, help),
+    ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(parentTaskId === undefined ? {} : { parentTaskId }),
     ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }),
     ...(command.options.has("--ready") ? { ready: true } : {}),
     ...(allowAgents === undefined ? {} : { allowAgents: allowAgents === "true" }),

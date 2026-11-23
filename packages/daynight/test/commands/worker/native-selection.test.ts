@@ -71,3 +71,11 @@ describe("owned native selection probe", () => {
     await expect(verify()).rejects.toMatchObject({ errors: [expect.objectContaining({ message: "deadline elapsed" }), cleanup] });
   });
 });
+
+
+it("sends the native verification request to the supervisor", async () => {
+  await verifyWorkerNativeSelection({ native: { agent: "codex", model: null, args: [] }, cwd: "/task", environment: {} }, operation);
+  const args = run.mock.calls[0]![1] as string[];
+  expect(JSON.parse(args[1]!)).toMatchObject({ agent: "codex" });
+  expect(args.at(-1)).toBe("verify");
+});

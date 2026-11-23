@@ -2,6 +2,15 @@ import type { WorkersMessages } from '../workers';
 import { workerConfiguration } from './worker-configuration';
 
 export const workers: WorkersMessages = {
+  alias: {
+    label: 'Worker alias', machineName: 'Machine name', set: 'Set alias', edit: 'Edit alias',
+    save: 'Save alias', saving: 'Saving…', cancel: 'Cancel', clear: 'Clear alias',
+    hint: '1–80 characters. Surrounding whitespace is removed. Control characters and directional overrides are not allowed.',
+    current: 'Saved alias', none: 'Not set', failed: 'The alias could not be saved or checked. Your input is retained.',
+    conflict: 'The alias changed elsewhere. Check the saved alias before submitting again. Your input is retained.',
+    unknown: 'The save result is unknown. Check the saved alias before deciding whether to save again.',
+    check: 'Check saved alias', checked: 'The saved alias is shown above. Your input is retained; review it before saving.',
+  },
   configuration: workerConfiguration,
   title: 'My Workers', subtitle: 'See recently active Workers and their runtime status.', list: 'Worker list',
   loading: 'Loading Workers', loadingDetail: 'Reading recent Workers and their runtime observations.',
@@ -11,7 +20,7 @@ export const workers: WorkersMessages = {
   refresh: 'Refresh', refreshing: 'Refreshing…', retry: 'Retry',
   readError: 'The service could not provide a confirmed Worker observation.', networkError: 'Check your connection and try again.',
   cacheStorageError: 'The local project cache could not be checked or cleared. Private content for affected projects is hidden. Try again.',
-  protocolError: 'The service returned an invalid Worker response.', refreshFailed: 'Worker updates could not be synchronized.',
+  protocolError: 'The service returned an invalid Worker response.', upgradeService: 'Upgrade the service to view Worker details.', refreshFailed: 'Worker updates could not be synchronized.',
   retainedState: 'The values and badges show the last confirmed observation.',
   lastSynchronized: 'Last synchronized', lastReported: 'Last report', sampledAt: 'Resource sample', checkedAt: 'Checked',
   online: 'online', offline: 'offline', confirmedStatus: ({ status }) => `${status} · last confirmed`,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
 // CredentialFamilyWriter binds family operations to the caller's transaction.
@@ -20,10 +21,13 @@ type CredentialFamilyScope interface {
 
 // OAuthGrant is the durable authorization and the frozen validated client facts.
 type OAuthGrant struct {
+	// ScopePolicy belongs to MCP grants; fixed OAuth profiles have no policy.
+	ScopePolicy                           *scopepolicy.Policy
 	ID, UserID, ClientID, Resource, Scope string
 	ClientSnapshot                        json.RawMessage
 	CreatedAt, ExpiresAt                  time.Time
-	RevokedAt                             *time.Time
+	RevokedAt, LastUsedAt                 *time.Time
+	Description                           *string
 }
 
 // OAuthFamilyIssue contains hashes only. Access and refresh belong to Grant;
@@ -35,9 +39,19 @@ type OAuthFamilyIssue struct {
 	AccessExpiresAt         time.Time
 }
 
+// OAuthBinding identifies one accepted resource, scope and optional fixed client.
+// An empty ClientID accepts the recorded client for that resource and scope.
+type OAuthBinding struct {
+	Resource, Scope, ClientID string
+}
+
 type OAuthAccessIdentity struct {
-	Principal model.Principal
-	GrantID   string
+	// ScopePolicy is the current grant snapshot, not an access-token copy.
+	ScopePolicy *scopepolicy.Policy
+	Principal   model.Principal
+	GrantID     string
+	// ExpiresAt is the earlier of the persisted access and grant deadlines.
+	ExpiresAt time.Time
 }
 
 // CredentialFamilyDAO is transaction-bound. IssueFamily never commits. The
@@ -53,7 +67,9 @@ type OAuthAccessIdentity struct {
 type CredentialFamilyDAO interface {
 	IssueFamily(context.Context, OAuthFamilyIssue) error
 	RevokeFamily(context.Context, string, time.Time) (bool, error)
-	AuthenticateAccess(context.Context, []byte, string, string, time.Time) (OAuthAccessIdentity, error)
+	AuthenticateAccess(context.Context, []byte, []OAuthBinding, time.Time) (OAuthAccessIdentity, error)
+	LockAccess(context.Context, model.Principal, []OAuthBinding, time.Time) error
+	ReadAccess(context.Context, model.Principal, []OAuthBinding, time.Time) error
 	InspectGrant(context.Context, string, bool) (OAuthGrant, error)
 	ActiveClientReferences(context.Context, string, time.Time) (bool, error)
 }

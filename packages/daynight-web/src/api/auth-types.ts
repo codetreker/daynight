@@ -20,7 +20,10 @@ export type PersonalAccessToken = {
   readonly name: string;
   readonly createdAt: string;
   readonly expiresAt: string | null;
+  readonly lastUsedAt: string | null;
+  readonly description: string | null;
 };
+export type LegacyPersonalAccessToken = Omit<PersonalAccessToken, 'description'>;
 export type PersonalAccessTokenExpiryUpdate = {
   readonly expiresAt: string | null;
   readonly expectedExpiresAt: string | null;

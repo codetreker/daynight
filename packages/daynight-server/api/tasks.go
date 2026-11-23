@@ -35,8 +35,10 @@ type TaskPropertySchema struct {
 }
 
 type CreateTaskRequest struct {
+	TagIDs                  *[]string              `json:"tagIds,omitempty"`
 	Type                    *string                `json:"type,omitempty"`
 	ParentID                **string               `json:"parentId,omitempty"`
+	ParentTaskID            *string                `json:"parentTaskId,omitempty"`
 	AssignedToPresent       bool                   `json:"-"`
 	RequiredPlatformPresent bool                   `json:"-"`
 	Status                  *string                `json:"status,omitempty"`
@@ -60,6 +62,7 @@ type UpdateTaskRequest struct {
 	Title             *string              `json:"title,omitempty"`
 	Description       *string              `json:"description,omitempty"`
 	DependsOn         *[]string            `json:"dependsOn,omitempty"`
+	TagIDs            *[]string            `json:"tagIds,omitempty"`
 }
 
 type TaskDeleteRequest struct {
@@ -68,9 +71,10 @@ type TaskDeleteRequest struct {
 }
 
 type TaskStatusUpdateRequest struct {
-	Version int64   `json:"version"`
-	Status  string  `json:"status"`
-	ClaimID *string `json:"claimId,omitempty"`
+	Version           int64   `json:"version"`
+	Status            string  `json:"status"`
+	ClaimID           *string `json:"claimId,omitempty"`
+	CancelDescendants *bool   `json:"cancelDescendants,omitempty"`
 }
 
 type Task = taskprotocol.REST

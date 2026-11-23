@@ -25,8 +25,10 @@ ordinary Windows entries to the complete phase; all other native phases retain
 one entry. Each matrix entry prepares its own runner, and both matrices depend only on module detection with
 the same CLI selection condition and `fail-fast: false`. All entries use common
 checkout, Node.js 24, pnpm, locked dependency installation, environment recording
-and build steps. Every job has the same 10-minute limit, including setup,
-validation and uploads. Test, hook and command deadlines retain their settings.
+and build steps. The original jobs had the same 10-minute limit, including setup,
+validation and uploads. The [macOS ordinary job budget](2026-11-12-macos-ordinary-validation-budget.md)
+supersedes that limit for the ordinary macOS entry. Test, hook and command
+deadlines retain their settings.
 
 Conditional macOS steps assert Darwin ARM64 in both matrices. Ordinary macOS
 verification runs the complete ordinary Vitest command under the
@@ -47,10 +49,10 @@ its ordinary entry. No clearing or cross-phase continuation guard is needed.
 Final `checks` waits for both matrix jobs, so a failure or cancellation in either
 phase on any native platform fails the gate.
 
-Runtime compatibility depends on module detection and the ordinary `verify`
-matrix. Its package is produced only by the Ubuntu ordinary entry, but the
-matrix dependency also waits for ordinary verification on Windows and macOS.
-Installed acceptance remains independent of runtime compatibility.
+At this decision, runtime compatibility depended on module detection and the
+ordinary `verify` matrix, even though its package came only from Ubuntu. The
+[runtime package decision](2026-11-18-independent-runtime-package.md) separates
+that producer from ordinary verification; installed acceptance remains independent.
 
 The [development guide](../../../../docs/development.md#ci-selection) owns current
 commands and gate selection. This replaces the single-allocation topology while
@@ -77,7 +79,7 @@ one matrix definition per phase.
 
 Two macOS allocations and two dependency preparations are required. Actual
 elapsed time depends on hosted capacity and scheduling, so independence does
-not guarantee a shorter run or repair acquisition failures. Runtime checks now
-wait for ordinary macOS verification through their existing matrix dependency.
+not guarantee a shorter run or repair acquisition failures. At the time of this
+decision, runtime checks also waited for ordinary macOS verification.
 Both complete source-bound ARM64 results remain necessary whenever CLI validation
 is selected.

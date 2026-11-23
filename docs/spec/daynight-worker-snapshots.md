@@ -4,6 +4,8 @@
 
 Worker 快照是认证客户端主动提交的观测。服务端校验格式、账号及任务归属，不执行系统采集或启动执行进程。硬件和版本数据是客户端提供的展示信息，机器名称及 machine.id 不构成认证身份。
 
+本机检查点存储不就绪或诊断文件不可写时，Worker 的独立[运行监控](daynight-worker-monitoring.md)保留相应故障与重试信息；最近机器快照或应用报告不构成当前新执行准入证明。未持久化的实际结果不能借快照声明 applied，日志缺项也不能证明副作用未发生。
+
 ## 资源与认证
 
 | 方法 | 路径 | 成功结果 |
@@ -18,7 +20,7 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 
 ## 上报结构
 
-请求为 UTF-8 `application/json`，最多 1 MiB。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
+请求为 UTF-8 `application/json`；带有效 `Daynight-Worker-Configuration: 1` 或 `2` 的报告正文最多 9 MiB，未带配置协议的普通报告最多 1 MiB。未知或重复配置协议头在业务调用前拒绝。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
 
 以下顶层字段必填；`assistantHost` 为可选扩展，旧报告省略该字段仍有效。选择配置协议时另外要求其定义的 `configuration` 字段，未选择时该字段仍属于未知输入：
 
@@ -32,10 +34,10 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 | cpu | Probe，成功值为 `{model,logicalProcessors,usagePercent}` |
 | memory | Probe，成功值为 `{usedBytes,totalBytes}` |
 | disk | Probe，成功值为 `{availableBytes,totalBytes}` |
-| versions | `{daynight,herdr,codex,copilot}`；daynight 为非空白版本文本，其余为下述探测结果 |
+| versions | `{daynight,codex,copilot}`；daynight 为非空白版本文本，其余为下述探测结果 |
 | taskInventory | 显式 null，或完整 `{observedAt,claims}` 对象 |
 
-文本必须是无 NUL 的有效 UTF-8。machine.name 最多 256 字节，workingDirectory 最多 4096 字节，Daynight、Herdr 和 Agent 版本各最多 256 字节；OS type/arch 各最多 64 字节，release 最多 256 字节，version 最多 1024 字节，CPU model 最多 512 字节。字节均按解码后 UTF-8 计量。日期使用有效、非零的 RFC3339 时刻，响应转换为 UTC。客户端 sampledAt、checkedAt 和 inventory observedAt 只说明数据来源，不决定在线状态。
+文本必须是无 NUL 的有效 UTF-8。machine.name 最多 256 字节，workingDirectory 最多 4096 字节，Daynight 和 Agent 版本各最多 256 字节；OS type/arch 各最多 64 字节，release 最多 256 字节，version 最多 1024 字节，CPU model 最多 512 字节。字节均按解码后 UTF-8 计量。日期使用有效、非零的 RFC3339 时刻，响应转换为 UTC。客户端 sampledAt、checkedAt 和 inventory observedAt 只说明数据来源，不决定在线状态。
 
 ### 探测结果
 
@@ -46,7 +48,6 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 | ok | `{state:"ok",checkedAt,value}` |
 | error | `{state:"error",checkedAt,code}` |
 | not_installed | `{state:"not_installed",checkedAt}`，仅 Codex/Copilot |
-| not_running | `{state:"not_running",checkedAt}`，仅 Herdr |
 
 error 的 code 仅接受 `not_found`、`permission_denied`、`timeout`、`command_failed`、`invalid_output`、`invalid_sample`、`out_of_range`、`io_error`、`unavailable`。成功不能携带 code，失败不能携带 value，特殊安装/运行状态不能携带两者。
 
@@ -56,9 +57,9 @@ CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的�
 
 ### 工具路径观察
 
-`Daynight-Worker-Tool-Paths: 1` 请求与响应回显控制此扩展。报告的可选 toolPaths 保存为 telemetry.toolPaths；缺字段表示本次报告未提供工具路径信息，与 not_checked 不同，不能沿用旧报告或猜测自动路径。旧读者的详情响应省略该字段，versions 继续原有严格形状。列表不复制完整遥测。
+`Daynight-Worker-Tool-Paths: 2` 为报告和详情必需，成功响应回显该版本。报告的可选 toolPaths 保存为 telemetry.toolPaths；缺字段表示本次报告未提供工具路径信息，与 not_checked 不同，不能沿用旧报告或猜测自动路径。旧版本或缺少协议头的详情和报告明确拒绝并提示升级。列表不复制完整遥测。
 
-对象为 `{schemaVersion:1,observedAt,entries}`。entries 最多五个唯一 tool/context：codex/web、codex/herdr、copilot/web、copilot/herdr、herdr/herdr；Herdr/web 拒绝。Bot 使用 web 上下文。每个可用上下文都保留条目，未检查时使用 not_checked。
+对象为 `{schemaVersion:1,observedAt,entries}`。entries 最多两个唯一 tool/context：codex/web、copilot/web。Bot 使用 web 上下文。每个可用上下文都保留条目，未检查时使用 not_checked。
 
 每项完整包含以下字段，所有对象均拒绝未知字段：
 
@@ -77,15 +78,17 @@ CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的�
 | activeSelections | 按 selectionKey 排序的运行选择分组，每项含 actual、nullable executionCount、nullable instanceCount、unconfirmedCount |
 | error | null 或闭合 `{code,occurredAt}`，不能包含自由诊断正文 |
 
+工具的云端 choice 未采纳时，该目标不可用于新执行。若有可合法报告的历史目标，观察项保留其真实来源和版本，标记 pending/configuration_unavailable，并继续报告已知活跃责任；不能把本机选择标为当前云端目标。没有可报告的历史目标时省略该工具的观察项，缺项不能解释为已检查或已应用。
+
 实际选择为 `{selection,selectionKey,entryPath,executablePath,interpreterPath,source,version,checkedAt}`。selection 是产生该结果的完整 choice；selectionKey 为运行管理器给出的 64 位小写 SHA-256 十六进制标识。entryPath 表示入口、executablePath 表示实际工具程序、interpreterPath 为解释器路径或 null。source 只能是 explicit/path/bundled；path 每项最多 4096 UTF-8 字节，version 最多 256 字节。时间必须有效；服务不接收 command、argv、环境、artifact 内容或进程凭据。target 沿用 desired 的平台无关路径语法，使 Worker 能携带原目标报告平台不匹配的 invalid_path；actual、candidate 和 activeSelections 的实际路径仍须符合所报 Worker 平台。
 
 actual 仅表示后续新执行可准入的已验证选择，不代表全部旧执行。candidate 是已探测但尚未安全应用的目标，不能替代 actual。目标失败可以保留旧 actual，但新执行不得借旧值回退。applied 必须有与 target 相等的 actual.selection；消费者还必须核对 cloud targetRevision、当前 desired choice 和 tool/context，不能把迟到报告当作新目标成功。保存成功、单独 versions probe 和候选都不能证明工具已应用。离线或快照过期时，actual 只能作为带 checkedAt 的历史事实展示。
 
-activeSelections 由原 Task/Bot/Herdr 责任按选择聚合，不逐 Task 枚举。每个上下文最多八组；超出数量或编码预算只省略完整组，不截断路径。activeSelectionCount 保留已知真实总数，activeSelectionsComplete=false 明确尚有未展示选择；未知总数不能写成已展示数量。旧执行没有冻结工具身份时以 activeObservationError 和不完整标记表达，不能重建伪路径，也不能因此把已正确应用的新目标改报 error。停止未确认的责任继续计入 unconfirmedCount。
+activeSelections 由原 Task/Bot 责任按选择聚合，不逐 Task 枚举。每个上下文最多八组；超出数量或编码预算只省略完整组，不截断路径。activeSelectionCount 保留已知真实总数，activeSelectionsComplete=false 明确尚有未展示选择；未知总数不能写成已展示数量。旧执行没有冻结工具身份时以 activeObservationError 和不完整标记表达，不能重建伪路径，也不能因此把已正确应用的新目标改报 error。停止未确认的责任继续计入 unconfirmedCount。
 
 错误 code 只接受 not_found、permission_denied、not_executable、invalid_path、unsupported_launcher、unrecognized_output、incompatible_runtime、probe_timeout、cleanup_unknown、tool_identity_changed、legacy_tool_identity_missing、io_error、unavailable。它们保留路径、权限、启动器、输出、协议、期限、回收和原身份故障，原始命令输出及 cause 只留本地。not_checked 是状态而非异常。
 
-工具扩展受 256 KiB UTF-8 JSON 编码子预算、完整请求 1 MiB 和已存 telemetry/Worker 4 MiB 预算共同约束，不保证所有字段可同时取最大值。生产者预算不足时省略完整运行组，并在仍不能容纳时降为有界 pending/report_budget_exceeded 观察，保留本地完整事实和普通心跳；不能删掉必需任务清单或未确认配置结果制造成功。若必需内容占用的剩余预算连保留完整 target 的降级条目也无法容纳，则省略可选工具扩展，保留本地 report_budget_exceeded 结果；缺少扩展不能继续展示上次成功。服务继续严格拒绝超限或格式错误输入，不替客户端截断数据。
+工具扩展受 256 KiB UTF-8 JSON 编码子预算、所选完整请求预算（配置报告 9 MiB，普通报告 1 MiB）和已存 telemetry/Worker 4 MiB 预算共同约束，不保证所有字段可同时取最大值。生产者预算不足时省略完整运行组，并在仍不能容纳时降为有界 pending/report_budget_exceeded 观察，保留本地完整事实和普通心跳；不能删掉必需任务清单或未确认配置结果制造成功。若必需内容占用的剩余预算连保留完整 target 的降级条目也无法容纳，则省略可选工具扩展，保留本地 report_budget_exceeded 结果；缺少扩展不能继续展示上次成功。服务继续严格拒绝超限或格式错误输入，不替客户端截断数据。
 
 服务只验证结构、来源时间、版本关系、路径语法、预算和账号归属，不运行工具。工具状态由 Worker 运行管理器提供；未接入该管理器的 Worker 不得从 bare 版本字符串生成工具实际路径或 applied。
 
@@ -106,13 +109,15 @@ activeSelections 由原 Task/Bot/Herdr 责任按选择聚合，不逐 Task 枚�
 `timeout`、`command_failed`、`invalid_output`、`unavailable`。
 model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数组，最多 128 项，每项为最多 4096 UTF-8 字节的非空白文本。目录、model 和 args 不接受控制字符。`unsupported_arguments` 必须同时清空 model 为 null、args 为 []，不能把不支持的原生命令或凭据作为报告内容。
 
-默认 Provider 才能继承全局 model/args；其它 Provider 使用各自原生默认，即 model=null、args=[]。所有 Provider 都按 Web 适配器参数规则预检，Worker 任务使用 Herdr 不影响该规则。Worker 本机核对真实目录与可执行文件；服务端只校验路径语法，不访问另一台机器的目录。Windows 接受完整盘符路径或 UNC 路径，不接受 drive-relative 路径。
+默认 Provider 才能继承全局 model/args；其它 Provider 使用各自原生默认，即 model=null、args=[]。需要预检的 Provider 按 Web 适配器参数规则检查。Worker 本机核对真实目录与可执行文件；服务端只校验路径语法，不访问另一台机器的目录。Windows 接受完整盘符路径或 UNC 路径，不接受 drive-relative 路径。
+
+当前有效全局或任一项目选择 Copilot，或本 Worker 存在非删除的 Copilot Bot 定义时，后台需要 Copilot 检查。没有此需求且没有可纯读取的现有成功 Web selection 证明时，Copilot 条目为 `available=false`、`reason=unavailable`、`model=null`、`args=[]`，不产生该 Provider 的采集 issue；未检查不能作为未安装或成功的证据。现有成功证明可用于报告，但不能因此重新解析或探测。配置未应用时保留原配置应用预检；明确请求 Copilot 的模型发现和新执行仍按需准备。实际需要检查时，真实错误继续报告。
 
 预检成功只表示在来源时刻通过有界启动条件检查，不证明认证、模型访问或原生 Session 已成功建立。消费者必须同时核对 Worker 最近报告和预检时刻：两者都不能在服务端当前时间之后，且年龄都必须小于 120 秒；达到边界即不可作为可启动依据。缺报告表示不支持助手托管；依次区分 offline、stale、全部 Provider unavailable 和至少一个 Provider available。选择具体 Provider 时还必须检查对应条目，不能用另一 Provider 的成功替代。
 
 每次有效机器报告完整替换助手预检；后来省略字段会清除之前的助手能力，不能沿用任务清单 null 的保留行为。详情保留原报告及 observedAt，不把历史 available 改写为当前启动承诺。服务层提供上述状态判断供创建默认解析使用；普通 Worker 列表和详情外层字段保持原有结构。
 
-报告协议和预检采集器不代表完整助手已可运行。默认 Worker runtime 不提交此扩展；只有完成托管链路组合后才能接入能力广告。
+报告协议和预检采集器不代表完整助手已可运行；能力广告来自已组合的 Worker 托管链路。
 
 ### 任务清单
 
@@ -120,7 +125,7 @@ model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数�
 
 服务端根据这些引用读取当前任务，只接受认证账号与 workerId 拥有的相同 active claim，且 task 为 in_progress、未删除、账号仍有项目权限。任务标题、项目名、status、phase 和 agent 均取服务端数据，客户端不能提供这些权威字段。已完成、已撤回、转交或失权的普通竞态省略对应引用；不存在与不可访问的目标不通过省略差异泄漏给调用者。
 
-报告发送的是完整观测清单，不按 maxConcurrent 截断。恢复清单可以大于当前并发设置；既有 1 MiB 传输上限仍适用，超限明确失败。
+报告发送的是完整任务观测清单，不按 maxConcurrent 截断。恢复清单可以大于当前并发设置；所选报告传输上限仍适用，超限明确失败。独立的 configuration.observation.items 使用[配置协议](daynight-worker-configuration.md#应用观测)规定的本批有界集合；服务端接纳后整体替换该批，遗漏项表示本次未观察，本机保留事实不因此被确认或删除。任务清单的完整性和应用观测的分批语义分别保持。
 
 ## 最新快照与时间
 

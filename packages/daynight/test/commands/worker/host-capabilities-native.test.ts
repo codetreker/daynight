@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import { expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createAssistantHostCollector, type AssistantHostIssue } from "../../../src/commands/worker/bots/host-capabilities.js";
-import { hasHerdrCommandCleanupFailure, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { hasOwnedCommandCleanupFailure, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 
 import { createHostProbeDiagnostic } from "./host-capabilities-diagnostic.js";
 
@@ -17,8 +17,8 @@ it("qualifies bounded native Web prerequisites without starting a session", asyn
   let issues: readonly AssistantHostIssue[] = [];
   try {
     const environment = { ...process.env, HOME: root, USERPROFILE: root, CODEX_HOME: root, CLAUDE_CONFIG_DIR: root, COPILOT_HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root };
-    const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }, environment,
-      runCommand: (command, probeOperation) => runHerdrCommand(command, probeOperation, diagnostic.start, { cleanupWithinDeadline: true }),
+    const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, environment,
+      runCommand: (command, probeOperation) => runOwnedCommand(command, probeOperation, diagnostic.start, { cleanupWithinDeadline: true }),
     });
     const started = performance.now();
     const sample = await collector.collect(operation);
@@ -28,7 +28,7 @@ it("qualifies bounded native Web prerequisites without starting a session", asyn
     expect(elapsed).toBeLessThan(5_500);
     expect(sample.assistantHost.defaultProvider).toBe("copilot");
     expect(sample.assistantHost.providers).toHaveLength(3);
-    expect(sample.issues.some(issue => hasHerdrCommandCleanupFailure(issue.error))).toBe(false);
+    expect(sample.issues.some(issue => hasOwnedCommandCleanupFailure(issue.error))).toBe(false);
     for (const entry of sample.assistantHost.providers) {
       expect(entry.available).toBe(entry.reason === null);
       expect(entry.model).toBeNull();

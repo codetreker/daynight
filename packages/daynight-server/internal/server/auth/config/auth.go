@@ -49,10 +49,31 @@ func ValidateAuthSettings(config AuthSettings, callbackURL string) (*url.URL, st
 	if callbackPath == "" || callbackPath == "/" || !strings.HasPrefix(callbackPath, "/") || path.Clean(callbackPath) != callbackPath || callback.RawPath != "" || strings.ContainsAny(callbackPath, "{}%\\") || strings.ContainsFunc(callbackPath, func(char rune) bool { return unicode.IsSpace(char) || unicode.IsControl(char) }) {
 		return nil, "", &configvalue.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_CALLBACK_URL", Rule: "requires a canonical non-root callback path without routing wildcards or encoded aliases"}
 	}
-	for _, reserved := range []string{"/mcp", "/oauth", "/.well-known", "/api/v1/oauth", "/api/v1/teams", "/teams", "/shared-projects", "/api/v1/team-invitations", "/team-invitations", "/api/v1/session-capabilities", "/api/v1/test-session-capabilities", "/api/v1/controller-channel", "/api/v1/controller-resources", "/api/v1/projects", "/api/v1/test-sessions", "/test-sessions", "/bots", "/workers", "/api/v1/me", "/api/v1/webhook-event-types", "/api/v1/invitations", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/providers", "/api/v1/auth/device", "/device", "/healthz", "/readyz", "/assets", "/login", "/projects", "/account", "/invitations", "/setup"} {
+	if credentialRoute(callbackPath) {
+		return nil, "", &configvalue.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_CALLBACK_URL", Rule: "must not overlap an application API, page, asset, or health route"}
+	}
+	for _, reserved := range []string{"/mcp", "/oauth", "/.well-known", "/api/v1/oauth", "/api/v2/oauth", "/api/v1/teams", "/teams", "/shared-projects", "/api/v1/team-invitations", "/team-invitations", "/api/v1/session-capabilities", "/api/v1/test-session-capabilities", "/api/v1/controller-channel", "/api/v1/controller-resources", "/api/v1/projects", "/api/v1/test-sessions", "/test-sessions", "/bots", "/workers", "/my-tasks", "/api/v1/me", "/api/v1/webhook-event-types", "/api/v1/invitations", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/session", "/api/v1/auth/providers", "/api/v1/auth/preview", "/auth/sso", "/api/v1/auth/device", "/api/v2/auth/device", "/device", "/healthz", "/readyz", "/assets", "/login", "/auth/complete", "/projects", "/account", "/invitations", "/setup"} {
 		if callbackPath == reserved || strings.HasPrefix(callbackPath, reserved+"/") {
 			return nil, "", &configvalue.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_CALLBACK_URL", Rule: "must not overlap an application API, page, asset, or health route"}
 		}
 	}
 	return origin, callbackPath, nil
+}
+
+// credentialRoute matches only the new account-management route shapes.
+func credentialRoute(path string) bool {
+	for _, base := range []string{"/api/v2/me/tokens", "/api/v3/oauth/grants"} {
+		if path == base {
+			return true
+		}
+		suffix, ok := strings.CutPrefix(path, base+"/")
+		if !ok {
+			continue
+		}
+		id, end, ok := strings.Cut(suffix, "/")
+		if ok && id != "" && (end == "description" || end == "scopes") {
+			return true
+		}
+	}
+	return false
 }

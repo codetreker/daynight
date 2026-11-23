@@ -59,10 +59,20 @@ describe("Webhook wire contracts", () => {
     const invalid = catalog(); Object.assign(invalid.limits, { endpointQuota: 10 });
     expect(() => parseWebhookCatalog(invalid)).toThrow();
   });
+  it.each([false, true])("accepts the five continuing events with optional Steps (%s)", includeSteps => {
+    const value = catalog();
+    value.items = value.items.filter(item => includeSteps || item.key !== "task.step_updated").reverse();
+    expect(parseWebhookCatalog(value).items).toEqual(value.items);
+    expect(parseWebhookEndpoint({ ...endpoint(), subscriptions: [{ ...endpoint().subscriptions[0], eventTypes: ["task.step_updated"] }] }, owner).lifecycle).toBe("active");
+    expect(parseWebhookDelivery({ ...delivery(), eventType: "task.step_updated" }, owner, endpointId).eventType).toBe("task.step_updated");
+  });
   it.each([
-    () => ({ ...catalog(), items: catalog().items.slice(0, 5) }),
-    () => ({ ...catalog(), items: [...catalog().items.slice(0, 5), catalog().items[0]] }),
+    ...catalog().items.filter(item => item.key !== "task.step_updated").map(missing => () => ({ ...catalog(), items: catalog().items.filter(item => item.key !== missing.key) })),
+    () => ({ ...catalog(), items: [...catalog().items, catalog().items[0]] }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, key: "task.unknown" })) }),
     () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, wireType: "cc.other.task.paused.v1" })) }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, schemaVersion: 2 })) }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, resourceKind: "task" })) }),
     () => ({ ...catalog(), service: { dispatchEnabled: false } }),
   ])("rejects incomplete and mismatched catalog metadata %#", value => expect(() => parseWebhookCatalog(value())).toThrow());
   it("preserves revoked disclosure and minimum tombstones without fallback", () => {
@@ -71,6 +81,14 @@ describe("Webhook wire contracts", () => {
     const deleted = { id: endpointId, owner, lifecycle: "deleted", configVersion: "8", deletedAt: now };
     expect(parseWebhookEndpoint(deleted, owner)).toEqual(deleted);
     expect(() => parseWebhookEndpoint({ ...deleted, name: "Old private name" }, owner)).toThrow();
+  });
+  it("accepts the optional creation key on active endpoints and summaries", () => {
+    expect(parseWebhookEndpoint({ ...endpoint(), clientKey: "assistant-task-inbox:1" }, owner)).toMatchObject({ lifecycle: "active", clientKey: "assistant-task-inbox:1" });
+    expect(parseWebhookEndpoint({ ...endpoint(), clientKey: null }, owner)).toMatchObject({ lifecycle: "active", clientKey: null });
+    for (const key of ["", "has space", "x".repeat(201), 1]) expect(() => parseWebhookEndpoint({ ...endpoint(), clientKey: key }, owner)).toThrow();
+    expect(parseWebhookEndpointPage({ items: [{ ...summary(), clientKey: "inbox" }], nextCursor: null }, owner).items[0]?.clientKey).toBe("inbox");
+    expect(() => parseWebhookEndpointPage({ items: [{ ...summary(), clientKey: "a b" }], nextCursor: null }, owner)).toThrow();
+    expect(() => parseWebhookEndpoint({ id: endpointId, owner, lifecycle: "deleted", configVersion: "8", deletedAt: now, clientKey: null }, owner)).toThrow();
   });
   it("rejects foreign owners and duplicate subscription or page identities", () => {
     expect(() => parseWebhookEndpoint({ ...endpoint(), owner: { kind: "team", id: uuid(8) } }, owner)).toThrow();
@@ -159,6 +177,32 @@ describe("Webhook authenticated requests", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(response({ items: [summary()], nextCursor: "same" })).mockResolvedValueOnce(response({ items: [summary()], nextCursor: null })));
     await expect(listWebhooks(owner, { cursor: "same" }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
     await expect(listWebhooks(owner, { enabled: false }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("filters by creation key and rejects items outside the filter", async () => {
+    const key = "assistant-task-inbox:a/b", keyed = { ...summary(), clientKey: key };
+    const fetch = vi.fn().mockResolvedValueOnce(response({ items: [keyed], nextCursor: null })).mockResolvedValueOnce(response({ items: [{ ...summary(), clientKey: null }], nextCursor: null })).mockResolvedValueOnce(response({ items: [summary()], nextCursor: null }));
+    vi.stubGlobal("fetch", fetch);
+    expect((await listWebhooks(owner, { clientKey: key, limit: 100 }, signal(), admission())).items).toEqual([keyed]);
+    expect(fetch.mock.calls[0]![0]).toBe("/api/v1/me/webhooks?clientKey=assistant-task-inbox%3Aa%2Fb&limit=100");
+    await expect(listWebhooks(owner, { clientKey: key }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    // An item without the field cannot be shown to satisfy the filter.
+    await expect(listWebhooks(owner, { clientKey: key }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    fetch.mockClear();
+    for (const clientKey of ["", "a b", "x".repeat(201), "é"]) expect(() => listWebhooks(owner, { clientKey }, signal(), admission())).toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("accepts the existing endpoint details only on endpoint_exists", async () => {
+    const exists = (code: string, details: unknown) => response({ error: { code, message: "Conflict", requestId: "test-request", details } }, 409);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "4" }))
+      .mockResolvedValueOnce(failure(409, "endpoint_exists"))
+      .mockResolvedValueOnce(exists("version_conflict", { endpointId, configVersion: "4" }))
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "04" }))
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "4", name: "Private" })));
+    const create = () => submitWebhookMutation(owner, "endpoint.create", null, operationId, "{}", signal(), admission(), vi.fn());
+    await expect(create()).rejects.toMatchObject({ kind: "server", status: 409, code: "endpoint_exists" });
+    await expect(create()).rejects.toMatchObject({ kind: "server", status: 409, code: "endpoint_exists" });
+    for (let index = 0; index < 3; index++) await expect(create()).rejects.toMatchObject({ kind: "protocol" });
   });
   it("reads secrets only through the independent signing-secret route", async () => {
     const value = { endpointId, configVersion: "2", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${btoa("a".repeat(32))}` };

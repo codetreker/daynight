@@ -92,11 +92,11 @@ describe("worker setup configuration transaction", () => {
   });
 
   it("replaces the full selection while retaining matched paths, comments and compatible native settings", async () => {
-    const f = await fixture(`${connection}worker:\n  agent: codex\n  model: global-model\n  args: [--search]\n  repositories:\n    # Retain this path\n    - projectId: ${uuid(1)}\n      remote: git@github.com:example/repo-1.git\n      path: ../original\n      agent: codex\n      model: custom-model\n    - projectId: ${uuid(3)}\n      remote: ${projects[2]!.repoUrl}\n      path: ../removed\n`);
+    const f = await fixture(`${connection}worker:\n  agent: codex\n  model: global-model\n  args: [--sandbox, read-only]\n  repositories:\n    # Retain this path\n    - projectId: ${uuid(1)}\n      remote: git@github.com:example/repo-1.git\n      path: ../original\n      agent: codex\n      model: custom-model\n    - projectId: ${uuid(3)}\n      remote: ${projects[2]!.repoUrl}\n      path: ../removed\n`);
     const plan = await prepareWorkerSetup(f.options);
     expect(plan.removedRepositories.map(({ projectId }) => projectId)).toEqual([uuid(3)]);
     expect(plan.resetRepositories).toEqual([]);
-    expect(plan.configuration.repositories[0]).toMatchObject({ remote: "git@github.com:example/repo-1.git", path: path.join(f.homeDirectory, "original"), agent: "codex", model: "custom-model", args: ["--search"] });
+    expect(plan.configuration.repositories[0]).toMatchObject({ remote: "git@github.com:example/repo-1.git", path: path.join(f.homeDirectory, "original"), agent: "codex", model: "custom-model", args: ["--sandbox", "read-only"] });
     await saveWorkerSetup(f.options);
     const source = await readFile(f.paths.configFile, "utf8");
     expect(source).toContain("# Retain this path");
@@ -106,19 +106,19 @@ describe("worker setup configuration transaction", () => {
   });
 
   it("switches every selected repository to the chosen agent and clears incompatible native settings", async () => {
-    const f = await fixture(`${connection}worker:\n  agent: copilot\n  model: copilot-model\n  args: [--allow-all-tools]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      model: copilot-project-model\n      args: [--allow-all-tools]\n    - projectId: ${uuid(2)}\n      remote: ${projects[1]!.repoUrl}\n      path: ../second\n      agent: codex\n      model: retained-codex-model\n      args: [--search]\n`);
+    const f = await fixture(`${connection}worker:\n  agent: copilot\n  model: copilot-model\n  args: [--effort, high]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      model: copilot-project-model\n      args: [--effort, high]\n    - projectId: ${uuid(2)}\n      remote: ${projects[1]!.repoUrl}\n      path: ../second\n      agent: codex\n      model: retained-codex-model\n      args: [--sandbox, read-only]\n`);
     const plan = await prepareWorkerSetup(f.options);
     expect(plan.resetGlobalNativeSettings).toBe(true);
     expect(plan.resetRepositories.map(({ projectId }) => projectId)).toEqual([uuid(1)]);
     const result = await saveWorkerSetup(f.options);
     expect(result).toMatchObject({ agent: "codex", model: null, args: [] });
     expect(result.repositories[0]).toMatchObject({ agent: "codex", model: null, args: [] });
-    expect(result.repositories[1]).toMatchObject({ agent: "codex", model: "retained-codex-model", args: ["--search"] });
+    expect(result.repositories[1]).toMatchObject({ agent: "codex", model: "retained-codex-model", args: ["--sandbox", "read-only"] });
     expect(parse(await readFile(f.paths.configFile, "utf8")).worker.repositories.every((repository: Record<string, unknown>) => !Object.hasOwn(repository, "agent"))).toBe(true);
   });
 
   it("switches from Codex to Copilot without carrying incompatible native parameters", async () => {
-    const f = await fixture(`${connection}worker:\n  agent: codex\n  model: codex-model\n  args: [--search]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      model: codex-project-model\n    - projectId: ${uuid(2)}\n      remote: ${projects[1]!.repoUrl}\n      path: ../second\n      agent: copilot\n      model: retained-copilot-model\n      args: [--allow-all-tools]\n`);
+    const f = await fixture(`${connection}worker:\n  agent: codex\n  model: codex-model\n  args: [--sandbox, read-only]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      model: codex-project-model\n    - projectId: ${uuid(2)}\n      remote: ${projects[1]!.repoUrl}\n      path: ../second\n      agent: copilot\n      model: retained-copilot-model\n      args: [--effort, high]\n`);
     const options = { ...f.options, agent: "copilot" as const };
     const plan = await prepareWorkerSetup(options);
     expect(plan.resetGlobalNativeSettings).toBe(true);
@@ -126,7 +126,7 @@ describe("worker setup configuration transaction", () => {
     const result = await saveWorkerSetup(options);
     expect(result).toMatchObject({ agent: "copilot", model: null, args: [] });
     expect(result.repositories[0]).toMatchObject({ agent: "copilot", model: null, args: [] });
-    expect(result.repositories[1]).toMatchObject({ agent: "copilot", model: "retained-copilot-model", args: ["--allow-all-tools"] });
+    expect(result.repositories[1]).toMatchObject({ agent: "copilot", model: "retained-copilot-model", args: ["--effort", "high"] });
   });
 
   it.each(["prepare", "save"] as const)("refuses to %s setup when repository edits would alter an aliased review list", async (operation) => {
@@ -181,7 +181,7 @@ describe("worker setup configuration transaction", () => {
   });
 
   it("preserves unrelated aliases and compatible native model aliases during setup", async () => {
-    const f = await fixture(`${connection}review:\n  copilotReasoningEffort: &effort high\n  copilotModel: &sharedModel retained-model\nworker:\n  agent: codex\n  model: *sharedModel\n  args: &sharedArgs [--search]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      args: *sharedArgs\n`);
+    const f = await fixture(`${connection}review:\n  copilotReasoningEffort: &effort high\n  copilotModel: &sharedModel retained-model\nworker:\n  agent: codex\n  model: *sharedModel\n  args: &sharedArgs [--sandbox, read-only]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      args: *sharedArgs\n`);
     await saveWorkerSetup(f.options);
     const saved = await readFile(f.paths.configFile, "utf8");
     expect(saved).toContain("copilotReasoningEffort: &effort high");
@@ -192,7 +192,7 @@ describe("worker setup configuration transaction", () => {
   });
 
   it.each([
-    "worker:\n  agent: codex\n", "worker:\n  model: changed\n", "worker:\n  args: [--allow-all-tools]\n",
+    "worker:\n  agent: codex\n", "worker:\n  model: changed\n", "worker:\n  args: [--effort, high]\n",
     "worker:\n  repositoryRoot: ../changed\n", "serverUrl: https://changed.example\n", "serverToken: changed-credential\n",
     `worker:\n  repositories:\n    - remote: ${projects[0]!.repoUrl}\n      path: ../concurrent\n`,
   ])("rejects a stale setup after a relevant concurrent edit: %s", async (changed) => {
@@ -248,6 +248,7 @@ describe("interactive worker setup", () => {
       expect.objectContaining({ message: "Save this worker configuration?", default: true }),
     ]);
     expect(f.dependencies.inspectEnvironment).toHaveBeenCalledTimes(2);
+    expect(f.dependencies.inspectEnvironment.mock.calls[0]![0]).toEqual({ workingDirectory: f.homeDirectory, signal: expect.any(AbortSignal) });
     expect(f.dependencies.inspectEnvironment.mock.calls[1]![0]).toMatchObject({ configuration: { agent: "codex", model: null, args: [] } });
     expect(f.dependencies.save).toHaveBeenCalledOnce();
     expect((await readWorkerConfiguration(f.paths)).repositories).toHaveLength(2);
@@ -266,11 +267,11 @@ describe("interactive worker setup", () => {
 
   it("reports missing prerequisites and saves configuration with an explicit repair instruction", async () => {
     const f = await fixture();
-    f.dependencies.inspectEnvironment.mockResolvedValue([{ label: "Herdr", status: "missing", detail: "Not installed", remedy: "Install Herdr." }]);
+    f.dependencies.inspectEnvironment.mockResolvedValue([{ label: "Git", status: "missing", detail: "Not installed", remedy: "Install Git." }]);
     await runWorkerSetup(f.context, f.dependencies);
     expect(f.dependencies.save).toHaveBeenCalledOnce();
-    expect(f.output.join("")).toContain("[missing] Herdr: Not installed");
-    expect(f.output.join("")).toContain("Install Herdr.");
+    expect(f.output.join("")).toContain("[missing] Git: Not installed");
+    expect(f.output.join("")).toContain("Install Git.");
     expect(f.output.join("")).toContain("Repair the missing prerequisites above");
   });
 

@@ -4,8 +4,9 @@ import "github.com/codetreker/daynight/packages/daynight-server/internal/core/mo
 
 // Capabilities select independent optional fields without changing prompt versions.
 type Capabilities struct {
-	ControlMode bool
-	ToolPaths   bool
+	ToolPaths        bool
+	ArchiveSessions  bool
+	PlatformTaskMode bool
 }
 
 type ToolPathChoice = model.ToolPathChoice
@@ -20,6 +21,15 @@ type ToolPathError = model.ToolPathError
 func DetailForCapabilities(snapshot model.WorkerSnapshot, capabilities Capabilities) WorkerDetail {
 	if !capabilities.ToolPaths {
 		snapshot.Telemetry.ToolPaths = nil
+	} else if snapshot.Telemetry.ToolPaths != nil {
+		paths := *snapshot.Telemetry.ToolPaths
+		paths.Entries = make([]model.ToolPathObservation, 0, len(snapshot.Telemetry.ToolPaths.Entries))
+		for _, entry := range snapshot.Telemetry.ToolPaths.Entries {
+			if (entry.Tool == "codex" || entry.Tool == "copilot") && entry.Context == "web" {
+				paths.Entries = append(paths.Entries, entry)
+			}
+		}
+		snapshot.Telemetry.ToolPaths = &paths
 	}
 	return Detail(snapshot)
 }

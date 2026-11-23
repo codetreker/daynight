@@ -18,18 +18,19 @@ import (
 // are exercised through the module rather than reproduced by the fixture.
 type identityDAO struct {
 	store.IdentityDAO
-	failures      map[string]error
-	calls         []string
-	pending       model.LoginTransaction
-	user          model.User
-	principal     model.Principal
-	facts         store.PersonalTeamFacts
-	pat           model.PersonalAccessToken
-	pats          []model.PersonalAccessToken
-	device        model.DeviceAuthorization
-	attempts      int
-	admissionTime time.Time
-	rejection     string
+	failures        map[string]error
+	calls           []string
+	pending         model.LoginTransaction
+	user            model.User
+	principal       model.Principal
+	facts           store.PersonalTeamFacts
+	pat             model.PersonalAccessToken
+	pats            []model.PersonalAccessToken
+	device          model.DeviceAuthorization
+	attempts        int
+	admissionTime   time.Time
+	admissionLimits [2]int
+	rejection       string
 }
 
 func (d *identityDAO) hit(name string) error {
@@ -40,7 +41,8 @@ func (d *identityDAO) CleanupCredentials(context.Context, time.Time) error { ret
 func (d *identityDAO) CleanupLoginCredentials(context.Context, time.Time, time.Time) error {
 	return d.hit("cleanup")
 }
-func (d *identityDAO) AdmitLogin(_ context.Context, _ []byte, _, _ int) (time.Time, string, error) {
+func (d *identityDAO) AdmitLogin(_ context.Context, _ []byte, globalLimit, browserLimit int) (time.Time, string, error) {
+	d.admissionLimits = [2]int{globalLimit, browserLimit}
 	return d.admissionTime, d.rejection, d.hit("admit")
 }
 func (d *identityDAO) InsertLogin(_ context.Context, p model.LoginTransaction) error {
@@ -77,6 +79,9 @@ func (d *identityDAO) ListPATs(context.Context, string, time.Time) ([]model.Pers
 func (d *identityDAO) DeletePAT(context.Context, string, string) error { return d.hit("delete-pat") }
 func (d *identityDAO) LockActivePAT(context.Context, string, string, time.Time) (model.PersonalAccessToken, error) {
 	return d.pat, d.hit("lock-pat")
+}
+func (d *identityDAO) FreshPATTime(_ context.Context, now time.Time) (time.Time, error) {
+	return now, d.hit("fresh-pat-time")
 }
 func (d *identityDAO) SetPATExpiry(_ context.Context, _ string, e *time.Time) (model.PersonalAccessToken, error) {
 	d.pat.ExpiresAt = e
@@ -145,8 +150,12 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 		t.Fatalf("cleanup failure: %v", err)
 	}
 	d.failures = nil
+	d.admissionLimits = [2]int{}
 	if _, err = m.CreateLogin(ctx, d, pending, now); err != nil || d.pending.ID != start.ID {
 		t.Fatalf("login persistence: %v", err)
+	}
+	if d.admissionLimits != ([2]int{10000, 5}) {
+		t.Fatalf("login admission limits: global=%d browser=%d, want global=10000 browser=5", d.admissionLimits[0], d.admissionLimits[1])
 	}
 	d.failures = map[string]error{"admit": failure}
 	d.calls = nil
@@ -235,16 +244,16 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 
 func TestLoginReturnPathByteLimit(t *testing.T) {
 	m := NewIdentity("https://example.test/auth/callback")
-	for _, value := range []string{
-		"/" + strings.Repeat("a", MaxReturnPathBytes-1),
-		"/" + strings.Repeat("界", (MaxReturnPathBytes-1)/3),
-	} {
+	ascii := "/" + strings.Repeat("a", 4095)
+	multibyte := "/" + strings.Repeat("界", 1365)
+	for _, value := range []string{ascii, multibyte} {
 		if err := m.ValidateLogin("github", value); err != nil {
 			t.Fatalf("valid boundary rejected: %v", err)
 		}
 		checkFault(t, m.ValidateLogin("github", value+"a"), "invalid_input")
 	}
-	checkFault(t, m.ValidateLogin("github", "/"+strings.Repeat("a", MaxReturnPathBytes)+"%zz"), "invalid_input")
+	checkFault(t, m.ValidateLogin("github", multibyte+"界"), "invalid_input")
+	checkFault(t, m.ValidateLogin("github", ascii+"a%zz"), "invalid_input")
 }
 
 func TestPATLifecycleValidationAndFailures(t *testing.T) {
@@ -338,6 +347,77 @@ func TestPATLifecycleValidationAndFailures(t *testing.T) {
 	input.ExpectedExpiresAt = nil
 	if _, err = m.UpdatePATExpiry(ctx, d, p, minted.Credential.ID, input, now); err != nil {
 		t.Fatalf("no-op expiry: %v", err)
+	}
+}
+
+func TestLoginCompletionReturnPath(t *testing.T) {
+	identity := NewIdentity("https://daynight.example/auth/callback")
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/auth/complete", false},
+		{"/auth/complete?next=%2Fprojects#section", false},
+		{"/auth/complete/child", false},
+		{"/auth/other/../complete/child", false},
+		{"/auth/%63omplete", false},
+		{"/auth/complete%2Fchild", false},
+		{"/x%2Fsomething/../auth/complete?returnPath=%2F", false},
+		{"/x%2Fsomething/%2e%2e/auth/complete", false},
+		{"/x%2Fsomething/.%2E/auth/complete/child", false},
+		{"/foo#fragment/../auth/complete", false},
+		{"/foo#fragment/../auth/complete/child", false},
+		{"/foo?x=1#fragment/../auth/complete", true},
+		{"%2Ffoo/../complete?returnPath=%2F", false},
+		{"%2Ffoo/%2e%2e/complete", false},
+		{"/x%2Fsomething/../auth/completed", true},
+		{"%2Ffoo/../completed", true},
+		{"/auth/completed", true},
+		{"/", true},
+		{"/setup?from=login#instructions", true},
+		{"/assets/app.js?version=1#fragment", true},
+		{"/assets/%FF?x=1#fragment", true},
+		{"/%C3", true},
+		{"%2Fprojects", true},
+		{"/projects?sort=recent#current", true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			_, pending, err := identity.StartLogin("github", tc.path, time.Now())
+			if tc.want {
+				if err != nil || pending.ReturnPath != tc.path {
+					t.Fatalf("return path %q: pending=%q err=%v", tc.path, pending.ReturnPath, err)
+				}
+			} else {
+				checkFault(t, err, "invalid_input")
+			}
+		})
+	}
+}
+
+func TestLoginCompletionReturnPathUsesCallbackDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		callback, target string
+		want             bool
+	}{
+		{"/auth/callback", "%2Ffoo/../complete?returnPath=%2F", false},
+		{"/auth/callback", "%2Ffoo/%2e%2e/complete/child", false},
+		{"/custom/callback", "%2Ffoo/../complete?returnPath=%2F", true},
+		{"/custom/callback", "%2Ffoo/%2e%2e/complete/child", true},
+		{"/custom/callback", "%2Ffoo/../../auth/complete", false},
+		{"/custom/callback", "%2Ffoo/%2e%2e/%2e%2e/auth/complete", false},
+		{"/custom/callback", "%2Fprojects?view=1#part", true},
+	} {
+		t.Run(tc.callback+" -> "+tc.target, func(t *testing.T) {
+			identity := NewIdentity("https://daynight.example" + tc.callback)
+			_, pending, err := identity.StartLogin("github", tc.target, time.Now())
+			if tc.want {
+				if err != nil || pending.ReturnPath != tc.target {
+					t.Fatalf("return path %q: pending=%q err=%v", tc.target, pending.ReturnPath, err)
+				}
+			} else {
+				checkFault(t, err, "invalid_input")
+			}
+		})
 	}
 }
 

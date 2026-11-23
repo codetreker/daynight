@@ -73,7 +73,7 @@ func (s *Execution) ListTest(ctx context.Context, p model.Principal, token strin
 			return err
 		}
 		for _, value := range items {
-			r := record{Snapshot: durableSnapshot(value.Snapshot), LastSeen: value.LastSeen, DrainUntil: value.DrainUntil}
+			r := record{Snapshot: durableSnapshot(value.Snapshot), LastSeen: value.LastSeen, DrainUntil: value.DrainUntil, ConnectionExpiry: value.ConnectionExpiry}
 			if online {
 				r.Snapshot.ConnectionState = "connected"
 			}

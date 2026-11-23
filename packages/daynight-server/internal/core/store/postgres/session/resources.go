@@ -13,6 +13,7 @@ import (
 )
 
 var _ store.SessionResourceDAO = (*DAO)(nil)
+var _ store.SessionCaptureInventoryDAO = (*DAO)(nil)
 var _ store.SessionIntentDAO = (*DAO)(nil)
 
 func (tx *DAO) SavedSessionResource(ctx context.Context, s, id string) (store.SessionResourceRecord, error) {
@@ -28,33 +29,24 @@ func (tx *DAO) SavedSessionResource(ctx context.Context, s, id string) (store.Se
 	return r, nil
 }
 func (tx *DAO) ListSessionResources(ctx context.Context, s string) ([]store.SessionResourceRecord, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT resource_id::text FROM session_resources WHERE session_id=$1 ORDER BY resource_id`, s)
+	rows, err := tx.tx.Query(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),COALESCE(migration_id::text,''),gc_pending,content IS NOT NULL FROM session_resources WHERE session_id=$1 ORDER BY resource_id`, s)
 	if err != nil {
 		return nil, mediaQueryError("list saved resources", err)
 	}
-	ids := []string{}
+	defer rows.Close()
+	out := []store.SessionResourceRecord{}
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, mediaQueryError("scan resource identity", err)
+		r := store.SessionResourceRecord{SessionID: s}
+		var raw []byte
+		if err = rows.Scan(&raw, &r.BlobID, &r.BlobPath, &r.MigrationID, &r.GCPending, &r.HasInlineContent); err != nil {
+			return nil, mediaQueryError("scan saved resource", err)
 		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, mediaQueryError("list saved resources", err)
-	}
-	out := make([]store.SessionResourceRecord, 0, len(ids))
-	for _, id := range ids {
-		r, e := tx.SavedSessionResource(ctx, s, id)
-		if e != nil {
-			return nil, e
+		if err = json.Unmarshal(raw, &r.Resource); err != nil {
+			return nil, mediaQueryError("decode saved resource", err)
 		}
 		out = append(out, r)
 	}
-	return out, nil
+	return out, mediaQueryError("list saved resources", rows.Err())
 }
 func (tx *DAO) InsertSessionResource(ctx context.Context, r store.SessionResourceRecord) error {
 	raw, err := json.Marshal(r.Resource)
@@ -107,18 +99,12 @@ func (tx *DAO) SessionResourceReferenceExists(ctx context.Context, r store.Sessi
 }
 func (tx *DAO) SessionResourceUsage(ctx context.Context, s string) (store.SessionResourceUsage, error) {
 	var r store.SessionResourceUsage
-	// Serialize volume reservation across different Sessions and service instances.
-	// Each caller already holds only its authorized Session lock.
-	_, err := tx.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7310293381::bigint)`)
-	if err != nil {
-		return r, mediaQueryError("lock resource volume admission", err)
-	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_resource_state(session_id) VALUES($1) ON CONFLICT DO NOTHING`, s)
+	_, err := tx.tx.Exec(ctx, `INSERT INTO session_resource_state(session_id) VALUES($1) ON CONFLICT DO NOTHING`, s)
 	if err != nil {
 		return r, mediaQueryError("initialize resource state", err)
 	}
-	err = tx.tx.QueryRow(ctx, `SELECT delete_epoch,deleting,EXISTS(SELECT 1 FROM session_archive_bundles WHERE session_id=$1 AND phase IN ('sealed','committed','verified')),(SELECT COALESCE(sum((spec->>'byteLength')::bigint*CASE WHEN receipt->>'state'='complete' THEN 1 ELSE 2 END),0) FROM session_image_uploads WHERE NOT storage_released)+(SELECT COALESCE(sum(2*COALESCE((validated->>'byteLength')::bigint,10485760)),0) FROM session_image_captures captures WHERE receipt->>'state' IN ('reserved','copying') AND NOT EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=captures.session_id AND uploads.upload_id=COALESCE((captures.receipt->>'attemptId')::uuid,captures.capture_id)))+(SELECT COALESCE(sum(byte_length*CASE WHEN state='complete' THEN 1 ELSE 2 END),0) FROM session_archive_files WHERE purpose='resource' AND NOT staging_released)+(SELECT COALESCE(sum(byte_length*CASE WHEN purpose='history' THEN 2 ELSE 1 END),0) FROM session_archive_files WHERE purpose IN ('history','timeline') AND NOT staging_released)+(SELECT count(*)*138412032 FROM (SELECT session_id FROM session_image_uploads UNION SELECT session_id FROM session_resources UNION SELECT session_id FROM session_image_captures UNION SELECT session_id FROM session_archive_bundles) resource_sessions),(SELECT COALESCE(sum((descriptor->>'byteLength')::bigint),0) FROM session_resources WHERE session_id=$1 AND descriptor->>'status'='available'),(SELECT count(*) FROM session_resources WHERE session_id=$1),(SELECT COALESCE(sum((spec->>'byteLength')::bigint),0) FROM session_image_uploads WHERE session_id=$1 AND NOT storage_released AND receipt->>'state'<>'complete')+(SELECT COALESCE(sum(COALESCE((validated->>'byteLength')::bigint,10485760)),0) FROM session_image_captures captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying') AND NOT EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=captures.session_id AND uploads.upload_id=COALESCE((captures.receipt->>'attemptId')::uuid,captures.capture_id)))+(SELECT COALESCE(sum(byte_length),0) FROM session_archive_files WHERE session_id=$1 AND purpose='resource' AND state='receiving'),(SELECT count(*) FROM session_image_uploads WHERE session_id=$1 AND NOT storage_released AND receipt->>'state'<>'complete')+(SELECT count(*) FROM session_image_captures captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying') AND NOT EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=captures.session_id AND uploads.upload_id=COALESCE((captures.receipt->>'attemptId')::uuid,captures.capture_id)))+(SELECT count(*) FROM session_archive_files WHERE session_id=$1 AND purpose='resource' AND state='receiving'),(SELECT count(*) FROM (SELECT upload_id AS identity FROM session_image_uploads WHERE session_id=$1 UNION SELECT capture_id AS identity FROM session_image_captures WHERE session_id=$1) resource_identities) FROM session_resource_state WHERE session_id=$1 FOR UPDATE`, s).Scan(&r.DeleteEpoch, &r.Deleting, &r.Frozen, &r.GlobalReservedBytes, &r.Bytes, &r.Resources, &r.ReservedBytes, &r.ReservedResources, &r.UploadIdentities)
-	return r, mediaQueryError("read resource budget", err)
+	err = tx.tx.QueryRow(ctx, `SELECT delete_epoch,deleting,EXISTS(SELECT 1 FROM session_archive_bundles WHERE session_id=$1 AND phase IN ('sealed','committed','verified')),(SELECT COALESCE(sum((descriptor->>'byteLength')::bigint),0) FROM session_resources WHERE session_id=$1 AND descriptor->>'status'='available'),(SELECT count(*) FROM session_resources WHERE session_id=$1 AND descriptor->>'status'='available') FROM session_resource_state WHERE session_id=$1 FOR UPDATE`, s).Scan(&r.DeleteEpoch, &r.Deleting, &r.Frozen, &r.Bytes, &r.Resources)
+	return r, mediaQueryError("read resource state", err)
 }
 func (tx *DAO) SessionUpload(ctx context.Context, s, id string) (store.SessionUploadRecord, error) {
 	r := store.SessionUploadRecord{SessionID: s}
@@ -136,6 +122,17 @@ func (tx *DAO) SessionImageUploadExists(ctx context.Context, s, image string) (b
 	var found bool
 	e := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_image_uploads WHERE session_id=$1 AND image_id=$2)`, s, image).Scan(&found)
 	return found, mediaQueryError("read image upload identity", e)
+}
+
+func (tx *DAO) SessionUploadByResource(ctx context.Context, session, resource string) (store.SessionUploadRecord, error) {
+	var upload string
+	// The unique (session_id, blob_id) key identifies the original owner even
+	// when several later capture attempts reference the same resource.
+	err := tx.tx.QueryRow(ctx, `SELECT upload_id::text FROM session_image_uploads WHERE session_id=$1 AND blob_id=$2`, session, resource).Scan(&upload)
+	if err != nil {
+		return store.SessionUploadRecord{}, mediaQueryError("read resource upload owner", err)
+	}
+	return tx.SessionUpload(ctx, session, upload)
 }
 func (tx *DAO) SaveSessionUpload(ctx context.Context, r store.SessionUploadRecord) error {
 	spec, err := json.Marshal(r.Spec)
@@ -182,13 +179,51 @@ func (tx *DAO) SessionCapture(ctx context.Context, s, id string) (store.SessionC
 	if err != nil {
 		return r, mediaQueryError("read image capture", err)
 	}
+	err = decodeSessionCapture(&r, request, receipt, validated)
+	return r, mediaQueryError("decode image capture", err)
+}
+func decodeSessionCapture(r *store.SessionCaptureRecord, request, receipt, validated []byte) (err error) {
 	if err = json.Unmarshal(request, &r.Request); err == nil {
 		err = json.Unmarshal(receipt, &r.Receipt)
 	}
 	if err == nil && len(validated) > 0 {
 		err = json.Unmarshal(validated, &r.Validated)
 	}
-	return r, mediaQueryError("decode image capture", err)
+	return err
+}
+func (tx *DAO) SessionCaptures(ctx context.Context, session, after string, limit int) ([]store.SessionCaptureRecord, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("capture inventory limit must be between 1 and 1000")
+	}
+	var cursor any
+	if after != "" {
+		cursor = after
+	}
+	rows, err := tx.tx.Query(ctx, `SELECT capture_id::text,request,receipt,validated FROM session_image_captures WHERE session_id=$1 AND ($2::uuid IS NULL OR capture_id>$2::uuid) ORDER BY capture_id LIMIT $3`, session, cursor, limit)
+	if err != nil {
+		return nil, mediaQueryError("list image captures", err)
+	}
+	defer rows.Close()
+	out := []store.SessionCaptureRecord{}
+	for rows.Next() {
+		r := store.SessionCaptureRecord{SessionID: session}
+		var captureID string
+		var request, receipt, validated []byte
+		if err = rows.Scan(&captureID, &request, &receipt, &validated); err != nil {
+			return nil, mediaQueryError("scan image capture", err)
+		}
+		if err = decodeSessionCapture(&r, request, receipt, validated); err != nil {
+			return nil, mediaQueryError("decode image capture", err)
+		}
+		if r.Request.CaptureID != captureID {
+			return nil, errors.New("capture inventory identity differs from persisted key")
+		}
+		out = append(out, r)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mediaQueryError("list image captures", err)
+	}
+	return out, nil
 }
 func (tx *DAO) SessionCaptureByImage(ctx context.Context, s, image string) (store.SessionCaptureRecord, error) {
 	var id string
@@ -213,7 +248,7 @@ func (tx *DAO) SaveSessionCapture(ctx context.Context, r store.SessionCaptureRec
 	}
 	var tag pgconn.CommandTag
 	if r.Expected == nil {
-		tag, e = tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated) VALUES($1,$2,$3,$4,$5,$6)`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
+		tag, e = tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
 	} else {
 		expectedReceipt, err := json.Marshal(r.Expected.Receipt)
 		if err != nil {

@@ -9,7 +9,7 @@ const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
-const task = { type: 'task', parentId: null, assignedTo: null, id: taskId, projectId, title: 'Platform work', description: '', properties: { pullRequests: [] }, status: 'todo',
+const task = { type: 'task', parentId: null, assignedTo: null, tags: [], id: taskId, projectId, title: 'Platform work', description: '', properties: { pullRequests: [] }, status: 'todo',
   version: 9007199254740993n, allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graph = (requiredPlatform: unknown) => ({ observedAt: time,
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },

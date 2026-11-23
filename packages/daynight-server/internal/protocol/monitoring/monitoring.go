@@ -17,10 +17,18 @@ import (
 )
 
 const MaxBody = 256 * 1024
+
+// MaxStoredBody includes the fixed compatibility envelope for direct observations.
+const MaxStoredBody = MaxBody + 62
 const MaxDetail = 512 * 1024
 const MaxQuery = 256 * 1024
 
 type Observation map[string]any
+type DirectObservation map[string]any
+type DirectReceipt struct {
+	ReceivedAt time.Time `json:"receivedAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+}
 type Receipt = store.MonitoringReceipt
 
 type DetailResponse struct {
@@ -264,6 +272,7 @@ func scope(raw json.RawMessage) (any, error) {
 
 // Diagnostic text is a fixed protocol vocabulary, not an exception message.
 var diagnosticCauses = map[string]string{
+	"archive-quota-exceeded":     "Session archive capacity was exceeded (quota_exceeded).",
 	"cancelled":                  "The operation was cancelled.",
 	"timeout":                    "The operation timed out.",
 	"authentication-required":    "Authentication is required.",
@@ -284,7 +293,9 @@ var diagnosticCauses = map[string]string{
 	"recovery-limit":             "The recovery limit was reached.",
 	"native-identity-missing":    "The original native execution identity is missing.",
 	"worktree-validation-failed": "The worktree failed ownership validation.",
+	"ownership-unconfirmed":      "Retained resource ownership is unconfirmed; automatic cleanup is unsafe.",
 	"branch-mismatch":            "The worktree branch does not match the recorded owner.",
+	"markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.",
 	"recovery-blocked":           "Recovery is blocked and needs attention.",
 	"outcome-unknown":            "The operation outcome is unknown.",
 	"unknown":                    "The operation failed; inspect local Worker diagnostics for details.",
@@ -452,25 +463,96 @@ func recovery(raw json.RawMessage) (any, error) {
 
 var deliveryFailure = object(map[string]parser{"observedAt": timestamp, "phase": phaseDelivery, "error": structured, "requestId": nullable(id)})
 var schedulerObject = object(map[string]parser{"phase": scheduler, "coverage": coverage, "cycleId": nullable(id), "lastCompletedAt": nullable(timestamp), "lastSuccessfulAt": nullable(timestamp), "lastOutcome": nullable(enum("completed", "failed", "cancelled")), "nextPollAt": nullable(timestamp)})
-var capacity = object(map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt), "detailCoverage": detail})
-var observation = object(map[string]parser{"runId": id, "sequence": sequence, "capturedAt": timestamp, "lifecycle": enum("starting", "running", "stopping", "stopped"), "scheduler": schedulerObject, "capacity": nullable(capacity), "admission": object(map[string]parser{"observedAt": timestamp, "coverage": coverage, "reasons": list(admissionReason, 16, false)}), "reservations": list(reservation, 128, false), "activities": list(activity, 128, false), "currentFailures": list(failure, 32, false), "lastRecovery": nullable(recovery), "detailCoverage": detail, "delivery": object(map[string]parser{"lastSucceededAt": nullable(timestamp), "lastFailure": nullable(deliveryFailure)})})
+
+func capacityParser(withCoverage bool) parser {
+	return func(raw json.RawMessage) (any, error) {
+		var input map[string]json.RawMessage
+		if json.Unmarshal(raw, &input) != nil {
+			return nil, bad()
+		}
+		fields := map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt)}
+		if withCoverage {
+			fields["detailCoverage"] = detail
+		}
+		if _, present := input["breakdown"]; present {
+			fields["breakdown"] = object(map[string]parser{"active": number(0, safeInt), "retained": number(0, safeInt)})
+		}
+		value, err := object(fields)(raw)
+		if err != nil {
+			return nil, err
+		}
+		c := value.(map[string]any)
+		occupied := c["occupied"].(int64)
+		if c["available"].(int64) != max(int64(0), c["limit"].(int64)-occupied) {
+			return nil, bad()
+		}
+		if b, ok := c["breakdown"].(map[string]any); ok && b["active"].(int64)+b["retained"].(int64) != occupied {
+			return nil, bad()
+		}
+		return value, nil
+	}
+}
+
+var capacity = capacityParser(true)
+var observationFields = map[string]parser{"capturedAt": timestamp, "lifecycle": enum("starting", "running", "stopping", "stopped"), "scheduler": schedulerObject, "capacity": nullable(capacity), "admission": object(map[string]parser{"observedAt": timestamp, "coverage": coverage, "reasons": list(admissionReason, 16, false)}), "reservations": list(reservation, 128, false), "activities": list(activity, 128, false), "currentFailures": list(failure, 32, false), "lastRecovery": nullable(recovery), "detailCoverage": detail, "delivery": object(map[string]parser{"lastSucceededAt": nullable(timestamp), "lastFailure": nullable(deliveryFailure)})}
+
+func observationParser(legacy bool) parser {
+	fields := make(map[string]parser, len(observationFields)+2)
+	for k, v := range observationFields {
+		fields[k] = v
+	}
+	if legacy {
+		fields["runId"] = id
+		fields["sequence"] = sequence
+	}
+	return object(fields)
+}
 
 func ParseObservation(raw json.RawMessage) (Observation, error) {
-	if len(raw) > MaxBody {
+	return parseObservation(raw, MaxBody, true, false)
+}
+
+// ParseStoredObservation accepts the private compatibility envelope without expanding the HTTP input limit.
+func ParseStoredObservation(raw json.RawMessage) (Observation, error) {
+	return parseObservation(raw, MaxStoredBody, true, false)
+}
+
+func ParseDirectObservation(raw json.RawMessage) (DirectObservation, error) {
+	o, err := parseObservation(raw, MaxBody, false, true)
+	return DirectObservation(o), err
+}
+
+// LegacyObservationForDirect adds stable compatibility metadata for existing readers.
+func LegacyObservationForDirect(o DirectObservation, sampleID string) Observation {
+	legacy := make(Observation, len(o)+2)
+	for k, v := range o {
+		legacy[k] = v
+	}
+	legacy["runId"] = sampleID
+	legacy["sequence"] = "1"
+	return legacy
+}
+
+func parseObservation(raw json.RawMessage, limit int, legacy, direct bool) (Observation, error) {
+	if len(raw) > limit {
 		return nil, &model.Fault{Code: "payload_too_large", Message: "Monitoring observation exceeds its input limit."}
 	}
 	if !jsonunicode.Valid(raw) {
 		return nil, bad()
 	}
-	v, e := observation(raw)
+	v, e := observationParser(legacy)(raw)
 	if e != nil {
 		return nil, e
 	}
 	o := Observation(v.(map[string]any))
-	if c, ok := o["capacity"].(map[string]any); ok {
-		limit, occupied, available := c["limit"].(int64), c["occupied"].(int64), c["available"].(int64)
-		want := max(int64(0), limit-occupied)
-		if available != want {
+	if direct {
+		for _, entry := range o["currentFailures"].([]any) {
+			f := entry.(map[string]any)
+			if f["component"] == "monitoring" && f["phase"] != "write" && f["phase"] != "shutdown" {
+				return nil, bad()
+			}
+		}
+		if f, ok := o["delivery"].(map[string]any)["lastFailure"].(map[string]any); ok && f["phase"] != "write" && f["phase"] != "shutdown" {
 			return nil, bad()
 		}
 	}
@@ -501,7 +583,7 @@ func ParseObservation(raw json.RawMessage) (Observation, error) {
 	if e != nil {
 		return nil, bad()
 	}
-	if len(b) > MaxBody {
+	if len(b) > limit {
 		return nil, &model.Fault{Code: "payload_too_large", Message: "Monitoring observation exceeds its encoded limit."}
 	}
 	return o, nil

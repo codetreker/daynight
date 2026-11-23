@@ -1,0 +1,134 @@
+{
+  "name": "task_search",
+  "description": "Search Task or Goal titles, descriptions and IDs with a nonempty expression and optional tag and other filters. Results are ranked lean pages. Repeat the same query and filters with nextCursor; changes cause search_changed. Use task_list for tag-only queries.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "task",
+          "goal"
+        ],
+        "default": "task",
+        "description": "Select ordinary tasks (default) or Goals."
+      },
+      "parentId": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid",
+        "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "proposed",
+          "todo",
+          "in_progress",
+          "done",
+          "cancelled"
+        ]
+      },
+      "assignedTo": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "uuid"
+          },
+          {
+            "enum": [
+              "me",
+              "unassigned"
+            ]
+          }
+        ]
+      },
+      "ready": {
+        "type": "boolean"
+      },
+      "allowAgents": {
+        "type": "boolean"
+      },
+      "compatiblePlatform": {
+        "type": "string",
+        "enum": [
+          "windows",
+          "linux",
+          "macos"
+        ]
+      },
+      "tagIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Project tag UUIDs; applied with other filters before pagination or the ready limit. Empty means no tag condition unless untagged is true."
+      },
+      "tagMatch": {
+        "type": "string",
+        "enum": [
+          "all",
+          "any"
+        ],
+        "default": "all",
+        "description": "Match all selected tags or any selected tag; defaults to all."
+      },
+      "untagged": {
+        "type": "boolean",
+        "description": "Select resources without tags; conflicts with a nonempty tagIds set."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 50
+      },
+      "cursor": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string",
+        "description": "Nonempty text expression: AND, OR, NOT, parentheses, quoted terms and id:, title:, description: fields. Tag names are not text fields."
+      },
+      "taskParentView": {
+        "type": "string",
+        "enum": [
+          "v1"
+        ],
+        "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+      },
+      "parentTaskId": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Select direct children of this visible ordinary Task in the same Project; conflicts with parentId."
+      }
+    },
+    "required": [
+      "projectId",
+      "query"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "not": {
+          "required": [
+            "parentId",
+            "parentTaskId"
+          ]
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "openWorldHint": false
+  }
+}

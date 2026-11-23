@@ -5,6 +5,10 @@ import { parseTaskSessionInspection } from "./task-session.js";
 import type { TaskSessionInspection, TaskSessionReader } from "./task-session.js";
 import { array, bool, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
 import { resourcePath } from "./resource-path.js";
+import { parseTaskSessionHistoryDirectory } from "./task-session-history-directory.js";
+import type { TaskSessionHistoryDirectory } from "./task-session-history-directory.js";
+
+export type * from "./task-session-history-directory.js";
 
 export type TaskSessionCurrent = {
   readonly status: "registered" | "not_registered" | "not_applicable";
@@ -44,6 +48,7 @@ export type TaskSessionReadQuery = { readonly limit?: number; readonly before?: 
 export type TaskSessionReadClient = {
   currentTaskSession(projectId: string, taskId: string): Promise<TaskSessionCurrent>;
   listTaskSessions(projectId: string, taskId: string, query?: TaskSessionListQuery): Promise<TaskSessionDirectory>;
+  listTaskSessionHistoryDirectory(projectId: string, taskId: string, query?: TaskSessionListQuery): Promise<TaskSessionHistoryDirectory>;
   readTaskSession(projectId: string, taskId: string, sessionId: string, query?: TaskSessionReadQuery): Promise<TaskSessionMessagePage>;
   readTaskSessionEntry(projectId: string, taskId: string, sessionId: string, cursor: string): Promise<TaskSessionEntryChunk>;
 };
@@ -118,6 +123,12 @@ export const parseTaskSessionEntryChunk = (value: unknown, sessionId: string): T
 };
 
 export const createTaskSessionReadClient = (read: TaskSessionReader): TaskSessionReadClient => ({
+  listTaskSessionHistoryDirectory: async (projectId, taskId, input = {}) => {
+    const project = id(projectId.toLowerCase()), task = id(taskId.toLowerCase()), limit = pageLimit(input.limit);
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (input.cursor !== undefined) query.set("cursor", cursor(input.cursor));
+    return read({ operation: "task.session.history-directory", projectId: project, taskId: task, historyDirectoryVersion: 1, path: `${resourcePath("projects", project, "history-directory", "tasks", task, "sessions")}?${query}` }, value => parseTaskSessionHistoryDirectory(value, task, limit));
+  },
   currentTaskSession: async (projectId, taskId) => {
     const project = id(projectId.toLowerCase()), task = id(taskId.toLowerCase());
     return read({ operation: "task.session.current", projectId: project, taskId: task, path: `${resourcePath("projects", project, "tasks", task, "sessions", "current")}?view=inspection` }, value => parseTaskSessionCurrent(value, project, task));

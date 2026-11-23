@@ -1,4 +1,5 @@
 import type { ReactNode, RefObject } from 'react';
+import type { NativeSelectProps } from '../../ui/native-select/NativeSelect';
 import type { SessionSnapshot } from '../../api/types';
 import type { SessionDraft, SessionViewState } from './client';
 import type { SessionDisplayMode } from './display-mode';
@@ -51,6 +52,7 @@ export type SessionComposerFooterSlot = {
 
 /** Keep the chosen DOM structure stable for a mounted Composer. Do not omit controls. */
 export type SessionComposerPresentation = {
+  readonly nativeSelectTouchMode?: NativeSelectProps['touchMode'];
   /** Bound short-screen menus above the input; the shared Composer retains scrolling and focus ownership. */
   readonly compactMenus?: boolean;
   /** Add normal-flow, height-bounded content without wrapping the shared textarea. */

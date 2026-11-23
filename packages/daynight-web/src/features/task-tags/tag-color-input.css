@@ -1,0 +1,13 @@
+.tag-color-input { min-width: 0; margin: 12px 0; padding: 0; border: 0; }
+.tag-color-input legend { margin-bottom: 8px; font-weight: 600; }
+.tag-color-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-color-preset { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 2px solid #526174; border-radius: 50%; cursor: pointer; }
+.tag-color-preset[aria-pressed="true"] { outline: 2px solid #344054; outline-offset: 2px; }
+.tag-color-preset:focus-visible { outline: 3px solid #172132; outline-offset: 3px; }
+.tag-color-preset span { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #fff; color: #172132; font-weight: 700; line-height: 1; }
+.tag-color-custom { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin-top: 12px; }
+.tag-color-custom label { display: grid; gap: 4px; min-width: 0; }
+.tag-color-custom input[type="color"] { width: 48px; height: 36px; padding: 2px; }
+.tag-color-custom input[type="text"] { box-sizing: border-box; width: 10em; max-width: 100%; }
+.tag-color-input p { color: #a3322b; }
+.tag-color-preview { margin-top: 8px; }

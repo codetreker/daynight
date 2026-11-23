@@ -6,6 +6,7 @@ import { navigate } from '../src/app/router';
 import type { WorkerConfigurationOutcome } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
+import { useWorkerReviewParticipation } from '../src/features/workers/configuration/useWorkerReviewParticipation';
 import { WorkerEditingPanels } from '../src/features/workers/configuration/WorkerEditingPanels';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -13,10 +14,11 @@ import { configurationError, configurationResource, configurationResponse, confi
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
-type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
+type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'review' | 'confirming' | 'visible'>;
 const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
   const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled });
-  return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
+  const review = useWorkerReviewParticipation(props.workerId, false);
+  return <WorkerConfigurationPanel {...props} visible state={state} review={review} confirming={false} />;
 };
 const mount = () => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const install = (response: () => Response) => {

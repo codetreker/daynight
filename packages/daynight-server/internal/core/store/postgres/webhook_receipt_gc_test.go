@@ -13,6 +13,7 @@ import (
 )
 
 func TestWebhookReceiptGCFenceAndExpiry(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -151,6 +152,7 @@ func TestWebhookReceiptGCFenceAndExpiry(t *testing.T) {
 }
 
 func TestWebhookReceiptGCRechecksAfterFence(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

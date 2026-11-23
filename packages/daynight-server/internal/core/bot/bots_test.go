@@ -209,6 +209,45 @@ func TestCreateIdentityAndFailurePaths(t *testing.T) {
 	assertFault(t, err, "resource_conflict")
 }
 
+func TestListCursorPreservesWorkerScope(t *testing.T) {
+	principal := model.Principal{UserID: "11111111-1111-4111-8111-111111111111"}
+	createdAt := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	records := store.BotPage{
+		Items: []model.Bot{
+			{ID: "22222222-2222-4222-8222-222222222222", OwnerUserID: principal.UserID, CreatedAt: createdAt.Add(-time.Second)},
+			{ID: botID, OwnerUserID: principal.UserID, CreatedAt: createdAt},
+		},
+		HasMore: true,
+	}
+	for _, tc := range []struct {
+		name      string
+		issuedFor *string
+		readFor   *string
+		accepted  bool
+	}{
+		{name: "global to global", accepted: true},
+		{name: "global to Worker", readFor: ptr(workerID)},
+		{name: "Worker to same Worker", issuedFor: ptr(workerID), readFor: ptr(workerID), accepted: true},
+		{name: "Worker to different Worker", issuedFor: ptr(workerID), readFor: ptr("33333333-3333-4333-8333-333333333333")},
+		{name: "Worker to global", issuedFor: ptr(workerID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ListResult(principal, tc.issuedFor, records)
+			if err != nil || result.NextCursor == nil {
+				t.Fatalf("issue Bot list cursor: %+v %v", result, err)
+			}
+			page, err := ListPage(principal, tc.readFor, model.PageRequest{Limit: 2, Cursor: result.NextCursor})
+			if !tc.accepted {
+				assertFault(t, err, "invalid_input")
+				return
+			}
+			if err != nil || page.Limit != 2 || page.After == nil || page.After.ID != botID || !page.After.CreatedAt.Equal(createdAt) {
+				t.Fatalf("Bot list continuation lost its last-record keyset: %+v %v", page, err)
+			}
+		})
+	}
+}
+
 func TestReadScopeAndCompletionErrors(t *testing.T) {
 	ctx := context.Background()
 	p := model.Principal{UserID: "owner"}
@@ -272,7 +311,9 @@ func TestListAuthorizationAndStorageFailures(t *testing.T) {
 	ctx := context.Background()
 	principal := model.Principal{UserID: "owner"}
 	target := workerID
-	request := store.Page{Limit: 2}
+	const afterID = "22222222-2222-4222-8222-222222222222"
+	afterTime := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	request := store.Page{Limit: 2, After: &store.Position{ID: afterID, CreatedAt: afterTime}}
 	database := &reader{fail: map[string]error{}, records: store.BotPage{Items: []model.Bot{{ID: botID}}}}
 	_, err := List(ctx, snapshot{r: database, err: model.ErrNotFound}, principal, &target, request)
 	assertFault(t, err, "unauthenticated")
@@ -295,9 +336,31 @@ func TestListAuthorizationAndStorageFailures(t *testing.T) {
 	if _, err = List(ctx, snapshot{r: database}, principal, &target, request); !errors.Is(err, sentinel) {
 		t.Fatalf("list cause: %v", err)
 	}
-	delete(database.fail, "list")
-	result, err := List(ctx, snapshot{r: database}, principal, &target, request)
-	if err != nil || len(result.Items) != 1 || database.listOwner != principal.UserID || database.listWorker == nil || *database.listWorker != target || database.listPage.Limit != request.Limit {
-		t.Fatalf("scope: %+v %v", result, err)
+	if database.listCalls != 1 {
+		t.Fatalf("BotDAO.Bots calls before successful reads: %d, want 1", database.listCalls)
+	}
+	for _, tc := range []struct {
+		name   string
+		worker *string
+	}{
+		{name: "global"},
+		{name: "worker", worker: &target},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := &reader{records: store.BotPage{Items: []model.Bot{{ID: botID}}}}
+			result, err := List(ctx, snapshot{r: database}, principal, tc.worker, request)
+			if err != nil || len(result.Items) != 1 || result.Items[0].ID != botID {
+				t.Fatalf("Bot list result: %+v %v", result, err)
+			}
+			readWorker := database.listWorker
+			if database.listCalls != 1 || database.listOwner != principal.UserID ||
+				(tc.worker == nil) != (readWorker == nil) || readWorker != nil && *readWorker != workerID {
+				t.Fatalf("BotDAO.Bots scope: owner=%q worker=%v calls=%d", database.listOwner, readWorker, database.listCalls)
+			}
+			page := database.listPage
+			if page.Limit != 2 || page.After == nil || page.After.ID != afterID || !page.After.CreatedAt.Equal(afterTime) {
+				t.Fatalf("BotDAO.Bots lost the continuation keyset: limit=%d after=%+v, want limit=2 ID=%q CreatedAt=%v", page.Limit, page.After, afterID, afterTime)
+			}
+		})
 	}
 }

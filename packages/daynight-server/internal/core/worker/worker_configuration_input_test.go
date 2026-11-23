@@ -17,7 +17,7 @@ const configurationInputProjectB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 func configurationInputDocument() map[string]any {
 	return map[string]any{
-		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3, "preferPlatformSpecificTasks": false,
+		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3, "platformTaskMode": "all",
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
 		"projects": []any{},
 	}
@@ -37,7 +37,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	document["maxConcurrent"] = int64(64)
 	document["pollIntervalMs"] = int64(60000)
 	document["recoveryLimit"] = int64(0)
-	document["preferPlatformSpecificTasks"] = true
+	document["platformTaskMode"] = "prefer"
 	document["native"] = map[string]any{"agent": "copilot", "model": "provider/model", "args": []any{"--flag", "a b"}}
 	document["projects"] = []any{
 		map[string]any{"projectId": strings.ToUpper(configurationInputProjectB), "nativeOverrides": map[string]any{"agent": "claude", "model": nil, "args": []any{}}},
@@ -47,7 +47,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaxConcurrent != 64 || value.PollIntervalMs != 60000 || value.RecoveryLimit != 0 || !value.PreferPlatformSpecificTasks || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
+	if value.MaxConcurrent != 64 || value.PollIntervalMs != 60000 || value.RecoveryLimit != 0 || value.PlatformTaskMode != model.PlatformTaskPrefer || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
 		t.Fatalf("invalid parsed settings: %+v", value)
 	}
 	if len(value.Projects) != 2 || value.Projects[0].ProjectID != configurationInputProjectA || value.Projects[1].ProjectID != configurationInputProjectB || len(value.Projects[0].NativeOverrides) != 0 {
@@ -61,7 +61,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 		document := configurationInputDocument()
 		document["native"].(map[string]any)["agent"] = agent
 		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
-		if err != nil || parsed.PreferPlatformSpecificTasks || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
+		if err != nil || parsed.PlatformTaskMode != model.PlatformTaskAll || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
 			t.Fatalf("explicit empty settings rejected: %+v %v", parsed, err)
 		}
 	}
@@ -69,10 +69,10 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 
 func TestWorkerConfigurationInputRejectsMalformedConfiguration(t *testing.T) {
 	cases := map[string]func(map[string]any){
-		"preference missing":    func(v map[string]any) { delete(v, "preferPlatformSpecificTasks") },
-		"preference null":       func(v map[string]any) { v["preferPlatformSpecificTasks"] = nil },
-		"preference number":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = 1 },
-		"preference string":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = "false" },
+		"preference missing":    func(v map[string]any) { delete(v, "platformTaskMode") },
+		"preference null":       func(v map[string]any) { v["platformTaskMode"] = nil },
+		"preference number":     func(v map[string]any) { v["platformTaskMode"] = 1 },
+		"preference string":     func(v map[string]any) { v["platformTaskMode"] = "false" },
 		"missing scalar":        func(v map[string]any) { delete(v, "maxConcurrent") },
 		"unknown field":         func(v map[string]any) { v["repositoryRoot"] = "/private" },
 		"max zero":              func(v map[string]any) { v["maxConcurrent"] = 0 },
@@ -233,6 +233,70 @@ func TestWorkerConfigurationPreferenceApplicationAcceptsBothBooleanValues(t *tes
 	for _, value := range []any{1, "false", []any{}, map[string]any{}} {
 		_, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(configurationInputItem("preferPlatformSpecificTasks", value))))
 		requireFault(t, err, "invalid_input")
+	}
+}
+
+func TestSudoCleanupConfigurationAndObservation(t *testing.T) {
+	for _, value := range []any{false, true} {
+		document := configurationInputDocument()
+		document["enableSudoCleanup"] = value
+		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
+		if err != nil || parsed.EnableSudoCleanup != value {
+			t.Fatalf("configuration %v: %+v %v", value, parsed, err)
+		}
+		item := configurationInputItem("enableSudoCleanup", value)
+		exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || string(exchange.Observation.Items[0].AppliedValue) != fmt.Sprint(value) {
+			t.Fatalf("observation %v: %+v %v", value, exchange, err)
+		}
+	}
+	for _, value := range []any{nil, "false", 1, []any{}} {
+		document := configurationInputDocument()
+		document["enableSudoCleanup"] = value
+		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {
+			t.Fatalf("invalid configuration accepted: %v", value)
+		}
+		item := configurationInputItem("enableSudoCleanup", value)
+		if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err == nil {
+			t.Fatalf("invalid applied observation accepted: %v", value)
+		}
+	}
+	item := configurationInputItem("enableSudoCleanup", nil)
+	item["state"] = "pending"
+	if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err != nil {
+		t.Fatalf("pending null rejected: %v", err)
+	}
+}
+
+func TestWindowsProcessCleanupConfigurationAndObservation(t *testing.T) {
+	for _, value := range []any{false, true} {
+		document := configurationInputDocument()
+		document["enableWindowsProcessCleanup"] = value
+		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
+		if err != nil || parsed.EnableWindowsProcessCleanup != value {
+			t.Fatalf("configuration %v: %+v %v", value, parsed, err)
+		}
+		item := configurationInputItem("enableWindowsProcessCleanup", value)
+		exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || string(exchange.Observation.Items[0].AppliedValue) != fmt.Sprint(value) {
+			t.Fatalf("observation %v: %+v %v", value, exchange, err)
+		}
+	}
+	for _, value := range []any{nil, "false", 1, []any{}} {
+		document := configurationInputDocument()
+		document["enableWindowsProcessCleanup"] = value
+		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {
+			t.Fatalf("invalid configuration accepted: %v", value)
+		}
+		item := configurationInputItem("enableWindowsProcessCleanup", value)
+		if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err == nil {
+			t.Fatalf("invalid applied observation accepted: %v", value)
+		}
+	}
+	item := configurationInputItem("enableWindowsProcessCleanup", nil)
+	item["state"] = "pending"
+	if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err != nil {
+		t.Fatalf("pending null rejected: %v", err)
 	}
 }
 
@@ -399,14 +463,14 @@ func TestWorkerConfigurationInputUnicodeBoundaries(t *testing.T) {
 }
 
 func configurationCapacityValue() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{}}
 }
 
 func configurationCapacityDocument() map[string]any {
 	return map[string]any{
-		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false,
+		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "platformTaskMode": "all",
 		"native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{},
 	}
 }
@@ -527,4 +591,11 @@ func TestWorkerConfigurationCapacityInput(t *testing.T) {
 		_, err = ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
 		requireFault(t, err, "invalid_input")
 	})
+}
+
+func legacyConfigurationInputDocument() map[string]any {
+	document := configurationInputDocument()
+	delete(document, "platformTaskMode")
+	document["preferPlatformSpecificTasks"] = false
+	return document
 }

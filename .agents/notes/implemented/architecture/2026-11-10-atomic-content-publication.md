@@ -13,11 +13,15 @@ independent history, inspection and archive readers.
 
 ## Decision
 
-The existing Controller content owner stores each entry revision in an immutable
-candidate file. After the candidate is durable, the same SQLite transaction
-commits its file pointer, identity, length and hashes with the source outbox.
-Every reader uses its own SQLite snapshot to select content. Directory scans
-account for physical bytes; they never publish uncommitted candidates.
+The original implementation stored each entry revision in an immutable
+candidate file. After the candidate was durable, the same SQLite transaction
+committed its file pointer, identity, length and hashes with the source outbox.
+Every reader used its own SQLite snapshot to select content. Directory scans
+accounted for physical bytes and never published uncommitted candidates. The
+[SQL activation decision](2026-11-12-session-sqlite-activation.md) replaces file
+pointers with current body rows while retaining this atomic visibility rule.
+The [resource ownership decision](2026-11-12-session-resource-files.md) separates
+resource files from timeline storage while retaining its reference guard.
 
 The named native input publication operation validates the original accepted
 observation and canonical input. It applies the association to the current entry,
@@ -31,7 +35,7 @@ that same image position on the current view, without registering or sending
 again; ordinary receipt adoption does not publish another timeline event.
 
 The named Markdown publication operation commits its projection state in the
-same transaction as the candidate pointer and source outbox. Analysis and image
+same transaction as the current body and source outbox. Analysis and image
 receipt state cannot advance independently of visible text. Native-only patches
 may precede a Markdown state rebase; recovery reads the committed entry and
 adopts only the same native image positions before publishing another Markdown
@@ -39,13 +43,13 @@ view. This preserves both completed analysis and late native image receipts
 without guessing which body is newer. The
 [source decision](2026-11-05-session-image-sources.md) owns that projection flow.
 
-Journal v8 migrates only legacy content that exactly matches its SQL index.
-Missing, unindexed or advanced legacy files cannot prove the committed snapshot;
-migration refuses them while retaining the original database and files. New
-candidates left by rollback remain invisible. Old committed candidates remain
-available to readers holding older WAL snapshots and count against the existing
-physical metadata budget. No online deletion assumes that a current pointer
-proves the absence of an older reader.
+The original v8 migration required legacy content to match its SQL index and
+refused missing, unindexed or advanced files. The later [local mapping decision](2026-11-16-controller-local-format-mapping.md)
+keeps the SQL index as the source selection boundary without auditing payload
+integrity. Under that format, new candidates left by rollback remain invisible. Old
+committed candidates remain available to readers holding older WAL snapshots until reader-safe retirement. The v10 transition imports only
+committed pointers and uses a successful reader barrier before retiring files;
+current-pointer checks alone do not prove the absence of an older reader.
 
 This completes the atomic publication requirement in the
 [provider decision](2026-11-05-session-image-providers.md) without introducing a
@@ -81,12 +85,10 @@ without clearing the original writer identity or claiming a new commit.
 
 File and SQL failure boundaries are explicit. A candidate can survive a failed
 transaction without becoming history, and a lost commit response can be resolved
-by the original publication identity. Hash, length and entry identity failures
-remain visible instead of falling back to directory scanning or empty history.
+by the original publication identity. Ordinary readers expose hash, length and entry identity failures instead of
+falling back to directory scanning or empty history.
 
-Retaining candidates costs physical metadata space even when the logical
-history remains small. Admission counts retained and orphan files and rejects
-writes at the existing limit; it does not delete old content to admit more.
-Safe online reclamation would require a lifetime protocol covering every
-independent reader. Native backend qualification and visual acceptance remain
-separate from these local storage guarantees.
+Retaining candidates made physical metadata space grow even when logical history
+remained small. This cost motivates current-row SQL storage. The [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission; migration still retains files until reader-safe retirement. SQL WAL supplies the snapshot
+lifetime for ordinary current-row updates. Native backend qualification and
+visual acceptance remain separate from these local storage guarantees.

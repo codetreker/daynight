@@ -20,23 +20,39 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
 type Authentication struct {
 	*RequestAuthentication
 	identity     identityOperations
 	callbackPath string
+	previewLogin func(http.ResponseWriter, *http.Request, string)
 }
 
-func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger) (*Authentication, error) {
+func (h *Authentication) CallbackPath() string { return h.callbackPath }
+
+// BindPreviewLogin links a successful main-site login to the preview SSO flow.
+func (h *Authentication) BindPreviewLogin(start func(http.ResponseWriter, *http.Request, string)) {
+	h.previewLogin = start
+}
+
+func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*Authentication, error) {
+	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
+		return nil, errors.New("invalid credential usage observer")
+	}
 	origin, callbackPath, err := authconfig.ValidateAuthSettings(settings, identity.CallbackURL())
 	if err != nil {
 		return nil, err
 	}
-	return &Authentication{
-		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
+	h := &Authentication{
+		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, browserActivity: identity.AuthenticateBrowserActivity, authority: origin.Host, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
 		identity:              identity, callbackPath: callbackPath,
-	}, nil
+	}
+	if len(observers) == 1 {
+		h.observeUsage = observers[0]
+	}
+	return h, nil
 }
 
 func (h *Authentication) scopeCookieName() string {
@@ -59,23 +75,89 @@ func (h *Authentication) cookie(name, value string, expires time.Time, maxAge in
 	return &http.Cookie{Name: name, Value: value, Path: "/", Secure: h.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: maxAge}
 }
 
-func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
+func (h *Authentication) RegisterRoutes(mux httpx.RouteRegistrar) {
+	h.RegisterRoutesWithScopeObserver(mux, nil)
+}
+
+// RegisterRoutesWithScopeObserver reports account classifications from actual registrations.
+func (h *Authentication) RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) {
+	h.registerRoutes(mux, observe, nil, nil)
+}
+
+// RegisterScopedRoutes selects policy-aware profile admission while preserving the
+// existing authentication and account-management routes. scoped must retain the
+// original authentication and Origin checks.
+func (h *Authentication) RegisterScopedRoutes(mux httpx.RouteRegistrar, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) {
+	if scoped == nil || profile == nil {
+		panic("scoped profile dependencies are required")
+	}
+	h.registerRoutes(mux, observe, scoped.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
+		h.patchMeAuthorized(w, r, authorization, profile, recheck)
+	}), nil)
+}
+
+// RegisterScopedAccountRoutes combines scope-aware profile and credential management.
+func (h *Authentication) RegisterScopedAccountRoutes(mux httpx.RouteRegistrar, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) error {
+	if scoped == nil || profile == nil {
+		return errors.New("scoped profile dependencies are required")
+	}
+	pat, ok := h.identity.(ScopedPATOperations)
+	if !ok {
+		return errors.New("identity service does not support scoped PAT management")
+	}
+	if _, enabled := pat.DeviceScopeCatalog(); !enabled {
+		return errors.New("PAT scope catalog is unavailable")
+	}
+	h.registerRoutes(mux, observe, scoped.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
+		h.patchMeAuthorized(w, r, authorization, profile, recheck)
+	}), pat)
+	return nil
+}
+
+// RegisterPATScopeRoutes registers account routes with scoped PAT management.
+func (h *Authentication) RegisterPATScopeRoutes(mux httpx.RouteRegistrar, observe func(ScopeRoute)) error {
+	pat, ok := h.identity.(ScopedPATOperations)
+	if !ok {
+		return errors.New("identity service does not support scoped PAT management")
+	}
+	if _, enabled := pat.DeviceScopeCatalog(); !enabled {
+		return errors.New("PAT scope catalog is unavailable")
+	}
+	h.registerRoutes(mux, observe, nil, pat)
+	return nil
+}
+
+func (h *Authentication) registerRoutes(mux httpx.RouteRegistrar, observe func(ScopeRoute), scopedPatch http.HandlerFunc, pat ScopedPATOperations) {
+	routes := accountRouteRegistry{mux: mux, observe: observe}
 	h.registerDeviceRoutes(mux)
+	h.registerCredentialRoutes(routes, pat)
+	h.registerBrowserSessionRoutes(routes)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)
 	mux.HandleFunc("HEAD /api/v1/auth/login", httpx.MethodNotAllowed(h.logger, "GET"))
 	mux.HandleFunc("HEAD "+h.callbackPath, httpx.MethodNotAllowed(h.logger, "GET"))
-	mux.HandleFunc("GET /api/v1/me", h.Require(h.me))
-	mux.HandleFunc("POST /api/v1/auth/logout", h.Require(h.logout))
-	mux.HandleFunc("GET /api/v1/me/tokens", h.Require(h.listTokens))
-	mux.HandleFunc("POST /api/v1/me/tokens", h.Require(h.createToken))
-	mux.HandleFunc("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken))
-	mux.HandleFunc("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken))
-	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
+	routes.handle("GET /api/v1/me", h.Require(h.me), accountSelf, true)
+	if scopedPatch == nil {
+		scopedPatch = h.Require(h.patchMe)
+	}
+	routes.handle("PATCH /api/v1/me", scopedPatch, accountWrite, false)
+	routes.handle("POST /api/v1/auth/logout", h.Require(h.logout), accountBrowser, false)
+	routes.handle("POST /api/v1/auth/session/activity", h.sessionActivity, accountBrowser, false)
+	routes.handle("/api/v1/auth/session/activity", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		httpx.CloseUnreadBody(w, r)
+		httpx.MethodNotAllowed(h.logger, "POST")(w, r)
+	}, accountBrowserFallback, false)
+	routes.handle("GET /api/v1/me/tokens", h.Require(h.listTokens), accountBrowser, true)
+	routes.handle("POST /api/v1/me/tokens", h.Require(h.createToken), accountBrowser, false)
+	routes.handle("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken), accountBrowser, false)
+	routes.handle("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken), accountBrowser, false)
+	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD, PATCH", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
 		fallback := httpx.MethodNotAllowed(h.logger, methods)
 		if path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/me") {
-			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }))
+			routes.handle(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }), accountFallback, false)
+
 		} else {
 			mux.HandleFunc(path, fallback)
 		}
@@ -123,7 +205,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		httpx.WriteError(w, request, h.logger, "auth", "callback", Failure())
 		return
 	}
-	result, err := h.identity.CompleteLogin(request.Context(), values, binding)
+	result, err := h.identity.CompleteLogin(request.Context(), values, binding, request.UserAgent())
 	logger := h.logger.With("login_id", result.LoginID)
 	if result.LoginID != "" {
 		http.SetCookie(w, h.cookie(h.bindingCookieName(values.Get("state")), "", time.Unix(1, 0), -1))
@@ -149,16 +231,22 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		}
 		return
 	}
-	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.ExpiresAt, int(identity.SessionLifetime.Seconds())))
+	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.CreatedAt.Add(BrowserCookieLifetime), int(BrowserCookieLifetime.Seconds())))
 	logger.InfoContext(request.Context(), "login completed", "component", "auth", "phase", "callback", "user_id", result.User.ID, "credential_id", result.Session.ID, "request_id", httpx.RequestID(request.Context()))
-	http.Redirect(w, request, result.ReturnPath, http.StatusSeeOther)
+	destination := url.Values{"returnPath": {result.ReturnPath}, "callbackPath": {request.URL.EscapedPath()}}
+	complete := "/auth/complete?" + destination.Encode()
+	if h.previewLogin != nil {
+		h.previewLogin(w, request, h.origin+complete)
+		return
+	}
+	http.Redirect(w, request, complete, http.StatusSeeOther)
 }
 
 func userResponse(user model.User) api.User {
 	return profileprotocol.UserResponse(user)
 }
 func tokenResponse(c model.PersonalAccessToken) api.PersonalAccessToken {
-	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}
+	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt), LastUsedAt: utcTokenExpiry(c.LastUsedAt)}
 }
 
 func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p model.Principal) {

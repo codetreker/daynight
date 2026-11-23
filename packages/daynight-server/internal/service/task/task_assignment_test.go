@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -54,7 +55,7 @@ type assignmentCapture struct {
 	fn func(context.Context, []protocol.Fact) error
 }
 
-func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, _ wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if c.fn == nil {
 		c.t.Fatal("unexpected source capture")
@@ -84,6 +85,12 @@ func newAssignmentFixture(t *testing.T, current model.Task, prerequisites []mode
 	base := newTaskMockBase(t, "assignment")
 	f := &assignmentFixture{t: t, ctx: t.Context(), project: project, principal: principal, current: current, capture: &assignmentCapture{t: t}}
 	f.writer = &taskWriterMock{taskMockBase: base.withLabel("task")}
+	f.writer.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != current.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	f.projectDAO = &projectWriterMock{taskMockBase: base.withLabel("project")}
 	f.sessions = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	f.projectDAO.ProjectAccessFn = func(ctx context.Context, p model.Principal) (model.ProjectAccess, error) {
@@ -128,6 +135,25 @@ func newAssignmentFixture(t *testing.T, current model.Task, prerequisites []mode
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(ctx context.Context, projectID, id string) (model.TaskHeader, error) {
+		if ctx != f.ctx || projectID != project.ID || id != current.ID {
+			t.Fatal("preflight Task identity/context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: current.Type}, nil
+	}}
+	projects := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != f.ctx || p != principal || projectID != project.ID {
+			t.Fatal("preflight authorization scope")
+		}
+		return taskMockAccess(project, principal), nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight-snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+		if ctx != f.ctx {
+			t.Fatal("preflight changed caller context")
+		}
+		return work(snapshot)
+	}
 	f.tasks = taskservice.NewTasks(f.database, f.capture)
 	return f
 }
@@ -399,7 +425,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 
 	before := after
 	v = taskcore.CurrentWrite(before)
-	v.Properties["paused"] = []byte("true")
+	v.Properties["blocked"] = []byte("true")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -415,7 +441,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	}
 	before = after
 	v = taskcore.CurrentWrite(before)
-	delete(v.Properties, "paused")
+	delete(v.Properties, "blocked")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -583,7 +609,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	_, base, owner := assignmentTaskModels()
 	bob := "bbbbbb77-7777-4777-8777-777777777777"
 	descriptor := workerDescriptor()
-	descriptor.AgentControlMode = model.AgentControlModeHerdr
+	descriptor.AgentControlMode = model.AgentControlModeWeb
 	active := base
 	active.AllowAgents = true
 	active.Status = model.TaskInProgress
@@ -645,7 +671,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	t.Run("active properties", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
-		v.Properties["paused"] = []byte("true")
+		v.Properties["blocked"] = []byte("true")
 		after := assignmentResult(active, v)
 		f.ExpectUpdate(v, after)
 		f.ExpectCapture([]protocol.Fact{{Type: protocol.Paused, ProjectID: active.ProjectID, TaskID: active.ID, TaskVersion: after.Version, OccurredAt: after.UpdatedAt, Paused: true}})
@@ -653,7 +679,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		assertReturned(t, got, after, err)
 		f = workerMockWrite(t, after, owner)
 		v = taskcore.CurrentWrite(after)
-		delete(v.Properties, "paused")
+		delete(v.Properties, "blocked")
 		removed := assignmentResult(after, v)
 		f.ExpectUpdate(v, removed)
 		got, err = f.Tasks.RemoveProperty(f.Context, owner, after.ProjectID, after.ID, "paused", after.Version)
@@ -663,9 +689,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	released.Status = model.TaskTodo
 	released.Ready = true
 	released.StartedAt = nil
-	releasedWorker := *testWorker(t, active.Properties)
-	releasedWorker.State = model.WorkerReleased
-	released.Properties = testWithWorker(t, active.Properties, &releasedWorker)
+	released.Properties = testWithWorker(t, active.Properties, nil)
 	t.Run("release", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
@@ -681,7 +705,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	reassigned := released
 	reassigned.AssignedTo = &bob
 	reassigned.AllowAgents = false
-	t.Run("reassign retained execution", func(t *testing.T) {
+	t.Run("reassign released task", func(t *testing.T) {
 		f := newAssignmentFixture(t, released, nil)
 		f.expectTarget(bob, nil)
 		v := taskcore.CurrentWrite(released)
@@ -691,20 +715,17 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		f.expectUpdate(v, after)
 		got, err := f.tasks.Update(f.ctx, owner, f.project.ID, released.ID, taskcore.UpdateTask{Version: released.Version, AssignedTo: assignmentChange(&bob)})
 		assertReturned(t, got, after, err)
-		if testWorker(t, got.Properties).UserID != owner.UserID || got.AllowAgents {
-			t.Fatal("reassignment transferred execution ownership")
+		if testWorker(t, got.Properties) != nil || got.AllowAgents {
+			t.Fatal("reassignment restored execution ownership")
 		}
 	})
 	next := workerDescriptor()
-	next.AgentControlMode = model.AgentControlModeHerdr
-	t.Run("assignee cannot resume another owner", func(t *testing.T) {
-		actor := owner
-		actor.UserID = bob
-		f := workerMockWrite(t, reassigned, actor)
-		f.ExpectedAccessCalls = 2
-		_, err := f.Tasks.ResumeWorker(f.Context, actor, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		requireFault(t, err, "forbidden")
-	})
+	next.AgentControlMode = model.AgentControlModeWeb
+	for _, caller := range []model.Principal{owner, {UserID: bob, CredentialID: owner.CredentialID, Kind: owner.Kind}} {
+		f := workerMockWrite(t, reassigned, caller)
+		_, err := f.Tasks.ClaimWorker(f.Context, caller, reassigned.ProjectID, reassigned.ID, taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next})
+		requireFault(t, err, "invalid_transition")
+	}
 	resumed := reassigned
 	resumed.Status = model.TaskInProgress
 	resumed.Ready = false
@@ -712,28 +733,6 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	clock := reassigned.UpdatedAt.Add(time.Second)
 	resumedWorker.ClaimedAt = clock
 	resumed.Properties = testWithWorker(t, reassigned.Properties, &resumedWorker)
-	t.Run("original owner resumes", func(t *testing.T) {
-		f := workerMockWrite(t, reassigned, owner)
-		v := taskcore.CurrentWrite(reassigned)
-		v.Status = model.TaskInProgress
-		v.Properties = resumed.Properties
-		after := assignmentResult(reassigned, v)
-		after.UpdatedAt = clock
-		after.StartedAt = &clock
-		f.Task.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			if ctx != f.Context {
-				t.Fatal("resume clock scope")
-			}
-			return clock, nil
-		}
-		f.ExpectUpdate(v, after)
-		workerProtocolCapture(f, reassigned, after)
-		got, err := f.Tasks.ResumeWorker(f.Context, owner, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		assertReturned(t, got, after, err)
-		if got.AllowAgents {
-			t.Fatal("manual resume changed automatic permission")
-		}
-	})
 	completed := resumed
 	completed.Status = model.TaskDone
 	completed.Ready = false

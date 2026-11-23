@@ -41,7 +41,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
   const archive = (item: SessionHistoryItem): SessionArchive => ({ schemaVersion: 1, sessionId: item.sessionId, claimId: item.claimId, executionGeneration: item.executionGeneration,
     controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
     provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId, entries: entries(item.sessionId), resources: [] });
-  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdIdentity: null as Promise<void> | null, holdHistory: null as Promise<void> | null, items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
+  const state = { busyContent: false, contentReads: 0, historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, receiptPosts: [] as string[], items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
   await page.addInitScript(({ locale, key, item }) => { localStorage.setItem('daynight.web.locale', locale); sessionStorage.setItem(key, JSON.stringify(item)); sessionStorage.setItem('unrelated-session-key', 'preserve'); }, { locale, key: `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`, item: other });
   await page.routeWebSocket('**/channel*', socket => { state.channels++; socket.onMessage(message => state.sent.push(String(message))); socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })); });
   await page.route('**/api/v1/**', async route => {
@@ -49,7 +49,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const failure = (status: number) => send({ error: { code: status === 403 ? 'permission_denied' : 'internal', message: 'Fixture read rejected', requestId: source.sessionId } }, status);
-    if (path === '/api/v1/me') { state.identityReads++; if (state.holdIdentity) await state.holdIdentity; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
+    if (path === '/api/v1/me') { state.identityReads++; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
@@ -57,23 +57,38 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     if (path === `/api/v1/projects/${projectId}/members`) return send({ items: [], nextCursor: null, actorAccess: directAccessFixture(projectId) });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === root) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
-    if (path === `${root}/sessions`) { state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError); return send({ items: state.items, nextCursor: null }); }
+    if (path === `${root}/sessions`) {
+      state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError);
+      if (scenario === 'herdr') {
+        const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
+        const terminalRecord: SessionHistoryItem = { ...record, executionGeneration: terminalArchive.executionGeneration, agentControlMode: 'herdr', contentKind: 'terminal_recording', archive: state.archiveState === 'pending'
+          ? { state: 'pending', sha256: null, byteLength: null, completeness: null }
+          : { state: 'ready', sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness } };
+        return url.searchParams.has('cursor') ? send({ items: [terminalRecord], nextCursor: null }) : send({ items: [other], nextCursor: 'next' });
+      }
+      return send({ items: state.items, nextCursor: null });
+    }
     if (scenario === 'herdr') {
-      const registration = v2('valid-registration', url.origin), owner = registration.payload.owner;
       const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
       const status = { ...v2('valid-status', url.origin), payload: { ...v2('valid-status', url.origin).payload, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness, finalizationId: terminalArchive.finalizationId } };
-      if (path === `${root}/sessions/current`) { state.currentReads++; return send({ status: 'registered', protocol: registration.protocol, schemaVersion: 2, projectionVersion: 1, sessionId: source.sessionId, claimId: source.claimId, executionGeneration: '1', agentControlMode: 'herdr', contentKind: 'terminal_recording', owner, binding: registration.payload.binding, connectionEpoch: '1', connected: false, capabilities: registration.payload.capabilities, control: v2('valid-control', url.origin).payload, snapshot: v2('valid-snapshot', url.origin).payload, ledger: v2('valid-active-ledger', url.origin).payload, archive: status.payload, recording: [] }); }
       if (path === `${root}/sessions/${source.sessionId}/archive`) { state.archiveReads++; return send(state.archiveState === 'pending' ? v2('valid-status-pending', url.origin) : status); }
-      if (path === `${root}/sessions/${source.sessionId}/archive/content`) return send(terminalArchive);
+      if (path === `${root}/sessions/${source.sessionId}/archive/content`) {
+        state.contentReads++;
+        if (state.busyContent && state.contentReads === 1) return route.fulfill({ status: 429, json: { error: { code: 'resource_busy', message: 'busy', requestId: source.sessionId } } });
+        return send(terminalArchive);
+      }
     }
     if (path === `${root}/sessions/current`) { state.currentReads++; if (state.currentError) return failure(state.currentError); return send(state.registered ? { status: 'registered', session: snapshot } : { status: 'not_registered', claimId: source.claimId, agentControlMode: 'web' }); }
     if (path === `${root}/sessions/${source.sessionId}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries(source.sessionId), resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    if (path === `${root}/sessions/${source.sessionId}/commands` && request.method() === 'POST') {
+      const command = request.postDataJSON(); state.receiptPosts.push(command.operationId);
+      return send({ operation: { protocol: snapshot.protocol, sessionId: snapshot.sessionId, claimId: snapshot.claimId, executionGeneration: snapshot.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'failed', providerResult: null, error: { code: 'provider_failed', message: 'The provider did not accept the message. Check the current session status before trying again.' } }, operationUrl: `${root}/sessions/${source.sessionId}/operations/${command.operationId}` }, 202);
+    }
     for (const item of [record, other]) {
       if (path === `${root}/sessions/${item.sessionId}/archive`) { state.archiveReads++; return send({ archive: state.archiveState === 'ready' ? archiveStatus : { state: state.archiveState, sha256: null, byteLength: null, errorCode: state.archiveState === 'failed' ? 'archive_invalid' : null } }); }
       if (path === `${root}/sessions/${item.sessionId}/archive/content`) return send({ archive: archive(item) });
     }
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
-    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
     return failure(404);
   });
   return Object.assign(state, {
@@ -145,9 +160,11 @@ test('confirmed empty history hides Session; failed and first reads stay disting
   expect(state.writes).toEqual([]);
 });
 
-test('released claim in todo automatically reads the latest real history without writes', async ({ page }) => {
+test('todo without a current claim automatically reads the latest real history without writes', async ({ page }) => {
   const state = await install(page, 'history'); await navigate(page);
   await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+  await expect(page.locator('.task-claim')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Force withdraw' })).toHaveCount(0);
   await noSelector(page); await readonly(page); expect(state.currentReads).toBe(0); expect(state.writes).toEqual([]);
 });
 
@@ -171,18 +188,17 @@ for (const status of ['pending', 'failed', 'unavailable'] as const) test(`comple
   expect(state.writes).toEqual([]);
 });
 
-test('working refresh and background identity checks preserve the draft and rendered reading state', async ({ page }) => {
+test('working refresh and a healthy foreground return preserve the draft and rendered reading state', async ({ page }) => {
   const state = await install(page, 'working'); await navigate(page);
   const input = page.getByRole('textbox', { name: 'Message', exact: true }); await input.fill('Retained unsent draft');
   await noSelector(page);
   await input.evaluate(node => { node.setAttribute('data-retained-input', 'yes'); });
   const message = page.getByText(savedText(record.sessionId), { exact: true }); await message.evaluate(node => node.setAttribute('data-retained-message', 'yes'));
-  const pending = Promise.withResolvers<void>(); state.holdIdentity = pending.promise; const before = state.identityReads;
+  const before = state.identityReads;
   await returnToPage(page);
-  await expect.poll(() => state.identityReads).toBeGreaterThan(before);
   await expect(input).toHaveValue('Retained unsent draft'); await expect(input).toHaveAttribute('data-retained-input', 'yes');
   await expect(message).toHaveAttribute('data-retained-message', 'yes');
-  state.holdIdentity = null; pending.resolve();
+  expect(state.identityReads).toBe(before);
   await expect(input).toHaveValue('Retained unsent draft');
   await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(input).toHaveValue('Retained unsent draft');
@@ -200,7 +216,56 @@ test('completed Herdr reads its bound terminal archive without acquiring control
   await expect(page.locator('.terminal-recording input[type="range"]')).toBeVisible();
   await noSelector(page); await readonly(page);
   await page.screenshot({ path: info.outputPath('herdr-readonly-390.png') });
+  expect(state.historyReads).toBeGreaterThanOrEqual(2); expect(state.currentReads).toBe(0);
   expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
+});
+
+test('terminal recording native zoom Escape cancels before leaving fullscreen', async ({ page }, info) => {
+  const state = await install(page, 'herdr');
+  await navigate(page);
+  await expect(page.locator('.terminal-recording')).toBeVisible();
+  const toggle = page.locator('.session-fullscreen-toggle');
+  await toggle.click();
+  const zoom = page.locator('.terminal-recording-summary select');
+  const terminal = page.locator('.terminal-text');
+  await expect(terminal).toHaveCSS('font-size', '14px');
+  for (const [percent, font] of [['75', '10.5px'], ['125', '17.5px'], ['150', '21px']] as const) {
+    await zoom.selectOption(percent);
+    await expect(terminal).toHaveCSS('font-size', font);
+    await expect(page.locator('.terminal-recording-time')).toHaveCSS('font-size', '12px');
+    await expect(page.locator('.terminal-recording-summary')).toHaveCSS('font-size', '14px');
+  }
+  await page.evaluate(() => document.documentElement.style.setProperty('--text-base', '2rem'));
+  await expect(terminal).toHaveCSS('font-size', '21px');
+  await page.evaluate(() => document.documentElement.style.setProperty('--text-sm', '1rem'));
+  await expect(terminal).toHaveCSS('font-size', '24px');
+  await page.evaluate(() => {
+    document.documentElement.style.removeProperty('--text-base');
+    document.documentElement.style.removeProperty('--text-sm');
+    document.documentElement.style.fontSize = '24px';
+  });
+  await expect(terminal).toHaveCSS('font-size', '31.5px');
+  await returnToPage(page);
+  await expect(zoom).toHaveValue('150');
+  await expect(terminal).toHaveCSS('font-size', '31.5px');
+  await zoom.selectOption('100');
+  await expect(terminal).toHaveCSS('font-size', '21px');
+  await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+  await expect(terminal).toHaveCSS('font-size', '14px');
+  await zoom.selectOption('125');
+  await expect(zoom.locator('..')).toHaveAttribute('data-density', 'filter');
+  expect(await zoom.evaluate(node => node.getBoundingClientRect().height)).toBe(32);
+  await zoom.click();
+  await expect.poll(() => zoom.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => zoom.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(zoom).toHaveValue('125');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
+  expect(state.historyReads).toBeGreaterThanOrEqual(2); expect(state.currentReads).toBe(0);
+  expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
+  await info.attach('native-recording-cancel', { body: JSON.stringify({ zoom: '125', height: 32, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true }), contentType: 'application/json' });
 });
 
 
@@ -217,4 +282,41 @@ test('an already open working Session becomes readonly before its native lifecyc
   await returnToPage(page);
   await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
   await readonly(page); expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
+});
+
+
+for (const [width, height] of [[320, 640], [1360, 900]]) test(`Task Session preserves reading, controls and draft around a ${width}px send failure`, async ({ page }, info) => {
+  await page.setViewportSize({ width: width!, height: height! });
+  const state = await install(page, 'working', 'en'); await navigate(page);
+  const input = page.locator('.session-composer textarea'); await input.fill('Retained draft');
+  const composer = page.locator('.session-composer'), before = await composer.evaluate(node => node.getBoundingClientRect().height);
+  const send = composer.locator('button[type="submit"]'); await send.click();
+  const message = 'The provider did not accept the message. Check the current session status before trying again.';
+  await expect(page.locator('.session-receipt')).toHaveCount(1);
+  await expect(page.getByText(message, { exact: true })).toHaveCount(1);
+  await expect(composer).not.toContainText(message); await expect(input).toHaveValue('Retained draft');
+  await expect(send).toBeEnabled();
+  expect(state.receiptPosts).toHaveLength(1);
+  expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
+  const after = await composer.evaluate(node => node.getBoundingClientRect().height);
+  expect(after).toBe(before);
+  const timeline = await page.locator('.session-timeline-shell').evaluate(node => node.getBoundingClientRect().height);
+  expect(timeline).toBeGreaterThanOrEqual(72);
+  await info.attach('task-geometry', { body: JSON.stringify({ width, height, before, after, timeline }), contentType: 'application/json' });
+  await input.focus(); await send.focus(); await expect(send).toBeFocused(); await expect(send).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: info.outputPath('task-receipt.png') });
+  await page.locator('.session-fullscreen-toggle').click();
+  await expect(page.locator('.session-receipt')).toBeVisible(); await expect(input).toHaveValue('Retained draft');
+  expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
+  await input.focus(); await send.focus(); await expect(send).toBeFocused(); await expect(send).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press('Escape'); await expect(input).toHaveValue('Retained draft');
+});
+
+
+test('Herdr archive retries a headerless capacity rejection in Chromium', async ({ page }) => {
+  const state = await install(page, 'herdr'); state.busyContent = true;
+  await navigate(page);
+  await expect(page.locator('.terminal-recording')).toBeVisible();
+  expect(state.contentReads).toBe(2); expect(state.archiveReads).toBe(1);
+  expect(state.writes).toEqual([]);
 });

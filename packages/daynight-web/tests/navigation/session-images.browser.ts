@@ -20,8 +20,17 @@ for (const entry of ['task', 'test', 'task-dialog'] as const) test(`${entry} use
     await expect.poll(() => trigger.locator('img').evaluateAll(nodes => nodes.map(node => (node as HTMLImageElement).naturalWidth))).toEqual([3]);
     const geometry = await trigger.locator('img').evaluate(image => ({ key: image.getAttribute('data-media-key'), width: image.getBoundingClientRect().width, height: image.getBoundingClientRect().height, frameWidth: image.parentElement!.getBoundingClientRect().width }));
     expect(geometry.key).toBeTruthy(); expect(geometry.width).toBe(3); expect(geometry.height).toBe(2); expect(geometry.frameWidth).toBeLessThanOrEqual(420);
-    const scrollTop = await timeline.evaluate(node => node.scrollTop);
+    // Playwright may scroll the trigger into position before dispatching pointerdown.
+    const activation = await trigger.evaluateHandle(button => {
+      const position: { scrollTop?: number } = {};
+      const timeline = button.closest<HTMLElement>('.session-timeline')!;
+      button.addEventListener('pointerdown', () => { position.scrollTop = timeline.scrollTop; }, { capture: true, once: true });
+      return position;
+    });
     await trigger.click();
+    const { scrollTop } = await activation.jsonValue();
+    await activation.dispose();
+    expect(scrollTop).toBeDefined();
     const dialog = page.locator('dialog.session-image-preview'); await expect(dialog).toBeVisible();
     await expect(dialog.locator('img')).toHaveJSProperty('naturalWidth', 3);
     expect(await dialog.evaluate(node => !!node.closest('.task-agent-session') && !node.closest('.session-timeline'))).toBe(true);
@@ -34,7 +43,23 @@ for (const entry of ['task', 'test', 'task-dialog'] as const) test(`${entry} use
     expect(createHash('sha256').update(await readFile(destination)).digest('hex')).toBe(fixture.resources.find(resource => resource.name === label)!.sha256);
     const resourceId = fixture.resources.find(resource => resource.name === label)!.resourceId, readCount = () => fixture.observations.resources.filter(id => id === resourceId).length, reads = readCount(); await page.keyboard.press('Escape'); await expect(dialog).not.toBeVisible(); await expect(trigger).toBeFocused();
     expect(await timeline.evaluate(node => node.scrollTop)).toBe(scrollTop);
-    await trigger.click(); await expect(dialog.locator('img')).toHaveJSProperty('naturalWidth', 3); expect(readCount()).toBe(reads); await page.keyboard.press('Escape');
+    let reopenTop: number | undefined;
+    if (entry === 'task' && format === 'png') {
+      // Activate in the same browser task as a scroll, before its scroll event.
+      reopenTop = await trigger.evaluate(button => {
+        const timeline = button.closest<HTMLElement>('.session-timeline')!;
+        timeline.scrollTop += 17;
+        const top = timeline.scrollTop;
+        (button as HTMLButtonElement).click();
+        return top;
+      });
+      expect(reopenTop).toBe(scrollTop! + 17);
+    } else await trigger.click();
+    await expect(dialog.locator('img')).toHaveJSProperty('naturalWidth', 3); expect(readCount()).toBe(reads); await page.keyboard.press('Escape');
+    if (reopenTop !== undefined) {
+      await expect(trigger).toBeFocused();
+      expect(await timeline.evaluate(node => node.scrollTop)).toBe(reopenTop);
+    }
     let refreshReads: number | null = null;
     if (entry === 'task' && format === 'png') {
       const image = await trigger.locator('img').elementHandle(), beforeCurrent = fixture.observations.currentReads, beforeReads = readCount();

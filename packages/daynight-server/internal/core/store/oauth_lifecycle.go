@@ -24,6 +24,7 @@ type OAuthRotation struct {
 	OldHash, AccessHash, RefreshHash []byte
 	AccessID                         string
 	CreatedAt, AccessExpiresAt       time.Time
+	GrantExpiresAt                   time.Time
 }
 
 type GrantLifecycleDAO interface {
@@ -34,5 +35,7 @@ type GrantLifecycleDAO interface {
 	AccessGrant(context.Context, []byte) (string, error)
 	RotateRefresh(context.Context, OAuthRotation) error
 	OwnerGrants(context.Context, string) ([]OAuthGrant, error)
+	UpdateOwnerGrantDescription(context.Context, string, string, *string, *string) (bool, error)
+	OwnerGrantExists(context.Context, string, string) (bool, error)
 	PruneCredentials(context.Context, time.Time, int) (int, error)
 }

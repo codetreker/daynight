@@ -32,8 +32,10 @@ the distinction while keeping the failure and other metadata.
 
 ## Consequences
 
-Operators can locate eligible failures without obtaining a directory operation or
-ownership proof. Paths follow the claim's current visibility and remain bounded;
+The observation can identify eligible failure locations without providing a
+directory operation or ownership proof. The [diagnostic panel decision](../simplification/2026-11-20-worker-monitoring-diagnostic-panels.md)
+removes their Web presentation. Paths follow the claim's current visibility and
+remain bounded;
 large encoded paths can become unavailable in a snapshot while the in-memory
 record remains intact. Strict readers and Servers must be deployed before new
 producers, and rollback requires the existing frame expiry barrier.

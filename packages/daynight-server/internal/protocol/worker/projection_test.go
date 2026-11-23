@@ -53,6 +53,19 @@ func TestWorkerEncodingMatchesProduction(t *testing.T) {
 	}
 }
 
+func TestConfigurationBudgetRetainsBaseShape(t *testing.T) {
+	enabled := false
+	value := model.WorkerConfiguration{ArchiveSessions: &enabled, Native: model.WorkerNativeConfiguration{Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
+	var out bytes.Buffer
+	n, err := EncodeConfiguration(&out, value, math.MaxInt64)
+	if err != nil || n != int64(out.Len()) || bytes.Contains(out.Bytes(), []byte(`"archiveSessions"`)) {
+		t.Fatalf("unexpected base configuration encoding: %s %d %v", out.Bytes(), n, err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, n-1); err == nil {
+		t.Fatal("base configuration exceeded its budget")
+	}
+}
+
 func TestWorkerProjectionStates(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("x", 3600))
 	text := "model"
@@ -111,5 +124,30 @@ func TestWorkerWriteItemChecksCollectionsBeforeProjection(t *testing.T) {
 	_, err = EncodeItem(io.Discard, snap, 256)
 	if !errors.As(err, &v) || !v.LowerBound {
 		t.Fatalf("project preflight: %v", err)
+	}
+}
+
+func TestConfigurationEmptyTagFilterBudget(t *testing.T) {
+	value := model.WorkerConfiguration{TaskTagFilter: &model.TagNameFilter{Names: []string{}, Match: "any"}}
+	var output bytes.Buffer
+	size, err := EncodeConfiguration(&output, value, math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	without := value
+	without.TaskTagFilter = nil
+	oldSize, err := EncodeConfiguration(io.Discard, without, math.MaxInt64)
+	if err != nil || size-oldSize != EmptyTaskTagFilterMemberBytes {
+		t.Fatalf("old=%d new=%d overhead=%d err=%v", oldSize, size, EmptyTaskTagFilterMemberBytes, err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize); err != nil {
+		t.Fatalf("canonical empty exceeds historical budget: %v", err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize-1); err == nil {
+		t.Fatal("accepted historical budget overrun")
+	}
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{"backend"}, Match: "any"}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize); err == nil {
+		t.Fatal("exempted nonempty filter")
 	}
 }

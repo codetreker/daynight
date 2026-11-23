@@ -82,7 +82,7 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 关闭任务 rows 后，以选中 task IDs 的一次 `ANY` 查询批量读取并装配完整规范属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整标题、标题预览及完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
 
 ## 目录与调用方向
 
@@ -109,7 +109,11 @@ packages/daynight-server/
         └── store/
             └── postgres/
                 ├── internal/
-                └── migrations/
+                └── schema/
+                    └── migrations/
+                        ├── 026/
+                        ├── 083/
+                        └── 115/
 ```
 
 `cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
@@ -133,8 +137,10 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
 加锁和持久化操作由 store 提供，已拆分领域的候选变更由 core 判断，service 编排作用域与跨领域操作。现有关系型数据只有 PostgreSQL 一个实现，
-`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影；它声明实际消费的 `ProjectOperations`、`MembershipOperations` 业务接口，以及 `RouteAuthentication` 和需要 Origin 的 `MembershipAuthentication` 认证能力，生产 service 与真实请求认证组件满足这些能力，HTTP 单元测试直接控制业务结果并实际执行协议机制。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力。附件的字节存储接口由其独立
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Tag、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影；它声明实际消费的 `ProjectOperations`、`MembershipOperations` 业务接口，以及 `RouteAuthentication` 和需要 Origin 的 `MembershipAuthentication` 认证能力，生产 service 与真实请求认证组件满足这些能力，HTTP 单元测试直接控制业务结果并实际执行协议机制。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task、Tag、Task 标签关联与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
+
+`ProjectWriteScope` 还提供绑定同一事务的 `WorkerClaimAdmissionDAO`，以窄读取保留 Worker 权威目标及其锁生命周期。[Worker 配置设计](daynight-worker-configuration.md#项目事务内的目标读取资源)拥有 Raw 投影、缺行准入锁、锁序和错误合同；该存储资源不独立提交。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
 客户端的 review 命令。`cmd/` 与 `internal/` 的职责遵循
@@ -149,13 +155,17 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
 | Task | `id`、`projectId`、资源类型 `type`、可空 `parentId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
-| TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
+| TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false）、非空 `dependency_type`（默认 `task`）、可空 `goal_edge_id` |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
 
 `TaskDependency` 的方向是“`taskId` 依赖 `dependsOnTaskId`”。project 拥有任务及依赖
-图；不同 project 可以关联相同仓库地址，`repoUrl` 不作为 project 唯一键。当前 API
-没有修改 project 仓库或删除资源的操作。
+图。`repoUrl` 保留地址原文，不作为全局唯一键；`projects.repository_identity text COLLATE "C"`
+保存稳定规则算出的仓库身份。归属仅存于 `project_ownership`，活跃状态仅由 `projects.deleted_at`
+决定；同 Team 活跃身份唯一性由共享 core 规则和 Team 行锁保护。不同 Team 可持有同仓库项目。
+Project 仓库创建后不可修改，软删除保留历史并释放占用。
+
+依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；Goal 关系通过独立的 [REST 资源](../spec/goal-dependencies.md)读写。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
 
 任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：
@@ -181,11 +191,23 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
 
-`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type`、可空 Goal `parentId` 和可选普通 `parentTaskId`；两个非空父项互斥，省略类型为普通 Task，类型创建后不可修改。普通父边只能由创建产生，状态确认和公开 REST/MCP 写入由[父子写入设计](daynight-task-parent-writes.md)拥有。内部读取携带真实直属 Parent ID 及类型；完整与摘要资源的默认映射保持 Goal-only `parentId`，显式扩展表示提供 `parentTaskId`。直属筛选、搜索上下文及读取兼容由[父项读取设计](daynight-task-parent-reads.md)拥有。窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
 
-`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+`062_task_resource_rows.sql` 建立统一资源视图；迁移 `123_task_ancestor_visibility.sql` 增加内部 `ancestor_deleted_at` 并将有效删除改为 `COALESCE(deleted_at, ancestor_deleted_at)`，保留原视图列及直属 Parent 事实。历史 Goal-only 形状校验、回填和视图替换同事务完成。无需锁定的存在性和对外查询在排序、分页和聚合前过滤。资料和 Session 带锁入口锁定目标物理行并读取有效删除；Session 注册使用 UPDATE，其他资源使用 SHARE。祖先删除在项目锁内枚举仍可见后代，连同目标及显式解除引用源按 UUID 取得最终行锁，再同事务写入目标墓碑、继承标记、关联清理和一次 epoch 轮换。后代仅隐藏时保留业务版本及时间。机制与恢复由[删除设计](daynight-task-deletion.md)拥有，取舍见[子树可见性决策](../../.agents/notes/implemented/architecture/2026-11-23-task-subtree-visibility.md)。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
 `063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
+
+`070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名、改色和删除旋转标签目录 epoch；改名、改色和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；名称引用批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
+
+Tag 目录的显式授权入口 `service/tag.NewScoped` 共享上述快照和事务，在项目访问通过后、Tag 数据操作前执行 `core/tag.RequireAuthorization`。读取使用 `tag:read`，完整创建与更新回执同时需要 `tag:write` 与 `tag:read`，删除最小回执仅需 `tag:delete`。关联清理保留删除动作的隐式效果，主动任务关联写入保持独立。生产 REST/MCP 注册使用 scoped 入口，共享原解析与投影。权限和错误合同见[凭据 Scope 内部合同](credential-scope-internal.md)。
+
+标签重名只在精确唯一索引标记和可靠的操作阶段回滚同时成立时映射为 409 `tag_name_conflict`。REST 检查完整错误树：标记分支只允许一个数据库错误；包围该标记、同样报告 SQLSTATE 23505 的存储包装描述同一故障，不重复计数。附加错误分支、清理失败、提交尝试及未知结果仍保留各自失败语义。
+
+`074_tag_color.sql` 为 Tag 增加非空大写 `#RRGGBB` 色值，既有和省略颜色的新 Tag 均为 `#9AA3B2`。服务在项目写锁内先校验原始版本，再原子更新名称和颜色；实际改色与改名一样 touch 关联 Task/Goal 并旋转目录 epoch，同值不写入。颜色批量读取在同一授权快照校验可选 epoch，并按规范化去重后的 ID 返回精确版本和颜色或明确缺失。REST 创建和更新接受颜色，并通过独立的颜色 resolve 投影按实际编码限制返回完整结果；旧 REST Tag 及 REST/MCP Task 标签引用不包含颜色，也不扩大既有回执预算；MCP Tag 结果包含颜色。设计取舍见[颜色存储决策](../../.agents/notes/implemented/architecture/2026-11-15-tag-color-storage.md)。
+
+`core/task` 规范化并排序标签集合。创建省略或提交空集合时无关联；项目锁内校验候选及全部标签后，在原创建事务写入 Task/Goal 和关联，重新加载实际引用并核对集合，响应准入失败回滚全部写入。创建不 touch 条目，保留原始版本和数据库时间。更新省略标签保留、空集合清除，即使无变化也检查原始版本。`service/task` 的独立关联操作在项目锁内检查成员、有效 Task/Goal 和全部本项目标签；实际变化替换关联并使用锁后数据库时间 touch 一次，不改变执行归属或冻结 Session。PATCH 仅提交 `tagIds` 时使用独立关联操作；混合 metadata 时在原写事务校验最终集合，关联替换与 metadata 写入、响应准入共同提交或回滚，最多推进一次版本。单资源读取及完整写回执在同一事务加载真实标签引用；列表、ready、搜索和同步在截取选定页后批量加载引用，与任务行共享快照。关联变化不旋转任务缓存 epoch。
+
+有标签的完整 Task 写入在提交前对准入副本保留实际 ID，将名称设为 64 个 `&`，并预留最大版本和最长 UTC 更新时间，再用与实际输出相同的有界 REST 编码器及当前 MCP envelope 检查预算。实际输出保留真实值；此上界使合法改名无需逐条读取大正文。无标签仍按实际值准入，超限回滚整个事务。详见[关联容量决策](../../.agents/notes/implemented/architecture/2026-11-13-task-tag-admission.md)。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。
@@ -195,7 +217,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `044_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
 
-Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
+Project 删除在 Read Committed 事务内依照[项目生命周期 Goal 边清理](#项目生命周期中的-goal-边清理)取得项目和图锁，再按 UUID 锁全部源项目 Task（包括已删除 Task）及受影响的存活远端 Goal；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
 
 删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 和请求条数分页，完整投影阻塞项，不按标题或响应字节缩短页面。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
 
@@ -229,11 +251,42 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 网络访问、仓库存在性检查、认证验证或 clone。
 
 `repoUrl` 保留校验后的地址写法，用于 project 关联，不推导本地 clone 路径。REST
-创建接口直接注册项目。MCP 的 `project_create` 与只读 `project_resolve` 在单个只读快照中按 CLI 的仓库身份规则
-比较调用者可见项目。两者复用 `core/project` 的匹配和完整 keyset 分页遍历，service 负责快照及创建协调。
-唯一匹配返回完整 Project；多个匹配立即拒绝。无匹配时解析返回 `not_found`，注册仅在明确确认后创建。
-快照完成失败时不返回暂存结果；后续对象操作重新检查权限。扫描保留一页和一个匹配，未引入持久身份索引。
-该检查不设置全局唯一约束；并发创建仍可能产生多个项目，后续识别会报告歧义。
+创建接口直接注册项目。MCP `project_create` 先解析目标 Team，在单个只读快照中以持久身份查询该 Team 的
+活跃可见 Project，最多读取两个；既有 Project 可见性关系包括独立授权，历史 NULL 身份不匹配。唯一匹配返回
+完整 Project，多个匹配拒绝，零匹配经确认后进入共享创建事务。该查询不替代写事务的唯一性检查。
+只读 `project_resolve` 仍在一个快照中完整遍历可见 Project，按仓库身份规则比较，零匹配返回 `not_found`，
+多个匹配拒绝，包括跨 Team 匹配。快照完成失败时不返回暂存结果；后续对象操作重新检查权限。
+
+### Team 仓库占用
+
+新建项目在现有地址准入后计算 `internal/core/repositoryidentity/v1` 的稳定 `RepositoryIdentity`，
+无法计算返回 `invalid_input`。创建在已锁定目标 Team 并检查成员资格后，由 `core/project`
+决定仓库占用拒绝，再原子写入 Project、身份、ownership 和 creator admin grant。实际转移先
+按既有顺序锁 Project、ownership 及 UUID 升序的 source/target Team，检查权限和版本，然后
+读取受锁 Project 的持久身份并检查目标占用。当前 Team 的无变化转移不判重；历史 NULL 身份
+实际转移返回 `project_repository_identity_unavailable`。普通和 GitHub App 转移在共用规则
+拒绝之后才允许修改归属或执行集成副作用。
+
+DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `projects` JOIN 的 `EXISTS`
+过滤目标 Team、活跃状态和身份逐字节相等，业务决策留在 core。查询复用既有
+`project_ownership(team_id, project_id)` 索引和 Project 主键，不锁其他 Project 行，
+也不对最长 4096-byte 地址建立完整 B-tree 索引。目标 Team 行锁覆盖空集合，后一个等待者的
+独立语句能看到前一写入的提交；转出持有来源 Team 锁，参与同一串行顺序。删除只释放占用，
+不增加锁；与删除重叠的请求可以观察删除前的占用，确认删除后开始的新请求可以复用空位。
+
+冲突使用 `project_repository_conflict`；HTTP 映射 409，MCP 注册为已知领域错误并使用原错误信封。
+身份不可用同样映射 HTTP 409。错误不返回冲突 Project 详情。日志只保留 request ID、错误类别
+和适用阶段，不记录地址原文或凭据。既有事务完成和清理失败优先级保持，未知提交不重放。
+[唯一性决策](../../.agents/notes/implemented/architecture/2026-11-18-team-project-repository-uniqueness.md)
+记录锁、存储和查询方案的取舍。
+
+### 项目仓库改址
+
+`projects.repository_version` 区分真实地址变更及 A→B→A，原样保存不推进版本。预览在只读快照取得项目、有效授权和 GitHub 连接事实，在事务外使用现有安装凭据读取旧稳定 ID；候选路径读取还要求 owner Team 管理权限与有效 grant。分类优先使用可用的稳定 ID，相同地址文本不发起外部观察。写入重新观察并比较预览分类和目标 ID，再在 Read Committed 事务按 Project、归属、owner Team、授权、App、grant、连接顺序锁定，重新核对版本及证明依赖。Team 锁后的新语句排除本项目检查占用。
+
+真实换仓在同一事务关闭旧仓库覆盖区间、推进 GitHub 世代、清除项目侧连接及旧工作，并按一次快照的 Worker 列表以用户和 Worker ID 顺序锁行。锁后基于最新原始配置只移除目标项目，保留其他配置和观测，仅推进实际受影响的目标版本。外部观察和数据库提交的结果独立，未知提交不能重放。旧来源读取见 [PR 来源](github-pr-reading.md)，连接恢复由管理员手工执行。
+
+改址日志关联请求、主体和 Project，记录阶段、分类及事务完成状态，不记录仓库地址或凭据。Worker 配置行数仅在确认提交时表示实际影响；提交未知时记录事务内拟变更数，回滚时记录零。
 
 ## 状态与依赖不变量
 
@@ -245,32 +298,46 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
 实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回proposed/todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active；release 清除当前归属后普通状态规则生效，cancelled 不能恢复。[认领架构](daynight-worker-claims.md)拥有归属检查与普通重新认领。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人、Parent 和属性。完整候选校验保证
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
-Goal 不进入依赖图，其 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
+Goal 不进入普通 Task 依赖图；详情和写回执中的依赖及 blockedBy 为空且 ready=false。TaskSync 摘要的 Goal dependsOn 单独投影项目内有效 Goal 的直接验收前置，externalDependsOn 为空，机制见[摘要同步设计](daynight-task-sync.md)。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
 external=true 的排序子集；数组明确为空。ready 当且仅当 todo 且 blockedBy 为空。
 派生值不持久化，前置变化不修改本任务版本或更新时间；因此同版本读取可有新 ready/blockedBy。
 POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[外部依赖架构](daynight-external-dependencies.md)。
 
+### Goal 验收依赖的生命周期保护
+
+Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际修改出边从逻辑值 1 推进到 2，空操作不推进，清空不删除修订。状态、直接删除与项目生命周期入口保护已有边；独立关系服务提供授权读取与编辑，机制见[Goal 关系设计](goal-dependencies.md)。公开关系路由独立于旧 Task 投影。
+
+显式状态与删除先读取不可变类型；识别为 Goal 后进入受图锁影响的分支，使用五秒预算覆盖后续连接池、锁、查询与提交。类型预判使用调用方原 context，不受该分支预算限制。写入先锁本地 Project，读取当前 owner Team，再取得该 Team 的事务级图锁，之后锁定并重读 Goal、检查权限与版本。进入 `done` 要求全部直接前置为 `done`；离开 `done` 时若有已完成下游则拒绝。直接删除拒绝未删除 Goal 的入边；无入边时同事务移除出边、推进关系修订并软删除。拒绝不公开对端身份；事务失败保留原结果及提交未知语义。普通 Task 写入及子 Task 自动开始 Parent 保持原项目事务，不取得图锁。
+
+### 项目生命周期中的 Goal 边清理
+
+基础 Projects 与生产 AppProjects 的转移和删除共享项目事务中的 Goal 边清理合同。四条入口先检查源项目 owner Team 管理员权限。事务收集源项目及现有入出边的下游项目，按 UUID 顺序锁定项目行，再读取稳定的当前 owner Team 并取得其图锁。取得图锁后重查影响集合；发现未锁定项目时先确认事务回滚，再在原 deadline 内重新收集并按序取锁，不持图锁补取项目锁。锁集稳定后，按 Task UUID 顺序锁定所有可能更新的存活下游 Goal；删除源项目时在同一次排序中纳入源项目的全部历史 Task。随后业务 callback 再次检查权限并取得原有 ownership、Team 与 App 行锁。Thread 持有 Task 共享锁后再读 ownership，因此生命周期须在 ownership 前取得这些 Task 锁。四条入口均以十五秒预算覆盖权限预检、连接池、锁等待、业务查询和提交，继承调用方取消。转移只需来源 Team 图锁；提交前目标 Team 的关系编辑会因归属不匹配拒绝，提交后项目已无旧边。
+
+实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不要求清理确认，也不修改任何边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括已删除 Goal 及其他项目内的下游。仍可见的下游 Goal 去重后同事务推进 Task 版本及更新时间，使用全部项目锁取得后的数据库时间；已删除 Goal 和已删除项目内 Goal 不更新。删除源项目时其 Goal 随项目不可见，不再单独推进；转移源项目时其存活 Goal 仍须推进。关系修订或需更新的 Task 版本耗尽、任何写入失败均回滚全部操作。
+
+清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。REST 转移与删除适配器共同严格解析单值 `Daynight-Confirm-Goal-Dependency-Removal: true`，将结果透传 TransferInput 或 DeletionInput；缺少 header 透传 false，错误 header 在业务调用前以 `400 invalid_input` 拒绝。既有请求体字段、删除空正文、预览与回执保持原结构，CORS allow-list 允许该请求 header。
+
 ## 写事务与并发
 
-所有 Task 与 Goal 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
+Task 与 Goal 写入共享下述项目事务步骤；显式 Goal 状态与直接删除另遵循上节的 Team 图锁和验收规则：
 
 1. 以 `READ COMMITTED` 开启事务，用 `SELECT ... FOR UPDATE` 查找并锁定 project
    行；不存在时返回 `not_found`。获得锁后检查当前成员关系，非成员同样返回
    `not_found`，管理员操作另行要求 `admin`。
 2. 在获得锁后执行新的查询，读取目标任务、现有依赖和校验所需任务状态。更新检查
    请求中的 `version`，与当前任务版本不一致则返回 `version_conflict`。
-3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。实际改变检查全部前置及受保护后继，
-   不满足时使用 dependency_unsatisfied。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
+3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。普通 Task 实际改变检查全部前置及受保护后继，
+   不满足时使用 dependency_unsatisfied。Goal 验收边的拒绝使用专用错误码。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
 4. 原子写入任务、依赖集合与执行起止；存在真实变更时，将版本加 1，并更新 `updatedAt`。
 5. DAO 返回最终资源后、提交前以实际协议编码检查成功响应容量；超限作为事务错误回滚。提交后返回资源；提交或发送故障保留实际完成事实与原始错误链。
 
-同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
+同 project 的 Task 写入由 project 行锁串行化；普通 Task 的不同 project 写入可以并行，受同一 Team 图锁保护的 Goal 操作另按上述规则串行化。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
 提交的 project 内写入。任务 UPDATE 依据实际旧/新状态维护时间：进入 in_progress 产生新起点并清空终点，
 退回 proposed/todo 清空两端，in_progress→done 保留可空起点并写真实终点，proposed/todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
@@ -278,7 +345,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 取得新快照的语义，见[事务隔离文档](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED)
 及[行锁文档](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)。
 
-写锁同时覆盖“检查再写入”，所以并发添加 `A → B` 和 `B → A`，以及依赖更新与
+普通 Task 的项目写锁同时覆盖“检查再写入”，所以并发添加 `A → B` 和 `B → A`，以及依赖更新与
 开始、完成或重开竞争，都根据取得锁后的最新结果校验。状态先检查 version，使落后请求
 返回版本冲突；当前版本同状态不写入。版本检查解决同一任务
 的过期客户端覆盖问题；project 锁解决跨任务图和状态的不变量，两者职责不同。
@@ -288,7 +355,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
 
-Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选，显式 resume 保持自身规则。Goal 删除只标记 Goal 并同事务轮换 epoch，不修改子项；其有效删除使库存缺失进入既有 cleanup。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值。写后 Goal progress 在同一事务内聚合并参与精确响应准入。Goal 不发布现有可执行 Task Webhook。
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 共用同项目递归祖先查询，排除任一祖先 Goal 已结束的 Task；自有库存不使用该筛选，普通 ready 与 blockedBy 不加入该条件。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前直属 Parent；普通父项直接保留状态，更高层 Goal 不自动启动。DAO 在首次 Task 锁前计划目标和本次实际要启动的直属 todo Goal，按 UUID 升序锁定，再进入 Worker configuration/execution 检查，保持 Project → Task → Worker 顺序。若直属 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并同事务轮换 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
 
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
@@ -308,24 +375,36 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
 
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 复用项目转移预览准入，再读取 Project 名称，返回项目身份、来源和目标 Team、精确十进制字符串 ownership 与目标 Team 版本，以及永久清理范围。预览不枚举或计数关系；确认覆盖事务提交时所有相关 Goal 边，包括其他项目的入边和出边。宿主展示项目、两侧 Team 和影响，取得用户对本次转移及清理的明确答复后，才调用 `project_transfer`，同时提交 `confirm:true`、`confirmGoalDependencyRemoval:true`、预览原值 `ifVersion` 和 `ifTargetVersion`。清理确认要求两个版本均存在，适配器保持原值并交给既有事务检查。无答复或拒绝时宿主不调用写工具；冲突须重新预览和确认，结果未知不自动重放。stateless MCP 不发起服务端确认请求。旧工具请求缺少清理声明时沿用服务端拒绝规则，无边及同归属空操作保持可用。完整调用方法由嵌入的 `daynight://manuals/concepts.md` 维护。
+
 ## HTTP 传输准入
 
 Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
 
 确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
-MCP 产品手册以 Go embed 和固定十二项目录随服务发布。`productManualManifest` 是生产目录的
+MCP 产品手册以 Go embed 和固定十六项目录随服务发布，包括总览和十五篇专题。`productManualManifest` 是生产目录的
 唯一所有者，注册、正文加载和引用校验使用同一组声明；路径、Name 和 URI 保持一致，Title、
 Description、MIMEType 和严格 UTF-8 byte Size 随正文同步。Entry 在注册前校验完整目录、非空有效
 UTF-8 正文、大小及 instructions 与正文中的绝对内部 URI 引用，构造失败保留错误链。
-SDK 原生 Resources 提供目录和每个主题的完整原文，独立 instructions 同时供两版协议使用。
+SDK 原生 Resources 提供目录和每篇手册的完整原文。独立 instructions 同时供两版协议使用，
+只介绍产品并提供总览的直接读取 URI，无需先查询目录。
 
-入口按操作选择主题。公共 write-safety 拥有精确版本、授权和写完成规则；各资源拥有其分页、
-身份、完整性、失败和恢复的具体条件。Session 读取与发送、Steps、Thread 和附件读取与写入
-各自可独立取得，不需要从混合长文截取章节。正式材料的用途与充分性由 materials 拥有。
+总览按操作选择必读和条件性增读的主题，集中解释结果信封和示意符号；仍适用的已读正文可复用。
+公共 write-safety 拥有授权、精确版本、冲突及写入完成分类；各资源拥有其分页、身份、完整性、
+失败和恢复的具体条件。Task 读取与生命周期写入分别由 tasks 和 task-writes 提供；纯依赖修改
+使用 dependencies、dependency-writes 和 write-safety，创建时附带依赖或混合修改还需 task-writes。
+依赖图读取和替换分别由 dependencies 和 dependency-writes 提供；Session 的观察、定位及 inspection 由
+session-reads 提供，历史分页与完整条目读取由 session-history 提供。Session 发送前需建立身份或
+admission 时还需 session-reads；发送恢复使用原 operation。Session 发送、Steps、Thread 和附件读取与写入各有独立专题。
+正式材料的归属、用途与充分性由 materials 拥有。
 内部链接直接指向当前目录的 `daynight://manuals/...` URI，不在运行时聚合文稿或转换链接。
 客户端在服务更新后重新发现目录；移除的混合主题 URI 沿用未知 URI 的协议错误。
-[主题决策](../../.agents/notes/implemented/architecture/2026-11-11-mcp-topic-manuals.md)记录划分理由。
+[主题决策](../../.agents/notes/implemented/architecture/2026-11-11-mcp-topic-manuals.md)记录划分理由，
+[总览决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-overview-entry.md)记录握手入口的取舍，
+[共享规则决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-shared-guidance.md)记录集中约定的理由，
+[Task 专题拆分决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-task-read-write.md)记录读取与写入的边界，
+[Session 专题拆分决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-session-history.md)记录观察与历史的边界。
 
 静态 Resources capability 不承诺订阅或变更通知。每次读取创建独立结果，并在构造前非阻塞取得
 共享 Control 名额，直到 handler 与 HTTP 交付均结束才释放。饱和返回顶层协议内部错误；该限制
@@ -351,17 +430,20 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
-| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
+| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及普通 Task 依赖 |
+| `GET/PATCH /api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立授权投影与关系修订编辑 |
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
-| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
-| `POST .../tasks/{taskId}/worker-claim/resume` | owner/admin 显式为 released task 开始新执行 |
+| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active，清除归属并关闭自动执行 |
 | `POST /api/v1/me/workers/{workerId}/report` | 原子保存账号级最新运行快照，不写 task |
 | `GET /api/v1/me/workers` | 近期 Worker 摘要、当前可见任务计数及稳定 cursor |
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 | `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
+| `GET, PUT /api/v1/me/workers/{workerId}/review-participation` | 独立的账号级参与设置及版本 CAS，默认关闭；[设计](worker-review-participation.md)拥有字段和写入边界 |
+| `GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment` | 查询当前账号的长期 Reviewer 归属及 Worker 状态；[设计](pr-review-assignment.md)拥有资格、对账和并发规则 |
+| `GET /api/v1/me/workers/{workerId}/review-pull-requests` | 按当前账号和 Worker 分页读取仍有资格的候选；[归属设计](pr-review-assignment.md)拥有服务端过滤与分页，[Worker Reviewer](worker-reviewer.md)拥有客户端消费与恢复 |
 
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
@@ -417,11 +499,15 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `type`、互斥的 Goal `parentId` 和普通父项 `parentTaskId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
+
+普通列表与 priority/ready 查询共享 `store.TagFilter`。`core/task` 将 ID 规范化、去重排序并验证 all/any/untagged 组合；service 在已授权的同一 repeatable-read scope 中通过 `TagDAO.ResolveTags` 校验全部项目内标签后再选择任务。缺失标签返回 `invalid_tag_filter`，数据库与取消错误保留。DAO 使用关联表集合条件在排序和 LIMIT 前执行 all、any 或无关联选择，与类型、Parent、状态、负责人和就绪条件 AND 组合；有效删除视图继续排除自身或祖先已删除的条目。选定页仍批量加载标签引用。cursor 使用规范化标签过滤的 SHA-256 摘要绑定集合、模式和无标签状态，避免合法的大型 query 使 cursor 超过 16 KiB；摘要不承担授权或防篡改。ranked 搜索与客户端参数采用由各自查询入口拥有。取舍见[标签筛选决策](../../.agents/notes/implemented/feature/2026-11-13-task-tag-filters.md)。
+
+自动候选的 `candidateWorkerId` 独立于 inventory `workerId`。service 在同一授权快照读取账号所属 Worker 的 Raw 目标，解析名称筛选后建立绑定身份和语义摘要的 cursor scope。DAO 以单个 `text[]` 参数按 `project_tags.name_key` 检查任务自身标签：any 使用 EXISTS，all 对每个配置 key 检查不存在的关联。条件与现有资格共同在排序及 LIMIT 前生效，未初始化目标视为空筛选；读取或解析错误继续传播。名称不预先解析为项目标签 ID，因此缺失名称不会从 all 集合中消失。
 
 Task cursor 版本3绑定 type、parent、解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本3。
 
@@ -478,7 +564,14 @@ driver 错误或完整请求体。成功日志提供方法、路由模板、状�
 安全的 `logging_failed` 诊断直接写 stderr。生产者停止后关闭文件并释放锁；锁文件
 保留供下次启动使用。stderr 管道断开时，普通服务将 SIGPIPE 转为写入错误，仍尝试
 文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
-完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
+完成记录。`verify-storage` 与 `migrate-storage` 只写 stderr，不创建日志或获取服务日志锁。
+
+凭据使用记录器由 App 显式构造和启动，HTTP grace 期间继续接受已准入请求的事件。
+HTTP/relay 退出后 App 等待其他 producer，再 seal 并 join 记录器及其日志 consumer。
+App 的外层 `Drained()`/`Closed()` 错误分别表明整个应用已排空或已关闭，并保留原始 cause；
+Runtime 不从单个嵌套错误推断整体完成。完成但失败的 drain 不阻止依赖释放，未退出时则保留
+资源。persistence 通过原关闭 channel join pool，包括驱动异步清理，超时后继续等待同一次关闭。
+request-local 故障的前置发布、版本确认和异常兜底见[认证设计](daynight-auth.md#凭据使用记录器)。
 
 诊断服务失败时，先以响应 `requestId` 定位日志，再沿组件和阶段定位失败；数据库
 问题另外检查迁移版本及 PostgreSQL 日志。验收应通过非法状态、版本冲突和受控
@@ -486,12 +579,14 @@ driver 错误或完整请求体。成功日志提供方法、路由模板、状�
 
 ## 启动、迁移与关闭
 
-启动配置通过模块默认值、root 下两层 YAML 和显式环境变量依次覆盖。root 由 `--root`、`DAYNIGHT_ROOT` 或 `/var/lib/daynight` 选择，相对文件路径以 root 为基准，默认存储目录为 `storage`。配置加载不创建业务资源；`verify-storage` 只对数据库和存储执行语义验证。PostgreSQL 连接信息及五个鉴权字段必须由 YAML 或环境变量提供；鉴权字段对应的环境变量为：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
+启动配置通过模块默认值、root 下两层 YAML 和显式环境变量依次覆盖。root 由 `--root`、`DAYNIGHT_ROOT` 或 `/var/lib/daynight` 选择，相对文件路径以 root 为基准，默认存储目录为 `storage`。配置加载不创建业务资源；`verify-storage` 只对数据库和存储执行语义验证。`migrate-storage` 使用同一配置加载器，只打开 schema 匹配的离线目标数据库、只读源卷和显式 Azure 目标，按[离线迁移设计](offline-storage-migration.md)复制与核验后结算目标在途状态，不启动普通服务或自动迁移 schema。PostgreSQL 连接信息及六个鉴权字段必须由 YAML 或环境变量提供；鉴权字段对应的环境变量为：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_PREVIEW_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
 `DAYNIGHT_UNIAUTH_APP_SECRET`、`DAYNIGHT_UNIAUTH_CALLBACK_URL`。公开 origin 与
 callback 必须同 origin；callback 无 query/fragment，使用规范的非根路径，并在
 创建登录事务前拒绝路由冲突和返回循环。仅该配置路径接收 callback，不保留旧路径
-别名。生产使用 HTTPS；`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` 仅控制主站受控 HTTP
-测试策略，`DAYNIGHT_ALLOW_LOOPBACK_HTTP` 单独传给 UniAuth SDK，允许字面量
+别名。生产使用 HTTPS；`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` 控制主站受控 HTTP
+测试策略及 literal localhost/numeric-loopback 应用 CORS HTTP 例外；
+`s2s.allowed_origin` 的精确配置与用户 REST 接入由[鉴权设计](daynight-auth.md#用户-rest-的精确-cors)拥有。
+`DAYNIGHT_ALLOW_LOOPBACK_HTTP` 单独传给 UniAuth SDK，允许字面量
 loopback gateway HTTP，两者不能互相替代。
 
 HTTP 默认监听 `127.0.0.1`。LocalStorage 在打开数据库和监听前准备可写根目录并
@@ -538,6 +633,24 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 明确失败。成功与失败路径都先在锁所属连接上显式解锁，再将连接归还 pool；若无法
 确认解锁，则关闭该物理连接使 session 结束，不能把可能持锁的连接归还 pool。清理
 使用独立且有界的 context，避免已取消的启动 context 跳过解锁。
+
+当前 snapshot 与完整迁移历史统一位于 `postgres/schema`：普通 SQL 在 `schema/migrations`，
+包含冻结 Go transform 的迁移各自保留版本目录与内部布局。仓库身份迁移 083 的源码在
+`schema/migrations/083/migrate.go`，SQL 在其 `migrations/083_project_repository_identity.sql`，
+独立 `register.go` 向根注册表暴露 SQL。冻结文件与 SQL 原文不随目录移动改写；只移动目录不改变
+checksum。Worker 标签筛选继续使用其已发布的迁移 082，版本及账本内容保持不变。
+
+迁移 083 在同一个事务中增加 nullable `repository_identity`、分批计算回填并检查存量重复。
+`migration083` 冻结 transform，运行时与迁移共用 `repositoryidentity/v1`，迁移 checksum
+包含两份实际源码及其中的版本诊断；版本诊断的变化也会改变 checksum。身份规范化和 SQL 算法
+保持原规则，未来身份语义变化必须用新迁移重算及复查冲突。回填不改地址原文、业务时间、
+版本、授权或历史。活跃项目按 Team 和身份检查重复；无法解析的记录保留 NULL，诊断含
+`migration_version=83`、`project_id` 和 `error_kind=project_repository_identity_unavailable`，
+不含地址或凭据。活跃 NULL 中同 Team 重复原文同样使迁移失败。冲突报告 Team 与 Project ID，
+并连同字段、回填和 ledger 整体回滚。空库初始化使用包含该列的当前 schema snapshot；
+恢复操作由[服务指南](../../packages/daynight-server/README.md#team-repository-uniqueness-upgrade)拥有。
+
+迁移 115 在 `task_properties` 的 SHARE 锁内冻结校验全部 Worker 行，逐值比较 Go 与 PostgreSQL 的认领键提取，再建立非唯一 active 部分索引并写账本。冻结源码和 DDL 纳入校验和；属性原文、Task 版本、时间及 Sync 围栏保持不变。空库 snapshot 含同一索引，当前清单继续运行原读路径。部署预算与账本/索引核对、同账本重启由[Worker 索引设计](worker-active-claim-index.md)拥有。
 
 服务启动期间只支持当前迁移序列中已有的版本，不在业务读取时判断或修补旧格式。
 所有迁移成功且数据库可用之后才开始接受 HTTP 请求；启动失败释放已创建的 pool
@@ -651,3 +764,11 @@ Go 模块与 startup/shutdown job 分别使用独立 PostgreSQL 服务并归档�
 `skipped`，失败、取消及其他结果使汇总失败。包耗时、组合命令、
 完整门禁与 hosted job 时间分别记录，保持源码、toolchain、cache、instrumentation 和资源
 预算可核对。性能比较包括承接原有物理证明的所有者，不能用本地包提速推断托管收益。
+
+## 账号进行中任务读取
+
+[账号读取合同](../spec/daynight-personal-in-progress-tasks.md)通过账号权限关系与有效删除视图，在数据库中筛选本人进行中普通 Task、聚合完整项目数量并以有界页面返回投影。Parent Goal 标题来自实际父资源；页面选择包含创建时间及平台，排除 lookahead 后按项目与页面 Task 批量读取标签和实际未结束的前置关系。暂停属性和 Session 来源也来自同一快照。服务按 Task ID、Project ID、版本和状态核对来源，由个人任务规则选择保留的 active 或 completed Worker 及机器摘要；无 Session 注册也可取得记录。来源缺失、不一致或严格读取错误拒绝整页，HTTP 不查询 Worker 目录或逐任务追加读取。
+
+选择快照验证凭据并读取活跃项目事实、页面和 Session 来源，结束后才采样 Session。同一次 Engine 采样同时生成既有完整 `session` 和必填 `sessionRow`；后者复用项目 TaskSync 的完整行观测规则，保留 Task 精确版本、归一化状态、观测时间、有效期、关注事实及独立阅读资格。完整 Session 未提供的归档和现场阅读事实由该投影拥有，客户端无需猜测或追加读取。两份投影共同经过所选 Task 版本、执行来源和采样后复核，不能把旧绑定观测套到新执行。发布前在新快照复核凭据及清单 revision，并从该快照取得数据库时钟 `responseTaskAt`；采样和复核完成后从 Session Engine 时钟取得 `responseSessionAt`。二者分别供 Task 时间和 Session 时效判断，不替代原 `observedAt` 水位。权限或清单变化拒绝发布，普通观测失败保留行及已确认的 Worker 并报告部分观测。标签、前置状态及 claim 获取、完成或释放造成的版本事实变化在复核时重置清单；最终复核后的变化由后续刷新反映。revision 是按项目 ID 排序的规范事实向量的 SHA-256，包含项目归属、设置、匹配数及项目全部 Task 的 epoch、数量和版本和，不包含 Session 或时钟。版本和使用精确十进制，避免溢出。
+
+每页选择与最终复核均聚合活跃项目全部 Task 历史；无关更新可能重置遍历，持续变化不保证完成。该机制复用既有项目版本事实，不依赖进程内快照或持久化全局版本。真实成本取决于数据和负载，不承诺性能收益。

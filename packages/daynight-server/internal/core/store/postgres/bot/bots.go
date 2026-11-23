@@ -46,14 +46,32 @@ func (s *Reader) BotWorker(ctx context.Context, ownerID, workerID string) error 
 
 const botProjection = `id::text,owner_user_id::text,worker_id::text,name,version,creation_order,request_fingerprint,
  requested_overrides,resolved_configuration,role_configuration,session_id::text,startup_result,deletion,created_at,updated_at,
- (SELECT bound.test_execution_id::text FROM task_sessions bound WHERE bound.id=bots.session_id AND bound.bot_id=bots.id)`
+ (SELECT bound.test_execution_id::text FROM task_sessions bound WHERE bound.id=bots.session_id AND bound.bot_id=bots.id),
+ (SELECT count(*) FROM assistant_task_events e WHERE e.owner_user_id=bots.owner_user_id
+  AND e.target_bot_id=bots.id AND e.attention AND e.seen_at IS NULL AND e.type<>'proposal_pending') +
+ (SELECT count(*) FROM assistant_task_proposals p JOIN assistant_tasks t ON t.id=p.task_id AND t.owner_user_id=p.owner_user_id
+  WHERE t.owner_user_id=bots.owner_user_id AND t.holder_bot_id=bots.id AND t.state<>'deleted' AND p.status='pending'),
+ (SELECT jsonb_build_object('WorkerID',r.worker_id,'ServiceOrigin',r.service_origin,'MachineID',r.machine_id,'MachineName',r.machine_name,
+  'IdentityHash',encode(r.identity_hash,'base64'),'HostingGeneration',r.hosting_generation)
+  FROM bot_recovery r WHERE r.bot_id=bots.id)`
 
 func scanBot(row pgx.Row) (model.Bot, error) {
 	var bot model.Bot
-	var overrides, configuration, role, startup, deletion []byte
+	var overrides, configuration, role, startup, deletion, recovery []byte
 	if err := row.Scan(&bot.ID, &bot.OwnerUserID, &bot.WorkerID, &bot.Name, &bot.Version, &bot.CreationOrder, &bot.RequestFingerprint,
-		&overrides, &configuration, &role, &bot.SessionID, &startup, &deletion, &bot.CreatedAt, &bot.UpdatedAt, &bot.TestExecutionID); err != nil {
+		&overrides, &configuration, &role, &bot.SessionID, &startup, &deletion, &bot.CreatedAt, &bot.UpdatedAt, &bot.TestExecutionID, &bot.AttentionCount, &recovery); err != nil {
 		return model.Bot{}, err
+	}
+	if recovery != nil {
+		var row struct {
+			WorkerID, ServiceOrigin, MachineID, MachineName string
+			IdentityHash                                    []byte
+			HostingGeneration                               int64
+		}
+		if err := json.Unmarshal(recovery, &row); err != nil {
+			return model.Bot{}, err
+		}
+		bot.Recovery = &model.BotRecovery{WorkerID: row.WorkerID, ServiceOrigin: row.ServiceOrigin, MachineID: row.MachineID, MachineName: row.MachineName, IdentityHash: row.IdentityHash, HostingGeneration: row.HostingGeneration}
 	}
 	for _, field := range []struct {
 		raw    []byte

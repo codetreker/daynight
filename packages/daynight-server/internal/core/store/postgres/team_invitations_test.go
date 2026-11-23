@@ -18,8 +18,9 @@ import (
 )
 
 func TestTeamInvitationStoreFailurePaths(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, admin, team := storeTeamFixture(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	invitation := testutil.TeamInvitation(team, admin, "fault")
 	if err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
 		t.Fatal(err)
@@ -34,10 +35,19 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	}
 	for _, operation := range []func(TeamWriteDAO) error{
 		func(tx TeamWriteDAO) error { return tx.CreateInvitation(ctx, invitation) },
-		func(tx TeamWriteDAO) error { _, err := tx.AddInvitedMember(ctx, admin.UserID); return err },
+		func(tx TeamWriteDAO) error {
+			_, err := tx.AddMember(ctx, admin.UserID, model.ProjectMemberRole)
+			return err
+		},
 	} {
 		assertRollback(testWriteTeam(s, ctx, team.ID, operation))
 	}
+	const tableIdentity = `SELECT 'team_invitations'::regclass::oid`
+	var tableOID uint32
+	if err := s.Pool.QueryRow(ctx, tableIdentity).Scan(&tableOID); err != nil {
+		t.Fatal(err)
+	}
+	before := authorizationReceiverRow(t, ctx, s, "team_invitations", "id", invitation.ID)
 	for _, operation := range []func(TeamWriteDAO, pgx.Tx) error{
 		func(tx TeamWriteDAO, raw pgx.Tx) error {
 			if _, err := raw.Exec(ctx, `DROP TABLE team_invitations`); err != nil {
@@ -53,10 +63,22 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 			return err
 		},
 	} {
-		assertRollback(testWriteTeamRaw(s, ctx, team.ID, operation))
+		err := testWriteTeamRaw(s, ctx, team.ID, operation)
+		assertRollback(err)
+		var database *pgconn.PgError
+		if !errors.As(err, &database) || database.Code != "42P01" {
+			t.Fatalf("expected the missing invitation table error: %v", err)
+		}
+		var restored uint32
+		if err := s.Pool.QueryRow(ctx, tableIdentity).Scan(&restored); err != nil || restored != tableOID {
+			t.Fatalf("invitation table was not restored: OID=%d want=%d error=%v", restored, tableOID, err)
+		}
+		if after := authorizationReceiverRow(t, ctx, s, "team_invitations", "id", invitation.ID); after != before {
+			t.Fatalf("invitation changed after rollback: before=%s after=%s", before, after)
+		}
 	}
-	t.Run("consume failure rolls back added membership", func(t *testing.T) {
-		s, admin, team := storeTeamFixture(t)
+	if !t.Run("consume failure rolls back added membership", func(t *testing.T) {
+		admin, team := testutil.TeamFixture(t, s)
 		_, newcomer, _ := testAuthRecords(t, s)
 		ctx := t.Context()
 		invitation := testutil.TeamInvitation(team, admin, "consume failure")
@@ -70,7 +92,7 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 			if err != nil {
 				return err
 			}
-			if _, err := tx.AddInvitedMember(ctx, newcomer.UserID); err != nil {
+			if _, err := tx.AddMember(ctx, newcomer.UserID, model.ProjectMemberRole); err != nil {
 				return err
 			}
 			return tx.ConsumeInvitation(ctx, locked.ID, newcomer.UserID, time.Now())
@@ -94,7 +116,8 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 		}); err != nil {
 			t.Fatal(err)
 		}
-		mustQueryExec(t, s, `DROP TRIGGER refuse_team_invitation_consume ON team_invitations`)
+		mustQueryExec(t, s, `DROP TRIGGER refuse_team_invitation_consume ON team_invitations; DROP FUNCTION refuse_team_invitation_consume()`)
+		assertFaultTriggerRemoved(t, s, "refuse_team_invitation_consume", "team_invitations")
 		if err := testWriteTeam(s, ctx, team.ID, consume); err != nil {
 			t.Fatalf("same token could not be reused after rollback: %v", err)
 		}
@@ -103,10 +126,13 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 		if err := s.Pool.QueryRow(ctx, `SELECT consumed_by::text,(SELECT count(*) FROM team_members WHERE team_id=$2 AND user_id=$3) FROM team_invitations WHERE id=$1 AND consumed_at IS NOT NULL`, invitation.ID, team.ID, newcomer.UserID).Scan(&consumer, &memberships); err != nil || consumer != newcomer.UserID || memberships != 1 {
 			t.Fatalf("same-token retry did not persist atomically: %q %d %v", consumer, memberships, err)
 		}
-	})
+	}) {
+		return
+	}
+	testutil.AssertPoolReusable(t, s.Pool)
 	for _, change := range []string{"consumed", "revoked", "deleted"} {
-		t.Run("lock waiter observes "+change, func(t *testing.T) {
-			s, admin, team := storeTeamFixture(t)
+		if !t.Run("lock waiter observes "+change, func(t *testing.T) {
+			admin, team := testutil.TeamFixture(t, s)
 			_, first, _ := testAuthRecords(t, s)
 			_, second, _ := testAuthRecords(t, s)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -122,7 +148,7 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 				dao := scope.TeamDAO()
 				switch change {
 				case "consumed":
-					if _, err := dao.AddInvitedMember(ctx, first.UserID); err != nil {
+					if _, err := dao.AddMember(ctx, first.UserID, model.ProjectMemberRole); err != nil {
 						return err
 					}
 					if err := dao.ConsumeInvitation(ctx, invitation.ID, first.UserID, at); err != nil {
@@ -188,6 +214,9 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 					t.Fatalf("fresh invitation differs from locked row: %v %v %v", consumer, consumed, revoked)
 				}
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 }

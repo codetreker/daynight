@@ -17,6 +17,68 @@ type ActiveHistoryWriter struct {
 	Credential string
 }
 
+type historySourceIdentity struct {
+	SourceEpoch string `json:"sourceEpoch"`
+}
+
+func sourceEpoch(r *record) string {
+	if r.SourceEpoch == nil {
+		return ""
+	}
+	return *r.SourceEpoch
+}
+
+// The reset itself supplies the durable proof linking source epochs. Keep the
+// accepted checkpoint's epoch and advance only the authorized target.
+func handoffHistorySource(ctx context.Context, tx *operationTx, r *record, previous, next string) error {
+	dao, ok := tx.dao.(store.SessionArchiveDAO)
+	if !ok {
+		return nil
+	}
+	bundle, err := dao.SessionArchiveBundle(ctx, r.Snapshot.SessionID)
+	if errors.Is(err, model.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if bundle.Phase != "active" {
+		return nil
+	}
+	var ledger archiveLedger
+	if json.Unmarshal(bundle.Ledger, &ledger) != nil {
+		return archiveConflict()
+	}
+	if ledger.SourceEpoch == "" {
+		ledger.SourceEpoch = previous
+	}
+	current := ledger.SourceEpoch
+	if ledger.TargetSourceEpoch != "" {
+		current = ledger.TargetSourceEpoch
+	}
+	if current != previous {
+		return archiveConflict()
+	}
+	// Retire only old history rounds. Other media operations do not block source
+	// reset; any in-flight history writer rechecks this state and epoch under the
+	// same Session lock before its final publication.
+	files, err := dao.SessionArchiveFiles(ctx, bundle.SessionID)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if file.Purpose == "history" && file.State == "receiving" {
+			file.State = "failed"
+			if err = dao.SaveSessionArchiveFile(ctx, file); err != nil {
+				return err
+			}
+		}
+	}
+	ledger.TargetSourceEpoch = next
+	bundle.Ledger = encode(ledger)
+	return dao.SaveSessionArchiveBundle(ctx, bundle)
+}
+
 // retireActiveHistory runs only after the caller proves the old generation has
 // stopped. Durable leases still prevent retirement while server IO is running.
 // Failed rounds retain their original file identity and acknowledged chunks.
@@ -136,6 +198,9 @@ func (op *ArchiveOperation) validateHistoryWriter(r *record, t task) error {
 	if op.principal.Kind != model.PATCredential || op.principal.UserID != r.Owner || !r.Consumed || !bytes.Equal(hash[:], r.GrantHash) || op.historyWriter.Fence != r.Snapshot.ControllerFence || r.Snapshot.ContentRevision != sp.ContentRevision || !active(t, r) || r.Snapshot.Lifecycle != "active" || r.Live == nil || r.ConnectionExpiry == nil || !op.execution.now().Before(*r.ConnectionExpiry) {
 		return conflict()
 	}
+	if r.OnlineMode == "relay" {
+		return fault("component_unsupported", "Online relay Sessions do not support active history ledgers.")
+	}
 	return nil
 }
 
@@ -145,9 +210,14 @@ func (op *ArchiveOperation) prepareHistoryLedger(ctx context.Context, writer Act
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
 		if err := op.validateHistoryWriter(r, t); err != nil {
+			return err
+		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
 			return err
 		}
 		dao, err := archiveDAO(tx)
@@ -166,7 +236,7 @@ func (op *ArchiveOperation) prepareHistoryLedger(ctx context.Context, writer Act
 			return err
 		}
 		identity := sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID}
-		bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: r.Snapshot.Identity.ControllerInstanceID, Phase: "active", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: "0", Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
+		bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: r.Snapshot.Identity.ControllerInstanceID, Phase: "active", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceEpoch: sourceEpoch(r), SourceThrough: "0", Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
 		return dao.SaveSessionArchiveBundle(ctx, bundle)
 	})
 	op.markCommit(err)
@@ -184,6 +254,8 @@ func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer Acti
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.bundleAccess(ctx, func(_ *operationTx, _ *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if bundle.Phase != "active" {
@@ -204,7 +276,7 @@ func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer Acti
 
 func imageHistoryCurrent(bundle store.ArchiveBundle, r *record) bool {
 	var ledger archiveLedger
-	return bundle.Phase == "active" && bundle.HistoryID != "" && json.Unmarshal(bundle.Ledger, &ledger) == nil && ledger.HistoryID == bundle.HistoryID && ledger.Sealable && ledger.HistoryEpoch == r.Snapshot.HistoryEpoch && ledger.SourceThrough == decimal(r.SourceSeq)
+	return bundle.Phase == "active" && bundle.HistoryID != "" && json.Unmarshal(bundle.Ledger, &ledger) == nil && ledger.HistoryID == bundle.HistoryID && ledger.Sealable && ledger.HistoryEpoch == r.Snapshot.HistoryEpoch && ledger.SourceThrough == decimal(r.SourceSeq) && ledger.TargetSourceEpoch == "" && (ledger.SourceEpoch == "" || ledger.SourceEpoch == sourceEpoch(r))
 }
 
 // ActiveHistoryPrincipal validates the existing connection delegation inside its

@@ -21,9 +21,9 @@ flowchart LR
 
 core 使用通用 TaskProperties map。internal/core/model/taskproperty 拥有静态注册表、值 codec、规范化与 typed reader；internal/core/task/properties 使用同一注册表执行公开写权限与 Worker/sessionStartup 关联规则。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、blocked、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，blocked 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
 ## 值解析与规范化
 
@@ -37,9 +37,9 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 ## 暂停标记的消费
 
-paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
+blocked 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+兼容写入入口把 paused 归一为 blocked，两个名称同值合并、异值拒绝。协议投影在属性存在时生成同值的 blocked 与 paused，缺席时均省略；属性目录同时列出兼容名称。共享编码器计量实际回执，相对旧 paused 单键按每个对象的 true 15 字节或 false 16 字节补偿，MCP 按实际出现次数和原 RPC ID 转义规则计量。CLI/Web 通用属性对象保持所有键。新版 CLI、Worker 与 Controller 的 typed reader 在消费处严格解释 blocked；旧客户端仍读取兼容的 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -54,7 +54,7 @@ CREATE TABLE task_properties (
 
 task ID 已是全局 UUID 主键，属性行不重复 project_id。授权先定位父项目和任务，再以准入后的任务 ID 读取值。属性行没有独立版本、时间或删除标记；父任务软删除保留其属性，业务读取只从可见父任务派生 ID 集合。不增加 foreign key。
 
-value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；存储和读取都不对既有 opaque 字符串做 SQL JSON 转换。
+value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；普通属性的存储和读取不对既有 opaque 字符串做 SQL JSON 转换。Worker 活跃认领索引只对受 `CASE` 保护的 Worker 值做 JSONB 提取，冻结迁移先验证存量形状及 Go/PostgreSQL 字符语义一致；[索引设计](worker-active-claim-index.md)拥有表达式、锁与恢复规则。
 
 完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，查询、扫描或正常编码失败使整个读取失败。一次任务页使用一次属性批量查询，查询次数不随该页任务或属性数量线性增长。
 
@@ -86,7 +86,7 @@ valueText 外壳复用正 int64 version、UTF-8 application/json 和严格字段
 
 ## Worker 与 Session fence
 
-没有保留归属时没有 worker 行。Claim/resume 创建 active 对象，摘要更新替换其值，release 与 claim-bound complete 分别保留 released/completed 对象；withdraw 删除 worker 行并原子完成状态、计时及自动许可重置。公开属性入口不能制造、覆盖或移除归属。[认领架构](daynight-worker-claims.md)拥有完整生命周期。
+没有保留归属时没有 worker 行。Claim 创建 active 对象，摘要更新替换其值，release 删除 worker 和 sessionStartup，claim-bound complete 保留 completed 对象；withdraw 删除 worker 行并原子完成状态、计时及自动许可重置。公开属性入口不能制造、覆盖或移除归属。[认领架构](daynight-worker-claims.md)拥有完整生命周期。
 
 Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。所有属性写入必须先取得不兼容的父任务锁，不能仅锁属性行：缺失 worker 没有可锁行。项目行锁自身不能替代这一 fence。锁序保持项目（如有）→ 父任务 → 属性 → Session/freeze，不出现 Session→父任务的反向顺序。该约束覆盖注册、控制、状态、claim/release/withdraw/complete 与属性修改。
 
@@ -98,11 +98,17 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 每批读完关闭 rows 后再写，避免连接忙。新旧业务值核对、旧列删除和 migration ledger 提交均属于同一事务。任务 version、created_at、updated_at 和执行时间不变化。失败回滚全部结构和数据；运行时只读取新表，不保留旧列或 null 兼容分支。
 
-属性缺失改变完整资源契约，服务端与 CLI/Web 必须协调更新。模型切换使 Web IDB schema 1→2，重建可再生的项目/摘要/详情并轮换 user fence，清理旧必填/null 详情和旧水位；否则旧详情与新值会在相同版本产生冲突。旧客户端需要更新，不通过读时默认值延长旧格式。数据库提交后的回退需恢复数据库或经验证的反向迁移，不能仅更换旧二进制。
+属性行迁移将键缺失纳入完整资源契约。当时依赖旧必填键的客户端需要升级，服务端没有通过读取默认值延长旧格式。Web IDB 从 schema 1 升到 2，重建可再生的项目、摘要和详情并轮换 user fence，清理旧必填或 `null` 详情和旧水位，避免同一任务版本的新旧值冲突。数据库提交迁移后，回退需要恢复数据库或执行经过验证的反向迁移；更换旧二进制不足以恢复被删除的列。
+
+blocked 迁移直接改名属性行，验证旧布尔值并让主键冲突或坏行回滚迁移及 ledger，包含软删除任务，不触碰任务版本、业务时间、项目 epoch、claim 和事件。排空旧服务端及后台写入方后运行迁移，再启动包含兼容 Web 的新制品，验证服务端后才分发新版客户端。提交后优先前滚；旧服务端回退须恢复匹配其 ledger 的备份，并按原操作流程处理备份后的写入。
+
+迁移 115 在 SHARE 锁内验证全部 Worker 属性、建立非唯一部分索引并写账本，保留属性原文、任务版本、时间和 Sync epoch。空库 snapshot 包含同一索引；当前清单读路径继续可用，了解相同账本的索引构建可用于查询切换后的重启回退。启动预算、未知提交核对和前滚修复由[索引设计](worker-active-claim-index.md)拥有。
+
+后续变更按[组件交付与启用规则](../development.md#component-delivery-and-activation)分别评估 PR 边界和受支持的运行时版本组合。
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、blocked、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
@@ -122,7 +128,7 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 ## 备选与验证
 
-每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
+每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义；Worker 索引限定在受保护的认领对象，其他属性没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
 验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，Go race 采用[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
 

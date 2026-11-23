@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -19,12 +21,35 @@ type backupStorageReader interface {
 	Open(context.Context, string, string) (filestorage.Object, error)
 }
 
+func backupMissingOnly(err error) bool {
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !backupMissingOnly(cause) {
+				return false
+			}
+		}
+	} else if wrapped, ok := err.(interface{ Unwrap() error }); ok && wrapped.Unwrap() != nil {
+		return backupMissingOnly(wrapped.Unwrap())
+	}
+	return true
+}
+
 func verifyStorageObject(ctx context.Context, files backupStorageReader, object store.StorageObject) (result error) {
 	if object.ByteLength < 0 {
 		return errors.New("invalid storage object length")
 	}
 	value, err := files.Open(ctx, object.Bucket, object.Path)
 	if err != nil {
+		if object.Optional && backupMissingOnly(err) {
+			return nil
+		}
 		return err
 	}
 	defer func() { result = archiveCleanupFailure(result, value.Body.Close()) }()
@@ -56,7 +81,33 @@ func readStorageObject(ctx context.Context, files backupStorageReader, object st
 
 // VerifyStorageBackup checks only the restored original bytes. Missing objects
 // and corrupt known-available resources remain failures, never partial success.
+type ArchiveRecoveryOffset struct {
+	SessionID, FileID string
+	Offset            int64
+}
+
 func VerifyStorageBackup(ctx context.Context, files backupStorageReader, inventory store.StorageInventory) error {
+	return VerifyStorageBackupWithReport(ctx, files, inventory, nil)
+}
+
+// VerifyStorageBackupWithReport reports staging observations only after the
+// owning Session's complete inventory and published closure have verified.
+func VerifyStorageBackupWithReport(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, report func(ArchiveRecoveryOffset) error) error {
+	var offsets []ArchiveRecoveryOffset
+	if err := verifyStorageBackup(ctx, files, inventory, &offsets); err != nil {
+		return err
+	}
+	if report != nil {
+		for _, offset := range offsets {
+			if err := report(offset); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func verifyStorageBackup(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, offsets *[]ArchiveRecoveryOffset) error {
 	namespace, err := archiveNamespace(inventory.ProjectID, inventory.OwnerID, inventory.SessionID)
 	if err != nil {
 		return err
@@ -96,6 +147,9 @@ func VerifyStorageBackup(ctx context.Context, files backupStorageReader, invento
 		if err = verifyStorageObject(ctx, files, object); err != nil {
 			return err
 		}
+	}
+	if err = verifyArchiveV2Files(ctx, files, inventory, namespace, offsets); err != nil {
+		return err
 	}
 	if inventory.Migration != nil {
 		if err = verifyBackupMigration(ctx, files, inventory); err != nil {
@@ -138,6 +192,16 @@ func VerifyStorageBackup(ctx context.Context, files backupStorageReader, invento
 		}
 		if manifest.RecordID != inventory.SessionID {
 			return archiveConflict()
+		}
+		if bundle := inventory.ArchiveBundle; bundle != nil && len(inventory.ArchiveFilesV2) > 0 && (bundle.Phase == "committed" || bundle.Phase == "verified") {
+			var ledger archiveLedger
+			if manifest.Timeline.FileID != bundle.TimelineID || !jsonEqual(bundle.Resources, encode(manifest.Resources)) || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.ContentPolicy != manifest.ContentPolicy {
+				return archiveConflict()
+			}
+			file := inventory.ArchiveTimeline
+			if file == nil || (file.UploadVersion != 1 && file.UploadVersion != 2) || file.FileID != bundle.TimelineID || file.State != "complete" || file.Path != namespace.Directory()+"/files/"+file.FileID || file.SHA256 != manifest.Timeline.SHA256 || decimal(file.ByteLength) != manifest.Timeline.ByteLength || file.AcceptedOffset != file.ByteLength || file.TimelineRevision != bundle.Revision {
+				return archiveConflict()
+			}
 		}
 		timeline, err := readStorageObject(ctx, files, store.StorageObject{Bucket: archiveBucket, Path: namespace.Directory() + "/files/" + manifest.Timeline.FileID + "/content", SHA256: manifest.Timeline.SHA256, ByteLength: number(manifest.Timeline.ByteLength)})
 		if err != nil {

@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { directAccessFixture } from "../helpers/taskSync";
 import { stringifyWireJson } from "../helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -32,12 +33,14 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 const defaults = (url: string): Response => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user);
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
-  if (url === "/api/v1/me/tokens") return json({ items: [] });
-  if (url === "/api/v1/oauth/grants") return json({ userId, grants: [] });
+  if (url === "/api/v1/me/browser-sessions") return json({ userId, current: { id: memberId, browser: null, os: null, createdAt: "2026-10-21T12:34:56Z", lastUsedAt: null, expiresAt: "2099-10-21T12:34:56Z" }, items: [], nextCursor: null });
+  if (url === "/api/v2/me/tokens") return json({ items: [] });
+  if (url === "/api/v3/oauth/grants") return json({ userId, grants: [] });
   if (url === `/api/v1/projects/${projectId}`) return json({ id: projectId, name: "Raw project", repoUrl: "https://example.test/repo", createdAt: timestamp, updatedAt: timestamp, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1n } });
   if (url === `/api/v1/projects/${projectId}/access`) {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
@@ -80,7 +83,7 @@ describe("authentication language changes", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(signal.aborted).toBe(false);
     await act(async () => pending.resolve(json(user)));
-    await screen.findByRole("heading", { name: "个人" });
+    await screen.findByText("个人", { selector: ".project-list-information .eyebrow" });
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.projects);
     expect(language()).toHaveValue("zh-CN");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
@@ -106,10 +109,10 @@ describe("authentication language changes", () => {
 
   it("translates an existing token error and request ID without refetching or leaving the token tab", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = install((url) => url === "/api/v1/me/tokens" ? failure(503, "internal_error") : defaults(url));
+    const fetcher = install((url) => url === "/api/v2/me/tokens" ? failure(503, "internal_error") : defaults(url));
     const interaction = userEvent.setup();
     renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     const alert = await screen.findByRole("alert");
     const requestId = within(alert).getByText("auth-locale-request");
     await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
@@ -118,7 +121,7 @@ describe("authentication language changes", () => {
     expect(screen.getByRole("alert")).toBe(alert);
     expect(alert).toHaveTextContent(zhCN.auth.management.common.operationFailed);
     expect(within(alert).getByText("auth-locale-request")).toBe(requestId);
-    expect(screen.getByRole("button", { name: zhCN.auth.management.account.tokensTab })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: zhCN.auth.management.account.tokensTab })).toHaveAttribute("aria-current", "page");
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.account);
     expect(fetcher).toHaveBeenCalledTimes(requests);
     expect(screen.queryByText("Untrusted server detail")).toBeNull();
@@ -127,10 +130,12 @@ describe("authentication language changes", () => {
   it("keeps token inputs and one pending creation across an application language change, then preserves the revealed secret", async () => {
     window.history.replaceState(null, "", "/account");
     const pending = deferred<Response>();
-    const fetcher = install((url, init) => url === "/api/v1/me/tokens" && init?.method === "POST" ? pending.promise : defaults(url));
+    const created = { id: tokenId, name: "原始 device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" };
+    let issued = false;
+    const fetcher = install((url, init) => url === "/api/v2/me/tokens" ? init?.method === "POST" ? pending.promise : json({ items: issued ? [created] : [] }) : defaults(url));
     const interaction = userEvent.setup();
     const view = renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.createToken }));
     const dialog = screen.getByRole("dialog", { name: en.auth.management.account.createTitle });
     const input = within(dialog).getByLabelText(/Token name/);
@@ -140,7 +145,7 @@ describe("authentication language changes", () => {
     const date = within(dialog).getByLabelText(en.auth.management.account.expiryDateLabel);
     fireEvent.change(date, { target: { value: "2099-10-22T12:45" } });
     await interaction.click(within(dialog).getByRole("button", { name: en.auth.management.account.createToken }));
-    const creation = fetcher.mock.calls.find(([url, init]) => url === "/api/v1/me/tokens" && init?.method === "POST")!;
+    const creation = fetcher.mock.calls.find(([url, init]) => url === "/api/v2/me/tokens" && init?.method === "POST")!;
     expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
     view.setLocale("zh-CN");
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.account.createTitle })).toBe(dialog);
@@ -150,7 +155,8 @@ describe("authentication language changes", () => {
     expect(date).toHaveValue("2099-10-22T12:45");
     expect(creation[1]!.signal!.aborted).toBe(false);
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
-    await act(async () => pending.resolve(json({ id: tokenId, name: "原始 device", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "secret-raw-once" }, 201)));
+    issued = true;
+    await act(async () => pending.resolve(json({ ...created, token: "secret-raw-once" }, 201)));
     const revealed = await screen.findByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle });
     const secret = within(revealed).getByLabelText(zhCN.auth.management.secret.tokenLabel);
     expect(within(revealed).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
@@ -161,7 +167,7 @@ describe("authentication language changes", () => {
     expect(screen.getByText("原始 device")).toBeVisible();
     expect(screen.getByText(getFormats("en").dateTime(timestamp))).toBeVisible();
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
-    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(2);
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v2/me/tokens")).toHaveLength(3);
   });
 
   it("keeps preference failure feedback with the page selector outside a management dialog", () => {
@@ -318,7 +324,7 @@ describe("authentication language changes", () => {
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {
     const invitationId = "00000000-0000-4000-8000-000000000005";
     const fetcher = install((url) => {
-      if (url === "/api/v1/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
+      if (url === "/api/v2/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
       if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [{ id: invitationId, projectId, createdBy: userId, createdAt: timestamp, expiresAt: "2099-10-29T12:34:56Z", consumedBy: null, consumedAt: null, revokedAt: null }] });
       return defaults(url);
     });
@@ -327,7 +333,7 @@ describe("authentication language changes", () => {
     if (kind === "token") {
       window.history.replaceState(null, "", "/account");
       view = renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-      await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+      await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.revokeLabel({ name: "Raw 令牌" }) }));
       await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     } else {
@@ -392,61 +398,38 @@ describe("authentication language changes", () => {
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/invitations/accept")).toHaveLength(0);
   });
 
-  it("retranslates a failed account revalidation without restarting it or removing a revealed token", async () => {
+  it("retranslates an account-change notice without removing a revealed token", async () => {
     const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     window.history.replaceState(null, "", "/account");
-    const pending = deferred<Response>();
-    const retry = deferred<Response>();
     let checks = 0;
     const fetcher = install((url, init) => {
-      if (url === "/api/v1/me" && ++checks > 1) return checks === 2 ? pending.promise : retry.promise;
-      if (url === "/api/v1/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
+      if (url === "/api/v1/me") checks++;
+      if (url === "/api/v2/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
       return defaults(url);
     });
     const interaction = userEvent.setup();
     const { setLocale } = renderWithLocale(<AuthenticatedApp />, { locale: "en", getStorage: () => { throw new Error("storage unavailable"); } });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.createToken }));
     const creating = screen.getByRole("dialog");
     await interaction.type(within(creating).getByLabelText(/Token name/), "Raw device");
     await interaction.click(within(creating).getByRole("button", { name: en.auth.management.account.createToken }));
     const secret = await screen.findByLabelText(en.auth.management.secret.tokenLabel);
     const reveal = screen.getByRole("dialog");
-    focused.mockReturnValue(false);
-    fireEvent(window, new Event("blur"));
-    focused.mockReturnValue(true);
-    fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(checks).toBe(2));
-    expect(screen.queryByRole("dialog", { name: en.auth.shell.revalidationLabel })).toBeNull();
-    expect(screen.getByRole("dialog", { name: en.auth.management.secret.tokenTitle })).toBe(reveal);
-    await act(async () => pending.resolve(failure(503, "internal")));
-    const overlay = await screen.findByRole("dialog", { name: en.auth.shell.revalidationLabel });
+    focused.mockReturnValue(false); fireEvent(window, new Event("blur")); focused.mockReturnValue(true); fireEvent(window, new Event("focus"));
+    expect(checks).toBe(1);
+    act(() => { window.localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000099")); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
+    expect(await within(reveal).findByText("Account changed")).toBeVisible();
     const requests = fetcher.mock.calls.length;
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(en.auth.shell.revalidationError);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
     setLocale("zh-CN");
-    expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationError);
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationRetained);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
-    expect(within(overlay).queryByText(zhCN.language.preferenceNotice.write)).toBeNull();
-    expect(within(overlay).queryByRole("button", { name: zhCN.common.retrySave })).toBeNull();
-    expect(document.querySelector(".auth-shell")).toHaveTextContent(zhCN.language.preferenceNotice.write);
-    expect(secret).toHaveValue("kept-raw-secret");
-    expect(secret.closest("[role=dialog]")).toBe(reveal);
-    expect(fetcher).toHaveBeenCalledTimes(requests);
-    expect(checks).toBe(2);
-    await interaction.click(within(overlay).getByRole("button", { name: zhCN.auth.shell.revalidationRetry }));
-    expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
-    expect(document.body).toHaveClass("auth-session-checking");
-    expect(document.querySelector(".auth-shell")).toHaveAttribute("inert");
-    expect(within(overlay).getByRole("status")).toHaveTextContent(zhCN.auth.shell.revalidationLoading);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
-    expect(checks).toBe(3);
-    await act(async () => retry.resolve(json(user)));
-    expect(screen.queryByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBeNull();
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle })).toBe(reveal);
+    expect(within(reveal).getByText("账户已变化")).toBeVisible();
+    expect(within(reveal).getByRole("button", { name: "刷新页面" })).toBeVisible();
+    expect(within(reveal).queryByRole("combobox")).toBeNull();
+    expect(secret).toHaveValue("kept-raw-secret");
     expect(screen.getByLabelText(zhCN.auth.management.secret.tokenLabel)).toBe(secret);
+    expect(fetcher).toHaveBeenCalledTimes(requests);
+    expect(checks).toBe(1);
   });
 });
 

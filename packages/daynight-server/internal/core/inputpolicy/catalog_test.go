@@ -32,12 +32,10 @@ func TestResponseAndRangePolicies(t *testing.T) {
 	}{
 		{"bot.cwd", 4096, "bytes"},
 		{"task.resource", 512 << 10, "bytes"},
+		{"task.dependencies", 30, "items"},
 		{"search.expression", 8192, "bytes"},
 		{"search.terms", 128, "items"},
 		{"search.depth", 32, "levels"},
-		{"step.title", 1024, "bytes"},
-		{"step.description", 64 << 10, "bytes"},
-		{"step.mcp.cursor", 2048, "bytes"},
 		{"terminal.history.cursor", 1024, "bytes"},
 		{"identity.upstream.timeout", 15, "seconds"},
 		{"transport.rest.body", 1 << 20, "bytes"},

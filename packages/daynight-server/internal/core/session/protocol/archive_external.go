@@ -11,7 +11,8 @@ import (
 )
 
 const MaxArchiveManifestBytes = 4 * 1024 * 1024
-const MaxArchiveHistoryBytes = 67125248
+const MaxArchiveTimelineBytes = 128 * 1024 * 1024
+const MaxArchiveHistoryBytes = MaxArchiveTimelineBytes + 16*1024
 const MaxArchiveBlobBytes = 10 * 1024 * 1024
 const ArchiveMetadataReserveBytes = 132 * 1024 * 1024
 
@@ -26,6 +27,7 @@ type ArchiveResourceReference struct {
 }
 type ArchiveManifest struct {
 	SchemaVersion        int                        `json:"schemaVersion"`
+	ContentPolicy        string                     `json:"contentPolicy,omitempty"`
 	ContentKind          string                     `json:"contentKind"`
 	RecordID             string                     `json:"recordId"`
 	Fence                Fence                      `json:"fence"`
@@ -57,6 +59,8 @@ type ArchivePrepareReceipt struct {
 	SourceThrough    string                     `json:"sourceThrough"`
 }
 type ArchiveFileReceipt struct {
+	UploadVersion    int         `json:"-"`
+	SuccessorFileID  *string     `json:"successorFileId,omitempty"`
 	TimelineRevision *string     `json:"-"`
 	FileID           string      `json:"fileId"`
 	State            string      `json:"state"`
@@ -66,10 +70,37 @@ type ArchiveFileReceipt struct {
 	Error            *ImageError `json:"error"`
 }
 type ArchiveHistoryContent struct {
-	HistoryEpoch  string          `json:"historyEpoch"`
-	SourceThrough string          `json:"sourceThrough"`
-	Entries       []TimelineEntry `json:"entries"`
-	Resources     []Resource      `json:"resources"`
+	ContentPolicy          string            `json:"contentPolicy,omitempty"`
+	OnlineImageOccurrences []ImageOccurrence `json:"-"`
+	HistoryEpoch           string            `json:"historyEpoch"`
+	SourceThrough          string            `json:"sourceThrough"`
+	Entries                []TimelineEntry   `json:"entries"`
+	Resources              []Resource        `json:"resources"`
+}
+
+func (h ArchiveHistoryContent) MarshalJSON() ([]byte, error) {
+	type history ArchiveHistoryContent
+	if h.ContentPolicy == "" {
+		return json.Marshal(history(h))
+	}
+	positions := h.OnlineImageOccurrences
+	if positions == nil {
+		positions = []ImageOccurrence{}
+	}
+	return json.Marshal(struct {
+		history
+		OnlineImageOccurrences []ImageOccurrence `json:"onlineImageOccurrences"`
+	}{history(h), positions})
+}
+
+// Task bodies retain messages verbatim; tool and control entries have separate lifetimes.
+func TaskBodyEntries(entries []TimelineEntry) bool {
+	for _, entry := range entries {
+		if entry.Kind != "user_message" && entry.Kind != "assistant_message" {
+			return false
+		}
+	}
+	return true
 }
 
 func DecodeArchivePrepareRequest(data []byte) (ArchivePrepareRequest, error) {
@@ -90,6 +121,12 @@ func DecodeArchiveManifest(data []byte) (ArchiveManifest, error) {
 	}
 	fields, err := object(data, "schemaVersion", "contentKind", "recordId", "fence", "provider", "nativeSessionId", "controllerId", "controllerInstanceId", "timeline", "resources", "completeness")
 	if err != nil {
+		fields, err = object(data, "schemaVersion", "contentPolicy", "contentKind", "recordId", "fence", "provider", "nativeSessionId", "controllerId", "controllerInstanceId", "timeline", "resources", "completeness")
+		if err == nil && !enum("task_body")(fields["contentPolicy"]) {
+			return out, errInvalid
+		}
+	}
+	if err != nil {
 		return out, err
 	}
 	if string(fields["schemaVersion"]) != "3" || !enum("native_timeline")(fields["contentKind"]) || !identifier(fields["recordId"]) || !nested(fenceSchema)(fields["fence"]) || !enum("codex", "claude", "copilot")(fields["provider"]) || !optional(func(value json.RawMessage) bool {
@@ -100,8 +137,11 @@ func DecodeArchiveManifest(data []byte) (ArchiveManifest, error) {
 	if !nested(schema{"fileId": identifier, "sha256": pattern(`^[a-f0-9]{64}$`), "byteLength": sequence})(fields["timeline"]) || json.Unmarshal(data, &out) != nil || out.RecordID != out.Fence.SessionID {
 		return ArchiveManifest{}, errInvalid
 	}
+	if out.ContentPolicy != "" && out.Fence.ClaimID == "" {
+		return ArchiveManifest{}, errInvalid
+	}
 	n, e := strconv.ParseInt(out.Timeline.ByteLength, 10, 64)
-	if e != nil || n > MaxArchiveBytes {
+	if e != nil || n > MaxArchiveTimelineBytes {
 		return ArchiveManifest{}, errInvalid
 	}
 	values, e := array(fields["resources"])
@@ -146,7 +186,7 @@ func DecodeArchiveManifest(data []byte) (ArchiveManifest, error) {
 }
 func DecodeArchiveTimeline(data []byte) (ArchiveTimeline, error) {
 	var out ArchiveTimeline
-	if len(data) == 0 || len(data) > MaxArchiveBytes || !validUnicode(data) {
+	if len(data) == 0 || len(data) > MaxArchiveTimelineBytes || !validUnicode(data) {
 		return out, errInvalid
 	}
 	f, e := object(data, "entries")
@@ -179,6 +219,12 @@ func DecodeArchiveHistory(data []byte) (ArchiveHistoryContent, error) {
 		return out, errInvalid
 	}
 	f, e := object(data, "historyEpoch", "sourceThrough", "entries", "resources")
+	if e != nil {
+		f, e = object(data, "contentPolicy", "onlineImageOccurrences", "historyEpoch", "sourceThrough", "entries", "resources")
+		if e == nil && !enum("task_body")(f["contentPolicy"]) {
+			return out, errInvalid
+		}
+	}
 	if e != nil || !key(f["historyEpoch"]) || !zeroSequence(f["sourceThrough"]) {
 		return out, errInvalid
 	}
@@ -193,6 +239,29 @@ func DecodeArchiveHistory(data []byte) (ArchiveHistoryContent, error) {
 	out.HistoryEpoch = stringField(f["historyEpoch"])
 	out.SourceThrough = stringField(f["sourceThrough"])
 	out.Entries = timeline.Entries
+	out.ContentPolicy = stringField(f["contentPolicy"])
+	if out.ContentPolicy != "" && !TaskBodyEntries(out.Entries) {
+		return ArchiveHistoryContent{}, errInvalid
+	}
+	if out.ContentPolicy != "" {
+		var positions []json.RawMessage
+		if json.Unmarshal(f["onlineImageOccurrences"], &positions) != nil || positions == nil || len(positions) > 4096 {
+			return ArchiveHistoryContent{}, errInvalid
+		}
+		seen := map[string]bool{}
+		bodyIDs := map[string]bool{}
+		for _, entry := range out.Entries {
+			bodyIDs[entry.EntryID] = true
+		}
+		for _, raw := range positions {
+			var position ImageOccurrence
+			if !validateOccurrence(raw) || json.Unmarshal(raw, &position) != nil || position.Container == "content" || seen[position.ImageID] || bodyIDs[position.EntryID] {
+				return ArchiveHistoryContent{}, errInvalid
+			}
+			seen[position.ImageID] = true
+			out.OnlineImageOccurrences = append(out.OnlineImageOccurrences, position)
+		}
+	}
 	out.Resources = []Resource{}
 	seen := map[string]bool{}
 	for _, raw := range values {
@@ -277,6 +346,9 @@ func VerifyArchiveClosure(manifest ArchiveManifest, timeline []byte, read func(A
 	out, e := DecodeArchiveTimeline(timeline)
 	if e != nil {
 		return out, e
+	}
+	if manifest.ContentPolicy == "task_body" && !TaskBodyEntries(out.Entries) {
+		return out, errInvalid
 	}
 	refs, missing, e := ArchiveReferences(out.Entries)
 	if e != nil {

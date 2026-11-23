@@ -12,6 +12,8 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { isWorkerOnline, isWorkerRecent, sortWorkers, workerServerMilliseconds } from '../src/features/workers/observation';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerPage, workerResponse, workerSummary } from './helpers/workers';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 vi.mock('../src/features/workers/useWorkerMonitoring', () => ({
   useWorkerMonitoringSummaries: () => ({ snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }),
 }));
@@ -20,7 +22,7 @@ const scopes: TaskCacheScope[] = [];
 let monotonic: number;
 let visibility: DocumentVisibilityState;
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch });
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { onIdentityMismatch(); void scope.invalidateScope(); } });
   vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
   scopes.push(scope); return scope;
 };

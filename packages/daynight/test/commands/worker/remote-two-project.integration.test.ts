@@ -13,10 +13,10 @@ import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-tele
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
-const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: uuid(6) };
+const worker: WorkerClaim = { ...descriptor, agentControlMode: "web", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
-  id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
+  id, projectId: project, title: "Task", description: "", tags: [], status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
@@ -65,7 +65,7 @@ afterEach(async () => {
 
 it("retains identity and request order through two-project inventory, claim and report", async () => {
   const second = uuid(8), token = "fixture-worker-token";
-  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
+  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
   const account = { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal" as const, name: null } };
   const candidate = { ...task(), assignedTo: worker.userId };
   const claimed = { ...task(taskId, worker), assignedTo: worker.userId, version: 2n };
@@ -74,8 +74,8 @@ it("retains identity and request order through two-project inventory, claim and 
     const url = new URL(request.url!, "http://localhost");
     requests.push({ method: request.method!, url: request.url!, authorization: request.headers.authorization, body });
     if (url.pathname === "/api/v1/me") respond(response, account);
-    else if (url.pathname.endsWith("/configuration")) { response.setHeader("Daynight-Worker-Configuration", "1"); respond(response, { desired, observationRevision: "0", observation: null }); }
-    else if (url.pathname.endsWith("/report")) respond(response, { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime });
+    else if (url.pathname.endsWith("/configuration")) { response.setHeader("Daynight-Worker-Configuration", "1"); response.setHeader("Daynight-Worker-Tool-Paths", "2"); respond(response, { desired, observationRevision: "0", observation: null }); }
+    else if (url.pathname.endsWith("/report")) { response.setHeader("Daynight-Worker-Tool-Paths", "2"); respond(response, { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime }); }
     else if (url.pathname.endsWith("/worker-claim")) respond(response, claimed);
     else if (url.pathname.endsWith("/tasks")) respond(response, { items: url.searchParams.has("assignedTo") && url.pathname.includes(projectId) ? [candidate] : [], nextCursor: null });
     else if (url.pathname === `/api/v1/projects/${projectId}`) respond(response, project());
@@ -86,7 +86,7 @@ it("retains identity and request order through two-project inventory, claim and 
   const operation = operations.createOperation();
   try {
     expect(await remote.currentUserId(signal())).toBe(worker.userId);
-    await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+    await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired: { known: desired } });
     await remote.project(projectId, signal()); await remote.project(second, signal());
     const inventory = await remote.ownInventory([{ projectId }, { projectId: second }], workerId, signal());
     expect(inventory).toEqual({ tasks: [], coveredProjectIds: [projectId, second], unavailableProjectIds: [] });

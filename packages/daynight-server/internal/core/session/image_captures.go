@@ -7,13 +7,50 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+// CaptureRequestError is a refusal of one authenticated capture request.
+// Handle exposes it only after the enclosing transaction has committed.
+type CaptureRequestError struct {
+	Code    string
+	Message string
+}
+
+func (e *CaptureRequestError) Error() string { return e.Message }
+
+func captureRefusal(code, message string) error {
+	return &CaptureRequestError{Code: code, Message: message}
+}
+
+func captureMissing(err error) error {
+	if onlyCaptureMissing(err) {
+		return captureRefusal("capture_not_found", "Image capture was not found.")
+	}
+	return err
+}
+
+func onlyCaptureMissing(err error) bool {
+	if err == model.ErrNotFound {
+		return true
+	}
+	if missing, ok := err.(*store.Error); ok {
+		return missing.MissingRow && !missing.DatabaseFailure
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		return len(children) == 1 && onlyCaptureMissing(children[0])
+	}
+	return err != nil && onlyCaptureMissing(errors.Unwrap(err))
+}
 
 func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *record, m sp.ControllerMessage) (map[string]any, error) {
 	if r.Snapshot.ContentRevision != 2 {
@@ -34,10 +71,25 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		category = "observe"
 	}
 	if e = s.admitImageRate(ctx, tx, r.Owner, category); e != nil {
+		if f, ok := e.(*model.Fault); ok && f.Code == "rate_limited" {
+			return nil, captureRefusal(f.Code, f.Message)
+		}
 		return nil, e
 	}
 	switch m.Action {
+	case "submit":
+		input, err := sp.DecodeDirectCaptureSubmission(m.MediaBody)
+		if err != nil {
+			return nil, fault("invalid_input", "Invalid direct image capture submission.")
+		}
+		capture, e = s.submitImageCapture(ctx, tx, r, d, input)
+		if e != nil {
+			return nil, e
+		}
 	case "register":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		request, e := sp.DecodeImageCaptureRequest(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image occurrence registration.")
@@ -51,24 +103,35 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		old, e := d.SessionCapture(ctx, r.Snapshot.SessionID, request.CaptureID)
 		if e == nil {
 			if !jsonEqual(encode(old.Request), encode(request)) {
-				return nil, fault("resource_conflict", "Capture identity already belongs to a different occurrence.")
+				return nil, captureRefusal("resource_conflict", "Capture identity already belongs to a different occurrence.")
 			}
 			capture = old
 			break
 		}
-		if !errors.Is(e, model.ErrNotFound) {
+		if !onlyCaptureMissing(e) {
 			return nil, e
 		}
 		if _, e = d.SessionUpload(ctx, r.Snapshot.SessionID, request.AttemptID); e == nil {
-			return nil, fault("resource_conflict", "Capture attempt already belongs to an upload identity.")
-		} else if !errors.Is(e, model.ErrNotFound) {
+			return nil, captureRefusal("resource_conflict", "Capture attempt already belongs to an upload identity.")
+		} else if !onlyCaptureMissing(e) {
 			return nil, e
 		}
 		if e = verifyImageOccurrence(ctx, tx, r, request.Occurrence); e != nil {
+			if f, ok := e.(*model.Fault); ok && f.Code == "resource_conflict" {
+				return nil, captureRefusal(f.Code, f.Message)
+			}
+			if onlyCaptureMissing(e) {
+				return nil, captureRefusal("capability_changed", "Complete source metadata is unavailable for image capture.")
+			}
 			return nil, e
 		}
+		var ledgerRefusal *model.Fault
 		if e = requireImageHistoryLedger(ctx, tx, r, true); e != nil {
-			return nil, e
+			if f, ok := e.(*model.Fault); ok && (f.Code == "capability_changed" || f.Code == "component_unsupported") {
+				ledgerRefusal = f
+			} else {
+				return nil, e
+			}
 		}
 		usage, e := d.SessionResourceUsage(ctx, r.Snapshot.SessionID)
 		if e != nil {
@@ -77,26 +140,34 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		if usage.Deleting || usage.Frozen {
 			return nil, conflict()
 		}
-		if usage.UploadIdentities >= sp.MaxUploadIdentities {
-			return nil, fault("quota_exceeded", "Session image capture identity capacity is exhausted.")
+		failRegistration := func(code, message string) (map[string]any, error) {
+			failed := store.SessionCaptureRecord{SessionID: r.Snapshot.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: request.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "failed", Error: &sp.ImageError{Code: code, Message: message}}}
+			if err := saveImageCapture(ctx, d, failed); err != nil {
+				return nil, err
+			}
+			if err := s.syncImageBudget(ctx, tx, r); err != nil {
+				return nil, err
+			}
+			return nil, captureRefusal(code, message)
 		}
-		if request.Locator.Kind != "resource" {
-			if s.imageDecoder == nil {
-				return nil, fault("component_unsupported", "Full image validation is unavailable.")
-			}
-			if e = s.admitImageResource(ctx, usage, sp.MaxImageBytes); e != nil {
-				return nil, e
-			}
+		if ledgerRefusal != nil {
+			return failRegistration(ledgerRefusal.Code, ledgerRefusal.Message)
+		}
+		if request.Locator.Kind != "resource" && s.imageDecoder == nil {
+			return failRegistration("component_unsupported", "Full image validation is unavailable.")
 		}
 		resourceID := uuid.NewString()
 		capture = store.SessionCaptureRecord{SessionID: r.Snapshot.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: request.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resourceID}}
 		if request.Locator.Kind == "resource" {
 			saved, e := d.SavedSessionResource(ctx, r.Snapshot.SessionID, request.Locator.ResourceID)
 			if e != nil {
+				if onlyCaptureMissing(e) {
+					return failRegistration("resource_conflict", "The original image resource was not found.")
+				}
 				return nil, e
 			}
 			if saved.Resource.Status != "available" {
-				return nil, conflict()
+				return failRegistration("resource_conflict", "The original image resource is unavailable.")
 			}
 			capture.Receipt.State = "committed"
 			capture.Receipt.ResourceID = &saved.Resource.ResourceID
@@ -117,31 +188,34 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		}
 		capture, e = d.SessionCapture(ctx, r.Snapshot.SessionID, body.CaptureID)
 		if e != nil {
-			return nil, e
+			return nil, captureMissing(e)
 		}
 		if capture.Receipt.State == "copying" && capture.Validated != nil {
 			s.scheduleCapture(tx, r, capture)
 		}
 	case "commit":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		input, e := sp.DecodeImageCaptureCommit(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image capture completion.")
 		}
 		capture, e = d.SessionCapture(ctx, r.Snapshot.SessionID, input.CaptureID)
 		if e != nil {
-			return nil, e
+			return nil, captureMissing(e)
 		}
 		if capture.Receipt.AttemptID != input.AttemptID {
-			return nil, conflict()
+			return nil, captureRefusal("resource_conflict", "Capture attempt identity changed.")
 		}
 		if capture.Validated != nil && !jsonEqual(encode(capture.Validated), encode(input.Validated)) {
-			return nil, fault("resource_conflict", "Capture validation identity changed.")
+			return nil, captureRefusal("resource_conflict", "Capture validation identity changed.")
 		}
 		if capture.Receipt.State == "committed" {
 			break
 		}
 		if capture.Receipt.State == "failed" {
-			return nil, conflict()
+			return nil, captureRefusal("resource_conflict", "Capture attempt has failed.")
 		}
 		usage, e := d.SessionResourceUsage(ctx, r.Snapshot.SessionID)
 		if e != nil {
@@ -157,6 +231,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		}
 		s.scheduleCapture(tx, r, capture)
 	case "failed":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		var body struct {
 			CaptureID string        `json:"captureId"`
 			AttemptID string        `json:"attemptId"`
@@ -167,13 +244,13 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		}
 		capture, e = d.SessionCapture(ctx, r.Snapshot.SessionID, body.CaptureID)
 		if e != nil {
-			return nil, e
+			return nil, captureMissing(e)
 		}
 		if capture.Receipt.AttemptID != body.AttemptID {
-			return nil, conflict()
+			return nil, captureRefusal("resource_conflict", "Capture attempt identity changed.")
 		}
 		if capture.Receipt.State == "committed" || capture.Receipt.State == "copying" {
-			return nil, conflict()
+			return nil, captureRefusal("resource_conflict", "Capture attempt is already copying or committed.")
 		}
 		capture.Receipt.State = "failed"
 		capture.Receipt.ResourceID = nil
@@ -219,35 +296,110 @@ func (s *Execution) scheduleCapture(tx *operationTx, r *record, capture store.Se
 			}
 			ioContext, finish, err := worker.beginImageIO(ctx, fence.SessionID, uuid.NewString())
 			if err != nil {
+				slog.ErrorContext(ctx, "Session image capture failed", "component", "session", "phase", "capture_copy", "session_id", fence.SessionID, "capture_id", capture.Request.CaptureID, "attempt_id", capture.Receipt.AttemptID, "causes", captureErrorFacts(err))
 				return
 			}
-			defer finish()
 			err = worker.copyCapture(ioContext, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture)
-			if failure := definiteImageFailure(err); failure != nil {
-				cleanup, stop := context.WithTimeout(context.WithoutCancel(ioContext), 5*time.Second)
-				defer stop()
-				if err := worker.browser(cleanup, model.Principal{UserID: owner}, project, taskID, fence.SessionID, func(tx *operationTx, r *record, _ task, _ bool) error {
-					d, e := resourceDAO(tx)
-					if e != nil {
-						return e
-					}
-					current, e := d.SessionCapture(cleanup, fence.SessionID, capture.Request.CaptureID)
-					if e != nil {
-						return e
-					}
-					if current.Receipt.State != "copying" || current.Receipt.AttemptID != capture.Receipt.AttemptID {
-						return nil
-					}
-					current.Receipt.State, current.Receipt.Error, current.Receipt.ResourceID = "failed", failure, nil
-					return saveImageCapture(cleanup, d, current)
-				}); err == nil {
-					// Failed validation does not release its reservation until the
-					// original attempt's staging files have actually been removed.
-					_ = worker.cleanupUploadFiles(cleanup, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture.Receipt.AttemptID)
-				}
+			if failure := imageFailureEvidence(err); failure != nil {
+				cleanupParent, cancelCleanupGate := filestorage.GateCleanupContext(ioContext)
+				cleanup, stop := context.WithTimeout(cleanupParent, 5*time.Second)
+				settleErr := worker.settleCaptureFailure(cleanup, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture, failure)
+				err = errors.Join(err, settleErr)
+				stop()
+				cancelCleanupGate()
+			}
+			err = errors.Join(err, finish())
+			if err != nil {
+				slog.ErrorContext(ctx, "Session image capture failed", "component", "session", "phase", "capture_copy", "session_id", fence.SessionID, "capture_id", capture.Request.CaptureID, "attempt_id", capture.Receipt.AttemptID, "causes", captureErrorFacts(err))
 			}
 		}()
 	})
+}
+
+func (s *Execution) settleCaptureFailure(ctx context.Context, p model.Principal, project, taskID, id string, capture store.SessionCaptureRecord, failure *definiteImageError) (result error) {
+	if s.files == nil {
+		return fault("component_unsupported", "Resource storage is unavailable.")
+	}
+	gate, err := s.files.AcquireGate(ctx, filestorage.PrivateGate, "session-image-upload/"+id+"/"+capture.Receipt.AttemptID)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
+	hasUpload := false
+	err = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+		d, e := resourceDAO(tx)
+		if e != nil {
+			return e
+		}
+		current, e := d.SessionCapture(ctx, id, capture.Request.CaptureID)
+		if e != nil {
+			return e
+		}
+		if current.Receipt.State != "copying" || current.Receipt.AttemptID != capture.Receipt.AttemptID {
+			return nil
+		}
+		upload, e := d.SessionUpload(ctx, id, capture.Receipt.AttemptID)
+		if e == nil {
+			if current.Receipt.ResourceID == nil || upload.BlobID != *current.Receipt.ResourceID || upload.ActorID != p.UserID || upload.Spec.ImageID != current.Request.Occurrence.ImageID || upload.Spec.UploadID != capture.Receipt.AttemptID {
+				return conflict()
+			}
+			// Another worker can advance or publish after this failure. Only the
+			// exact observed receiving or confirmed failed upload may be released.
+			if failure.expectedUpload == nil || !jsonEqual(encode(upload), encode(*failure.expectedUpload)) || (upload.Receipt.State != "receiving" && upload.Receipt.State != "failed") || upload.Receipt.Resource != nil {
+				return nil
+			}
+			hasUpload = true
+			upload.Receipt.State, upload.Receipt.Error = "released", nil
+			if e = s.saveImageUpload(ctx, tx, r, upload); e != nil {
+				return e
+			}
+		} else {
+			if !onlyCaptureMissing(e) {
+				return e
+			}
+			if !failure.expectAbsent {
+				return nil
+			}
+		}
+		current.Receipt.State, current.Receipt.Error, current.Receipt.ResourceID = "failed", &failure.image, nil
+		if e = saveImageCapture(ctx, d, current); e != nil {
+			return e
+		}
+		return s.syncImageBudget(ctx, tx, r)
+	})
+	if err != nil || !hasUpload {
+		return err
+	}
+	return s.cleanupUploadFiles(ctx, p, project, taskID, id, capture.Receipt.AttemptID)
+}
+
+// Diagnostic types and outcomes retain the error chain without logging paths,
+// tokens, or content from underlying filesystem and database errors.
+func captureErrorFacts(err error) []string {
+	if err == nil {
+		return nil
+	}
+	fact := fmt.Sprintf("%T", err)
+	if f, ok := err.(*model.Fault); ok {
+		fact += ":" + f.Code
+	}
+	if tx, ok := err.(*store.TransactionError); ok {
+		fact += fmt.Sprintf(":%s:%s:cleanup_failed=%t", tx.Phase, tx.Outcome, tx.CleanupFailed)
+	}
+	if publication, ok := err.(*filestorage.PublicationError); ok {
+		fact += ":" + string(publication.Outcome)
+	}
+	facts := []string{fact}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			facts = append(facts, captureErrorFacts(child)...)
+		}
+	} else if next := errors.Unwrap(err); next != nil {
+		facts = append(facts, captureErrorFacts(next)...)
+	}
+	return facts
 }
 func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project, taskID, id string, capture store.SessionCaptureRecord) error {
 	if capture.Validated == nil {
@@ -263,7 +415,7 @@ func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project,
 	if err != nil {
 		return err
 	}
-	receipt, _, err := s.prepareUpload(ctx, p, project, taskID, id, spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
+	receipt, _, err := s.prepareUploadIdentity(ctx, p, project, taskID, id, spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
 	if err != nil {
 		return err
 	}
@@ -348,7 +500,7 @@ func saveImageCapture(ctx context.Context, d store.SessionResourceDAO, row store
 			// The authorized Session lock also protects upload staging and identity
 			// observations until the capture's expected-state update completes.
 			upload, err := d.SessionUpload(ctx, row.SessionID, old.Receipt.AttemptID)
-			if err != nil && !errors.Is(err, model.ErrNotFound) {
+			if err != nil && !onlyCaptureMissing(err) {
 				return err
 			}
 			if err == nil && !upload.StorageReleased {
@@ -356,13 +508,13 @@ func saveImageCapture(ctx context.Context, d store.SessionResourceDAO, row store
 			}
 			if _, err = d.SessionUpload(ctx, row.SessionID, row.Receipt.AttemptID); err == nil {
 				return refuse()
-			} else if !errors.Is(err, model.ErrNotFound) {
+			} else if !onlyCaptureMissing(err) {
 				return err
 			}
 		}
 		row.Expected = &store.SessionCaptureState{Receipt: old.Receipt, Validated: old.Validated}
 		row.Receipt.Revision = next(old.Receipt.Revision)
-	} else if !errors.Is(e, model.ErrNotFound) {
+	} else if !onlyCaptureMissing(e) {
 		return e
 	} else {
 		row.Expected = nil
@@ -385,6 +537,13 @@ func verifyImageOccurrence(ctx context.Context, tx *operationTx, r *record, occu
 	var ledger archiveLedger
 	if json.Unmarshal(bundle.Ledger, &ledger) != nil {
 		return conflict()
+	}
+	if ledger.ContentPolicy == "task_body" && bundle.Phase == "active" && ledger.HistoryEpoch == r.Snapshot.HistoryEpoch && ledger.SourceThrough == decimal(r.SourceSeq) && ledger.HistoryID == bundle.HistoryID && ledger.TargetSourceEpoch == "" && (ledger.SourceEpoch == "" || ledger.SourceEpoch == sourceEpoch(r)) {
+		for _, position := range ledger.OnlineImageOccurrences {
+			if jsonEqual(encode(position), encode(occurrence)) {
+				return nil
+			}
+		}
 	}
 	for _, position := range ledger.Occurrences {
 		if position.ImageID == occurrence.ImageID && position.EntryID == occurrence.EntryID && position.Container == occurrence.Container && model.EqualOptional(position.PartID, occurrence.PartID) && model.EqualOptional(position.SourceRevision, occurrence.SourceRevision) && model.EqualOptional(position.SourceTextSHA256, occurrence.SourceTextSHA256) && model.EqualOptional(position.CallIDSHA256, archiveCallIDSHA256(occurrence.CallID)) {

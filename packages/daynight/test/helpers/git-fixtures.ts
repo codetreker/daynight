@@ -7,7 +7,7 @@ import { executeCommand } from "../../src/commands/review/adapters/github.js";
 import type { CommandExecutor, GitHubClient } from "../../src/commands/review/adapters/github.js";
 import { openStore } from "../../src/commands/review/store.js";
 import type { Store } from "../../src/commands/review/store.js";
-import type { PullRequestObservation } from "../../src/commands/review/model.js";
+import type { PullRequestObservation, ReviewState } from "../../src/commands/review/model.js";
 import { writeGitSnapshot } from "./git-objects.js";
 import type { GitSnapshotEntry } from "./git-objects.js";
 import { createMemoryDatabase } from "./sqlite.js";
@@ -58,6 +58,7 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
     let onGet: (() => void) | undefined;
     const client: GitHubClient = {
       resolveRepository: async (config) => ({ ...repository, githubId: config.owner === "owner" && config.name === "repo" ? "42" : "43", host: config.host }),
+      resolveRepositoryById: async (identity) => ({ ...repository, ...identity }),
       listPullRequestNumbers: async () => [101],
       listOpenPullRequests: async () => [observation],
       getPullRequest: async () => { onGet?.(); return { ...observation }; },
@@ -85,6 +86,24 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
       if (review === null) throw new Error("Expected a review reservation.");
       return review;
     };
+    const stageOwnedWorktree = (repositoryRoot: string, review: ReviewState): string => {
+      const pullRequest = store.getPullRequest(review);
+      if (!pullRequest?.sessionId) throw new Error("Expected an owned review session.");
+      const pinned = `refs/daynight/reviews/${review.id}`;
+      rawGit(repositoryRoot, [
+        "fetch", "--atomic", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", "--",
+        upstream, `refs/pull/${review.number}/head:${pinned}/head`, `refs/heads/${pullRequest.baseRef}:${pinned}/base`,
+      ]);
+      // The fixture puts the PR commit directly on top of the base.
+      rawGit(repositoryRoot, ["update-ref", `${pinned}/merge-base`, pullRequest.baseSha]);
+      store.pinReviewBase(review.id, pullRequest.baseSha, 20);
+
+      const worktreePath = path.join(repositoryRoot, ".worktrees", `pr-${review.number}`);
+      mkdirSync(path.dirname(worktreePath));
+      rawGit(repositoryRoot, ["worktree", "add", "--detach", "--lock", "--reason", `daynight:${pullRequest.sessionId}`, "--", worktreePath, review.headSha]);
+      store.registerWorktree(review, worktreePath);
+      return worktreePath;
+    };
     const manager = createGitManager({ temporaryDirectory: path.join(directory, "tmp"), client, execute, now: () => 20 });
     const update = (partial: Partial<PullRequestObservation>) => { observation = { ...observation, ...partial }; store.observePullRequest(repository, observation, 15); };
     const nextRevision = (reviewId: string, nextHead: string) => {
@@ -93,7 +112,7 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
       rawGit(upstream, ["update-ref", "refs/pull/101/head", nextHead]);
       return reserve();
     };
-    return { directory, upstream, base, head, configuration, repository, client, database, store, calls, execute, manager, reserve, update, nextRevision,
+    return { directory, upstream, base, head, configuration, repository, client, database, store, calls, execute, manager, reserve, stageOwnedWorktree, update, nextRevision,
       setIntercept: (value: CommandExecutor | undefined) => { intercept = value; }, setOnGet: (value: (() => void) | undefined) => { onGet = value; } };
   };
 

@@ -1,3 +1,4 @@
+import { nativeEntryId } from "../../../src/commands/controller/providers/projection.js";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ClaudeProjection } from "../../../src/commands/controller/providers/claude-image-projection.js";
@@ -78,12 +79,12 @@ test("submitted and native user image positions reuse the original ordered ident
 });
 
 test("closing history projection cancels a source waiting for its page acknowledgement", async () => {
-  const f = fixture(); let reserved!: () => void;
-  const entered = new Promise<void>(resolve => { reserved = resolve; }), write = f.options.imageRuntime!.writeState;
-  f.options.imageRuntime!.writeState = (key, value) => { write(key, value); if ((value as any).phase === "reserved") reserved(); };
+  const f = fixture(); let preparing!: () => void;
+  const entered = new Promise<void>(resolve => { preparing = resolve; }), write = f.options.imageRuntime!.writeState;
+  f.options.imageRuntime!.writeState = (key, value) => { write(key, value); if ((value as any).phase === "preparing") preparing(); };
   f.options.imageOccurrenceAcknowledged = () => true;
-  f.options.registerImageCapture = async (request: ImageCaptureRequest) => ({ captureId: request.captureId, attemptId: request.attemptId, revision: "1", occurrence: request.occurrence, state: "reserved", resourceId: null, resource: null, error: null });
-  f.options.queryImageCapture = vi.fn(); f.options.stageImageCapture = vi.fn(); f.options.commitImageCapture = vi.fn(); f.options.failImageCapture = vi.fn(); f.options.imageRuntime!.createSpool = vi.fn();
+  f.options.prepareImageCapture = async () => {};
+  f.options.queryImageCapture = vi.fn(); f.options.stageImageCapture = vi.fn(); f.options.submitImageCapture = vi.fn(); f.options.imageRuntime!.createSpool = vi.fn();
   const projection = new ClaudeProjection(f.options, f.sessionId, () => null), readMedia = vi.fn();
   const value = { type: "assistant", uuid: "history", message: { id: "history-message", content: [{ type: "image", source: { type: "base64", data: null } }] } };
   projection.message(value, { acknowledged: new Promise(() => {}), reader: { readMedia } as never, row: { value, assistantBlockOffset: 0, media: [{ mediaId: "source", path: ["message", "content", 0, "source", "data"], mediaType: "image/png", byteLength: 3, state: "available", error: null }] } });
@@ -115,4 +116,17 @@ test.each(["text", "thinking"])("a cold %s stream alias reserves its ordinal bef
     projection.message(value, { row: { value, media: [], assistantBlockOffset: offset }, reader: {} as never });
   }
   await projection.close(); expect(f.entries[1]!.entryId).toBe(originalId); expect(f.entries[2]!.entryId).not.toBe(originalId); expect(new Set(f.entries.map(entry => entry.entryId)).size).toBe(2);
+});
+
+
+test("Claude dispatch and history retain the original UUID association without tagging subagent inputs", async () => {
+  const f = fixture(), associations: unknown[][] = [];
+  f.options.onInputMessage = (...values) => { associations.push(values); };
+  const projection = new ClaudeProjection(f.options, f.sessionId, () => null), operationId = randomUUID();
+  try {
+    projection.dispatch({ content: [{ type: "text", text: "same input" }] }, operationId);
+    projection.message({ type: "user", uuid: operationId, message: { content: [{ type: "text", text: "same input" }] } });
+    projection.message({ type: "user", uuid: "subagent-input", parent_tool_use_id: "tool", message: { content: [{ type: "text", text: "same input" }] } });
+    expect(associations).toEqual(Array.from({ length: 2 }, () => [operationId, f.sessionId, nativeEntryId(f.sessionId, `${operationId}:0`)]));
+  } finally { await projection.close(); }
 });

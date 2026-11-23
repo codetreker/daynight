@@ -23,11 +23,17 @@ func databaseFailure(phase string, cause error) error {
 }
 
 func transact(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error) (err error) {
-	return transactMode(ctx, tx, operation, false)
+	return transactMode(ctx, tx, operation, false, false)
 }
 
 func transactReadOnly(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error) error {
-	return transactMode(ctx, tx, operation, true)
+	return transactMode(ctx, tx, operation, true, false)
+}
+
+// Signal reception has an end-to-end deadline. Failed rollback closes the pgx
+// connection, so cleanup must not continue past that deadline on the HTTP path.
+func transactSignal(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error) error {
+	return transactMode(ctx, tx, operation, false, true)
 }
 
 // soleClosed accepts the driver's closed-connection chain but not a joined
@@ -45,11 +51,16 @@ func soleClosed(err error) bool {
 	return false
 }
 
-func transactMode(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error, readOnly bool) (err error) {
+func transactMode(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error, readOnly, boundCleanup bool) (err error) {
 	stage := &TransactionError{Phase: "operation", Outcome: TransactionUnknown}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
+		if deadline, ok := ctx.Deadline(); boundCleanup && ok {
+			var stop context.CancelFunc
+			cleanup, stop = context.WithDeadline(cleanup, deadline)
+			defer stop()
+		}
 		var closedBefore bool
 		var done <-chan struct{}
 		if readOnly && !stage.CommitAttempted {

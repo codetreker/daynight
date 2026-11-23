@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectOverview } from "../src/features/projects/ProjectOverview";
 import { overviewProgress } from "../src/features/projects/overview-progress";
-import { recentTaskWindow, timestampNanoseconds } from "../src/features/projects/task-visibility";
+import { recentTaskWindow } from "../src/features/projects/task-visibility";
+import { timestampNanoseconds } from "../src/time/timestamp";
 import { useOverviewProgress } from "../src/features/projects/useOverviewProgress";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
 import { buildGraphIndex } from "../src/features/task-graph/model";
@@ -219,9 +220,26 @@ describe("shared local calendar clock", () => {
 });
 
 describe("project overview progress presentation", () => {
+  it("displays completed counts and integer percentages while retaining raw counts and status", () => {
+    const value = snapshot([
+      { id: "root", status: "done" },
+      ...[1, 2, 3].map((n) => ({ id: `done-${n}`, status: "done" as const, dependsOn: ["root"] })),
+      ...[1, 2].map((n) => ({ id: `todo-${n}`, status: "todo" as const, dependsOn: ["root"] })),
+      ...[1, 2, 3].map((n) => ({ id: `cancelled-${n}`, status: "cancelled" as const, dependsOn: ["root"] })),
+    ]);
+    const progress = project(value);
+    expect(progress.chains[0]).toMatchObject({ done: 4, cancelled: 3, ended: 7, total: 9, percent: 66, status: "in_progress" });
+    const view = renderWithLocale(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(value)} onNavigate={vi.fn()} />, { locale: "en" });
+    const button = screen.getByRole("button", { name: /Title root, 4 \/ 6 completed, 66%/ });
+    expect(button).toHaveTextContent("4 / 6");
+    expect(button.querySelector(".root-progress-track i")).toHaveStyle({ width: "66%" });
+    expect(screen.getByText("Total tasks").parentElement).toHaveTextContent("9");
+    view.setLocale("zh-CN");
+    expect(button).toHaveAccessibleName(/Title root.*4.*6.*66%/);
+  });
   it("offers both navigation targets, explains the recent scope, and keeps project statistics complete in both languages", () => {
     const value = mixed(); const onNavigate = vi.fn();
-    const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(value)} onNavigate={onNavigate} />, { locale: "zh-CN" });
+    const view = renderWithLocale(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(value)} onNavigate={onNavigate} />, { locale: "zh-CN" });
     const region = screen.getByRole("region", { name: "整体进度" });
     const buttons = within(region).getAllByRole("button");
     expect(buttons).toHaveLength(2); expect(buttons[0]).toHaveTextContent("Title root…");
@@ -236,12 +254,12 @@ describe("project overview progress presentation", () => {
   });
 
   it("shows recent work at 100% and reserves empty presentation for no currently eligible rows", () => {
-    const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([]))} onNavigate={vi.fn()} />, { locale: "zh-CN" });
+    const view = renderWithLocale(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(snapshot([]))} onNavigate={vi.fn()} />, { locale: "zh-CN" });
     expect(screen.getByRole("heading", { name: "还没有任务" })).toBeTruthy();
-    view.rerender(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))} onNavigate={vi.fn()} />);
+    view.rerender(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))} onNavigate={vi.fn()} />);
     expect(screen.getByRole("region", { name: "整体进度" })).toHaveTextContent("100%");
     expect(document.querySelector(".overview-progress-row")).toHaveAttribute("data-task-status", "done");
-    view.rerender(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
+    view.rerender(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
     expect(within(screen.getByRole("region", { name: "整体进度" })).queryByRole("button")).toBeNull();
   });
 });
@@ -255,11 +273,25 @@ it("uses cancellation time for mixed and cancelled terminal Goals without replac
   ]);
   const progress = project(value);
   expect(progress.chains[0]).toMatchObject({ taskId: "root", done: 1, cancelled: 1, ended: 2, total: 2, percent: 100, status: "ended" });
-  expect(progress.standalone).toMatchObject({ done: 0, cancelled: 1, ended: 1, total: 1, percent: 100, status: "cancelled" });
+  expect(progress.standalone).toMatchObject({ done: 0, cancelled: 1, ended: 1, total: 1, percent: 0, status: "cancelled" });
   expect(progress.recentStandaloneIds).toEqual(["cancelled-only"]);
-  const view = renderWithLocale(<ProjectOverview snapshot={value} progress={progress} pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: vi.fn() }} onNavigate={vi.fn()} onOpenTask={vi.fn()} />, { locale: "en" });
-  expect(screen.getByRole("button", { name: /Title root, 2 \/ 2 ended, 1 completed, 1 cancelled/ })).toBeInTheDocument();
-  expect(screen.getByText("Ended", { selector: ".stat-label" })).toBeInTheDocument();
+  const view = renderWithLocale(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} snapshot={value} progress={progress} pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: vi.fn() }} onNavigate={vi.fn()} onOpenTask={vi.fn()} />, { locale: "en" });
+  expect(screen.getByRole("button", { name: /Title root, 1 \/ 1 completed, 100%/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Standalone tasks, 0 \/ 0 completed, 0%/ })).toHaveAttribute("data-task-status", "cancelled");
+  const ended = screen.getByText("Ended", { selector: ".stat-label" }).parentElement!;
+  expect([...ended.children].map(child => child.textContent)).toEqual(["Ended", "4"]);
   expect(value.index.nodes.get("cancelled")!.completedAt).toBe(beforeCutoff);
   view.unmount();
+});
+
+it("shows the combined ended count in Chinese when a task is cancelled", () => {
+  const value = snapshot([
+    { id: "done", status: "done", completedAt: observedAt },
+    { id: "cancelled", status: "cancelled", cancelledAt: observedAt },
+  ]);
+  renderWithLocale(<ProjectOverview active pausedTasks={[]} onPausedFocusFallback={() => {}} onOpenTask={vi.fn()} {...presentation(value)} onNavigate={vi.fn()} />, { locale: "zh-CN" });
+  const cards = screen.getByRole("region", { name: "项目任务统计" }).querySelectorAll(".stat");
+  expect([...cards].map(card => [...card.children].map(child => child.textContent))).toEqual([
+    ["任务总数", "2"], ["已结束", "2"], ["待确认", "0"], ["待处理", "0"], ["进行中", "0"], ["可开始", "0"], ["未就绪", "0"],
+  ]);
 });

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestReleaseCompletedUnsentUploadReclaimsOriginalAndQuotaButRetainsIdentity(
 		t.Fatal("reclamation lost immutable upload tombstone")
 	}
 	usage, err := f.d.SessionResourceUsage(t.Context(), f.r.Snapshot.SessionID)
-	if err != nil || usage.Bytes != 0 || usage.Resources != 0 || usage.ReservedBytes != 0 {
+	if err != nil || usage.Bytes != 0 || usage.Resources != 0 {
 		t.Fatal("physical reclaim did not return quota", usage, err)
 	}
 }
@@ -506,14 +507,208 @@ func TestArchiveExpiryRequiresMatchingOriginalControllerRelease(t *testing.T) {
 				t.Fatal("expiry treated unknown or mismatched Controller release as cleanup", err)
 			}
 			usage, err := f.d.SessionResourceUsage(t.Context(), op.id)
-			if err != nil || usage.ReservedBytes != number(f.spec.ByteLength) {
-				t.Fatal("unconfirmed remote cleanup returned reservation", usage, err)
+			if err != nil || usage.Bytes != 0 || usage.Resources != 0 {
+				t.Fatal("unconfirmed remote cleanup changed accepted content", usage, err)
 			}
 			object, err := f.files.Open(t.Context(), sessionresource.Bucket, path)
 			if err != nil {
 				t.Fatal("unconfirmed remote release deleted recovery staging", err)
 			}
 			_ = object.Body.Close()
+		})
+	}
+}
+
+func TestArchiveSettlementRequiresCurrentProducerBeforeChangingExpiredUpload(t *testing.T) {
+	f, op, path := expiredReclaimFixture(t)
+	refusal := errors.New("producer scope revoked")
+	f.s.SetProducerAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal) error {
+		if p != f.p {
+			t.Fatalf("wrong original producer: %#v", p)
+		}
+		return refusal
+	})
+	if err := op.SettleExpiredUploads(t.Context()); !errors.Is(err, refusal) {
+		t.Fatalf("expected producer refusal, got %v", err)
+	}
+	if u := f.d.uploads[f.spec.UploadID]; u.Receipt.State != "receiving" || u.StorageReleased {
+		t.Fatalf("settlement changed committed upload: %#v", u)
+	}
+	object, err := f.files.Open(t.Context(), sessionresource.Bucket, path)
+	if err != nil {
+		t.Fatalf("settlement removed staged bytes: %v", err)
+	}
+	if err := object.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type releasedRecoveryDAO struct {
+	*imageRuleDAO
+	record store.SessionRecord
+	status sp.ArchiveStatus
+}
+
+func (d *releasedRecoveryDAO) LockSession(_ context.Context, id string) (store.SessionRecord, error) {
+	if d.record.Snapshot.SessionID != id {
+		return store.SessionRecord{}, model.ErrNotFound
+	}
+	return d.record, nil
+}
+func (d *releasedRecoveryDAO) SessionArchive(context.Context, string) (sp.ArchiveStatus, string, error) {
+	return d.status, "", nil
+}
+
+type releasedRecoveryScope struct {
+	store.ArchiveCleanupScope
+	target store.ArchiveCleanupTarget
+	dao    store.SessionDAO
+}
+
+func (s releasedRecoveryScope) Target() store.ArchiveCleanupTarget { return s.target }
+func (s releasedRecoveryScope) SessionDAO() store.SessionDAO       { return s.dao }
+
+func TestReadyArchiveReleasedUploadRecovery(t *testing.T) {
+	for _, scenario := range []string{"reclaim", "delete-retry", "held-reader", "controller-release", "unknown-mark", "shared-reference", "not-ready", "wrong-owner", "expired"} {
+		t.Run(scenario, func(t *testing.T) {
+			f, original := completedReclaimFixture(t)
+			u := f.d.uploads[f.spec.UploadID]
+			u.Receipt.State, u.Receipt.Resource = "released", nil
+			f.d.uploads[f.spec.UploadID] = u
+			for ref := range f.d.references {
+				delete(f.d.references, ref)
+			}
+			target := store.ArchiveCleanupTarget{TaskID: uuid.NewString(), SessionID: f.r.Snapshot.SessionID, OwnerID: f.r.Owner}
+			d := &releasedRecoveryDAO{imageRuleDAO: f.d, record: store.SessionRecord{Owner: f.r.Owner, Snapshot: f.r.Snapshot}, status: sp.ArchiveStatus{State: "ready", SchemaVersion: 3}}
+			observed := target
+			if scenario == "shared-reference" {
+				f.d.references[store.SessionResourceReference{SessionID: target.SessionID, ResourceID: original.Resource.ResourceID, Kind: "operation", ReferenceID: "shared"}] = true
+			}
+			if scenario == "not-ready" {
+				d.status.State = "pending"
+			}
+			if scenario == "wrong-owner" {
+				d.record.Owner = uuid.NewString()
+			}
+			if scenario == "expired" {
+				at := time.Now()
+				observed.ExpiredAt = &at
+			}
+			if scenario == "controller-release" {
+				prepareID := mediaIdentity(f.spec.UploadID, "prepare")
+				f.d.media[prepareID] = store.SessionMediaRequest{SessionID: target.SessionID, RequestID: prepareID, Action: "prepare", Body: encode(f.spec)}
+			}
+			calls := 0
+			unknown := errors.New("mark result unknown")
+			run := func(ctx context.Context, work func(*Operation, store.ArchiveCleanupScope) error) error {
+				op, err := f.s.BeginOperation()
+				if err != nil {
+					return err
+				}
+				defer op.Close()
+				calls++
+				err = work(op, releasedRecoveryScope{target: observed, dao: d})
+				if scenario == "unknown-mark" && calls == 3 && err == nil {
+					return &store.TransactionError{Phase: "commit", Cause: unknown, Outcome: store.TransactionUnknown, CommitAttempted: true}
+				}
+				return err
+			}
+			failure := errors.New("unlink failed")
+			var err error
+			var reader io.Closer
+			if scenario == "held-reader" {
+				lease := store.SessionResourceLease{SessionID: target.SessionID, ID: uuid.NewString(), ResourceID: original.Resource.ResourceID, Kind: "read", OwnerID: target.OwnerID}
+				f.d.leases[lease.ID] = lease
+				reader, err = f.files.AcquireGate(t.Context(), filestorage.MediaLeaseGate, "session-resource-lease/"+lease.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if reader != nil {
+						_ = reader.Close()
+					}
+				})
+			}
+			if scenario == "delete-retry" {
+				f.s.files = imageBoundaryStorage{Storage: f.files, point: "delete", cause: failure}
+			}
+			err = f.s.RecoverReleasedArchiveUploads(t.Context(), target, run)
+			switch scenario {
+			case "reclaim":
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "delete-retry":
+				if !errors.Is(err, failure) {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				f.s.files = f.files
+				if err = f.s.RecoverReleasedArchiveUploads(t.Context(), target, run); err != nil {
+					t.Fatal("restart recovery", err)
+				}
+			case "controller-release":
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "archive_incomplete" {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				receipt := sp.LocalImagePreparation{UploadID: f.spec.UploadID, ImageID: f.spec.ImageID, Target: f.spec.Target, State: "released"}
+				releaseID := mediaIdentity(f.spec.UploadID, "release")
+				f.d.media[releaseID] = store.SessionMediaRequest{SessionID: target.SessionID, RequestID: releaseID, Action: "release", Complete: true, Result: encode(receipt)}
+				if err = f.s.RecoverReleasedArchiveUploads(t.Context(), target, run); err != nil {
+					t.Fatal("confirmed release recovery", err)
+				}
+			case "unknown-mark":
+				if !errors.Is(err, unknown) {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				if err = f.s.RecoverReleasedArchiveUploads(t.Context(), target, run); err != nil {
+					t.Fatal("unknown mark recovery", err)
+				}
+			case "held-reader":
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "resource_busy" {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				if err = reader.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reader = nil
+				if err = f.s.RecoverReleasedArchiveUploads(t.Context(), target, run); err != nil {
+					t.Fatal("reader exit recovery", err)
+				}
+			case "shared-reference":
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "resource_in_use" {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				return
+			case "not-ready":
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				return
+			case "wrong-owner", "expired":
+				if err == nil {
+					t.Fatal("unconfirmed archive admitted")
+				}
+				assertReclaimRetainsOriginal(t, f, original)
+				return
+			}
+			if _, ok := f.d.resources[original.Resource.ResourceID]; ok {
+				t.Fatal("released original remains")
+			}
+			if saved := f.d.uploads[f.spec.UploadID]; saved.Receipt.State != "released" || !saved.StorageReleased {
+				t.Fatal("receipt or settlement lost", saved)
+			}
+			if _, err = f.files.Open(t.Context(), sessionresource.Bucket, original.BlobPath); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal("original remains", err)
+			}
 		})
 	}
 }

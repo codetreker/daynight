@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
@@ -13,14 +13,18 @@ let compiled: string, openHelper: typeof OpenHelper;
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(accept => { resolve = accept; }); return { promise, resolve }; };
 const observeExit = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise<void>(resolve => child.once("exit", () => resolve()));
 beforeAll(async () => {
-  await mkdir(".tmp", { recursive: true }); compiled = await mkdtemp(path.resolve(".tmp/claude-helper-code-")); await mkdir(path.join(compiled, "providers"));
+  await mkdir(".tmp", { recursive: true }); compiled = await mkdtemp(path.resolve(".tmp/claude-helper-code-"));
+  const controller = path.join(compiled, "commands", "controller");
+  await mkdir(path.join(controller, "providers"), { recursive: true });
+  await mkdir(path.join(compiled, "platform"));
+  await writeFile(path.join(compiled, "platform", "sqlite-filename.js"), stripTypeScriptTypes(await readFile("src/platform/sqlite-filename.ts", "utf8"), { mode: "transform" }));
   // The actual fork executes the production module as emitted JavaScript; no loader or subprocess double is installed.
   for (const name of ["claude-text", "claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) {
     const source = await readFile(path.resolve(`src/commands/controller/providers/${name}.ts`), "utf8");
-    await writeFile(path.join(compiled, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
+    await writeFile(path.join(controller, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
   }
-  for (const name of ["process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(compiled, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
-  openHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(compiled, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
+  for (const name of ["bootstrap-error", "process-proof", "linux-process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(controller, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
+  openHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(controller, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
 });
 afterEach(async () => {
   for (const child of children.splice(0)) {
@@ -46,7 +50,7 @@ test("real helper waits for each index lease, returns bounded metadata and strea
   const opening = openHelper({ ...f, onSpawn: process => {
     child = process; children.push(child);
     child.on("message", message => { frames++; expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThanOrEqual(1_048_576); });
-  }, acquireIndexReservation: async (_bytes, owner) => {
+  }, acquireIndexLease: async owner => {
     expect(owner?.pid).toBe(child.pid); expect(owner?.commandHash).toMatch(/^[a-f0-9]{64}$/);
     expect(held).toBe(0); held++; grants++;
     if (grants === 1) { firstReservation.resolve(); await allow.promise; }
@@ -82,7 +86,7 @@ test("the real helper reopens a persisted Read image mirror with bounded IPC and
     const reader = await openHelper({ ...f, onSpawn: process => {
       child = process; children.push(child);
       child.on("message", message => { expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThanOrEqual(1_048_576); });
-    }, acquireIndexReservation: () => ({ release() {} }) });
+    }, acquireIndexLease: () => ({ release() {} }) });
     try {
       const page = await reader.nextPage(), media = page.records[0]!.media;
       expect(media).toHaveLength(1); expect(JSON.stringify(page)).not.toContain(data);
@@ -102,7 +106,7 @@ test("the real helper serializes next-page reads with acknowledged media from th
   const f = await fixture();
   const rows = Array.from({ length: 100 }, (_, index) => JSON.stringify({ uuid: `row-${index}`, parentUuid: index ? `row-${index - 1}` : "u", type: "user", sessionId: f.nativeSessionId, cwd: f.cwd, message: { role: "user", content: [{ type: "text", text: `row ${index}` }] } }));
   await writeFile(f.transcriptPath, f.source + rows.join("\n") + "\n");
-  const reader = await openHelper({ ...f, onSpawn: child => { children.push(child); }, acquireIndexReservation: () => ({ release() {} }) });
+  const reader = await openHelper({ ...f, onSpawn: child => { children.push(child); }, acquireIndexLease: () => ({ release() {} }) });
   try {
     const first = await reader.nextPage(); expect(first.records).toHaveLength(100); await reader.acknowledge(first.cursor);
     const chunks: Buffer[] = [], page = reader.nextPage(), media = reader.readMedia(first.records[0]!.media[0]!.mediaId, bytes => { chunks.push(Buffer.from(bytes)); });
@@ -114,7 +118,7 @@ test("the real helper serializes next-page reads with acknowledged media from th
 
 test("close joins an already-started media consumer and observes actual child exit before cleanup", async () => {
   const f = await fixture(), started = deferred<void>(), consumed = deferred<void>(); let child!: ChildProcess;
-  const reader = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexReservation: () => ({ release() {} }) });
+  const reader = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexLease: () => ({ release() {} }) });
   const page = await reader.nextPage(); await reader.acknowledge(page.cursor);
   const reading = reader.readMedia(page.records[0]!.media[0]!.mediaId, async () => { started.resolve(); await consumed.promise; });
   const observedRead = reading.catch(error => error);
@@ -128,7 +132,7 @@ test("close joins an already-started media consumer and observes actual child ex
 
 test("a media cancellation joins consumption while retaining the read-only helper for later paging", async () => {
   const f = await fixture(), started = deferred<void>(), consumed = deferred<void>(), abort = new AbortController();
-  const reader = await openHelper({ ...f, onSpawn: child => { children.push(child); }, acquireIndexReservation: () => ({ release() {} }) });
+  const reader = await openHelper({ ...f, onSpawn: child => { children.push(child); }, acquireIndexLease: () => ({ release() {} }) });
   try {
     const page = await reader.nextPage(); await reader.acknowledge(page.cursor);
     let settled = false;
@@ -140,7 +144,7 @@ test("a media cancellation joins consumption while retaining the read-only helpe
 
 test("a lease granted after helper death is released only after exit and leaves no index files", async () => {
   const f = await fixture(1), requested = deferred<void>(), grant = deferred<void>(); let child!: ChildProcess, released = 0;
-  const opening = openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexReservation: async () => {
+  const opening = openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexLease: async () => {
     requested.resolve(); await grant.promise;
     return { release: () => { expect(child.exitCode !== null || child.signalCode !== null).toBe(true); released++; } };
   } });
@@ -151,9 +155,31 @@ test("a lease granted after helper death is released only after exit and leaves 
   expect(await outcome).toBeInstanceOf(Error); expect(released).toBe(1); expect(await readdir(f.indexDirectory)).toEqual([]);
 });
 
-test("refused parent budget is sanitized, exits the actual helper and removes its private directory", async () => {
+test("close reports an index handle shutdown failure from the real helper", async () => {
+  const f = await fixture(1), preload = path.join(f.indexDirectory, "close-fault.cjs"); let child!: ChildProcess;
+  const sqlite = createRequire(import.meta.url).resolve("better-sqlite3");
+  await writeFile(preload, `const Database = require(${JSON.stringify(sqlite)}); const close = Database.prototype.close; Database.prototype.close = function () { if (this.name.includes("claude-transcript-")) throw new Error("injected index close failure"); return close.call(this); };`);
+  const previous = process.env.NODE_OPTIONS;
+  let reader: Awaited<ReturnType<typeof openHelper>>;
+  try {
+    process.env.NODE_OPTIONS = `${previous ?? ""} --require=${preload}`;
+    reader = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexLease: () => ({ release() {} }) });
+  } finally { if (previous === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previous; }
+  await expect(reader.close()).rejects.toThrow("did not confirm successful shutdown");
+  expect(child.exitCode).not.toBe(0);
+});
+
+test("close reports an interrupted helper instead of claiming a confirmed shutdown", async () => {
   const f = await fixture(1); let child!: ChildProcess;
-  const result = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexReservation: () => { throw new Error(`Private budget details: ${f.nativeHome}`); } }).catch(error => error);
-  expect(result).toBeInstanceOf(Error); expect(result.message).not.toContain(f.nativeHome);
+  const reader = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexLease: () => ({ release() {} }) });
+  const exit = observeExit(child); child.kill("SIGKILL"); await exit;
+  await expect(reader.close()).rejects.toThrow("did not confirm successful shutdown");
+  expect(await readdir(f.indexDirectory)).toEqual([]);
+});
+
+test("refused parent lease is sanitized, exits the actual helper and removes its private directory", async () => {
+  const f = await fixture(1); let child!: ChildProcess;
+  const result = await openHelper({ ...f, onSpawn: process => { child = process; children.push(child); }, acquireIndexLease: () => { throw new Error(`Private lease details: ${f.nativeHome}`); } }).catch(error => error);
+  expect(result).toBeInstanceOf(Error); expect(result.message).not.toContain(f.nativeHome); expect(result.cause).toBeInstanceOf(Error);
   expect(child.exitCode !== null || child.signalCode !== null).toBe(true); expect(await readdir(f.indexDirectory)).toEqual([]);
 });

@@ -1,9 +1,11 @@
 import { selectTaskList } from '../helpers/projectViews';
-import { taskSyncReadFixture, createGraphSyncFixture } from "../helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture, directAccessFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTaskSync, listProjects } from "../../src/api/client";
+import { getProject } from "../../src/api/project-settings";
+import { getProjectAccess } from "../../src/api/auth";
 import type { GraphTask, ProjectPage, TaskGraph } from "../../src/api/types";
 import { App } from "../../src/app/App";
 import { getFormats } from "../../src/i18n/formats";
@@ -14,6 +16,8 @@ import { renderWithLocale } from "../helpers/renderWithLocale";
 vi.mock("../../src/api/client", async (original) => ({
   ...await original<typeof import("../../src/api/client")>(), getTaskSync: vi.fn(), listProjects: vi.fn(),
 }));
+vi.mock("../../src/api/project-settings", async original => ({ ...await original<typeof import("../../src/api/project-settings")>(), getProject: vi.fn() }));
+vi.mock("../../src/api/auth", async original => ({ ...await original<typeof import("../../src/api/auth")>(), getProjectAccess: vi.fn() }));
 vi.mock("../../src/features/task-graph/ChainList", () => ({ ChainList: () => null }));
 vi.mock("../../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ taskId, onRefreshGraph }: {
   taskId: string; onRefreshGraph: () => void;
@@ -53,6 +57,8 @@ beforeEach(() => {
 beforeEach(() => {
   graphRequest.mockReset();
   projectRequest.mockReset();
+  vi.mocked(getProject).mockReset().mockResolvedValue(project);
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
   graphRequest.mockResolvedValue(graph());
   projectRequest.mockResolvedValue({ items: [project], nextCursor: null });
 });
@@ -63,24 +69,29 @@ describe("workspace localization", () => {
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
-    const statistics = screen.getByRole("region", { name: "Project task statistics" });
+    const statistics = await screen.findByRole("region", { name: "Project task statistics" });
     expect(statistics.querySelectorAll(".stat")).toHaveLength(7);
     const waiting = statistics.querySelectorAll(".stat")[3]!;
-    expect(waiting).toHaveTextContent("To do1Waiting to start");
+    expect([...statistics.querySelectorAll(".stat")].map(card => [...card.children].map(child => child.textContent))).toEqual([
+      ["Total tasks", "1"], ["Done", "0"], ["Proposed", "0"], ["To do", "1"], ["In progress", "0"], ["Ready", "1"], ["Not ready", "0"],
+    ]);
     await selectTaskList();
-    await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
-    const row = screen.getByRole("button", { name: /Task 用户数据/ });
-    expect(row).toHaveTextContent("To do");
-    expect(row).toHaveTextContent("Ready");
+    await user.click(await screen.findByRole("tab", { name: "Standalone tasks" }));
+    const row = screen.getByRole("link", { name: "Task 用户数据" });
+    expect(row.closest(".task-row")).toHaveTextContent("To do");
+    expect(row.closest(".task-row")).toHaveTextContent("Ready");
     await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(document.querySelector(".stats")).toBe(statistics);
     expect(statistics).toHaveAttribute("aria-label", "项目任务统计");
     expect(statistics).not.toBeVisible();
-    expect(waiting).toHaveTextContent("待处理1等待开始");
-    expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
-    expect(row).toHaveTextContent("待处理");
-    expect(row).toHaveTextContent("可开始");
-    expect(graphRequest).toHaveBeenCalledTimes(1);
+    expect(waiting).toHaveTextContent("待处理1");
+    expect([...statistics.querySelectorAll(".stat")].map(card => [...card.children].map(child => child.textContent))).toEqual([
+      ["任务总数", "1"], ["已完成", "0"], ["待确认", "0"], ["待处理", "1"], ["进行中", "0"], ["可开始", "1"], ["未就绪", "0"],
+    ]);
+    expect(screen.getByRole("link", { name: "Task 用户数据" })).toBe(row);
+    expect(row.closest(".task-row")).toHaveTextContent("待处理");
+    expect(row.closest(".task-row")).toHaveTextContent("可开始");
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
   });
 
   it("translates a pending project request without restarting it and updates route titles without moving selector focus", async () => {
@@ -105,6 +116,7 @@ describe("workspace localization", () => {
     const card = screen.getByRole("heading", { name: project.name }).closest("a")!;
     await user.click(card);
     await screen.findByRole("heading", { name: project.name });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
     expect(document.title).toBe("项目任务 · Daynight");
     expect(screen.getByRole("main")).toHaveFocus();
@@ -146,20 +158,32 @@ describe("workspace localization", () => {
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     await selectTaskList();
-    await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
+    await user.click(await screen.findByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
-    const filter = screen.getByRole("combobox", { name: "Status" });
-    await user.selectOptions(filter, "todo");
-    const row = screen.getByRole("button", { name: /Task 用户数据/ });
+    const chainTab = screen.getByRole("tab", { name: "Task chains" });
+    expect(chainTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "Unfinished task chain count");
+    expect(standaloneTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "Unfinished task count");
+    const filter = screen.getByRole("button", { name: "Status: All statuses" });
+    fireEvent.click(filter);
+    fireEvent.click(screen.getByRole("checkbox", { name: "All statuses" }));
+    const selected = screen.getByRole("checkbox", { name: "To do" });
+    fireEvent.click(selected);
+    selected.focus();
+    const row = screen.getByRole("link", { name: "Task 用户数据" });
     const scroll = vi.spyOn(window, "scrollTo");
     scroll.mockClear();
     const selector = screen.getByRole("combobox", { name: /language/i });
-    await user.selectOptions(selector, "zh-CN");
+    fireEvent.change(selector, { target: { value: "zh-CN" } });
     expect(screen.getByRole("tab", { name: "独立任务" })).toBe(standaloneTab);
+    expect(screen.getByRole("tab", { name: "任务链" })).toBe(chainTab);
+    expect(chainTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "未完成任务链数");
+    expect(standaloneTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "未完成任务数");
     expect(standaloneTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("combobox", { name: "状态" })).toBe(filter);
-    expect(filter).toHaveValue("todo");
-    expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
+    expect(screen.getByRole("button", { name: "状态: 待办" })).toBe(filter);
+    expect(filter).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("checkbox", { name: "待办" })).toBe(selected);
+    expect(selected).toBeChecked(); expect(selected).toHaveFocus();
+    expect(screen.getByRole("link", { name: "Task 用户数据" })).toBe(row);
     expect(graphRequest).toHaveBeenCalledTimes(1);
     expect(scroll).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(`daynight:task-view:${projectId}`)).toBe('"standalone"');
@@ -190,6 +214,7 @@ describe("workspace localization", () => {
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     const notice = screen.getByText(en.workspace.preferences.tab.invalid);
     await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(screen.getByText(zhCN.workspace.preferences.tab.invalid)).toBe(notice);

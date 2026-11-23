@@ -15,13 +15,9 @@ export const IMAGE_LIMITS = Object.freeze({
   sessionBytes: 1_073_741_824,
   resources: 1000,
   chunkBytes: 524_288,
-  timelineBytes: 67_108_864,
   entries: 100_000,
   manifestBytes: 4_194_304,
-  historyBytes: 67_125_248,
-  archiveReserveBytes: 138_412_032,
   uploadHours: 24,
-  tombstones: 10_000,
   maxWidth: 16_384,
   maxHeight: 16_384,
   maxPixels: 33_554_432,
@@ -102,6 +98,7 @@ export type ImageInputPart = {
   readonly byteLength: string;
 };
 export type SessionInput = {
+  readonly origin?: import("./protocol.js").MessageOrigin;
   readonly content: readonly (TextPart | ImageInputPart)[];
   readonly expectedTurnId: string | null;
   readonly target?: ImageTarget;
@@ -117,6 +114,12 @@ export type ImageUploadSpec = {
   readonly mediaType: InputMime;
   readonly byteLength: string;
   readonly sha256: string;
+};
+export type DirectImageContent = {
+  readonly spec: ImageUploadSpec;
+  readonly offset: "0";
+  readonly sha256: string;
+  readonly data: string;
 };
 export type ImageUploadReceipt = {
   readonly uploadId: string;
@@ -189,6 +192,14 @@ export type ImageCaptureRequest = {
   readonly occurrence: ImageOccurrence;
   readonly locator: ImageLocator;
   readonly nativeSource: NativeImageSource | null;
+};
+export type DirectCaptureSubmission = {
+  readonly request: ImageCaptureRequest;
+  readonly attemptId: string;
+  readonly outcome:
+    | { readonly kind: "validated"; readonly validated: ValidatedImage }
+    | { readonly kind: "resource" }
+    | { readonly kind: "failed"; readonly error: ImageError };
 };
 export type ImageCaptureReceipt = {
   readonly captureId: string;
@@ -267,14 +278,16 @@ export const imageDecimal = (v: unknown, zero = false): string =>
   BigInt(v) <= 9223372036854775807n
     ? v
     : fail();
-export const imageText = (v: unknown, limit = 1024, empty = false): string =>
+const imageTextWithOptions = (v: unknown, limit = 1024, empty = false, stored = false): string =>
   typeof v === "string" &&
   v.isWellFormed() &&
   !/[\u0000-\u001f\u007f-\u009f]/.test(v) &&
   (empty || /[^\p{White_Space}]/u.test(v)) &&
-  new TextEncoder().encode(v).length <= limit
+  (stored || new TextEncoder().encode(v).length <= limit)
     ? v
     : fail();
+export const imageText = (v: unknown, limit = 1024, empty = false): string => imageTextWithOptions(v, limit, empty);
+export const storedImageText = (v: unknown, limit = 1024, empty = false): string => imageTextWithOptions(v, limit, empty, true);
 export const imageSha = (v: unknown): string =>
   typeof v === "string" && /^[a-f0-9]{64}$/.test(v) ? v : fail();
 export const imageInteger = (v: unknown, max: number, zero = false): number =>
@@ -288,10 +301,12 @@ const choice = <T extends string>(v: unknown, a: readonly T[]): T =>
   typeof v === "string" && a.includes(v as T) ? (v as T) : fail();
 const nullable = <T>(v: unknown, p: (v: unknown) => T): T | null =>
   v === null ? null : p(v);
-export const parseImageError = (v: unknown): ImageError => {
+const parseImageErrorWithOptions = (v: unknown, stored: boolean): ImageError => {
   const o = imageObject(v, ["code", "message"]);
-  return { code: choiceCode(o.code), message: imageText(o.message, 256) };
+  return { code: stored && typeof o.code === "string" && /^[a-z_]+$/.test(o.code) ? o.code : choiceCode(o.code), message: imageTextWithOptions(o.message, 256, false, stored) };
 };
+export const parseImageError = (v: unknown): ImageError => parseImageErrorWithOptions(v, false);
+export const parseStoredImageError = (v: unknown): ImageError => parseImageErrorWithOptions(v, true);
 const choiceCode = (v: unknown): string =>
   typeof v === "string" && /^[a-z_]{1,64}$/.test(v) ? v : fail();
 const parseFence = (v: unknown): SessionFence => {
@@ -338,7 +353,7 @@ export const parseImageTarget = (v: unknown): ImageTarget => {
     ),
   };
 };
-export const parseValidatedImage = (v: unknown): ValidatedImage => {
+const parseValidatedImageWithOptions = (v: unknown, stored: boolean): ValidatedImage => {
   const o = imageObject(v, [
     "mediaType",
     "byteLength",
@@ -348,13 +363,13 @@ export const parseValidatedImage = (v: unknown): ValidatedImage => {
     "frameCount",
   ]);
   const byteLength = imageDecimal(o.byteLength);
-  if (BigInt(byteLength) > BigInt(IMAGE_LIMITS.imageBytes)) return fail();
-  const width = imageInteger(o.width, IMAGE_LIMITS.maxWidth),
-    height = imageInteger(o.height, IMAGE_LIMITS.maxHeight),
-    frameCount = imageInteger(o.frameCount, IMAGE_LIMITS.maxFrames);
+  if (!stored && BigInt(byteLength) > BigInt(IMAGE_LIMITS.imageBytes)) return fail();
+  const width = imageInteger(o.width, stored ? Number.MAX_SAFE_INTEGER : IMAGE_LIMITS.maxWidth),
+    height = imageInteger(o.height, stored ? Number.MAX_SAFE_INTEGER : IMAGE_LIMITS.maxHeight),
+    frameCount = imageInteger(o.frameCount, stored ? Number.MAX_SAFE_INTEGER : IMAGE_LIMITS.maxFrames);
   if (
-    width * height > IMAGE_LIMITS.maxPixels ||
-    width * height * frameCount > IMAGE_LIMITS.totalPixels
+    !stored && (width * height > IMAGE_LIMITS.maxPixels ||
+    width * height * frameCount > IMAGE_LIMITS.totalPixels)
   )
     return fail();
   return {
@@ -372,6 +387,8 @@ export const parseValidatedImage = (v: unknown): ValidatedImage => {
     frameCount,
   };
 };
+export const parseValidatedImage = (v: unknown): ValidatedImage => parseValidatedImageWithOptions(v, false);
+export const parseStoredValidatedImage = (v: unknown): ValidatedImage => parseValidatedImageWithOptions(v, true);
 export const parseImageUploadSpec = (v: unknown): ImageUploadSpec => {
   const o = imageObject(v, [
     "uploadId",
@@ -393,6 +410,19 @@ export const parseImageUploadSpec = (v: unknown): ImageUploadSpec => {
     byteLength,
     sha256: imageSha(o.sha256),
   };
+};
+export const parseDirectImageContent = (v: unknown): DirectImageContent => {
+  const o = imageObject(v, ["spec", "offset", "sha256", "data"]);
+  const spec = parseImageUploadSpec(o.spec);
+  if (
+    o.offset !== "0" || typeof o.data !== "string" || o.data.length === 0 ||
+    o.data.length > 699052 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(o.data)
+  ) return fail();
+  const raw = atob(o.data);
+  if (raw.length === 0 || raw.length > IMAGE_LIMITS.chunkBytes ||
+      BigInt(raw.length) > BigInt(spec.byteLength) || btoa(raw) !== o.data) return fail();
+  return { spec, offset: "0", sha256: imageSha(o.sha256), data: o.data };
 };
 export const parseImageInputPart = (v: unknown): ImageInputPart => {
   const o = imageObject(v, [
@@ -432,7 +462,9 @@ export const parseSessionInput = (
   );
   const o = imageObject(
     v,
-    hasImages
+    [
+      ...(Object.hasOwn(raw, "origin") ? ["origin"] : []),
+      ...(hasImages
       ? [
           "content",
           "expectedTurnId",
@@ -441,7 +473,8 @@ export const parseSessionInput = (
           "draftId",
           "draftRevision",
         ]
-      : ["content", "expectedTurnId"],
+      : ["content", "expectedTurnId"]),
+    ],
   );
   const content = raw.content.map((p: unknown) =>
     p && typeof p === "object" && "type" in p && p.type === "image"
@@ -449,7 +482,8 @@ export const parseSessionInput = (
       : parseText(p),
   );
   const expectedTurnId = nullable(o.expectedTurnId, (v) => imageText(v, 256));
-  if (!hasImages) return { content, expectedTurnId };
+  const origin = Object.hasOwn(o, "origin") ? { origin: choice(o.origin, ["user", "daynight"] as const) } : {};
+  if (!hasImages) return { content, expectedTurnId, ...origin };
   let total = 0n;
   const images = content.filter((p): p is ImageInputPart => p.type === "image");
   if (
@@ -469,6 +503,7 @@ export const parseSessionInput = (
   return {
     content,
     expectedTurnId,
+    ...origin,
     target: parseImageTarget(o.target),
     expectedImageCapabilityRevision: imageDecimal(
       o.expectedImageCapabilityRevision,
@@ -477,7 +512,7 @@ export const parseSessionInput = (
     draftRevision: imageDecimal(o.draftRevision),
   };
 };
-export const parseImageOccurrence = (v: unknown): ImageOccurrence => {
+const parseImageOccurrenceWithOptions = (v: unknown, stored: boolean): ImageOccurrence => {
   const o = imageObject(v, [
     "imageId",
     "entryId",
@@ -496,7 +531,7 @@ export const parseImageOccurrence = (v: unknown): ImageOccurrence => {
   const partId = nullable(o.partId, imageId),
     sourceRevision = nullable(o.sourceRevision, (v) => imageDecimal(v)),
     sourceTextSha256 = nullable(o.sourceTextSha256, imageSha),
-    callId = nullable(o.callId, (v) => imageText(v, 256));
+    callId = nullable(o.callId, (v) => imageTextWithOptions(v, 256, false, stored));
   if (
     (container === "tool_output") !== (callId !== null) ||
     [partId, sourceRevision, sourceTextSha256].filter((x) => x !== null)
@@ -514,10 +549,11 @@ export const parseImageOccurrence = (v: unknown): ImageOccurrence => {
     sourceRevision,
     sourceTextSha256,
     callId,
-    sourceKey: imageText(o.sourceKey),
+    sourceKey: imageTextWithOptions(o.sourceKey, 1024, false, stored),
   };
 };
-export const parseNativeImageSource = (v: unknown): NativeImageSource => {
+export const parseImageOccurrence = (v: unknown): ImageOccurrence => parseImageOccurrenceWithOptions(v, false);
+const parseNativeImageSourceWithOptions = (v: unknown, stored: boolean): NativeImageSource => {
   const o = imageObject(v, [
     "provider",
     "nativeSessionId",
@@ -526,12 +562,13 @@ export const parseNativeImageSource = (v: unknown): NativeImageSource => {
   ]);
   return {
     provider: choice(o.provider, ["codex", "claude", "copilot"]),
-    nativeSessionId: imageText(o.nativeSessionId, 256),
-    nativeMessageId: imageText(o.nativeMessageId),
-    nativePartId: imageText(o.nativePartId),
+    nativeSessionId: imageTextWithOptions(o.nativeSessionId, 256, false, stored),
+    nativeMessageId: imageTextWithOptions(o.nativeMessageId, 1024, false, stored),
+    nativePartId: imageTextWithOptions(o.nativePartId, 1024, false, stored),
   };
 };
-export const parseImageLocator = (v: unknown): ImageLocator => {
+export const parseNativeImageSource = (v: unknown): NativeImageSource => parseNativeImageSourceWithOptions(v, false);
+const parseImageLocatorWithOptions = (v: unknown, stored: boolean): ImageLocator => {
   if (!v || typeof v !== "object" || !("kind" in v)) return fail();
   if (v.kind === "resource") {
     const o = imageObject(v, ["kind", "resourceId"]);
@@ -545,7 +582,7 @@ export const parseImageLocator = (v: unknown): ImageLocator => {
       "nativeMessageId",
       "nativePartId",
     ]);
-    return { kind: "native", ...parseNativeImageSource(o) };
+    return { kind: "native", ...parseNativeImageSourceWithOptions(o, stored) };
   }
   if (v.kind === "local") {
     const o = imageObject(v, ["kind", "path", "contextId"]);
@@ -553,7 +590,7 @@ export const parseImageLocator = (v: unknown): ImageLocator => {
       typeof o.path !== "string" ||
       !o.path.isWellFormed() ||
       o.path.includes("\0") ||
-      new TextEncoder().encode(o.path).length > 8192 ||
+      !stored && new TextEncoder().encode(o.path).length > 8192 ||
       !o.path
     )
       return fail();
@@ -561,7 +598,7 @@ export const parseImageLocator = (v: unknown): ImageLocator => {
   }
   const o = imageObject(v, ["kind", "url"]);
   if (o.kind !== "external") return fail();
-  const url = imageText(o.url, 8192);
+  const url = imageTextWithOptions(o.url, 8192, false, stored);
   let u: URL;
   try {
     u = new URL(url);
@@ -572,7 +609,8 @@ export const parseImageLocator = (v: unknown): ImageLocator => {
     return fail();
   return { kind: "external", url };
 };
-export const parseImageCaptureRequest = (v: unknown): ImageCaptureRequest => {
+export const parseImageLocator = (v: unknown): ImageLocator => parseImageLocatorWithOptions(v, false);
+const parseImageCaptureRequestWithOptions = (v: unknown, stored: boolean): ImageCaptureRequest => {
   const o = imageObject(v, [
     "captureId",
     "attemptId",
@@ -583,11 +621,33 @@ export const parseImageCaptureRequest = (v: unknown): ImageCaptureRequest => {
   return {
     captureId: imageId(o.captureId),
     attemptId: imageId(o.attemptId),
-    occurrence: parseImageOccurrence(o.occurrence),
-    locator: parseImageLocator(o.locator),
-    nativeSource: nullable(o.nativeSource, parseNativeImageSource),
+    occurrence: parseImageOccurrenceWithOptions(o.occurrence, stored),
+    locator: parseImageLocatorWithOptions(o.locator, stored),
+    nativeSource: nullable(o.nativeSource, v => parseNativeImageSourceWithOptions(v, stored)),
   };
 };
+export const parseImageCaptureRequest = (v: unknown): ImageCaptureRequest => parseImageCaptureRequestWithOptions(v, false);
+export const parseStoredImageCaptureRequest = (v: unknown): ImageCaptureRequest => parseImageCaptureRequestWithOptions(v, true);
+const parseDirectCaptureSubmissionWithOptions = (v: unknown, stored: boolean): DirectCaptureSubmission => {
+  const o = imageObject(v, ["request", "attemptId", "outcome"]);
+  const request = parseImageCaptureRequestWithOptions(o.request, stored), attemptId = imageId(o.attemptId);
+  if (!o.outcome || typeof o.outcome !== "object" || Array.isArray(o.outcome)) return fail();
+  const kind = (o.outcome as Record<string, unknown>).kind;
+  let outcome: DirectCaptureSubmission["outcome"];
+  if (kind === "validated") {
+    const value = imageObject(o.outcome, ["kind", "validated"]);
+    outcome = { kind, validated: parseValidatedImageWithOptions(value.validated, stored) };
+  } else if (kind === "resource") {
+    imageObject(o.outcome, ["kind"]);
+    outcome = { kind };
+  } else if (kind === "failed") {
+    const value = imageObject(o.outcome, ["kind", "error"]);
+    outcome = { kind, error: parseImageErrorWithOptions(value.error, stored) };
+  } else return fail();
+  return { request, attemptId, outcome };
+};
+export const parseDirectCaptureSubmission = (v: unknown): DirectCaptureSubmission => parseDirectCaptureSubmissionWithOptions(v, false);
+export const parseStoredDirectCaptureSubmission = (v: unknown): DirectCaptureSubmission => parseDirectCaptureSubmissionWithOptions(v, true);
 export const parseInputObservation = (v: unknown): InputObservation => {
   const o = imageObject(v, [
     "operationId",
@@ -633,13 +693,12 @@ export const parseImageReadChunk = (v: unknown): ImageReadChunk => {
   )
     return fail();
   const raw = atob(o.data);
-  const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
   if (
     btoa(raw) !== o.data ||
-    bytes.length > IMAGE_LIMITS.chunkBytes ||
-    BigInt(offset) + BigInt(bytes.length) > BigInt(byteLength) ||
-    o.eof !== (BigInt(offset) + BigInt(bytes.length) === BigInt(byteLength)) ||
-    (bytes.length === 0 && (!o.eof || offset !== byteLength))
+    raw.length > IMAGE_LIMITS.chunkBytes ||
+    BigInt(offset) + BigInt(raw.length) > BigInt(byteLength) ||
+    o.eof !== (BigInt(offset) + BigInt(raw.length) === BigInt(byteLength)) ||
+    (raw.length === 0 && (!o.eof || offset !== byteLength))
   )
     return fail();
   return {
@@ -801,6 +860,10 @@ export const parseImageBudget = (v: unknown): ImageBudget => {
 /** Canonical new operation bytes retain array order and explicit nulls. Old operation hashes are never recomputed. */
 export const canonicalSessionIntent = (command: SessionCommand): string => {
   const { requestId, ...intent } = command;
+  if (intent.kind === "send_message" && intent.payload.origin === "user") {
+    const { origin: _origin, ...payload } = intent.payload;
+    return canonicalImageJson({ ...intent, payload });
+  }
   return canonicalImageJson(intent);
 };
 export const canonicalImageJson = (v: unknown): string => {
@@ -831,8 +894,8 @@ export const canonicalImageJson = (v: unknown): string => {
   return fail();
 };
 
-export const parseImagePart = (
-  v: unknown,
+const parseImagePartWithOptions = (
+  v: unknown, stored: boolean,
 ): ImagePart | ImageUnavailablePart => {
   if (!v || typeof v !== "object" || !("type" in v)) return fail();
   if (v.type === "image") {
@@ -841,7 +904,7 @@ export const parseImagePart = (
       type: "image",
       imageId: imageId(o.imageId),
       resourceId: imageId(o.resourceId),
-      label: imageText(o.label),
+      label: imageTextWithOptions(o.label, 1024, false, stored),
     };
   }
   const o = imageObject(v, ["type", "imageId", "label", "error"]);
@@ -849,14 +912,17 @@ export const parseImagePart = (
   return {
     type: "image_unavailable",
     imageId: imageId(o.imageId),
-    label: imageText(o.label),
-    error: parseImageError(o.error),
+    label: imageTextWithOptions(o.label, 1024, false, stored),
+    error: parseImageErrorWithOptions(o.error, stored),
   };
 };
-export const parseMarkdownImageMetadata = (
+export const parseImagePart = (v: unknown): ImagePart | ImageUnavailablePart => parseImagePartWithOptions(v, false);
+export const parseStoredImagePart = (v: unknown): ImagePart | ImageUnavailablePart => parseImagePartWithOptions(v, true);
+const parseMarkdownImageMetadataWithOptions = (
   v: unknown,
   text: string,
-  allowUnknown = false,
+  allowUnknown: boolean,
+  stored: boolean,
 ): MarkdownImageMetadata => {
   const o = imageObject(v, [
     "partId",
@@ -871,7 +937,7 @@ export const parseMarkdownImageMetadata = (
     typeof o.complete !== "boolean" ||
     typeof o.truncated !== "boolean" ||
     !Array.isArray(o.retainedImages) ||
-    o.retainedImages.length > 1000
+    !stored && o.retainedImages.length > 1000
   )
     return fail();
   const binding = (v: unknown, max: number): MarkdownImageBinding => {
@@ -879,7 +945,7 @@ export const parseMarkdownImageMetadata = (
     const start = imageInteger(b.start, max, true),
       end = imageInteger(b.end, max, true),
       id = imageId(b.imageId),
-      part = parseImagePart(b.part);
+      part = parseImagePartWithOptions(b.part, stored);
     if (start >= end || part.imageId !== id) return fail();
     return { imageId: id, start, end, part };
   };
@@ -887,7 +953,7 @@ export const parseMarkdownImageMetadata = (
   if (o.bindings === null) {
     if (!allowUnknown) return fail();
   } else {
-    if (!Array.isArray(o.bindings) || o.bindings.length > 1000) return fail();
+    if (!Array.isArray(o.bindings) || !stored && o.bindings.length > 1000) return fail();
     bindings = o.bindings.map((b) => binding(b, text.length));
     let end = 0;
     for (const b of bindings) {
@@ -910,7 +976,7 @@ export const parseMarkdownImageMetadata = (
     ]);
     const { sourceRevision, sourceTextSha256, linkHref, ...rest } = b;
     const retained = binding(rest, Number.MAX_SAFE_INTEGER);
-    const href = nullable(linkHref, (v) => imageText(v, 8192));
+    const href = nullable(linkHref, (v) => imageTextWithOptions(v, 8192, false, stored));
     if (href !== null) {
       let u: URL;
       try {
@@ -946,7 +1012,9 @@ export const parseMarkdownImageMetadata = (
     retainedImages,
   };
 };
-export const parseMarkdownImagePart = (v: unknown): MarkdownImagePart => {
+export const parseMarkdownImageMetadata = (v: unknown, text: string, allowUnknown = false): MarkdownImageMetadata => parseMarkdownImageMetadataWithOptions(v, text, allowUnknown, false);
+export const parseStoredMarkdownImageMetadata = (v: unknown, text: string, allowUnknown = false): MarkdownImageMetadata => parseMarkdownImageMetadataWithOptions(v, text, allowUnknown, true);
+const parseMarkdownImagePartWithOptions = (v: unknown, stored: boolean): MarkdownImagePart => {
   const o = imageObject(v, [
     "type",
     "text",
@@ -963,16 +1031,19 @@ export const parseMarkdownImagePart = (v: unknown): MarkdownImagePart => {
     typeof o.text !== "string" ||
     !o.text.isWellFormed() ||
     o.text.includes("\0") ||
-    new TextEncoder().encode(o.text).length > 1_048_576
+    !stored && new TextEncoder().encode(o.text).length > 1_048_576
   )
     return fail();
   const { type, text, ...meta } = o;
   return {
     type: "markdown",
     text: o.text,
-    ...parseMarkdownImageMetadata(meta, o.text),
+    ...parseMarkdownImageMetadataWithOptions(meta, o.text, false, stored),
   };
 };
+
+export const parseMarkdownImagePart = (v: unknown): MarkdownImagePart => parseMarkdownImagePartWithOptions(v, false);
+export const parseStoredMarkdownImagePart = (v: unknown): MarkdownImagePart => parseMarkdownImagePartWithOptions(v, true);
 
 /** Verify the exact UTF-8 body before consuming persisted Markdown bindings. */
 export const verifyTimelineImageMetadata = async (entry: TimelineEntry): Promise<void> => {

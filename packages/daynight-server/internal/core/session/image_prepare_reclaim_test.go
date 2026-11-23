@@ -79,7 +79,7 @@ func TestFailedControllerPrepareCanReleaseOriginalStorage(t *testing.T) {
 				t.Fatal("release did not settle once under the original identities", *calls, f.d.uploads[f.spec.UploadID], f.d.media)
 			}
 			usage, err := f.d.SessionResourceUsage(t.Context(), f.r.Snapshot.SessionID)
-			if err != nil || usage.ReservedBytes != 0 || usage.ReservedResources != 0 {
+			if err != nil || usage.Bytes != 0 || usage.Resources != 0 {
 				t.Fatal("confirmed release retained quota", usage, err)
 			}
 			n, _ := sessionresource.NewNamespace("", f.p.UserID, f.r.Snapshot.SessionID)
@@ -263,8 +263,8 @@ func TestFailedPrepareCleanupRetainsQuotaUntilEveryOwnerAndBarrierConfirms(t *te
 				t.Fatal("cleanup hid the failed completion", err)
 			}
 			usage, usageErr := f.d.SessionResourceUsage(t.Context(), f.r.Snapshot.SessionID)
-			if usageErr != nil || usage.ReservedBytes != 8 || usage.ReservedResources != 1 || f.d.uploads[f.spec.UploadID].StorageReleased {
-				t.Fatal("unconfirmed cleanup returned quota", usage, usageErr)
+			if usageErr != nil || usage.Bytes != 0 || usage.Resources != 0 || f.d.uploads[f.spec.UploadID].StorageReleased {
+				t.Fatal("unconfirmed cleanup lost identity", usage, usageErr)
 			}
 			if point == "controller" {
 				return

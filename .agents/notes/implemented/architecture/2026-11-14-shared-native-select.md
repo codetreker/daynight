@@ -1,0 +1,165 @@
+# Agent Note: Shared Native Select Presentation
+
+Status: implemented
+
+## Problem
+
+Page-specific native select wrappers duplicate arrow geometry, focus treatments
+and disabled styling. Fixing one wrapper does not prevent another page or an
+independent entry from drawing an arrow against its border or allowing long text
+to overlap it. A common control must also preserve native list and multiple
+selection, form validation, events and real element refs. Shared implementation
+alone also leaves new pages free to recreate native elements or override its
+internal skin unless normal quality checks enforce ownership.
+
+## Decision
+
+`src/ui/native-select/NativeSelect.tsx` owns the native select structure and imports
+its presentation CSS directly. Its noninteractive wrapper adds a pointer-free SVG
+arrow only for a single-line select. Public density, width, focus, pending and
+touch properties express presentation; native values, options, constraints,
+events and refs stay with the select and its caller. Consumer wrapper classes
+are limited to external layout and statically resolvable tokens. The [component design](../../../../docs/design/native-select.md)
+owns the complete API, geometry and caller responsibilities.
+
+The component has no business state, network or Provider dependency.
+LanguageSelector and the public MCP setup client field use it without requiring
+an authenticated shell. Search status and PR status use the shared filter variant while retaining their
+separate values and behavior. Ordinary project status uses a custom checkbox
+popover and tag matching uses native radios. Their custom toolbar triggers share
+presentation parameters through the [selection presentation decision](2026-11-16-shared-selection-presentation.md),
+which retains this record's native structure and behavior ownership.
+Bot creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules.
+Management consumers use the same component: Team and
+Project roles choose filter density with a 120px layout wrapper; transfer,
+Token expiry and GitHub installation use full-width form density. Their options,
+permission gates, drafts and explicit confirmations remain caller-owned.
+A shared popup-state predicate gives enclosing Escape handlers a native
+observation without making the component an event owner. ManagementDialog uses
+it before its ordinary Escape close, retaining native cancellation and stopping
+outward propagation while respecting prevented events and IME input.
+
+Session Provider settings, single-value interaction form choices and terminal recording zoom
+use the shared component without moving their value or operation ownership.
+Pending presentation retains the confirmed Provider value, and recording zoom
+remains local player state. The [Session multi-select decision](../bug-fix/2026-11-20-session-form-multiselect.md)
+replaces the native list for form multi-select responses while preserving their arrays.
+
+BotSessionHost sets the Composer presentation touch mode after spreading caller
+configuration. Composer and ControlsPanel pass it to the common control; ordinary
+Task and Test callers retain the default mode. The existing Bot reading element
+provides both `bot-reading` and `native-select-region` names with inline-size
+containment. This keeps reading queries and control sizing tied to the same
+actual panel width despite nested Composer containers.
+
+Composer owns settings-panel Escape, while the shared Session fullscreen handler
+owns both its React and document entry points, including timeline interaction
+forms and recording controls outside Composer. Both honor consumed events and
+IME. An open native popup consumes propagation without preventing its default
+cancellation; panel, draft and fullscreen ownership survive until a later
+ordinary Escape. The [Bot Session design](../../../../docs/design/bot-session-view.md)
+records the presentation chain and keyboard responsibilities.
+
+This generalizes the geometry choice recorded in the
+[Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
+and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
+Their original reason remains valid: text padding cannot set a browser-drawn
+arrow's inset. The Worker record preserves the original local-wrapper choice and
+its rationale; the shared component owns current Worker presentation and the
+reusable contract. The
+[PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
+the earlier local implementation and its replacement.
+
+Webhook owner and status filters use the filter variant; subscription and
+delivery filters use the full-width form variant. Their callers retain scope
+isolation, option eligibility and explicit delivery-filter application.
+
+Task platform and PR pagination use compact controls; Task organization uses fill-width form controls. Callers retain confirmation, numeric
+conversion, drafts and real element refs. Task detail handlers leave native Escape
+cancellation intact while preventing an open picker from closing the enclosing view.
+
+The native select policy enumerates every production TS/TSX and CSS input,
+including unreferenced files. TypeScript 7 project snapshots and AST traversal
+recognize native JSX and standard React creation with actual import bindings;
+HTML host-tag strings retain case-insensitive HTML element semantics;
+css-tree parses selectors and declarations for internal control/arrow targets
+and the collected wrapper classes. Every production select and the internal control/arrow markers identify
+children of the shared wrapper, so their siblings and descendants retain that
+owner. Direct-child and internal-sibling `:has()` relationships carry the same
+ownership. Wrapper layout is granted only when all relative-selector branches
+prove an exact shared-wrapper child; ambiguous or deeper owned nodes retain
+internal restrictions. Outer page ancestors and fields adjacent to the wrapper retain page ownership. The common component and its CSS are the
+only declaration and presentation owners, with no legacy exemption list.
+Parsing, missing ASTs, file access and resource-release failures fail the command.
+Snapshots and API processes are released on both success and failure. The
+Node harness owns controlled policy fixtures and the real production-tree scan,
+so ordinary Web tests and CI quality enforce the same rule.
+
+## Alternatives
+
+**Share CSS while retaining page-owned structures.** Each caller could still
+omit or duplicate the arrow wrapper, modify internal padding or restore native
+appearance. Shared structure and explicit presentation properties keep those
+decisions with one owner.
+
+**Build a custom selection menu.** That would require reimplementing native
+keyboard and touch selection, form constraints, multi-selection and element-ref
+operations for a presentation problem. Keeping a real select preserves these
+mechanisms and platform menu behavior.
+
+**Size Bot settings from viewport width.** A narrow Bot panel can appear inside
+a wide desktop window. Viewport sizing would miss that touch target, while
+replacing the existing container name would disconnect reading layout queries.
+Multiple names on the same container preserve both responsibilities.
+
+**Protect popup Escape only in Composer.** Timeline forms and terminal playback
+controls bypass the Composer form. Guarding the common fullscreen handler also
+protects those controls and the external-boundary document path without moving
+event ownership into NativeSelect.
+
+**Keep the native single-line arrow and adjust text padding.** Its position is
+controlled by the browser independently of text padding. The earlier spacing
+decisions already identified why this cannot guarantee a fixed inset.
+
+**Search source text for select and styling patterns.** Comments, strings,
+generics, import aliases and mixed or nested CSS selectors make textual matches
+ambiguous. Compiler and CSS ASTs identify syntax and declarations without
+maintaining a second parser or a growing list of textual exceptions.
+
+**Check only imported application modules or grandfather existing selectors.**
+An unreferenced source file can later become an entry without passing review of
+its original implementation; an exception list also preserves page-specific
+skins after migration. Enumerating all production inputs and allowing only the
+common owner keeps future additions subject to the same rule.
+
+## Consequences
+
+Consumers share geometry and state styling while retaining their business
+timing and exact native element identity. List mode keeps native size and
+selection semantics without a dropdown arrow. Explicit responsive and named
+container modes support touch-sized forms without enlarging ordinary compact
+controls. Bot settings use their reading container width independently of the
+viewport, and shared fullscreen keyboard handling covers selects outside the
+input form. Native popup cancellation keeps current values and drafts intact.
+
+Worker configuration fields use the form/fill variant; the personal prompt
+preview uses filter/content. Their caller-owned drafts, inheritance and save
+timing remain separate from presentation. The former control-mode select and
+nullable draft were removed by the [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md).
+
+The source guard makes direct native creation and internal skin forks fail normal
+quality checks, and static wrapper tokens let CSS analysis connect caller layout
+to its declarations. It introduces explicit css-tree development dependencies and
+depends on the pinned TypeScript unstable project/AST API. Dependency upgrades
+must preserve parser, diagnostic and cleanup behavior. The guard cannot infer
+arbitrary drawing intent, prove visual geometry or replace platform interaction
+checks; those remain with browser suites and independent review.
+
+The extra wrapper must remain shrinkable and match the control's height.
+Inherited fieldset disabling, hidden state and direction must also affect the
+arrow. The browser suite renders production code to verify these conditions;
+module tests retain property, event, ref and form proofs. System-menu behavior
+still depends on the browser and platform, and simulated touch does not prove a
+physical phone's picker. The common browser configuration runs independently
+from routine unit quality and is registered in the main/manual browser workflow.

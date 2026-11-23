@@ -51,15 +51,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
-		BindTerminalConnection: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 v2.Envelope, a6 string) error {
-			b.mu.Lock()
-			fn := b.Funcs.BindTerminalConnection
-			b.mu.Unlock()
-			if err := b.check("BindTerminalConnection", fn != nil); err != nil {
-				return err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
 		BrowserPoll: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string) (sp.Snapshot, []map[string]any, string, error) {
 			b.mu.Lock()
 			fn := b.Funcs.BrowserPoll
@@ -92,16 +83,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3)
 		},
-		CurrentTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string) (map[string]any, error) {
-			b.mu.Lock()
-			fn := b.Funcs.CurrentTerminal
-			b.mu.Unlock()
-			if err := b.check("CurrentTerminal", fn != nil); err != nil {
-				var result0 map[string]any
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3)
-		},
 		CurrentWithStartup: func(a0 context.Context, a1 model.Principal, a2 string, a3 string) (map[string]any, error) {
 			b.mu.Lock()
 			fn := b.Funcs.CurrentWithStartup
@@ -120,34 +101,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				return err
 			}
 			return fn(a0, a1)
-		},
-		DisconnectTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 v2.Envelope, a6 string) error {
-			b.mu.Lock()
-			fn := b.Funcs.DisconnectTerminal
-			b.mu.Unlock()
-			if err := b.check("DisconnectTerminal", fn != nil); err != nil {
-				return err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
-		DisconnectTerminalViewer: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 string, a7 string) error {
-			b.mu.Lock()
-			fn := b.Funcs.DisconnectTerminalViewer
-			b.mu.Unlock()
-			if err := b.check("DisconnectTerminalViewer", fn != nil); err != nil {
-				return err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6, a7)
-		},
-		FinalizeTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.FinalizeTerminal
-			b.mu.Unlock()
-			if err := b.check("FinalizeTerminal", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
 		Grant: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 sp.Grant) (sessioncore.GrantResult, error) {
 			b.mu.Lock()
@@ -168,16 +121,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				return result0, err
 			}
 			return fn(a0, a1)
-		},
-		HandleTerminalControl: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.HandleTerminalControl
-			b.mu.Unlock()
-			if err := b.check("HandleTerminalControl", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
 		ListTest: func(a0 context.Context, a1 model.Principal, a2 string, a3 int, a4 bool) (sessioncore.TestListPage, error) {
 			b.mu.Lock()
@@ -218,32 +161,12 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1)
 		},
-		PollTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 v2.Envelope, a6 string) ([]v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.PollTerminal
-			b.mu.Unlock()
-			if err := b.check("PollTerminal", fn != nil); err != nil {
-				var result0 []v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
 		Register: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 sp.Registration) (sp.Snapshot, error) {
 			b.mu.Lock()
 			fn := b.Funcs.Register
 			b.mu.Unlock()
 			if err := b.check("Register", fn != nil); err != nil {
 				var result0 sp.Snapshot
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4)
-		},
-		RegisterTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.RegisterTerminal
-			b.mu.Unlock()
-			if err := b.check("RegisterTerminal", fn != nil); err != nil {
-				var result0 v2.Message
 				return result0, err
 			}
 			return fn(a0, a1, a2, a3, a4)
@@ -299,16 +222,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
 		},
-		SubmitTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.SubmitTerminal
-			b.mu.Unlock()
-			if err := b.check("SubmitTerminal", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
 		TerminalArchiveContentReserved: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 io.Closer) (sessionhttp.ArchiveContentForTest, error) {
 			b.mu.Lock()
 			fn := b.Funcs.TerminalArchiveContentReserved
@@ -318,16 +231,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				return result0, err
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		TerminalArchiveState: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string) (map[string]any, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalArchiveState
-			b.mu.Unlock()
-			if err := b.check("TerminalArchiveState", fn != nil); err != nil {
-				var result0 map[string]any
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4)
 		},
 		TerminalArchiveStatus: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string) (v2.Message, error) {
 			b.mu.Lock()
@@ -339,16 +242,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4)
 		},
-		TerminalAutomationRecovery: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalAutomationRecovery
-			b.mu.Unlock()
-			if err := b.check("TerminalAutomationRecovery", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5)
-		},
 		TerminalHistory: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 int) (map[string]any, error) {
 			b.mu.Lock()
 			fn := b.Funcs.TerminalHistory
@@ -358,46 +251,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				return result0, err
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		TerminalOperation: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalOperation
-			b.mu.Unlock()
-			if err := b.check("TerminalOperation", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		TerminalReceipt: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalReceipt
-			b.mu.Unlock()
-			if err := b.check("TerminalReceipt", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4)
-		},
-		TerminalRecordingEvidence: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 string) (map[string]any, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalRecordingEvidence
-			b.mu.Unlock()
-			if err := b.check("TerminalRecordingEvidence", fn != nil); err != nil {
-				var result0 map[string]any
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
-		TerminalState: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string) (map[string]any, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalState
-			b.mu.Unlock()
-			if err := b.check("TerminalState", fn != nil); err != nil {
-				var result0 map[string]any
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4)
 		},
 		TestSnapshot: func(a0 context.Context, a1 model.Principal, a2 string) (sp.Snapshot, error) {
 			b.mu.Lock()
@@ -438,46 +291,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				return result0, err
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		UpdateTerminalArchive: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.UpdateTerminalArchive
-			b.mu.Unlock()
-			if err := b.check("UpdateTerminalArchive", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		UpdateTerminalLedger: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.UpdateTerminalLedger
-			b.mu.Unlock()
-			if err := b.check("UpdateTerminalLedger", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
-		UpdateTerminalRecording: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.UpdateTerminalRecording
-			b.mu.Unlock()
-			if err := b.check("UpdateTerminalRecording", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
-		UpdateTerminalRecovery: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.UpdateTerminalRecovery
-			b.mu.Unlock()
-			if err := b.check("UpdateTerminalRecovery", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
 	}
 	return b.wrapResourceCalls(calls)

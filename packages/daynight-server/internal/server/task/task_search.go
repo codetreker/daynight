@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -22,11 +23,11 @@ type searchHandler struct {
 	operationTimeout time.Duration
 }
 
-func TaskSearchRoutes(mux *http.ServeMux, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
+func TaskSearchRoutes(mux httpx.RouteRegistrar, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
 	h := &searchHandler{run: search, logger: logger, operationTimeout: 5 * time.Second}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", auth.Require(h.search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
 	}
 }
 func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) {
@@ -51,6 +52,10 @@ func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) 
 			}
 		}
 		input.Parent = &value
+	}
+	input.ParentTask, err = httpx.OptionalString(fields, "parentTaskId")
+	if err != nil {
+		return input, err
 	}
 	input.AssignedTo, err = httpx.OptionalString(fields, "assignedTo")
 	if err != nil {
@@ -80,6 +85,27 @@ func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) 
 		value := model.TaskPlatform(*platform)
 		input.CompatiblePlatform = &value
 	}
+	ids, err := httpx.OptionalStrings(fields, "tagIds")
+	if err != nil {
+		return input, err
+	}
+	if ids != nil {
+		input.TagFilter.TagIDs = *ids
+	}
+	match, err := httpx.OptionalString(fields, "tagMatch")
+	if err != nil {
+		return input, err
+	}
+	if match != nil {
+		input.TagFilter.TagMatch = *match
+	}
+	untagged, err := httpx.OptionalBool(fields, "untagged")
+	if err != nil {
+		return input, err
+	}
+	if untagged != nil {
+		input.TagFilter.Untagged = *untagged
+	}
 	if raw, ok := fields["limit"]; ok {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &input.Limit) != nil || input.Limit < 1 || input.Limit > 100 {
 			return input, httpx.InvalidInput("limit must be an integer from 1 to 100")
@@ -93,25 +119,35 @@ func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) 
 	}
 	return input, nil
 }
-func searchResponse(page tasksearch.Page) api.TaskSearchPage {
+func searchResponse(page tasksearch.Page, relations ...bool) api.TaskSearchPage {
+	enabled := len(relations) != 0 && relations[0]
 	out := api.TaskSearchPage{ProjectID: page.ProjectID, Total: page.Total, Items: make([]api.TaskSearchItem, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, item := range page.Items {
 		var c *api.TaskSearchContext
 		if item.Context != nil {
 			c = &api.TaskSearchContext{TaskID: item.Context.TaskID, Title: item.Context.Title}
 		}
-		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, Type: string(item.Type), ParentID: item.ParentID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
+		parentID, parentTaskID := taskprotocol.ParentRelation(item.ParentID, item.ParentType, enabled)
+		var parentTaskContext *api.TaskSearchContext
+		if item.ParentType == model.TaskTypeTask {
+			if enabled {
+				parentTaskContext = c
+			}
+			c = nil
+		}
+		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, Type: string(item.Type), ParentID: parentID, ParentTaskID: parentTaskID, ParentTaskContext: parentTaskContext, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}, Tags: taskprotocol.RESTTags(item.Tags)})
 	}
 	return out
 }
 func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	projectID, _, logger, err := TaskResource(request, principal, h.logger)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor", "type", "parentId")
+	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor", "type", "parentId", "parentTaskId", "tagIds", "tagMatch", "untagged")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return
@@ -127,7 +163,7 @@ func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, pri
 	page, err := h.run(operation, principal, projectID, input)
 	var response []byte
 	if err == nil {
-		response, err = json.Marshal(searchResponse(page))
+		response, err = json.Marshal(searchResponse(page, taskParentView(request)))
 	}
 	if err == nil && operation.Err() != nil {
 		err = operation.Err()

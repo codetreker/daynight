@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sizeMermaidSvg } from '../src/features/task-detail/MermaidSvg';
+import { sizeMermaidSvg } from '../src/ui/markdown/mermaid/MermaidSvg';
 
 describe('Mermaid image dimensions', () => {
   it('uses the viewBox without changing its origin or unrelated styles', () => {

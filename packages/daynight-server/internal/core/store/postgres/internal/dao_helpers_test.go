@@ -56,7 +56,7 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 	ctx := t.Context()
 	project, task := helperTask(t, tx)
 	missing := uuid.NewString()
-	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"Change"}]`), "paused": json.RawMessage(`true`)}
+	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"Change"}]`), "blocked": json.RawMessage(`true`)}
 	if err := pg.WriteTaskProperties(ctx, tx, task, properties); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 	if err := pg.AttachTaskProperties(ctx, tx, tasks); err != nil || !reflect.DeepEqual(tasks[0].Properties, properties) || tasks[1].Properties == nil {
 		t.Fatalf("attached=%#v, err=%v", tasks, err)
 	}
-	properties = model.TaskProperties{"paused": json.RawMessage(`false`)}
+	properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
 	if err := pg.WriteTaskProperties(ctx, tx, task, properties); err != nil {
 		t.Fatal(err)
 	}
@@ -97,15 +97,6 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 		t.Fatalf("missing presence=%#v, err=%v", presence, err)
 	}
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("fixture", 7200))
-	helperExec(t, tx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'00000002',1,'Second','Two','in_progress',$2,$2),($1,'00000001',0,'First','One','todo',$2,$2)`, task, stamp)
-	steps, err := pg.ReadTaskSteps(ctx, tx, task)
-	if err != nil || len(steps) != 2 || steps[0].ID != "00000001" || steps[1].Title != "Second" || steps[1].Description != "Two" || string(steps[1].Status) != "in_progress" || steps[0].CreatedAt.Location() != time.UTC || !steps[0].CreatedAt.Equal(stamp) {
-		t.Fatalf("steps=%#v, err=%v", steps, err)
-	}
-	steps, err = pg.ReadTaskSteps(ctx, tx, missing)
-	if err != nil || steps == nil || len(steps) != 0 {
-		t.Fatalf("empty steps=%#v, err=%v", steps, err)
-	}
 	helperExec(t, tx, `UPDATE tasks SET deleted_at=$2 WHERE id=$1`, task, stamp)
 	presence, err = pg.TaskPresence(ctx, tx, project, task, "")
 	if err != nil || !presence.Found || presence.DeletedAt == nil || !presence.DeletedAt.Equal(stamp) || presence.DeletedAt.Location() != time.UTC {
@@ -122,11 +113,43 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 		t.Fatalf("missing header=%v", err)
 	}
 }
+func TestTaskHelpersUseInheritedDeletionWithPhysicalPrecedence(t *testing.T) {
+	tx := helperTransaction(t)
+	ctx := t.Context()
+	project, task := helperTask(t, tx)
+	parent := uuid.NewString()
+	helperExec(t, tx, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'task','Parent','todo')`, parent, project)
+	inherited := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	own := inherited.Add(time.Hour)
+	helperExec(t, tx, `UPDATE tasks SET parent_id=$2,ancestor_deleted_at=$3 WHERE id=$1`, task, parent, inherited)
+	for _, physical := range []bool{false, true} {
+		expected := inherited
+		if physical {
+			helperExec(t, tx, `UPDATE tasks SET deleted_at=$2 WHERE id=$1`, task, own)
+			expected = own
+		}
+		for _, lock := range []string{"", " FOR SHARE", " FOR UPDATE"} {
+			if _, err := pg.ReadTaskWithLock(ctx, tx, project, task, lock); !errors.Is(err, model.ErrTaskDeleted) {
+				t.Fatalf("hidden task physical=%v lock=%q: %v", physical, lock, err)
+			}
+			header, err := pg.ReadTaskHeader(ctx, tx, project, task, lock)
+			if err != nil || header.DeletedAt == nil || !header.DeletedAt.Equal(expected) {
+				t.Fatalf("hidden header physical=%v lock=%q: %+v %v", physical, lock, header, err)
+			}
+			presence, err := pg.TaskPresence(ctx, tx, project, task, lock)
+			if err != nil || !presence.Found || presence.DeletedAt == nil || !presence.DeletedAt.Equal(expected) {
+				t.Fatalf("hidden presence physical=%v lock=%q: %+v %v", physical, lock, presence, err)
+			}
+		}
+	}
+}
+
 func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 	tx := helperTransaction(t)
 	ctx := t.Context()
 	user := uuid.NewString()
 	future := time.Now().UTC().Add(20 * time.Minute).Truncate(time.Microsecond)
+	helperExec(t, tx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, user, uuid.NewString())
 	for _, tc := range []struct {
 		kind  model.CredentialKind
 		table string
@@ -137,14 +160,18 @@ func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 			columns := "id,user_id,token_hash,created_at,expires_at"
 			values := "$1,$2,$3,now(),$4"
 			if tc.kind == model.PATCredential {
-				columns += ",name"
-				values += ",'Token'"
+				columns += ",name,business_scopes,scope_version"
+				values += ",'Token',ARRAY['task:read'],1"
 			}
+			args := []any{id, user, hash[:], future}
 			if tc.kind == model.OAuthCredential {
+				grant := uuid.NewString()
+				helperExec(t, tx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'client','{}','https://example.test/mcp','daynight:mcp',now(),$3)`, grant, user, future.Add(time.Hour))
 				columns += ",grant_id"
-				values += ",gen_random_uuid()"
+				values += ",$5"
+				args = append(args, grant)
 			}
-			helperExec(t, tx, `INSERT INTO `+tc.table+`(`+columns+`) VALUES(`+values+`)`, id, user, hash[:], future)
+			helperExec(t, tx, `INSERT INTO `+tc.table+`(`+columns+`) VALUES(`+values+`)`, args...)
 			principal := model.Principal{Kind: tc.kind, CredentialID: id, UserID: user}
 			credential, err := pg.ThreadCredential(ctx, tx, principal, " FOR SHARE")
 			if err != nil || credential.ExpiresAt == nil || !credential.ExpiresAt.Equal(future) || credential.ExpiresAt.Location() != time.UTC {
@@ -271,7 +298,6 @@ func TestHelperQueriesRetainDriverFailures(t *testing.T) {
 		{"properties write", func() error { return pg.WriteTaskProperties(ctx, tx, uuid.NewString(), nil) }},
 		{"task", func() error { _, err := pg.ReadTaskWithLock(ctx, tx, "project", "task", ""); return err }},
 		{"header", func() error { _, err := pg.ReadTaskHeader(ctx, tx, "project", "task", ""); return err }},
-		{"steps", func() error { _, err := pg.ReadTaskSteps(ctx, tx, "task"); return err }},
 		{"presence", func() error { _, err := pg.TaskPresence(ctx, tx, "project", "task", ""); return err }},
 		{"thread", func() error { _, err := pg.ReadThreadMessage(ctx, tx, "task", "message"); return err }},
 		{"credential", func() error {

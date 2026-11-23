@@ -30,6 +30,7 @@ func webhookStoredFixture(t *testing.T) (webhook.Owner, webhook.Endpoint, webhoo
 }
 
 func TestWebhookReceiptInsertFailureRollsBackEffects(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	owner, endpoint, key, initial := webhookStoredFixture(t)
@@ -198,6 +199,7 @@ func TestWebhookAuthorityRecheckedAfterTeamLockWait(t *testing.T) {
 }
 
 func TestWebhookAuthorityRejectsMissingContainers(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	user := uuid.NewString()
@@ -213,6 +215,7 @@ func TestWebhookAuthorityRejectsMissingContainers(t *testing.T) {
 }
 
 func TestWebhookCredentialObservationAfterRowLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, mode := range []string{"natural expiry", "revocation"} {
 		t.Run(mode, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -375,6 +378,7 @@ func awaitEnrollmentProjectFence(t *testing.T, ctx context.Context, observer *St
 }
 
 func TestWebhookEnrollmentAndGrantRevocationFenceAbsentSubscription(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, first := range []string{"enrollment", "revocation"} {
 		t.Run(first, func(t *testing.T) {
 			base := isolatedStore(t)

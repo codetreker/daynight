@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import type { WorkerCloudValue } from "../../../src/api/worker-configuration.js";
@@ -9,8 +10,9 @@ import { updateConfigurationFile } from "../../../src/config/files.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import {
   assertWorkerConfigurationIsLocal, parseWorkerCloudBootstrap, parseWorkerLocalConfiguration,
-  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForId, workerLocalRepositoryForProject,
+  readWorkerLocalConfiguration, resolveCloudNative, validateWorkerBootstrapIdentity, WorkerBootstrapIdentityError, workerLocalRepositoryForId, workerLocalRepositoryForProject,
 } from "../../../src/commands/worker/configuration-source.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../src/commands/worker/configuration-failure.js";
 import { resolveWorkerCloudProjectNative } from "../../../src/commands/worker/configuration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { runWorkerRepositoryCommand } from "../../../src/commands/worker/configuration-guide.js";
@@ -21,7 +23,7 @@ const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toStr
 const time = "2026-11-04T00:00:00Z";
 const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
 const user = { id: uuid(1), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(2), kind: "personal", name: null } };
-const native = { agent: "codex" as const, model: "global", args: ["--search"] };
+const native = { agent: "codex" as const, model: "global", args: ["--sandbox", "read-only"] };
 const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] };
 const connection = { serverUrl: "https://service.example", serverToken: token };
 const directories: string[] = [];
@@ -38,7 +40,7 @@ const fixture = async (data: Record<string, unknown> = {}) => {
   return { directory, paths, source };
 };
 const response = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
-  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1" },
+  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" },
 });
 const cloudFetch = (desired: unknown) => vi.fn<typeof globalThis.fetch>()
   .mockResolvedValueOnce(response(user))
@@ -56,19 +58,70 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration sources", () => {
+  it.each([
+    ["serverToken: changed-credential-not-in-running-redactor\nworker: [", "Invalid YAML"],
+    ["- changed-credential-not-in-running-redactor\n", "Configuration must be a mapping"],
+  ])("retains typed invalid-source evidence from the production reader: %s", async (source, message) => {
+    const f = await fixture();
+    await writeFile(f.paths.configFile, source);
+    const error = await readWorkerLocalConfiguration(f.paths).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(WorkerConfigurationSourceError);
+    expect(error).toMatchObject({ message: expect.stringContaining(message), cause: expect.any(Error) });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "invalid_configuration", reason: "invalid_configuration" });
+    expect(inspect(error, { depth: 10 })).not.toContain("changed-credential-not-in-running-redactor");
+    expect(JSON.stringify(classifyConfigurationFailure(error))).not.toContain("changed-credential-not-in-running-redactor");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("imports the default archive setting and rejects malformed local settings", async () => {
+    const f = await fixture(), resolve = async () => ({ id: project.id }), signal = new AbortController().signal;
+    expect((await parseWorkerCloudBootstrap(f.source, f.paths, resolve, signal)).archiveSessions).toBe(true);
+    expect((await parseWorkerCloudBootstrap(stringify({ worker: { archiveSessions: false } }), f.paths, resolve, signal)).archiveSessions).toBe(false);
+    await expect(parseWorkerCloudBootstrap(stringify({ worker: { archiveSessions: "false" } }), f.paths, resolve, signal)).rejects.toThrow();
+  });
+
+  it("retains actual read failures as file evidence and leaves cancellation unchanged", async () => {
+    const f = await fixture();
+    await rm(f.paths.configFile);
+    await mkdir(f.paths.configFile);
+    const error = await readWorkerLocalConfiguration(f.paths).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ConfigurationFileOperationError);
+    expect(error).toMatchObject({ operation: "read", cause: { message: expect.stringContaining("Cannot read configuration file"), cause: { code: "EISDIR" } }, filesystemCause: { code: "EISDIR" } });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "io_error", reason: "io_error", systemCode: "EISDIR" });
+    const cancellation = new Error("Original source read cancellation"), controller = new AbortController();
+    controller.abort(cancellation);
+    await expect(readWorkerLocalConfiguration(f.paths, controller.signal)).rejects.toBe(cancellation);
+  });
+
+  it("preserves typed bootstrap identity mismatch fields and source validation causes", async () => {
+    const f = await fixture({ workerId: uuid(6) });
+    const local = await readWorkerLocalConfiguration(f.paths);
+    let error: unknown;
+    try { validateWorkerBootstrapIdentity(local, f.paths, { serverOrigin: connection.serverUrl, workerId: uuid(5) }); }
+    catch (failure) { error = failure; }
+    expect(error).toBeInstanceOf(WorkerBootstrapIdentityError);
+    expect(error).toBeInstanceOf(WorkerConfigurationSourceError);
+    expect(error).toMatchObject({ field: "workerId" });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "invalid_configuration", reason: "invalid_configuration" });
+    const invalid = stringify({ ...connection, worker: { agentControlMode: "unsupported" } });
+    expect(() => parseWorkerLocalConfiguration(invalid, f.paths)).toThrow(WorkerConfigurationSourceError);
+    try { parseWorkerLocalConfiguration(invalid, f.paths); }
+    catch (failure) { expect(failure).toMatchObject({ cause: expect.any(TypeError) }); }
+  });
+
   it("imports complete tool choices from the same parsed local source", async () => {
     const f = await fixture({ worker: { toolPaths: { codex: path.join(path.parse(process.cwd()).root, "tools with spaces", "codex"), copilot: null } } });
     const local = parseWorkerLocalConfiguration(f.source, f.paths);
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.toolPaths).toEqual(local.toolPaths);
-    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+    expect(seed.toolPaths).toEqual({ codex: local.toolPaths.codex, copilot: local.toolPaths.copilot });
+    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" } });
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
-  it.each([undefined, "web"])("imports the effective local control mode without rewriting YAML: %s", async agentControlMode => {
+  it.each([undefined, "web"])("imports Web without rewriting YAML: %s", async agentControlMode => {
     const f = await fixture({ worker: agentControlMode === undefined ? {} : { agentControlMode } });
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.agentControlMode).toBe(agentControlMode ?? "herdr");
+    expect(seed).not.toHaveProperty("agentControlMode");
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
@@ -84,7 +137,7 @@ describe("Worker cloud configuration sources", () => {
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
     const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
     const local = await readWorkerLocalConfiguration(f.paths);
-    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
     expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow();
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toBeUndefined();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
@@ -120,7 +173,7 @@ describe("Worker cloud configuration sources", () => {
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal);
     expect(seed).toMatchObject({ maxConcurrent: 4, native: { args: ["--model", "controlled-by-worker"] }, projects: [] });
     expect(resolve).not.toHaveBeenCalled();
-    expect(() => resolveCloudNative(seed.native, "herdr", seed.recoveryLimit)).toThrow();
+    expect(() => resolveCloudNative(seed.native, seed.recoveryLimit)).toThrow();
   });
 
   it("imports the optional platform preference with a false default and strict explicit booleans", async () => {
@@ -161,9 +214,9 @@ describe("Worker cloud configuration sources", () => {
   });
 
   it("preserves inheritance, explicit clears and native-kind changes", () => {
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: {} }), "herdr", 7)).toEqual({ ...native, agentControlMode: "herdr", recoveryLimit: 7 });
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { model: null, args: [] } }), "herdr", 7)).toMatchObject({ agent: "codex", model: null, args: [], recoveryLimit: 7 });
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { agent: "claude" } }), "web", 0)).toEqual({ agent: "claude", model: null, args: [], agentControlMode: "web", recoveryLimit: 0 });
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: {} }), 7)).toEqual({ ...native, agentControlMode: "web", recoveryLimit: 7 });
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { model: null, args: [] } }), 7)).toMatchObject({ agent: "codex", model: null, args: [], recoveryLimit: 7 });
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { agent: "claude" } }), 0)).toEqual({ agent: "claude", model: null, args: [], agentControlMode: "web", recoveryLimit: 0 });
   });
 
   it("checks cloud ownership despite an absent cache and preserves the local file", async () => {

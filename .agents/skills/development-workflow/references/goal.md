@@ -2,8 +2,11 @@
 
 The Goal workflow organizes a multi-stage objective in a `type=goal` resource.
 Ordinary direct child Tasks track stages and delivery; Parent expresses membership
-and ordinary dependencies express prerequisites. The Goal owns shared materials
-while each Task retains its own responsibility and results.
+and ordinary dependencies express prerequisites. The Goal owns effective shared
+specifications, architecture, breakdowns, conclusions and overall progress, even
+when produced directly in a Session. Each Task retains its own responsibility,
+status, results and evidence. Update Goal-wide conclusions and important progress
+under the product [material ownership rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#goal-outcomes-and-progress).
 Follow [create task](create-task.md) for creation, the [task content standard](task-content.md) for material, and [authorization and scope](authorization.md) for operational permissions.
 This file covers only stage progression and Goal-specific requirements.
 
@@ -18,7 +21,7 @@ This file covers only stage progression and Goal-specific requirements.
 
 Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
 Substantive revisions after confirmation require renewed confirmation.
-Goal status remains independently controlled and does not replace these stage gates or change Task dependencies.
+A child entering `in_progress` starts a `todo` Goal; Goal status does not replace these stage gates or change Task dependencies.
 Discussion acceptance does not automatically add repository PR merge requirements; only repository artifacts or PR delivery explicitly included in that task are subject to the corresponding delivery conditions.
 
 ## From requirements to solution
@@ -33,7 +36,7 @@ Its complete spec is a result of this stage, not a prerequisite for registering 
 ### Complete requirements spec
 
 The requirements Task produces a complete, independently readable Markdown attachment at `spec.md` on the Goal. The Goal owns the overall Thread; Task-specific material and requirements prototypes remain on the requirements Task.
-Keep the requirements Task description self-contained about the objective, responsibility, scope, deliverables, completion conditions, and the exact Goal ID and spec path; do not duplicate the full spec there.
+The requirements Task material defines its objective, responsibility, scope, deliverables, completion conditions, and the exact Goal ID and spec path.
 A complete description or a repository link does not replace this required Goal attachment.
 
 The spec covers the background and problem, goals and non-goals, applicable actors and scenarios, required behavior and boundaries, constraints, success and failure behavior, and observable whole-Goal acceptance criteria.
@@ -51,7 +54,7 @@ Attachments do not change the task version; follow [write safety](../../../../pa
 
 After the user confirms the current spec and directs progression to solution discussion, create or reuse the solution-discussion task while the requirements task remains `in_progress`.
 Use the same Goal as Parent and the requirements Task as an ordinary prerequisite; explicitly create the confirmed internal solution Task with `--parent <goal-id> --status todo`. It stays `todo` and blocked until that prerequisite is done.
-Its description must directly identify the requirements Task ID, the Goal ID, the full `spec.md` attachment path, and applicable prototype resources; read those actual sources and prepare the stage brief.
+Its own task material must directly identify the requirements Task ID, the Goal ID, the full `spec.md` attachment path, and applicable prototype resources; read those actual sources and prepare the stage brief.
 Keep the shared spec in its owning Goal.
 
 Read back the solution task, its Parent, required sources, and the actual dependency graph before completing the requirements task under the [shared completion conditions](task-execution.md#completion-conditions).
@@ -61,7 +64,7 @@ Ordinary execution may then start the solution discussion at the user's explicit
 If completion is uncertain, reconcile it before starting the solution task.
 
 Solution discussion explains responsibilities, data flow, control flow, interfaces, error behavior, key decisions, verification, and the proposed breakdown.
-The solution Task produces the shared architecture and breakdown on the Goal; its description identifies the Goal ID and exact paths. Keep task-specific material with the Task. Do not register delivery items before confirmation.
+The solution Task produces the shared architecture and breakdown on the Goal; its own material identifies the Goal ID and exact paths. Keep task-specific material with the Task. Do not register delivery items before confirmation.
 After the user confirms the solution, perform the registration checks below before completing the solution task.
 
 ## Register the delivery breakdown
@@ -83,8 +86,8 @@ Each Goal delivery task has one independently assessable outcome. Keep changes n
 
 Judge task boundaries by purpose and reviewability. File boundaries, technical layers or routine execution steps alone do not justify separate tasks; foundations, migrations and independent acceptance can be tasks when each has a defined result. Do not impose fixed task, file, line or time limits or a mandatory slicing pattern.
 
-These parts may be inline or supplied through precise readable references, without fixed headings or a separate plan file.
-The description must explain this task's contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
+Supply these parts through the Task's own material and precise readable references, without fixed headings or a separate plan file.
+Each Task's own material must explain its contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
 Keep shared detail with its owner. An implementation approach must explain the actual solution, design and implementation steps for this task; "follow the architecture" alone is insufficient. Apply the [delivery handoff threshold](task-content.md#content-sufficiency) to every delivery task.
 For an acceptance task, the approach describes how to check the requirements against the combined delivery. Detailed designs and implementation steps are durable task content, distinct from the session's command schedule, tool activity or debugging plan. Requirements and solution discussions still produce their own designs; those future outputs are not prerequisites for starting the producing stage.
 
@@ -102,12 +105,12 @@ Keep the reviewable breakdown in the Goal’s shared material; substantive revis
 Every root delivery task without another ordinary implementation prerequisite must directly depend on the solution task through an ordinary dependency, so all delivery paths inherit the confirmed design's completion conditions.
 Verify cross-chain dependencies and follow [classification and reduction](dependencies.md#dependency-reduction); external prerequisites cannot replace ordinary design prerequisites.
 
-**Every delivery Task description must directly identify the architecture-producing Task ID, the Goal ID as shared material owner, and all required architecture source locations, including for indirect successors.**
+**Every delivery Task's own material must directly identify the architecture-producing Task ID, the Goal ID as shared material owner, and all required architecture source locations, including for indirect successors.**
 Identify the description and applicable sections for inline architecture, list full paths for actual Goal attachments, and retain the owning resource ID and verified immutable references for repository sources.
-An index only in an upstream task or inside an attachment is insufficient.
+The index may be in the Task's own attachment reached from its description; an index only in an upstream task is insufficient.
 Read actual sources under the content standard; do not invent attachments or copy the full set of shared material.
 
-For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the architecture-producing Task, Goal owner and required architecture sources.
+For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's own material still directly lists the architecture-producing Task, Goal owner and required architecture sources.
 Source indexes do not create additional execution dependencies.
 
 Read back every delivery task, its Parent and required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task boundaries, whole-breakdown coverage and handovers, architecture indexes, and source readability.
@@ -121,7 +124,7 @@ Complete each task under its actual assignment and applicable execution rules; r
 A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
 Done and cancelled are both scheduling terminal states. When all members are
 terminal, their scheduling has ended, but cancelled members do not establish successful delivery.
-The Goal status remains independent of its members.
+Child completion and cancellation do not automatically end the Goal.
 Cancellation cannot replace a required stage result, source artifact, user
 confirmation or whole-Goal acceptance; judge delivery against the current confirmed
 scope and actual results.

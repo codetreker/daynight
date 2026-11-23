@@ -1,0 +1,53 @@
+# 助手任务 CLI
+
+`daynight assistant-task` 提供[助手任务服务端](assistant-task.md)的用户与 Bot 操作入口，并遵守[认领合同](assistant-task-claims.md)。它独立于项目 Task 命令，不使用 Project 参数，也不启动 Worker 调度或续约循环。
+
+## 命令与协议
+
+`commands/assistant-task/definition.ts` 定义帮助、参数和补全入口，`command.ts` 负责身份分流、显式版本、命令结果及诊断。`api/assistant-task.ts` 复用公共 Operation 期限及配置校验，并独立处理 HTTP 交换与认证用户响应头，`assistant-task-parse.ts` 校验资源结构、规范 UUID、精确 int64 字符串、时间、分页、作用域及认领回执。错误不回显任意服务端消息或请求体，避免凭据经错误进入终端。
+
+命令覆盖任务登记与状态、认领与转交、绑定与续约、手册及回退、附录、提案与用户决定、事项、工作记录、问答、事件投递与确认，以及收件箱管理。所有叶命令支持 `--json`；列表显式返回单页和游标，调用方决定下一次读取。命令不把分页缺失解释为资源不存在。
+
+`record add --kind outcome` 必须同时提供 `--outcome` 与 `--action-record`，其他记录类型提供任一选项时在网络请求前以用法错误拒绝。结果记录与负责 Bot 的其他工作记录一样使用已保存凭据；写入响应必须回显相同的类型、结果取值和动作记录 ID，否则视为无效响应。记录解析只在 `outcome` 记录中接受这两个字段，列表输出原样显示它们。
+
+`appendix add` 与 `appendix update` 用可重复的 `--scope-project`、`--scope-event-type` 和 `--scope-category` 声明适用范围；只要提供其中任一选项，就提交完整的 `scope`，未给值的维度为空数组，表示不限定。`appendix update` 省略全部范围选项时保留原范围，`--clear-scope` 显式提交空范围，与范围选项同时出现时在网络请求前以用法错误拒绝。`appendix validate <task-id> <appendix-id> --outcome-record <id>` 是 Bot 操作，使用已保存凭据登记一次验证；响应必须是同一附录且带有 `validation`，否则视为无效响应。重复登记由服务端以 `operation_conflict` 拒绝，CLI 不重试。附录解析只在服务端声明时接受 `scope` 与 `validation`，已删除附录携带任一字段视为无效响应；列表原样显示二者，缺少时表示不限定、尚未验证。
+
+`appendix related <task-id>` 是读取操作，用户终端和 Bot 均可调用，不读取认领凭据。可选的 `--project`、`--event-type` 和 `--category` 对应查询的三个维度，省略的维度不提交；`--project` 在网络请求前按规范 UUID 校验，类别原样提交，事件类型和类别的其余规则由服务端校验。响应解析要求至多 5 个属于该任务、ID 不重复且未删除的附录，并拒绝分页游标；输出保留服务端顺序。
+
+用户凭据始终来自已有配置。`DAYNIGHT_BOT_ID` 仅为协作身份，通过 `X-Daynight-Bot-Id` 提交；服务端校验它与登录用户的关系。Bot 专属操作在缺少该身份时先于网络请求拒绝。用户专属操作在设置该身份时拒绝，不能通过移除 Bot 身份绕过用户决定权限。
+
+写入接受 `--operation-id`，未提供时只生成一次。认领、收件箱管理及事件确认发送协议操作 ID；创建和追加使用该值作为资源 ID。版本更新、决定、回答、删除和清除关注没有服务端操作 ID 字段，该值仅用于 CLI 诊断，不承诺额外幂等性。版本条件来自显式 `--if-version`，不会用新读版本替换调用者的决定。所有写入只提交一次。
+
+### 收件箱命令
+
+| 命令 | 身份与请求 |
+| --- | --- |
+| `inbox show <task-id>` | 用户或 Bot；读取 `GET inbox`，输出不含令牌 |
+| `inbox enable <task-id> --if-version <v>` | 仅用户；输出开启回执、收件箱状态和一次性 `token` |
+| `inbox rotate <task-id> --if-version <v> --mode overlap\|immediate` | 仅用户；输出轮换回执和新的一次性 `token` |
+| `inbox disable <task-id> --if-version <v>` | 仅用户；永久停用当前 `inboxId` |
+| `inbox operation <task-id> <operation-id>` | 仅用户；只读核对原管理操作，不返回令牌 |
+
+设置 `DAYNIGHT_BOT_ID` 时，管理命令与回执读取先于网络请求拒绝；服务端同样拒绝携带 Bot 请求头的管理请求。令牌只出现在命令的成功输出中，输出按含秘密的写入结果处理。结果未知时诊断指向 `inbox operation`；该读取不会重放写入，也不能找回令牌，需要新令牌时以新的操作 ID 轮换。
+
+## 私有状态与协调
+
+`state.ts` 复用 Session 操作恢复的私有文件实现，使用同一任务锁协调 CLI 与 [bot host](worker-bot-runtime.md#助手任务维护) 调用。POSIX 使用文件锁、0700 目录与 0600 文件；Windows 使用已有私有 ACL 与原生文件锁实现。原子替换前同步文件，替换后同步目录；持久化失败时不发送认领请求。
+
+`DAYNIGHT_BOT_STATE_DIR/assistant-claims/<origin-sha256>/<owner>.<bot>/` 保存任务状态、任务锁和以任务 ID 与操作 ID 命名的请求记录。用户转交与释放使用配置状态根中的 `assistant-tasks`，身份目录以 `user` 区分。状态包括格式版本、服务 origin、owner、Bot、任务 ID、当前凭据和待核对操作；读取核对这些身份。凭据保留令牌、代次、绑定操作 ID 与是否必须续约。独立操作文件保留完整请求意图、指纹及 prepared/confirmed/refused/not_submitted 状态。
+
+`claims.ts` 在同一个任务锁内完成生成令牌、保存意图、标记待核对、提交一次请求与验证回执。令牌由密码学随机源生成，不出现在公开输出中。受保护业务写入读取并校验当前凭据，服务端仍负责实际写入时的权威准入。
+
+## 恢复与失效
+
+API 能确认请求尚未派发的取消、期限耗尽或输入拒绝，持久化为 not_submitted 并清除待核对标记；保留原操作记录，新的独立决定使用新的操作 ID。已派发请求的响应丢失、协议失败或取消保留待核对状态。`claim-operation show` 只读取原操作，核对类型、任务、actor 与请求指纹，再结合独立的 `currentClaim` 决定当前凭据是否可用。历史成功不等于当前有效，404 也不证明原请求未提交。待核对操作可能仍授予有效凭据时，禁止替代提交；只有权威观测证明其可能结果代次已被越过，或该结果代次已经失效/无人负责，才允许新的认领决定。
+
+转交先使目标进入 pending。目标保存自己的令牌并绑定，随后使用相同令牌续约；本地凭据在续约确认前不能用于应用写入。绑定和续约不推进代次或轮换令牌。旧持有者不能用历史回执恢复已转交的认领。私有凭据丢失后只能核对现状，不能凭公开信息重建秘密。
+
+CLI 不负责持续每分钟续约、目标扫描、应用评估或事件送入 Session；这些属于 Worker host。命令和单次本地协作验收不能替代跨 Worker 自动接收与重启恢复验收。
+
+## 验证
+
+API 模块使用受控响应验证协议、精确数字、身份、拒绝及未知结果；命令模块验证参数、请求和输出；文件机制测试使用真实目录与锁验证私有权限、提交前持久化、进程间协调和恢复。实际 localhost 站点连接开发 CLI 验证两个 Bot 的认领冲突、转交绑定续约、问答及过期接手。测试职责遵守[测试编写规则](../writing_tests.md)，不把这些边界矩阵加入正常产品 E2E。
+
+取舍与后果见[CLI 决策记录](../../.agents/notes/implemented/feature/2026-11-13-assistant-task-cli.md)。

@@ -1,3 +1,4 @@
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -29,7 +30,7 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
     const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
 
     const claim = { ...project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID() };
-    store.register({ ...claim, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
+    store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch("copilot"), agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
     store.bindWorktree(claim, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, 3);
     const task = store.initializeWebExecution(claim, 4);
     const sessionApi = { register: vi.fn(async () => ({ sessionId: randomUUID() })), grant: vi.fn(async () => ({})), verifySupport: vi.fn() } as unknown as WorkerSessionApi;
@@ -52,7 +53,7 @@ it("renews before two default polling cycles and serializes concurrent credentia
   try {
     const project = { projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
     const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), serverOrigin: "https://daynight.example" };
-    store.register({ ...identity, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, now);
+    store.register({ ...identity, project, configuration: { toolLaunch: frozenToolLaunch("copilot"), agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, now);
     store.bindWorktree(identity, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, now);
     const task = store.initializeWebExecution(identity, now);
     const grant = vi.fn().mockResolvedValueOnce({ token: "initial", expiresAt: new Date(now + 90_000).toISOString() }).mockResolvedValue({ token: "renewed", expiresAt: new Date(now + 900_000).toISOString() });
@@ -105,7 +106,7 @@ it.each([
   try {
     const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
     const claim = { ...project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID() };
-    store.register({ ...claim, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
+    store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch("copilot"), agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
     store.bindWorktree(claim, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, 3);
     const task = store.initializeWebExecution(claim, 4);
     let latest = "before preparation";

@@ -4,7 +4,9 @@ import type { WorkspaceMessages } from "./messages/workspace";
 import type { GraphMessages } from "./messages/graph";
 import type { PlatformMessages } from "./messages/platform";
 import type { AutomationMessages } from "./messages/automation";
+import type { MarkdownMessages } from "./messages/markdown";
 import type { InspectionMessages } from "./messages/inspection";
+import type { CompletionMessages } from "./messages/completion";
 import type { ExecutionMessages } from "./messages/execution";
 import type { AuthMessages } from "./messages/auth";
 import type { SetupMessages } from "./messages/setup";
@@ -26,12 +28,14 @@ export type Messages = {
   readonly workers: WorkersMessages;
   readonly graph: GraphMessages;
   readonly inspection: InspectionMessages;
+  readonly markdown: MarkdownMessages;
   readonly automation: AutomationMessages;
   readonly platform: PlatformMessages;
   readonly auth: AuthMessages;
   readonly setup: SetupMessages;
   readonly landing: LandingMessages;
   readonly execution: ExecutionMessages;
+  readonly completion: CompletionMessages;
   readonly language: {
     readonly label: string;
     readonly options: Readonly<Record<Locale, string>>;

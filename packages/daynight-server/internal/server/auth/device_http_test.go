@@ -12,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -64,6 +65,20 @@ func deviceBody(d deviceStartResponse, decision string) string {
 	return string(b)
 }
 
+func scopedDeviceBody(t *testing.T, h *authHarness, d deviceStartResponse, decision string) string {
+	t.Helper()
+	body := map[string]any{"userCode": d.UserCode, "decision": decision, "expectedUserId": d.ExpectedUserID}
+	if decision == "approve" {
+		catalog, enabled := h.Identity.DeviceScopeCatalog()
+		if !enabled {
+			t.Fatal("PAT scope catalog is unavailable")
+		}
+		body["catalogRevision"] = catalog.CatalogRevision
+		body["scopes"] = []string{"task:read"}
+	}
+	return testsupport.JSONBody(t, body)
+}
+
 func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.Login(t, "device-user")
@@ -74,7 +89,7 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	if inspect.Status != "pending" || inspect.UserCode != d.UserCode {
 		t.Fatalf("inspection: %+v", inspect)
 	}
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), cookies, nil, h.Origin); w.Code != 204 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), cookies, nil, h.Origin); w.Code != 204 {
 		t.Fatalf("approval: %d %s", w.Code, w.Body)
 	}
 	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE device_authorizations SET next_poll_at=$1`, time.Now().Add(-time.Second)); err != nil {
@@ -96,6 +111,17 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	}](t, tokenReply, 200)
 	if !strings.HasPrefix(response.AccessToken, "dnpat_") || response.TokenType != "Bearer" || response.ExpiresIn != nil || strings.Contains(tokenReply.Body.String(), `"expires_in"`) {
 		t.Fatal("invalid CLI credential response")
+	}
+	var deviceFields map[string]json.RawMessage
+	if json.Unmarshal(tokenReply.Body.Bytes(), &deviceFields) != nil || len(deviceFields) != 2 || deviceFields["access_token"] == nil || deviceFields["token_type"] == nil {
+		t.Fatal("device token response does not have exactly access_token and token_type")
+	}
+	listResponse := h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, "")
+	var initial struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if listResponse.Code != 200 || json.Unmarshal(listResponse.Body.Bytes(), &initial) != nil || len(initial.Items) != 1 || string(initial.Items[0]["lastUsedAt"]) != "null" || string(initial.Items[0]["name"]) != `"Daynight CLI (workstation)"` || strings.Contains(listResponse.Body.String(), response.AccessToken) {
+		t.Fatalf("new device PAT metadata is invalid: HTTP %d", listResponse.Code)
 	}
 	auth := []string{"Bearer " + response.AccessToken}
 	me := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", nil, auth, ""), 200)
@@ -136,57 +162,103 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 }
 
 func TestDeviceHTTPValidationAndBrowserOrigin(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "device-user")
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
 	cookies := []*http.Cookie{cookie}
-	d := deviceHTTPStart(t, h)
+	admit := expectAuthentication(actor, cookie.Value)
+	const source = "192.0.2.42"
+	const formType = "application/x-www-form-urlencoded"
+	const codePath = "/api/v1/auth/device/code"
+	const tokenPath = "/api/v1/auth/device/token"
+	form := func(path, body, contentType string, calls ...authRequestCall) *httptest.ResponseRecorder {
+		request := httptest.NewRequest("POST", path, strings.NewReader(body))
+		request.RemoteAddr = source + ":58443"
+		request.Header.Set("Content-Type", contentType)
+		return h.serve(request, calls...)
+	}
+
+	start := identity.DeviceStart{DeviceCode: strings.Repeat("A", 43), UserCode: "BCDFG-HJKLM"}
+	started := form(codePath, "client_id=daynight-cli", formType,
+		authRequestCall{name: "StartDevice", args: []any{identity.DeviceClientID, source}, result: start})
+	d := testsupport.DecodeResponse[deviceStartResponse](t, started, http.StatusOK)
+	if d.DeviceCode != start.DeviceCode || d.UserCode != start.UserCode || d.VerificationURI != authRequestOrigin+"/device" ||
+		d.VerificationURIComplete != d.VerificationURI+"?user_code="+d.UserCode || d.ExpiresIn != 600 || d.Interval != 5 ||
+		started.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("device response lost its code, URL, lifetime or cache contract")
+	}
+	d.ExpectedUserID = actor.UserID
+
 	for _, path := range []string{"inspect", "decision"} {
+		route := "/api/v1/auth/device/" + path
 		for _, origin := range []string{"", "https://evil.example"} {
-			if w := h.Request("POST", "/api/v1/auth/device/"+path, deviceBody(d, "approve"), cookies, nil, origin); w.Code != 403 {
-				t.Fatalf("cross-origin %s: %d", path, w.Code)
+			response := h.request("POST", route, deviceBody(d, "approve"), cookies, nil, origin, admit)
+			testsupport.AssertProjectError(t, response, http.StatusForbidden, "forbidden")
+			if response.Header().Get("Daynight-User-ID") != "" {
+				t.Fatalf("rejected Origin advertised a principal: %s", path)
 			}
 		}
-		if w := h.Request("POST", "/api/v1/auth/device/"+path, deviceBody(d, "approve"), nil, nil, h.Origin); w.Code != 401 {
-			t.Fatalf("anonymous %s: %d", path, w.Code)
-		}
+		response := h.request("POST", route, deviceBody(d, "approve"), nil, nil, authRequestOrigin)
+		testsupport.AssertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
 		for _, body := range []string{`{}`, `{"userCode":null}`, `{"userCode":"x","extra":true}`} {
-			if w := h.Request("POST", "/api/v1/auth/device/"+path, body, cookies, nil, h.Origin); w.Code != 400 {
-				t.Fatalf("invalid browser input: %d %s", w.Code, w.Body)
-			}
+			response := h.request("POST", route, body, cookies, nil, authRequestOrigin, admit)
+			testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 		}
 	}
+	const decisionPath = "/api/v1/auth/device/decision"
 	for _, body := range []string{`{"userCode":"` + d.UserCode + `"}`, `{"userCode":"` + d.UserCode + `","decision":null}`, `{"userCode":"` + d.UserCode + `","decision":"other"}`} {
-		if w := h.Request("POST", "/api/v1/auth/device/decision", body, cookies, nil, h.Origin); w.Code != 400 {
-			t.Fatalf("invalid decision input: %d", w.Code)
-		}
+		response := h.request("POST", decisionPath, body, cookies, nil, authRequestOrigin, admit)
+		testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
+	response := h.request("POST", decisionPath, deviceBody(d, "other"), cookies, nil, authRequestOrigin, admit,
+		authRequestCall{name: "DecideDevice", args: []any{actor, d.UserCode, "other", actor.UserID},
+			err: &model.Fault{Code: "invalid_input", Message: "decision must be approve or deny"}})
+	testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+	response = h.request("POST", "/api/v1/auth/device/inspect", `{"userCode":"x"}`, cookies, nil, authRequestOrigin, admit,
+		authRequestCall{name: "InspectDevice", args: []any{actor, "x"},
+			err: &model.Fault{Code: "invalid_input", Message: "Enter the ten-letter device code shown by the CLI."}})
+	testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+
 	for _, input := range []struct{ body, contentType string }{
-		{"client_id=daynight-cli", "application/json"}, {"client_id=daynight-cli", "application/x-www-form-urlencoded;charset=latin1"}, {"client_id=daynight-cli&client_id=daynight-cli", "application/x-www-form-urlencoded"}, {"client_id=%zz", "application/x-www-form-urlencoded"}, {"client_id=\xff", "application/x-www-form-urlencoded"}, {"", "application/x-www-form-urlencoded"},
+		{"client_id=daynight-cli", "application/json"},
+		{"client_id=daynight-cli", "application/x-www-form-urlencoded;charset=latin1"},
+		{"client_id=daynight-cli&client_id=daynight-cli", formType},
+		{"client_id=%zz", formType},
+		{"client_id=" + string([]byte{0xff}), formType},
+		{"", formType},
 	} {
-		deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code", input.body, input.contentType), 400, "invalid_request")
+		deviceHTTPOAuthError(t, form(codePath, input.body, input.contentType), http.StatusBadRequest, "invalid_request")
 	}
-	if w := deviceHTTPForm(h, "/api/v1/auth/device/code", "client_id="+strings.Repeat("a", 4096), "application/x-www-form-urlencoded"); w.Code != http.StatusRequestEntityTooLarge {
+	if w := form(codePath, "client_id="+strings.Repeat("a", 4096), formType); w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized device form: %d %s", w.Code, w.Body)
 	}
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code?client_id=x", "client_id=daynight-cli", "application/x-www-form-urlencoded"), 400, "invalid_request")
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code", "client_id=other", "application/x-www-form-urlencoded"), 400, "invalid_client")
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/token", "client_id=daynight-cli", "application/x-www-form-urlencoded"), 400, "invalid_request")
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/token", "client_id=other&grant_type=x&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "invalid_client")
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/token", "client_id=daynight-cli&grant_type=x&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "unsupported_grant_type")
-	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/token", "client_id=daynight-cli&grant_type="+url.QueryEscape(identity.DeviceGrantType)+"&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "invalid_grant")
-	for _, path := range []string{"code", "token"} {
-		w := h.Request("GET", "/api/v1/auth/device/"+path, "", nil, nil, "")
-		deviceHTTPOAuthError(t, w, 405, "invalid_request")
+	deviceHTTPOAuthError(t, form(codePath+"?client_id=x", "client_id=daynight-cli", formType), http.StatusBadRequest, "invalid_request")
+	deviceHTTPOAuthError(t, form(codePath, "client_id=other", formType,
+		authRequestCall{name: "StartDevice", args: []any{"other", source}, err: &identity.DeviceGrantError{Code: "invalid_client"}}), http.StatusBadRequest, "invalid_client")
+	deviceHTTPOAuthError(t, form(tokenPath, "client_id=daynight-cli", formType), http.StatusBadRequest, "invalid_request")
+	for _, input := range []struct{ client, grant, failure string }{
+		{"other", "x", "invalid_client"},
+		{identity.DeviceClientID, "x", "unsupported_grant_type"},
+		{identity.DeviceClientID, identity.DeviceGrantType, "invalid_grant"},
+	} {
+		body := "client_id=" + input.client + "&grant_type=" + url.QueryEscape(input.grant) + "&device_code=x&device_name=workstation"
+		response := form(tokenPath, body, formType, authRequestCall{
+			name: "RedeemDevice", args: []any{input.client, input.grant, "x", "workstation"}, err: &identity.DeviceGrantError{Code: input.failure},
+		})
+		deviceHTTPOAuthError(t, response, http.StatusBadRequest, input.failure)
+	}
+	for _, path := range []string{codePath, tokenPath} {
+		w := h.request("GET", path, "", nil, nil, "")
+		deviceHTTPOAuthError(t, w, http.StatusMethodNotAllowed, "invalid_request")
 		if w.Header().Get("Allow") != "POST" {
 			t.Fatal("missing Allow")
 		}
 	}
 	for _, path := range []string{"inspect", "decision", "logout"} {
-		if w := h.Request("GET", "/api/v1/auth/device/"+path, "", cookies, nil, ""); w.Code != 405 || w.Header().Get("Allow") != "POST" {
+		if w := h.request("GET", "/api/v1/auth/device/"+path, "", cookies, nil, "", admit); w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "POST" {
 			t.Fatalf("method contract: %d", w.Code)
 		}
 	}
-
 }
 
 func TestDeviceHTTPDeniedExpiredLimitsAndFailures(t *testing.T) {
@@ -194,11 +266,11 @@ func TestDeviceHTTPDeniedExpiredLimitsAndFailures(t *testing.T) {
 	cookie := h.Login(t, "device-user")
 	cookies := []*http.Cookie{cookie}
 	d := deviceHTTPStart(t, h)
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "deny"), cookies, nil, h.Origin); w.Code != 204 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "deny"), cookies, nil, h.Origin); w.Code != 204 {
 		t.Fatalf("deny: %d", w.Code)
 	}
 	deviceHTTPOAuthError(t, deviceHTTPPoll(h, d), 400, "access_denied")
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), cookies, nil, h.Origin); w.Code != 409 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), cookies, nil, h.Origin); w.Code != 409 {
 		t.Fatalf("duplicate decision: %d", w.Code)
 	}
 	expired := deviceHTTPStart(t, h)
@@ -236,7 +308,7 @@ func TestDeviceHTTPAccountSwitchCannotApproveReviewedAccount(t *testing.T) {
 	if inspect.Status != "pending" {
 		t.Fatal("unexpected initial grant status")
 	}
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), []*http.Cookie{bob}, nil, h.Origin); w.Code != 403 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), []*http.Cookie{bob}, nil, h.Origin); w.Code != 403 {
 		t.Fatalf("changed account decision: %d %s", w.Code, w.Body)
 	}
 	inspect = testsupport.DecodeResponse[identity.DeviceInspection](t, h.Request("POST", "/api/v1/auth/device/inspect", `{"userCode":"`+d.UserCode+`"}`, []*http.Cookie{alice}, nil, h.Origin), 200)

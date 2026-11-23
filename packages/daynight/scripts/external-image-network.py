@@ -8,6 +8,7 @@ import re
 import select
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -79,44 +80,111 @@ def source_urls(values):
     return values
 
 
+def inventory_address(value, source):
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError(f"Invalid IP address in {source}: {inventory_value(value)}") from None
+
+
+def inventory_network(value, source):
+    try:
+        return ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        raise ValueError(f"Invalid IP network in {source}: {inventory_value(value)}") from None
+
+
+def inventory_value(value):
+    # Unexpected metadata may contain credentials; only emit address-like text.
+    if isinstance(value, str) and (re.fullmatch(r"[A-Za-z0-9._/-]{1,253}", value)
+                                   or re.fullmatch(r"[a-fA-F0-9:./%]+", value)):
+        return repr(value)
+    return "<redacted invalid value>"
+
+
 def protected_cidrs(addresses, routes):
     result = {ipaddress.ip_network(v) for v in PLATFORM + ["198.18.0.0/29"] + [ip + "/32" for ip in DNS]}
     # Interface networks include the host, Docker bridges and every owned service.
-    for interface in addresses:
-        for address in interface.get("addr_info", []):
+    for interface_index, interface in enumerate(addresses):
+        for address_index, address in enumerate(interface.get("addr_info", [])):
             if address.get("family") in ("inet", "inet6"):
-                result.add(ipaddress.ip_network(f"{address['local']}/{address['prefixlen']}", strict=False))
-    for route in routes:
+                source = f"ip address[{interface_index}].addr_info[{address_index}] local/prefixlen"
+                result.add(inventory_network(f"{address['local']}/{address['prefixlen']}", source))
+    for route_index, route in enumerate(routes):
         destination = route.get("dst", "default")
         if destination != "default":
-            network = ipaddress.ip_network(destination, strict=False)
+            network = inventory_network(destination, f"ip route[{route_index}].dst")
             if network.prefixlen:
                 result.add(network)
         if route.get("gateway"):
-            gateway = ipaddress.ip_address(route["gateway"])
+            gateway = inventory_address(route["gateway"], f"ip route[{route_index}].gateway")
             result.add(ipaddress.ip_network(str(gateway) + ("/32" if gateway.version == 4 else "/128")))
     return [str(v) for family in (4, 6) for v in
             ipaddress.collapse_addresses(n for n in result if n.version == family)]
 
 
-def protected_domains(hosts, cidrs):
+def protected_hosts(hosts, cidrs, hostname):
     networks = [ipaddress.ip_network(cidr) for cidr in cidrs]
     domains = set()
-    for line in hosts.splitlines():
+    resolved = set()
+    observations = []
+    mappings = []
+    for line_number, line in enumerate(hosts.splitlines(), 1):
         fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
         if len(fields) < 2:
-            continue
-        address = ipaddress.ip_address(fields[0])
-        if not any(address in network for network in networks):
-            continue
-        for value in fields[1:]:
-            domain = value.lower().rstrip(".")
-            if not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in domain.split(".")):
-                raise RuntimeError("A protected host alias cannot be represented by the production profile.")
-            domains.add(domain)
+            raise ValueError(f"Incomplete host mapping in /etc/hosts line {line_number}: {inventory_value(fields[0])}")
+        try:
+            address = inventory_address(fields[0], f"/etc/hosts line {line_number} address")
+        except ValueError as error:
+            aliases = [value.lower().removesuffix(".") for value in fields]
+            host = hostname.lower().removesuffix(".")
+            def valid(value):
+                return (len(value) <= 253 and not re.fullmatch(r"[0-9.]+", value)
+                        and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                for label in value.split(".")))
+            # Some hosted runners add a nonstandard FQDN/short-name row. Treat
+            # it as aliases only when it identifies this kernel's own hostname.
+            if (len(aliases) != 2 or not all(valid(alias) for alias in aliases)
+                    or "." not in aliases[0] or aliases[1] != aliases[0].split(".")[0]
+                    or host not in aliases):
+                fields_text = ", ".join(f"{index}={inventory_value(value)}" for index, value in enumerate(fields))
+                raise ValueError(f"{error}; host row fields: {fields_text}; kernel hostname: {inventory_value(hostname)}") from None
+            for alias in aliases:
+                source = f"/etc/hosts line {line_number} alias"
+                try:
+                    answers = socket.getaddrinfo(alias, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+                except OSError:
+                    raise ValueError(f"Unable to resolve {source}: {inventory_value(alias)}") from None
+                if not answers:
+                    raise ValueError(f"Unable to resolve {source}: {inventory_value(alias)}")
+                alias_addresses = set()
+                for family, _, _, _, sockaddr in answers:
+                    if family not in (socket.AF_INET, socket.AF_INET6):
+                        raise ValueError(f"Unsupported resolver family for {source}: {inventory_value(alias)}")
+                    if family == socket.AF_INET6 and (len(sockaddr) != 4 or sockaddr[3] != 0):
+                        raise ValueError(f"Scoped resolver address for {source}: {inventory_value(alias)}")
+                    candidate = inventory_address(sockaddr[0], f"{source} {alias} resolver address")
+                    if candidate.version != (4 if family == socket.AF_INET else 6) or "%" in str(candidate):
+                        raise ValueError(f"Invalid resolver address for {source}: {inventory_value(sockaddr[0])}")
+                    alias_addresses.add(str(candidate))
+                    resolved.add(str(ipaddress.ip_network(f"{candidate}/{candidate.max_prefixlen}")))
+                observations.append({"source": source, "alias": alias, "addresses": sorted(alias_addresses)})
+            domains.update(aliases)
+        else:
+            mappings.append((address, fields[1:], line_number))
+    networks.extend(ipaddress.ip_network(cidr) for cidr in resolved)
+    for address, aliases, line_number in mappings:
+        if any(address in network for network in networks):
+            for value in aliases:
+                domain = value.lower().rstrip(".")
+                if not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in domain.split(".")):
+                    raise RuntimeError(f"/etc/hosts line {line_number}: a protected host alias cannot be represented by the production profile.")
+                domains.add(domain)
     if len(domains) > 256:
         raise RuntimeError("Protected host aliases exceed the production profile capacity.")
-    return sorted(domains)
+    return sorted(domains), sorted(resolved), observations
 
 
 def service_assets(directory):
@@ -338,10 +406,13 @@ def setup(directory, port_value, urls):
     host_routes += json.loads(command("ip", "-6", "-j", "route", "show", "table", "all").stdout)
     services = service_assets(directory)
     protected = sorted(set(protected_cidrs(host_addresses, host_routes) + services["protectedCidrs"]))
+    hostname = socket.gethostname()
+    host_domains, host_resolved, host_resolution = protected_hosts(Path("/etc/hosts").read_text(), protected, hostname)
+    protected = sorted(set(protected + host_resolved))
     # Collapse each family separately so nftables interval elements never overlap.
     protected = [str(network) for family in (4, 6) for network in ipaddress.collapse_addresses(
         ipaddress.ip_network(cidr) for cidr in protected if ipaddress.ip_network(cidr).version == family)]
-    domains = sorted(set(protected_domains(Path("/etc/hosts").read_text(), protected) + services["protectedDomains"]))
+    domains = sorted(set(host_domains + services["protectedDomains"]))
     if len(domains) > 256 or len(protected) > 256:
         raise RuntimeError("The deployment asset inventory exceeds the production profile capacity.")
     if any(ipaddress.ip_address(a) in ipaddress.ip_network(cidr) for a in source_addresses for cidr in protected):
@@ -370,6 +441,7 @@ def setup(directory, port_value, urls):
     document(directory / "deployment-assets.json", {"hostAddresses": host_addresses, "hostRoutes": host_routes,
              "extraNetworks": ["198.18.0.0/29"], "platformTargets": PLATFORM, "dns": DNS,
              "protectedCidrs": protected, "protectedDomains": domains,
+             "hostName": hostname if host_resolution else None, "hostAliasResolution": host_resolution,
              "services": services["observed"],
              "sourceResolution": {"urls": urls, "ipv4": source_addresses},
              "boundary": "This fresh hosted VM and its owned namespaces and Docker service networks; no private cloud network is attached."})

@@ -13,6 +13,8 @@ import { viewerHeaders } from './helpers/taskSync';
 import { personalTeamPage } from './helpers/team';
 import { configurationResource, configurationResponse } from './helpers/worker-configuration';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
@@ -28,20 +30,22 @@ const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, 
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
 const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal, observation = { observedAt, reportedAt, cpu: 34 }) => {
   const worker = summary(workerId, name);
-  return json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
+  const response = json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
     machine: worker.machine, platform: worker.platform, workingDirectory: '/srv/workers', sampledAt: observedAt,
     os: { state: 'ok', checkedAt: observedAt, value: { type: 'Linux', release: '6.8.0', version: '#1', arch: 'x64' } },
     cpu: { state: 'ok', checkedAt: observation.observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: observation.cpu } },
     memory: { state: 'ok', checkedAt: observedAt, value: { usedBytes: 4 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 } },
     disk: { state: 'ok', checkedAt: observedAt, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
-    versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: observedAt }, codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
+    versions: { daynight: '0.27.1', codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
   } } }, 200, viewer);
+  response.headers.set('Daynight-Worker-Tool-Paths', '2');
+  return response;
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
-const monitoringDetail = (viewer = principal) => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
+const monitoringDetail = (viewer = principal, activityTitle = 'Private activity task') => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
   runId: secondWorker, sequence: '1', capturedAt: observedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: null, lastSuccessfulAt: null, lastOutcome: null, nextPollAt: null },
   capacity: { observedAt, quality: 'current', limit: 2, occupied: 1, available: 1, detailCoverage: 'complete' },
-  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [],
+  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [{ operationId: secondWorker, kind: 'cleanup', phase: 'worktree-removal', status: 'running', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, association: { kind: 'task', projectName: 'Private project', title: activityTitle }, startedAt: observedAt, lastProgressAt: null, elapsedMs: 100, deadlineAt: null, waitReason: null, nextAttemptAt: null }],
   currentFailures: [{ operationId: firstWorker, component: 'execution', phase: 'executing', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, firstObservedAt: observedAt, lastObservedAt: observedAt, occurrencesInRun: 1, retryState: 'none', nextAttemptAt: null, association: { kind: 'task', projectName: 'Private project', title: 'Private failure task' } }],
   lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: null, lastFailure: null },
 } }, 200, viewer);
@@ -265,12 +269,12 @@ describe('Worker pages in the authenticated workspace', () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole('button', { name: 'User prompt' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'User prompt' }));
     const field = await screen.findByRole('textbox', { name: 'Prompt text' });
     fireEvent.change(field, { target: { value: 'account instructions' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Profile' }));
     expect(field).not.toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(field);
     fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toBe(1));
@@ -278,8 +282,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/account'));
-    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    expect(screen.getByRole('link', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);
@@ -317,33 +321,24 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(writes).toBe(1);
   });
 
-  it('quietly retains Worker details through foreground identity checks and replaces the confirmed report afterward', async () => {
+  it('keeps Worker details and focus on a healthy foreground return', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
-    const identity = Promise.withResolvers<Response>(), replacement = Promise.withResolvers<Response>();
     let identityReads = 0, workerReads = 0;
     install(url => {
-      if (url === '/api/v1/me' && ++identityReads === 2) return identity.promise;
-      if (url === `/api/v1/me/workers/${firstWorker}`) return ++workerReads === 1 ? detail() : replacement.promise;
+      if (url === '/api/v1/me') { identityReads++; return json(user()); }
+      if (url === `/api/v1/me/workers/${firstWorker}`) { workerReads++; return detail(); }
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByRole('heading', { name: 'Alice worker' });
+    const heading = await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
     const cpu = screen.getByRole('meter', { name: 'CPU usage' });
-    const content = document.querySelector('.worker-page')!, sections = [...content.children];
-    const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus(); returnToWorkspace();
-    await screen.findByText('online · last confirmed');
-    expect(workerReads).toBe(1); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
-    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
-    await act(async () => identity.resolve(json(user())));
-    await waitFor(() => expect(workerReads).toBe(2));
-    expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
-    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
-    const freshTime = '2026-10-29T11:01:00Z';
-    await act(async () => replacement.resolve(detail(firstWorker, 'Alice worker', owner, { observedAt: freshTime, reportedAt: freshTime, cpu: 67 })));
-    await screen.findByText('online');
-    expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '67');
-    expect(content.querySelector(`.worker-description time[datetime="${freshTime}"]`)).toBeInTheDocument();
-    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections); expect(refresh).toHaveFocus();
+    const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
+    returnToWorkspace();
+    expect(screen.getByRole('heading', { name: 'Alice worker' })).toBe(heading);
+    expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu);
+    expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(refresh).toHaveFocus();
+    expect(identityReads).toBe(1); expect(workerReads).toBe(1);
   });
 
   it('keeps refresh focus while only the background monitoring read remains pending', async () => {
@@ -359,9 +354,9 @@ describe('Worker pages in the authenticated workspace', () => {
     await screen.findByRole('heading', { name: 'Alice worker' });
     await waitFor(() => expect(monitoringReads).toBe(1));
     const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
-    returnToWorkspace();
+    fireEvent.click(refresh);
     await waitFor(() => { expect(workerReads).toBe(2); expect(monitoringReads).toBe(2); });
-    expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled(); expect(refresh).toHaveTextContent('Refresh');
+    expect(refresh).toHaveFocus(); expect(refresh).toBeDisabled(); expect(refresh).toHaveTextContent('Refresh');
     await act(async () => pending.resolve(absent()));
     expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
   });
@@ -399,17 +394,14 @@ describe('Worker pages in the authenticated workspace', () => {
       expect(search).toHaveFocus(); expect(search.selectionStart).toBe(2); expect(search.selectionEnd).toBe(7);
       expect(within(dialog).getByRole('checkbox', { name: /Project Two/ })).toBe(selected); expect(selected).toBeChecked();
       expect(args).toHaveValue('[invalid JSON'); expect(args).toBeInTheDocument();
-      expect(within(dialog).queryByRole('status')).toBeNull();
     };
     const initialConfigReads = configurationReads, initialProjectReads = projectReads;
-    recovery = true; returnToWorkspace();
-    await waitFor(() => expect(identityReads).toBe(2)); assertRetained();
-    expect(configurationReads).toBe(initialConfigReads); expect(projectReads).toBe(initialProjectReads);
-    await act(async () => identity.resolve(json(user())));
-    await waitFor(() => { expect(configurationReads).toBeGreaterThan(initialConfigReads); expect(projectReads).toBeGreaterThan(initialProjectReads); });
+    returnToWorkspace();
+    expect(identityReads).toBe(1); assertRetained();
+    act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
+    await within(dialog).findByText('Account changed');
     assertRetained();
-    await act(async () => configurationRead.resolve(config())); assertRetained();
-    await act(async () => projectsRead.resolve(projects())); assertRetained();
+    expect(configurationReads).toBe(initialConfigReads); expect(projectReads).toBe(initialProjectReads);
     expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(screen.getByRole('heading', { name: 'Project Two' })).toBeInTheDocument(); expect(args).toHaveValue('[invalid JSON');
@@ -428,86 +420,51 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(document.title).toBe('My Workers · Daynight');
   });
 
-  it('cancels a pending read during same-account revalidation and starts a fresh observation afterward', async () => {
+  it('cancels a pending Worker read and retains its prior observation after account change', async () => {
     window.history.replaceState(null, '', '/workers');
-    const pending = Promise.withResolvers<Response>();
-    const identity = Promise.withResolvers<Response>();
-    let workerReads = 0, identityReads = 0;
-    let oldSignal: AbortSignal | undefined;
+    const pending = Promise.withResolvers<Response>(); let reads = 0; let signal: AbortSignal | undefined;
     install((url, options) => {
-      if (url === '/api/v1/me' && ++identityReads === 2) return identity.promise;
-      if (url.startsWith('/api/v1/me/workers?')) {
-        workerReads++;
-        if (workerReads === 2) { oldSignal = options?.signal as AbortSignal; return pending.promise; }
-        return list(workerReads === 1 ? 'Initial observation' : 'Fresh observation');
-      }
+      if (url.startsWith('/api/v1/me/workers?')) { if (++reads === 1) return list('Initial observation'); signal = options?.signal as AbortSignal; return pending.promise; }
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByRole('heading', { name: 'Initial observation' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(workerReads).toBe(2));
-    returnToWorkspace();
-    await waitFor(() => expect(oldSignal?.aborted).toBe(true));
-    expect(screen.getByRole('heading', { name: 'Initial observation' })).toBeInTheDocument();
-    expect(workerReads).toBe(2);
-    await act(async () => identity.resolve(json(user())));
-    await screen.findByRole('heading', { name: 'Fresh observation' });
-    await act(async () => pending.resolve(list('Late superseded observation')));
-    expect(screen.queryByRole('heading', { name: 'Late superseded observation' })).toBeNull();
+    const heading = await screen.findByRole('heading', { name: 'Initial observation' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await waitFor(() => expect(reads).toBe(2));
+    act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
+    await screen.findByText('Account changed'); expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve(list('Late observation')));
+    expect(screen.getByRole('heading', { name: 'Initial observation' })).toBe(heading);
+    expect(screen.queryByRole('heading', { name: 'Late observation' })).toBeNull();
   });
 
-  it('destroys the prior account snapshot and ignores its late response after an account switch', async () => {
+  it('retains the prior account snapshot and ignores its late response after an account switch', async () => {
     window.history.replaceState(null, '', '/workers');
-    const pending = Promise.withResolvers<Response>();
-    let oldReads = 0;
-    install((url) => {
-      if (url.startsWith('/api/v1/me/workers?')) {
-        if (principal === other) return list('Bob worker', other);
-        oldReads++;
-        return oldReads === 1 ? list('Alice private worker', owner) : pending.promise;
-      }
-      return defaults(url);
-    });
+    const pending = Promise.withResolvers<Response>(); let reads = 0;
+    install(url => url.startsWith('/api/v1/me/workers?') ? ++reads === 1 ? list('Alice private worker') : pending.promise : defaults(url));
     render(<AuthenticatedApp />);
-    await screen.findByRole('heading', { name: 'Alice private worker' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(oldReads).toBe(2));
-    principal = other;
-    returnToWorkspace();
-    await screen.findByRole('heading', { name: 'Bob worker' });
-    expect(screen.queryByRole('heading', { name: 'Alice private worker' })).toBeNull();
-    await act(async () => pending.resolve(list('Late Alice private worker', owner)));
+    const heading = await screen.findByRole('heading', { name: 'Alice private worker' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await waitFor(() => expect(reads).toBe(2));
+    act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
+    await screen.findByText('Account changed');
+    await act(async () => pending.resolve(list('Late Alice private worker')));
+    expect(screen.getByRole('heading', { name: 'Alice private worker' })).toBe(heading);
     expect(screen.queryByRole('heading', { name: 'Late Alice private worker' })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Bob worker' })).toBeInTheDocument();
   });
 
-  it('clears expanded private monitoring errors and rejects a late response on account change', async () => {
+  it('retains the monitoring snapshot and rejects a late response on account change', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     const pending = Promise.withResolvers<Response>(); let reads = 0;
-    install(url => {
-      if (url === `/api/v1/me/workers/${firstWorker}`) return detail(firstWorker, principal === owner ? 'Alice worker' : 'Bob worker', principal);
-      return defaults(url);
-    }, () => {
-      if (principal === other) return json({ observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' });
-      return ++reads === 1 ? monitoringDetail(owner) : pending.promise;
-    });
+    install(url => url === `/api/v1/me/workers/${firstWorker}` ? detail() : defaults(url), () => ++reads === 1 ? monitoringDetail(owner) : pending.promise);
     render(<AuthenticatedApp />);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' });
-    fireEvent.click(summary.closest('summary')!);
-    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(reads).toBe(2));
-    principal = other; returnToWorkspace();
-    await screen.findByRole('heading', { name: 'Bob worker' });
-    expect(screen.queryByText('Private failure task')).toBeNull();
-    expect(screen.queryByText('The operation timed out.')).toBeNull();
-    await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.queryByText('Private failure task')).toBeNull();
-    expect(screen.queryByText('The operation timed out.')).toBeNull();
+    const old = await screen.findByRole('link', { name: 'Private activity task' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await waitFor(() => expect(reads).toBe(2));
+    act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
+    await screen.findByText('Account changed'); await act(async () => pending.resolve(monitoringDetail(owner, 'Late private activity')));
+    expect(screen.getByRole('link', { name: 'Private activity task' })).toBe(old);
+    expect(screen.queryByText('Late private activity')).toBeNull();
   });
 
-  it('withdraws an expanded scoped monitoring failure immediately and rejects its late response', async () => {
+  it('withdraws a scoped monitoring activity immediately and rejects its late response', async () => {
     const project = '00000000-0000-4000-8000-000000000030';
     const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: vi.fn() });
     vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map([[project, 'a']]));
@@ -518,39 +475,30 @@ describe('Worker pages in the authenticated workspace', () => {
     vi.stubGlobal('fetch', vi.fn(() => ++reads === 1 ? Promise.resolve(monitoringDetail(owner)) : reads === 2 ? pending.promise : newer.promise));
     const Monitor = () => { const state = useWorkerMonitoring(firstWorker, { readEnabled: true }); return <><button onClick={state.refresh}>Read again</button><WorkerMonitoring state={state} readEnabled /></>; };
     const view = render(<TaskCacheProvider scope={scope}><Monitor /></TaskCacheProvider>);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' }); fireEvent.click(summary.closest('summary')!);
-    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Private activity task' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Read again' })); await waitFor(() => expect(reads).toBe(2));
     act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'a' }));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument();
     await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     view.unmount(); scope.dispose(); newer.resolve(monitoringDetail(owner));
   });
 
-  it.each([200, 404])('discards the rendered identity before an unadmitted %s detail response can publish', async (status) => {
+  it.each([200, 404])('retains the rendered account before an unadmitted %s detail response can publish', async (status) => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
-    const identity = Promise.withResolvers<Response>();
-    let identityReads = 0, workerReads = 0;
-    install((url) => {
-      if (url === '/api/v1/me' && ++identityReads === 2) return identity.promise;
-      if (url === `/api/v1/me/workers/${firstWorker}`) {
-        workerReads++;
-        if (workerReads === 2) return status === 200 ? detail(firstWorker, 'Other account secret', other) : failure(404, 'not_found', other);
-        return detail(firstWorker, workerReads === 1 ? 'Alice private worker' : 'Revalidated worker', owner);
-      }
+    let reads = 0, identities = 0;
+    install(url => {
+      if (url === '/api/v1/me') { identities++; return json(user()); }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return ++reads === 1 ? detail(firstWorker, 'Alice private worker') : status === 200 ? detail(firstWorker, 'Other account secret', other) : failure(404, 'not_found', other);
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByRole('heading', { name: 'Alice private worker' });
+    const heading = await screen.findByRole('heading', { name: 'Alice private worker' });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(identityReads).toBe(2));
-    expect(screen.queryByRole('heading', { name: 'Alice private worker' })).toBeNull();
-    expect(screen.queryByText('Other account secret')).toBeNull();
-    expect(screen.queryByRole('complementary', { name: 'Workspace navigation' })).toBeNull();
-    await act(async () => identity.resolve(json(user())));
-    await screen.findByRole('heading', { name: 'Revalidated worker' });
+    await screen.findByText('Account changed');
+    expect(screen.getByRole('heading', { name: 'Alice private worker' })).toBe(heading);
+    expect(screen.queryByText('Other account secret')).toBeNull(); expect(identities).toBe(1);
   });
 
   it('closes the mobile drawer, clears the prior resource and focuses content on Worker A to B navigation', async () => {
@@ -561,7 +509,7 @@ describe('Worker pages in the authenticated workspace', () => {
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Worker A' });
     const main = screen.getByRole('main');
-    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => navigate(`/workers/${secondWorker}`));
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -574,6 +522,7 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(breadcrumb.getByRole('link', { name: 'My Workers' })).toHaveAttribute('href', '/workers');
     expect(breadcrumb.getByText('Worker')).toHaveAttribute('aria-current', 'page');
     expect(document.title).toBe('Worker · Daynight');
-    expect(within(screen.getByRole('complementary', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(within(screen.getByRole('dialog', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
   });
 });

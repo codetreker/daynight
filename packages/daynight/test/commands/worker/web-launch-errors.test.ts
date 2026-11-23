@@ -1,13 +1,17 @@
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn(), reconcile: vi.fn(), suspended: vi.fn(), job: vi.fn() }));
+vi.mock("../../../src/platform/windows-suspended-process.js", () => ({ createSuspendedProcess: native.suspended }));
+vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJobLease: native.job, releaseControllerJobLease: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: native.spawn }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: native.observe }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture, confirmControllerProcessesStopped: vi.fn() }));
+vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ reconcileSubmittedControllerLaunch: native.reconcile }));
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -19,18 +23,23 @@ const fixture = async () => {
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const store = openWebExecutionStore(createMemoryDatabase(), { onMigration: () => {} }); stores.push(store);
   const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
-  let task = store.register({ ...project, project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+  let task = store.register({ ...project, project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
   task = store.bindWorktree(task, { repositoryPath: home, commonDirectory: home, worktreePath: home, branch: "task" }, 2); task = store.initializeWebExecution(task, 3);
   task = store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "original" }, 4);
   const e = task.webExecution!, directory = controllerExecutionDirectory(home, e.executionId); await mkdir(directory, { recursive: true });
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: e.launchId, executionId: e.executionId, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId, sessionId: e.sessionId!, executionGeneration: e.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: task.configuration!, initialOperationId: e.initialOperationId, initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(directory, "credential.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
-  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null, signalCode: null, unref: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null, signalCode: null, connected: true, unref: vi.fn(), send: vi.fn(),
+    kill: vi.fn(() => { queueMicrotask(() => child.emit("close")); }), resume: vi.fn(), terminate: vi.fn(), hasExited: () => true, close: vi.fn() });
   native.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
-  native.capture.mockResolvedValue({ pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) });
-  native.observe.mockResolvedValue({ snapshot: { nativeProcesses: [] } });
+  native.suspended.mockImplementation(async () => child); native.job.mockResolvedValue({});
+  const proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) };
+  native.capture.mockResolvedValue(proof);
+  native.observe.mockResolvedValue({ snapshot: { controllerProcess: proof, nativeProcesses: [] } });
+  native.reconcile.mockImplementation(async () => ({ kind: "observed", snapshot: (await native.observe()).snapshot }));
   const grant = { token: "controller-token", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: ticket.sessionId, testExecutionId: undefined, claimId: task.claimId, executionGeneration: "1", controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId };
   const sessionApi = { grant: vi.fn(async () => grant) } as unknown as WorkerSessionApi;
-  const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5 });
+  const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5,
+    jobLeases: { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: vi.fn(), retain: vi.fn(), get: vi.fn(), release: vi.fn(), close: vi.fn() } });
   return { store, task, ticket, launcher, child };
 };
 
@@ -40,7 +49,7 @@ test("launch acknowledgment database failure is not retried as IPC uncertainty",
   vi.spyOn(store, "updateWebExecution").mockImplementation((identity, patch, now) => { if (patch.launchSubmission === "acknowledged") throw failure; return update(identity, patch, now); });
   await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toBe(failure);
   await launcher.launch(task, ticket, new AbortController().signal);
-  expect(native.observe).toHaveBeenCalledOnce(); expect(native.spawn).toHaveBeenCalledOnce();
+  expect(native.observe).toHaveBeenCalledOnce(); expect(process.platform === "win32" ? native.suspended : native.spawn).toHaveBeenCalledOnce();
   expect(store.getTask(task)?.webExecution).toMatchObject({ launchSubmission: "unknown", controllerProcess: { pid: 987 } });
 });
 
@@ -48,7 +57,8 @@ test("launch acknowledgment database failure is not retried as IPC uncertainty",
 test.each(["event", "synchronous"] as const)("persists a definite pre-hello controller spawn rejection (%s)", async kind => {
   const { store, task, ticket, launcher, child } = await fixture();
   const failure = new Error("spawn rejected /private/path token=private-value");
-  if (kind === "event") native.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("error", failure)); return child; });
+  if (process.platform === "win32") native.suspended.mockRejectedValueOnce(failure);
+  else if (kind === "event") native.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("error", failure)); return child; });
   else native.spawn.mockImplementation(() => { throw failure; });
   await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow();
   const result = store.getTask(task)!;
@@ -60,8 +70,8 @@ test.each(["event", "synchronous"] as const)("persists a definite pre-hello cont
 test("retains uncertainty when the controller exits before authenticated initialization", async () => {
   const { store, task, ticket, launcher, child } = await fixture();
   child.exitCode = 1 as never;
-  native.observe.mockRejectedValue(new Error("No authenticated response"));
-  await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before its authenticated initialization");
+  native.reconcile.mockResolvedValue({ kind: "pre-writer-exited", process: { pid: 987 }, journal: "missing" });
+  await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before authenticated initialization");
   expect(store.getTask(task)?.webExecution?.startupReport?.startup).toEqual({ state: "unknown", reasonCode: "controller_start_unknown" });
   expect(store.getTask(task)?.recovery.count).toBe(0);
 });

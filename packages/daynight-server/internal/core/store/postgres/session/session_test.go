@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -35,8 +34,14 @@ func TestSessionStore(t *testing.T) {
 	suite.run(t, "SessionListOnlineFiltersBeforePagination", testSessionListOnlineFiltersBeforePagination)
 	suite.run(t, "SessionListParentOwnershipAndTiedCursor", testSessionListParentOwnershipAndTiedCursor)
 	suite.run(t, "SessionListExcludesBotSessionsBeforePagination", testSessionListExcludesBotSessionsBeforePagination)
-	suite.run(t, "TaskOAuthCredentialRechecksGrantAndToken", testTaskOAuthCredentialRechecksGrantAndToken)
-	suite.run(t, "SessionOperationRetainsOriginalOAuthActorAfterRevocation", testSessionOperationRetainsOriginalOAuthActorAfterRevocation)
+	for _, profile := range []string{"mcp", "api"} {
+		suite.run(t, "TaskOAuthCredentialRechecksGrantAndToken/"+profile, func(t *testing.T, db *postgres.Store) { testTaskOAuthCredentialRechecksGrantAndToken(t, db, profile) })
+	}
+	for _, profile := range []string{"mcp", "api"} {
+		suite.run(t, "SessionOperationRetainsOriginalOAuthActorAfterRevocation/"+profile, func(t *testing.T, db *postgres.Store) {
+			testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t, db, profile)
+		})
+	}
 	suite.run(t, "ObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites/pat", func(t *testing.T, db *postgres.Store) {
 		testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t, db, model.PATCredential)
 	})
@@ -141,7 +146,7 @@ func testSessionDAORegistrationGrantAndList(t *testing.T, db *postgres.Store) {
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	patID := uuid.NewString()
-	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'test',$4,$5)`, patID, principal.UserID, make([]byte, 32), now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'test',$4,$5)`, patID, principal.UserID, make([]byte, 32), now.Add(-time.Hour), now.Add(time.Hour))
 	pat := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: patID}
 	claim, id, registration := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	execution, testID, testRegistration := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -287,70 +292,57 @@ func testSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T, db *postg
 	now := time.Now()
 	registration := store.SessionRegistration{Location: store.SessionLocation{SessionID: id}, Snapshot: sp.Snapshot{}}
 	op := store.SessionOperation{SessionID: id, OperationID: other, Actor: principal, Command: sp.Command{Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{}}
-	terminal := store.TerminalOperation{SessionID: id, OperationID: other, Actor: principal, Command: []byte(`{}`), Result: v2.OperationResult{}}
 	for name, run := range map[string]func() error{
-		"credential":                func() error { return dao.LockCredential(ctx, principal, now) },
-		"task":                      func() error { _, e := dao.LockTask(ctx, id, other); return e },
-		"task registration lock":    func() error { _, e := dao.LockTaskRegistration(ctx, id, other); return e },
-		"test owner lock":           func() error { return dao.LockTestOwner(ctx, id) },
-		"task registration":         func() error { _, e := dao.FindTaskRegistration(ctx, id, other, id, other); return e },
-		"test registration":         func() error { _, _, e := dao.FindTestRegistration(ctx, id, other, id); return e },
-		"task insertion":            func() error { return dao.InsertTaskSession(ctx, registration) },
-		"test insertion":            func() error { return dao.InsertTestSession(ctx, registration) },
-		"bot insertion":             func() error { _, e := dao.InsertBotSession(ctx, registration); return e },
-		"session location":          func() error { _, e := dao.SessionLocation(ctx, id); return e },
-		"grant lookup":              func() error { _, e := dao.SessionLocationByGrant(ctx, []byte("x")); return e },
-		"current task session":      func() error { _, e := dao.CurrentTaskSession(ctx, id, other, id); return e },
-		"grant update":              func() error { return dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id}) },
-		"generation stop":           func() error { return dao.SetSessionGenerationStop(ctx, id, []byte(`{}`)) },
-		"test stop":                 func() error { return dao.SetTestSessionStop(ctx, id, []byte(`{}`)) },
-		"connect":                   func() error { return dao.ConnectSession(ctx, id, other, now, &now) },
-		"touch":                     func() error { return dao.TouchSession(ctx, id, now) },
-		"disconnect":                func() error { return dao.DisconnectSession(ctx, id) },
-		"session lookup":            func() error { _, e := dao.LockSession(ctx, id); return e },
-		"session save":              func() error { return dao.SaveSession(ctx, store.SessionRecord{}) },
-		"session bot":               func() error { _, e := dao.SessionBotID(ctx, id); return e },
-		"bot session locks":         func() error { _, e := dao.LockBotSessions(ctx, id); return e },
-		"bot revocation":            func() error { return dao.RevokeBotSessions(ctx, id) },
-		"bot stop proof":            func() error { _, e := dao.LockBotSessionStop(ctx, id, other, id); return e },
-		"bot cleanup":               func() error { return dao.DeleteBotSession(ctx, id, other) },
-		"bot redact":                func() error { return dao.RedactDeletedBot(ctx, id) },
-		"operation read":            func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
-		"operation insert":          func() error { return dao.InsertSessionOperation(ctx, op) },
-		"operation receipt":         func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
-		"operation epoch":           func() error { return dao.SetSessionOperationEpoch(ctx, id, other, 1) },
-		"first input":               func() error { _, e := dao.HasOtherFirstInput(ctx, id, other); return e },
-		"interaction":               func() error { _, e := dao.HasInteractionResponse(ctx, id, other, id); return e },
-		"pending count":             func() error { _, e := dao.PendingSessionOperationCount(ctx, id); return e },
-		"accepted list":             func() error { _, e := dao.AcceptedSessionOperations(ctx, id); return e },
-		"stop list":                 func() error { _, e := dao.StoppingTestOperations(ctx, id); return e },
-		"unreconciled list":         func() error { _, e := dao.UnreconciledSessionOperations(ctx, id, 1); return e },
-		"unreconciled count":        func() error { _, e := dao.UnreconciledSessionOperationCount(ctx, id, 1); return e },
-		"archive task":              func() error { _, _, e := dao.LockArchiveTask(ctx, id, other); return e },
-		"archive read":              func() error { _, _, e := dao.SessionArchive(ctx, id); return e },
-		"archive state":             func() error { return dao.SetSessionArchiveState(ctx, id, "pending", nil) },
-		"archive ready":             func() error { return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("a", 64), 1, "path") },
-		"test list":                 func() error { _, e := dao.ListTestSessions(ctx, id, now, 1, false, now, nil, ""); return e },
-		"terminal lock":             func() error { _, e := dao.LockTerminal(ctx, id); return e },
-		"terminal save":             func() error { return dao.SaveTerminal(ctx, id, []byte(`{}`), &now, other) },
-		"terminal registration":     func() error { _, e := dao.FindTerminalRegistration(ctx, id, other, id, other, id); return e },
-		"terminal insert":           func() error { return dao.InsertTerminal(ctx, store.TerminalRegistration{}) },
-		"evidence insert":           func() error { return dao.InsertRecordingEvidence(ctx, id, 1, other, 1, strings.Repeat("a", 64)) },
-		"terminal operation":        func() error { _, e := dao.TerminalOperation(ctx, id, other); return e },
-		"terminal operation insert": func() error { return dao.InsertTerminalOperation(ctx, terminal) },
-		"terminal result":           func() error { return dao.SetTerminalOperationResult(ctx, id, v2.OperationResult{}) },
-		"terminal invalidate":       func() error { return dao.InvalidateTerminalOperations(ctx, id) },
-		"terminal expiry":           func() error { return dao.ExpireTerminalOperations(ctx, id, now) },
-		"terminal queued":           func() error { _, e := dao.QueuedTerminalOperation(ctx, id); return e },
-		"terminal viewer":           func() error { _, e := dao.TerminalViewerOperationPending(ctx, id, other, id); return e },
-		"terminal archive":          func() error { _, _, _, e := dao.TerminalArchive(ctx, id); return e },
-		"terminal receipt":          func() error { return dao.SaveTerminalReceipt(ctx, id, v2.Receipt{}, nil) },
-		"terminal archive status":   func() error { return dao.SaveTerminalArchiveStatus(ctx, id, v2.ArchiveStatus{}) },
-		"terminal current":          func() error { _, e := dao.CurrentTerminalSession(ctx, id, other, id); return e },
-		"terminal history":          func() error { _, e := dao.TerminalHistory(ctx, id, other, nil, nil, 1); return e },
-		"terminal evidence":         func() error { _, _, e := dao.TerminalRecordingEvidence(ctx, id, 1, other); return e },
-		"terminal admission":        func() error { _, e := dao.TerminalAutomationAllowed(ctx, id); return e },
-		"terminal pending":          func() error { _, e := dao.TerminalInputPending(ctx, id); return e },
+		"credential":             func() error { return dao.LockCredential(ctx, principal, now) },
+		"task":                   func() error { _, e := dao.LockTask(ctx, id, other); return e },
+		"task registration lock": func() error { _, e := dao.LockTaskRegistration(ctx, id, other); return e },
+		"test owner lock":        func() error { return dao.LockTestOwner(ctx, id) },
+		"task registration":      func() error { _, e := dao.FindTaskRegistration(ctx, id, other, id, other); return e },
+		"test registration":      func() error { _, _, e := dao.FindTestRegistration(ctx, id, other, id); return e },
+		"task insertion":         func() error { return dao.InsertTaskSession(ctx, registration) },
+		"test insertion":         func() error { return dao.InsertTestSession(ctx, registration) },
+		"bot insertion":          func() error { _, e := dao.InsertBotSession(ctx, registration); return e },
+		"session location":       func() error { _, e := dao.SessionLocation(ctx, id); return e },
+		"grant lookup":           func() error { _, e := dao.SessionLocationByGrant(ctx, []byte("x")); return e },
+		"current task session":   func() error { _, e := dao.CurrentTaskSession(ctx, id, other, id); return e },
+		"grant update":           func() error { return dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id}) },
+		"generation stop":        func() error { return dao.SetSessionGenerationStop(ctx, id, []byte(`{}`)) },
+		"test stop":              func() error { return dao.SetTestSessionStop(ctx, id, []byte(`{}`)) },
+		"connect":                func() error { return dao.ConnectSession(ctx, id, other, now, &now) },
+		"touch":                  func() error { return dao.TouchSession(ctx, id, now) },
+		"disconnect":             func() error { return dao.DisconnectSession(ctx, id) },
+		"session lookup":         func() error { _, e := dao.LockSession(ctx, id); return e },
+		"session save":           func() error { return dao.SaveSession(ctx, store.SessionRecord{}) },
+		"session bot":            func() error { _, e := dao.SessionBotID(ctx, id); return e },
+		"bot session locks":      func() error { _, e := dao.LockBotSessions(ctx, id); return e },
+		"bot revocation":         func() error { return dao.RevokeBotSessions(ctx, id) },
+		"bot stop proof":         func() error { _, e := dao.LockBotSessionStop(ctx, id, other, id); return e },
+		"bot cleanup":            func() error { return dao.DeleteBotSession(ctx, id, other) },
+		"bot redact":             func() error { return dao.RedactDeletedBot(ctx, id) },
+		"operation exists": func() error {
+			_, e := dao.(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, id, other)
+			return e
+		},
+		"operation read":     func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
+		"operation insert":   func() error { return dao.InsertSessionOperation(ctx, op) },
+		"operation receipt":  func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
+		"operation epoch":    func() error { return dao.SetSessionOperationEpoch(ctx, id, other, 1) },
+		"first input":        func() error { _, e := dao.HasOtherFirstInput(ctx, id, other); return e },
+		"interaction":        func() error { _, e := dao.HasInteractionResponse(ctx, id, other, id); return e },
+		"pending count":      func() error { _, e := dao.PendingSessionOperationCount(ctx, id); return e },
+		"accepted list":      func() error { _, e := dao.AcceptedSessionOperations(ctx, id); return e },
+		"stop list":          func() error { _, e := dao.StoppingTestOperations(ctx, id); return e },
+		"unreconciled list":  func() error { _, e := dao.UnreconciledSessionOperations(ctx, id, 1); return e },
+		"unreconciled count": func() error { _, e := dao.UnreconciledSessionOperationCount(ctx, id, 1); return e },
+		"archive task":       func() error { _, _, e := dao.LockArchiveTask(ctx, id, other); return e },
+		"archive read":       func() error { _, _, e := dao.SessionArchive(ctx, id); return e },
+		"archive state":      func() error { return dao.SetSessionArchiveState(ctx, id, "pending", nil) },
+		"archive ready":      func() error { return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("a", 64), 1, "path") },
+		"test list":          func() error { _, e := dao.ListTestSessions(ctx, id, now, 1, false, now, nil, ""); return e },
+		"terminal lock":      func() error { _, e := dao.LockTerminal(ctx, id); return e },
+		"terminal archive":   func() error { _, _, _, e := dao.TerminalArchive(ctx, id); return e },
+		"terminal current":   func() error { _, e := dao.CurrentTerminalSession(ctx, id, other, id); return e },
+		"terminal history":   func() error { _, e := dao.TerminalHistory(ctx, id, other, nil, nil, 1); return e },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := run(); !errors.Is(err, pgx.ErrTxClosed) {
@@ -364,7 +356,7 @@ func testSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T, db *post
 	ctx := context.Background()
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
-	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, task.ID)
+	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, task.ID)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		current, err := dao.LockTask(ctx, project.ID, task.ID)
 		if err != nil || current.Status != "in_progress" {
@@ -405,6 +397,7 @@ func testSessionCredentialKindsAndMissingIdentity(t *testing.T, db *postgres.Sto
 	now := time.Now().UTC()
 	token, grant := uuid.NewString(), uuid.NewString()
 	hash := sha256.Sum256([]byte(token))
+	mustQueryExec(t, db, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'session-test','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, grant, actor.UserID, now, now.Add(time.Hour))
 	mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, token, grant, actor.UserID, hash[:], now, now.Add(time.Minute))
 	oauth := model.Principal{Kind: model.OAuthCredential, UserID: actor.UserID, CredentialID: token}
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
@@ -441,13 +434,17 @@ func testSessionReadsRejectCorruptPersistedJSON(t *testing.T, db *postgres.Store
 	for _, column := range []string{"command", "receipt"} {
 		mustQueryExec(t, db, `UPDATE session_operations SET `+column+`='[]' WHERE session_id=$1`, id)
 		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+			for _, check := range []struct {
+				session, operation string
+				want               bool
+			}{{id, operation, true}, {id, uuid.NewString(), false}, {uuid.NewString(), operation, false}} {
+				exists, err := dao.(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, check.session, check.operation)
+				if err != nil || exists != check.want {
+					t.Fatalf("operation existence: got %v, want %v: %v", exists, check.want, err)
+				}
+			}
 			if _, err := dao.SessionOperation(ctx, id, operation); err == nil {
 				t.Fatalf("corrupt %s accepted", column)
-			}
-			if column == "receipt" {
-				if _, err := dao.TerminalOperation(ctx, id, operation); err == nil {
-					t.Fatal("corrupt terminal result accepted")
-				}
 			}
 			return nil
 		})
@@ -480,7 +477,7 @@ func testTestSessionListFiltersCredentialAndPaginates(t *testing.T, db *postgres
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, pat, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, pat, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
 	fresh, older, revoked := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		for _, id := range []string{fresh, older, revoked} {
@@ -551,7 +548,7 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		expiry    time.Time
 	}{{parent, actor.UserID, now.Add(time.Hour)}, {connection, actor.UserID, now.Add(time.Hour)}, {expired, actor.UserID, now}, {other, foreign.UserID, now.Add(time.Hour)}} {
 		hash := sha256.Sum256([]byte(credential.id))
-		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], now.Add(-time.Hour), credential.expiry)
+		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], now.Add(-time.Hour), credential.expiry)
 	}
 	row := func(id string) sessionListFilterRow {
 		return sessionListFilterRow{id: id, owner: actor.UserID, lifecycle: "active", connection: "connected", created: now.Add(-time.Minute), parent: &parent, connectionParent: &connection, seen: &now, expiry: ptrTime(now.Add(time.Hour))}
@@ -561,6 +558,7 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 	synchronizing.created, synchronizing.connection = now.Add(-time.Hour+time.Second), "synchronizing"
 	insertSessionListFilterRow(t, database, connected)
 	insertSessionListFilterRow(t, database, synchronizing)
+	expectedLeases := map[string]*time.Time{connected.id: connected.expiry, synchronizing.id: synchronizing.expiry}
 	cases := []struct {
 		name   string
 		change func(*sessionListFilterRow)
@@ -580,11 +578,15 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		r := row(queryID(310 + index))
 		test.change(&r)
 		insertSessionListFilterRow(t, database, r)
+		expectedLeases[r.id] = r.expiry
 	}
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
 		items, err := dao.ListTestSessions(t.Context(), actor.UserID, now, 1, true, floor, nil, "")
 		if err != nil || len(items) != 2 || items[0].Snapshot.SessionID != synchronizing.id || items[1].Snapshot.SessionID != connected.id {
 			t.Fatalf("online filters, heartbeat edge and lookahead: %+v %v", items, err)
+		}
+		if items[0].ConnectionExpiry == nil || !items[0].ConnectionExpiry.Equal(*synchronizing.expiry) || items[1].ConnectionExpiry == nil || !items[1].ConnectionExpiry.Equal(*connected.expiry) {
+			t.Fatal("online query lost actual connection leases")
 		}
 		cursor := items[0].UpdatedAt
 		items, err = dao.ListTestSessions(t.Context(), actor.UserID, now, 1, true, floor, &cursor, synchronizing.id)
@@ -603,6 +605,12 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		if err != nil || len(items) != len(cases)+2 {
 			t.Fatalf("connection revocation removed readable history: count=%d error=%v", len(items), err)
 		}
+		for _, item := range items {
+			want := expectedLeases[item.Snapshot.SessionID]
+			if (item.ConnectionExpiry == nil) != (want == nil) || want != nil && !item.ConnectionExpiry.Equal(*want) {
+				t.Fatalf("connection lease mapping for %s: got=%v want=%v", item.Snapshot.SessionID, item.ConnectionExpiry, want)
+			}
+		}
 		return nil
 	})
 }
@@ -619,7 +627,7 @@ func testSessionListParentOwnershipAndTiedCursor(t *testing.T, db *postgres.Stor
 		expiry    time.Time
 	}{{parent, actor.UserID, now.Add(time.Hour)}, {expired, actor.UserID, now}, {other, foreign.UserID, now.Add(time.Hour)}} {
 		hash := sha256.Sum256([]byte(credential.id))
-		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], created.Add(-time.Hour), credential.expiry)
+		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], created.Add(-time.Hour), credential.expiry)
 	}
 	for index, credential := range []*string{&parent, &parent, &expired, &other} {
 		insertSessionListFilterRow(t, database, sessionListFilterRow{id: queryID(401 + index), owner: actor.UserID, lifecycle: "archived", created: created, parent: credential})
@@ -651,7 +659,7 @@ func testSessionListExcludesBotSessionsBeforePagination(t *testing.T, db *postgr
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	parent := uuid.NewString()
 	hash := sha256.Sum256([]byte(parent))
-	mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, parent, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, parent, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
 	sessionBotDAOTransaction(t, database, func(_ store.SessionDAO, bots store.BotWriteDAO) error {
 		return bots.InsertBot(t.Context(), bot)
 	})

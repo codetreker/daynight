@@ -1,6 +1,7 @@
-import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
+import type { ImageCaptureReceipt, ValidatedImage, ImageCapabilities } from "../../session/image-values.js";
 import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
+import { ImageCaptureNotDispatchedError, ImageCaptureRequestError, ImageCaptureRetrySettledError, ImageCaptureRetryUnknownError } from "./media/capture-error.js";
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
@@ -11,8 +12,10 @@ import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type Con
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 import { CONTENT_READ_VERSION_HEADER, SessionHistoryError } from "../../session/history.js";
+import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
 
-export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
+const ONLINE_RELAY_VERSION_HEADER = "Daynight-Online-Relay-Version";
+export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" || operation.kind === "worker_input" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
 export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promise<ControllerGrantResponse> => {
   const metadata = await lstat(ticket.credentialFile);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 16_384 || process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw new Error("Controller credential must be a private regular file.");
@@ -20,11 +23,30 @@ export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promi
   if (grant.sessionId !== ticket.sessionId || grant.claimId !== ticket.claimId || grant.testExecutionId !== ticket.testExecutionId || grant.executionGeneration !== ticket.executionGeneration || grant.controllerId !== ticket.controllerId || grant.controllerInstanceId !== ticket.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("Controller credential is stale or belongs to another execution.");
   return grant;
 };
-export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
+/** Limit the foreground wait without taking ownership of the history work. */
+export const waitForImageHistory = async (work: () => Promise<void>, signal?: AbortSignal, deadline = Date.now() + 10_000): Promise<void> => {
+  signal?.throwIfAborted();
+  let abort!: () => void;
+  let timer!: NodeJS.Timeout;
+  const interrupted = new Promise<never>((_, reject) => {
+    abort = () => reject(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    timer = setTimeout(() => reject(new ImageCaptureNotDispatchedError("Image capture history checkpoint was not ready before the deadline.")), Math.max(0, deadline - Date.now()));
+  });
+  try {
+    await Promise.race([work(), interrupted]);
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new ImageCaptureNotDispatchedError("Image capture history checkpoint was not ready before the deadline.");
+  } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+};
+export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(error: unknown): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
   let supportsImageHistory = false;
+  let supportsDirectCapture = false;
+  let onlineMode: "legacy" | "relay" | null = null;
+  let connectionAcknowledged: string | null = null;
   const contentRequests: { request: ContentRequest; response: ContentResponse | null }[] = [];
   let reconciliation: ControllerOperation[][] = [];
   const mediaRequests = new Map<string, { key: string; promise: Promise<void>; controller: AbortController }>();
@@ -53,6 +75,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     const previous = mediaRequests.get(requestKey);
     if (previous) { if (previous.key !== key) throw new Error("Media request ID has different content."); return; }
     const decode = request.action === "complete" || request.action === "retry_capture";
+    const historyDeadline = request.action === "prepare" ? Date.now() + 10_000 : 0;
     const controller = new AbortController();
     if (!synchronized) { respond(null, { code: "rate_limited", message: "Controller media capacity is unavailable." }); return; }
     let blockLease: ControllerMediaBlockLease | null = null;
@@ -72,7 +95,10 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         await admission; acquired = true; controller.signal.throwIfAborted();
         const media = journal.media(); let result: ImageResponse["result"];
         switch (request.action) {
-          case "prepare": await callbacks.beforeImage?.(); result = await media.prepare(request.body); break;
+          case "prepare":
+            if (onlineMode !== "relay") await waitForImageHistory(async () => { await callbacks.beforeImage?.(); }, controller.signal, historyDeadline);
+            controller.signal.throwIfAborted();
+            result = await media.prepare(request.body); break;
           case "write": result = await media.write(request.body); break;
           case "complete": result = await media.complete(request.body); break;
           case "status": result = await media.status(request.body); break;
@@ -86,6 +112,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         }
         respond(result, null);
       } catch (error) {
+        if (request.action === "retry_capture" && (error instanceof ImageCaptureRetryUnknownError || error instanceof ImageCaptureNotDispatchedError)) { callbacks.onError(error); return; }
+        if (request.action === "retry_capture" && error instanceof ImageCaptureRetrySettledError) { respond(null, error.imageError); return; }
         if (request.action === "retry_capture" && error !== null && typeof error === "object" && "code" in error && error.code === "rate_limited") {
           respond(null, { code: "rate_limited", message: "Controller source capture capacity is unavailable." }); return;
         }
@@ -94,19 +122,19 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         respond(null, { code, message: "The Controller could not complete this image request." });
       } finally { if (acquired && decode) releaseDecoder(); blockLease?.close(); mediaRequests.delete(requestKey); }
     })();
-    mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(String(error)));
+    mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(error));
   };
   let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
-  const authorization = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  const authorization = new Map<string, { resolve(value: ImageCapabilities | undefined): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   const settleDispatchRefusal = (operation: SessionOperation, required = false, currentConnection = false): void => {
     const local = journal.getOperation(operation.operationId);
     if (!required && local?.state !== "accepted") return;
     if (!local || local.state !== "accepted" || operation.kind !== local.kind || operation.sessionId !== ticket.sessionId || operation.claimId !== ticket.claimId || operation.testExecutionId !== ticket.testExecutionId || (local.executionGeneration ?? ticket.executionGeneration) !== operation.executionGeneration || currentConnection && operation.executionGeneration !== fence?.executionGeneration || (operation.state !== "rejected" && operation.state !== "expired")) throw new Error("Invalid dispatch refusal receipt.");
     journal.recordOperation(operation.operationId, operation.state, null, operation.error?.message ?? "Operation no longer has current permission or state.");
   };
-  const clearConnection = () => { fence = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; for (const work of mediaRequests.values()) work.controller.abort(new Error("Image request connection changed.")); mediaRequests.clear();
+  const clearConnection = () => { fence = null; onlineMode = null; connectionAcknowledged = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; for (const work of mediaRequests.values()) work.controller.abort(new Error("Image request connection changed.")); mediaRequests.clear();
     for (const request of captureRequests.values()) { clearTimeout(request.timer); request.reject(new Error("Image capture outcome is unknown after relay disconnect; query the original capture.")); } captureRequests.clear(); pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
-  const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
+  const send = (message: ControllerMessage, target = socket) => { if (!target || target.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); target.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
   const sendReconciliation = () => {
     const batch = reconciliation.shift() ?? [];
@@ -117,22 +145,32 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     try {
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1" }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      const bodyOnly = journal.getHistoryContentPolicy?.() === "task_body";
+      let supportsBodyHistory = false, supportsOnlineRelay = false, invalidOnlineRelay = false;
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1", [ONLINE_RELAY_VERSION_HEADER]: "1", ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}) }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      supportsDirectCapture = false;
+      ws.on("upgrade", response => { if (socket === ws) { supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; supportsBodyHistory = response.headers[TASK_BODY_HISTORY_VERSION_HEADER.toLowerCase()] === "1"; const version = response.headers[ONLINE_RELAY_VERSION_HEADER.toLowerCase()]; supportsOnlineRelay = version === "1"; invalidOnlineRelay = version !== undefined && version !== "1"; } });
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
-      ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
+      ws.on("open", () => { if (stopped || socket !== ws) return; if (invalidOnlineRelay || bodyOnly && !supportsBodyHistory || journal.getOnlineMode?.() === "relay" && !supportsOnlineRelay) { callbacks.onError(new Error("upgrade_required: The service does not support the original Session protocol.")); ws.close(1008, "Session requires a compatible service"); return; } send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
       ws.on("message", data => {
         if (stopped || socket !== ws) return;
         try {
           const message = parseRelayMessage(JSON.parse(data.toString()));
           if (message.type === "welcome") {
+            if (fence !== null) throw new Error("Duplicate relay welcome.");
             if (message.session.sessionId !== ticket.sessionId || message.session.claimId !== ticket.claimId || message.session.testExecutionId !== ticket.testExecutionId || message.session.executionGeneration !== ticket.executionGeneration || message.session.identity.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Relay identity mismatch.");
+            if (supportsOnlineRelay !== (message.onlineMode !== undefined)) throw new Error("Relay welcome capability mismatch.");
+            const mode = message.onlineMode ?? "legacy";
+            journal.bindOnlineMode?.(mode, message.historyContentPolicy ?? null);
+            onlineMode = mode;
             fence = { ...sessionFence(ticket), connectionEpoch: message.connectionEpoch };
             requiresLiveSync = message.requiresLiveSync === true; supportsImageHistory = message.session.contentRevision === 2; historyEpoch = message.session.historyEpoch; journal.recordRelayHistory?.(historyEpoch);
             journal.acknowledgeEvents(message.lastAckedSourceSeq);
+            connectionAcknowledged = message.lastAckedSourceSeq;
             const unacknowledged: ControllerOperation[] = [];
             let after: string | undefined;
-            for (;;) { const page = journal.listUnacknowledgedOperations(100, after); unacknowledged.push(...page.filter(o => o.kind !== "initial" && o.kind !== "cleanup")); if (page.length < 100) break; after = page.at(-1)!.operationId; }
+            for (;;) { const page = journal.listUnacknowledgedOperations(100, after); unacknowledged.push(...page.filter(o => o.kind !== "initial" && o.kind !== "cleanup" && o.kind !== "worker_input")); if (page.length < 100) break; after = page.at(-1)!.operationId; }
             reconciliation = [];
             for (let i = 0; i < unacknowledged.length; i += 100) reconciliation.push(unacknowledged.slice(i, i + 100));
             if (!reconciliation.length) reconciliation.push([]);
@@ -155,7 +193,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             if (!pending) return;
             if (pending.action !== message.action || message.result && (message.result.captureId !== pending.captureId || pending.attemptId !== null && message.result.attemptId !== pending.attemptId)) throw new Error("Image capture result identity mismatch.");
             captureRequests.delete(message.requestId); clearTimeout(pending.timer);
-            if (message.error) pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
+            if (message.error) pending.reject(new ImageCaptureRequestError(message.error));
             else pending.resolve(message.result!);
           } else if (message.type === "image_request") {
             handleImage(message, ws);
@@ -174,29 +212,38 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
               waiter.reject(new Error(operation.error?.message ?? "Operation no longer has current permission or state."));
             }
           }
-          else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); pendingBatch = null; callbacks.onAcknowledged?.(); }
-          else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(String(error))); }
-          else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(); } }
+          else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through) || connectionAcknowledged === null || BigInt(message.lastAckedSourceSeq) < BigInt(connectionAcknowledged)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); connectionAcknowledged = message.lastAckedSourceSeq; pendingBatch = null; callbacks.onAcknowledged?.(); }
+          else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(error)); }
+          else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(message.imageAuthorization); } }
           else if (message.type === "error") { callbacks.onError(`${message.code}: ${message.message}`); ws.close(); }
-        } catch (error) { callbacks.onError(String(error)); ws.close(1008, "Invalid relay frame"); }
+        } catch (error) { callbacks.onError(error); ws.close(1008, "Invalid relay frame"); }
       });
-    } catch (error) { callbacks.onError(String(error)); reconnectAt = Date.now() + 1000; }
+    } catch (error) { callbacks.onError(error); reconnectAt = Date.now() + 1000; }
     finally { connecting = false; }
   };
   let polling = false;
   const tick = async () => {
     if (stopped || polling) return; polling = true;
+    let tickSocket: WebSocket | null = null, tickFence: ControllerFence | null = null;
+    const current = () => !stopped && tickSocket !== null && socket === tickSocket && tickSocket.readyState === WebSocket.OPEN && tickFence !== null && fence === tickFence;
+    const sendTick = (message: ControllerMessage): boolean => {
+      if (!current()) return false;
+      send(message, tickSocket);
+      return current();
+    };
     try {
       if (!socket) { if (Date.now() >= reconnectAt) await connect(); return; }
       if (!fence || !reconciled) return;
-      if (journal.getSourceFloor && BigInt(journal.getSourceFloor()) > BigInt(connectionFloor)) { socket.close(1000, "Local history synchronization required"); return; }
+      tickSocket = socket; tickFence = fence;
+      if (!current()) return;
+      if (journal.getSourceFloor && BigInt(journal.getSourceFloor()) > BigInt(connectionFloor)) { if (current()) tickSocket.close(1000, "Local history synchronization required"); return; }
       if (syncPending) return;
-      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (stopped || !socket || !fence || !reconciled) return; if (grant.token !== currentToken) { socket.close(1000, "Credential renewed"); return; } send({ ...prefix(), type: "heartbeat" }); lastHeartbeat = Date.now(); }
+      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (!current()) return; if (grant.token !== currentToken) { tickSocket.close(1000, "Credential renewed"); return; } if (!sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "heartbeat" })) return; lastHeartbeat = Date.now(); }
       if (pendingBatch) return;
       if (requiresLiveSync && !synchronized && !journal.pendingEvents(1).length) {
         const snapshot = journal.getSnapshot();
         const state = callbacks.readState?.() ?? { nativeSessionId: snapshot.nativeSessionId, initialInputState: snapshot.initialInputState, synchronized: true, activity: snapshot.activity, currentTurnId: snapshot.currentTurnId, capabilities: snapshot.capabilities, ...(snapshot.controls ? { controls: snapshot.controls } : {}), ...(snapshot.turnStartedAt !== undefined ? { turnStartedAt: snapshot.turnStartedAt } : {}) };
-        send({ ...prefix(), type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() });
+        if (!sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() })) return;
         syncPending = true; return;
       }
       const request = contentRequests[0];
@@ -218,7 +265,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       if (response && BigInt(journal.getLastAcknowledgedSequence()) >= BigInt(response.sourceThrough)) {
         // The response and its source barrier share WS ordering. Newer events
         // remain queued until after the server has captured this page's cursor.
-        send({ ...prefix(), type: "content_response", ...response }); contentRequests.shift(); return;
+        if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "content_response", ...response })) contentRequests.shift(); return;
       }
       journal.drainProjectionGap();
       const events: SourceEvent[] = []; let bytes = 1024;
@@ -233,33 +280,51 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         if (bytes + size > RELAY_LIMITS.maxFrameBytes) break;
         events.push(event); bytes += size;
       }
-      if (events.length) { const id = randomUUID(); pendingBatch = { id, through: events.at(-1)!.sourceSeq }; send({ ...prefix(), type: "events", batchId: id, sourceEpoch: ticket.executionId, events }); }
-    } catch (error) { callbacks.onError(String(error)); socket?.close(); }
+      if (events.length) { const id = randomUUID(); if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "events", batchId: id, sourceEpoch: ticket.executionId, events })) pendingBatch = { id, through: events.at(-1)!.sourceSeq }; }
+    } catch (error) { if (!tickSocket || current()) { callbacks.onError(error); tickSocket?.close(); } }
     finally { polling = false; }
   };
   const timer = setInterval(() => { void tick(); }, 100);
   void tick();
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true; clearInterval(timer); socket?.terminate(); socket = null; clearConnection();
+  };
   return {
+    stop,
     connected: () => synchronized && fence !== null,
     currentFence: (): ControllerFence | null => fence ? { ...fence } : null,
+    currentOnlineMode: (): "legacy" | "relay" | null => fence ? onlineMode : null,
+    currentAcknowledgedSequence: (): string | null => fence ? connectionAcknowledged : null,
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
-      if (!synchronized || !supportsImageHistory) { reject(new Error("Image capture relay is unavailable; query the original capture when synchronized.")); return; }
-      if (captureRequests.size >= 2) { reject(new Error("Controller image capture request capacity is unavailable.")); return; }
+      if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
+      if (action === "submit" && !supportsDirectCapture) { reject(new ImageCaptureRequestError({ code: "upgrade_required", message: "The server must support direct Session image submissions." })); return; }
+      if (action === "submit" && onlineMode === "relay") {
+        const submission = body as ImageCaptureBody["submit"];
+        if (submission.sourceEpoch !== undefined && (submission.sourceEpoch !== ticket.executionId || connectionAcknowledged === null || BigInt(submission.sourceSeq) > BigInt(connectionAcknowledged))) { reject(new ImageCaptureNotDispatchedError("Image capture proof is not acknowledged on this connection.")); return; }
+      }
+      // Check and enqueue without yielding. The server's controller-channel
+      // loop handles frames in order, so later source events cannot invalidate
+      // this complete checkpoint before the capture identity is established.
+      if (action === "submit" && onlineMode === "legacy" && (pendingBatch || journal.pendingEvents(1).length || !journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence()))) {
+        reject(new ImageCaptureNotDispatchedError("Image capture is waiting for its complete current history checkpoint.")); return;
+      }
+      if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);
-      captureRequests.set(requestId, { action, captureId: body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
+      captureRequests.set(requestId, { action, captureId: "request" in body ? body.request.captureId : body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
       try { send(parseImageCaptureMessage({ ...prefix(), type: "image_capture", requestId, action, body }) as ImageCaptureMessage); }
       catch (error) { clearTimeout(timer); captureRequests.delete(requestId); reject(error); }
     }),
-    authorize: (operationId: string): Promise<void> => new Promise((resolve, reject) => {
+    authorize: (operationId: string): Promise<ImageCapabilities | undefined> => new Promise((resolve, reject) => {
       if (!synchronized) { reject(new Error("Session relay is offline.")); return; }
       const timeout = setTimeout(() => { authorization.delete(operationId); reject(new Error("Operation authorization is unknown; native was not called.")); }, 15_000);
       authorization.set(operationId, { resolve, reject, timer: timeout });
       try { send({ ...prefix(), type: "operation_begin", operationId }); } catch (error) { clearTimeout(timeout); authorization.delete(operationId); reject(error); }
     }),
-    receipt: (operation: ControllerOperation) => { if (synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
+    receipt: (operation: ControllerOperation) => { if (operation.kind !== "worker_input" && synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
     async flush(timeoutMs = 5000): Promise<void> { const end = Date.now() + timeoutMs; while (journal.pendingEvents(1).length && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50)); if (journal.pendingEvents(1).length) throw new Error("Session events remain in the durable outbox."); },
-    close: async (): Promise<void> => { stopped = true; clearInterval(timer); socket?.terminate(); socket = null; clearConnection(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
+    close: async (): Promise<void> => { stop(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
   };
 };

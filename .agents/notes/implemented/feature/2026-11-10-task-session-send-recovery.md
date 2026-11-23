@@ -29,8 +29,11 @@ credentials. Real file and directory barriers precede the request.
 Execution identity and expectedTurnId remain the command preconditions.
 connectionEpoch is retained as an inspection observation, not added to the
 existing command wire. Historical receipt reads preserve their original Session
-after a new claim and do not restore a command queue. OAuth is admitted by Task
-purpose, with the original Actor reauthorized before dispatch.
+after a new claim and do not restore a command queue. MCP OAuth is admitted by
+its original Task message/receipt purpose; fixed API OAuth also enters existing
+user operations as described by the
+[API family decision](../architecture/2026-11-12-api-oauth-family.md). The original
+Actor is reauthorized before dispatch, and refreshed access never replaces it.
 Task OAuth admission and dispatch share the
 [grant-before-token lock protocol](../bug-fix/2026-11-10-task-oauth-family-locks.md)
 so revocation cannot partially delete a rotated family while waiting for another

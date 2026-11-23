@@ -1,0 +1,319 @@
+package task
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
+)
+
+type PersonalTaskItem struct {
+	Project          store.PersonalTaskProject
+	Task             store.PersonalTaskRow
+	MatchedTaskCount int64
+	Paused           bool
+	Worker           *taskcore.PersonalTaskWorker
+	Session          sp.TaskSessionObservation
+	SessionRow       model.TaskSyncObservation
+}
+
+type PersonalTaskPage struct {
+	ObservedAt                        time.Time
+	ResponseTaskAt, ResponseSessionAt time.Time
+	InventoryRevision                 string
+	TotalTaskCount, TotalProjectCount int64
+	SessionPartial                    bool
+	Items                             []PersonalTaskItem
+	NextCursor                        *string
+}
+
+// PersonalTaskError identifies the failed inventory stage without exposing
+// underlying storage or observation details in its own message.
+type PersonalTaskError struct {
+	Phase string
+	Cause error
+}
+
+func (e *PersonalTaskError) Error() string { return "personal tasks " + e.Phase + " failed" }
+func (e *PersonalTaskError) Unwrap() error { return e.Cause }
+
+func personalTaskPhase(phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PersonalTaskError{Phase: phase, Cause: err}
+}
+
+// PersonalTasks selects an account inventory in one snapshot, releases it for
+// live observation, then checks credentials and the complete inventory again.
+func (s *Observations) PersonalTasks(ctx context.Context, principal model.Principal, limit int, cursor *string) (PersonalTaskPage, error) {
+	if err := requireTaskScope(s.authorization, principal); err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if err := model.RequirePrincipal(principal); err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if _, ok := s.observer.(personalSessionRowObserver); !ok && sessionProjectionAllowed(s.authorization) {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("personal task row observer is unavailable"))
+	}
+	selection, err := taskcore.SelectPersonalTasks(principal.UserID, limit, cursor)
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	result := PersonalTaskPage{Items: []PersonalTaskItem{}}
+	var rows store.PersonalTaskPage
+	identities := map[string][]executionIdentity{}
+	sources := map[string]store.SnapshotScope{}
+	projects := map[string]store.PersonalTaskProject{}
+	counts := map[string]int64{}
+	order := []string{}
+	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if err := s.operations.credential(ctx, snapshot.CredentialDAO(), principal); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization); err != nil {
+			return err
+		}
+		reader, ok := snapshot.TaskDAO().(store.PersonalTaskReader)
+		if !ok {
+			return fmt.Errorf("personal task reader is unavailable")
+		}
+		facts, err := reader.PersonalTaskFacts(ctx, principal.UserID)
+		if err != nil {
+			return err
+		}
+		result.InventoryRevision, err = taskcore.PersonalTaskRevision(facts)
+		if err != nil {
+			return err
+		}
+		if err := selection.CheckRevision(result.InventoryRevision); err != nil {
+			return err
+		}
+		const maxSafe = int64(1<<53 - 1)
+		if int64(len(facts)) > maxSafe {
+			return fmt.Errorf("personal task project count exceeds response precision")
+		}
+		result.TotalProjectCount = int64(len(facts))
+		for _, project := range facts {
+			count, err := strconv.ParseInt(project.MatchedCount, 10, 64)
+			if err != nil || count <= 0 || count > maxSafe-result.TotalTaskCount {
+				return fmt.Errorf("personal task count exceeds response precision or is invalid")
+			}
+			if _, exists := projects[project.ID]; exists {
+				return fmt.Errorf("duplicate personal task project")
+			}
+			projects[project.ID], counts[project.ID] = project, count
+			result.TotalTaskCount += count
+		}
+		rows, err = reader.PersonalTaskPage(ctx, principal.UserID, selection.Query)
+		if err != nil {
+			return err
+		}
+		result.ObservedAt, err = snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows.Items {
+			project, exists := projects[row.ProjectID]
+			if !exists {
+				return fmt.Errorf("personal task row has no project facts")
+			}
+			paused, err := taskcore.PersonalTaskPaused(row.PausedRaw)
+			if err != nil {
+				return fmt.Errorf("decode personal task paused: %w", err)
+			}
+			result.Items = append(result.Items, PersonalTaskItem{Project: project, Task: row, MatchedTaskCount: counts[row.ProjectID], Paused: paused})
+			if _, exists := identities[row.ProjectID]; !exists {
+				order = append(order, row.ProjectID)
+			}
+			identities[row.ProjectID] = append(identities[row.ProjectID], executionIdentity{ID: row.ID, Version: row.Version, Type: model.TaskTypeTask})
+		}
+		if rows.HasMore {
+			if len(rows.Items) == 0 {
+				return fmt.Errorf("personal task continuation has no position")
+			}
+			value, err := selection.CursorAfter(result.InventoryRevision, rows.Items[len(rows.Items)-1].Position)
+			if err != nil {
+				return err
+			}
+			result.NextCursor = &value
+		}
+		for _, project := range order {
+			if !sessionProjectionAllowed(s.authorization) {
+				break
+			}
+			selected, err := loadSelectedExecutionSourcesWithPolicy(ctx, snapshot, project, identities[project], true)
+			if err != nil {
+				return err
+			}
+			sources[project] = selected
+			ids := make([]string, len(identities[project]))
+			for i, identity := range identities[project] {
+				ids[i] = identity.ID
+			}
+			captured, err := selected.SessionDAO().TaskSessionSources(ctx, project, ids)
+			if err != nil {
+				return err
+			}
+			byID := make(map[string]store.TaskSessionSource, len(captured))
+			for _, source := range captured {
+				if _, exists := byID[source.TaskID]; exists {
+					return fmt.Errorf("duplicate personal task source")
+				}
+				byID[source.TaskID] = source
+			}
+			if len(byID) != len(ids) {
+				return fmt.Errorf("personal task source count does not match selected rows")
+			}
+			for i := range result.Items {
+				item := &result.Items[i]
+				if item.Task.ProjectID != project {
+					continue
+				}
+				source, exists := byID[item.Task.ID]
+				if !exists || source.TaskID != item.Task.ID || source.ProjectID != project || source.TaskVersion != item.Task.Version || source.TaskStatus != model.TaskInProgress {
+					return fmt.Errorf("personal task source does not match selected row")
+				}
+				item.Worker, err = taskcore.RetainedPersonalTaskWorker(source.Worker)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if !sessionProjectionAllowed(s.authorization) {
+		result.ResponseTaskAt, err = s.recheckPersonalInventory(ctx, principal, result.InventoryRevision)
+		if err != nil {
+			return PersonalTaskPage{}, err
+		}
+		result.ResponseSessionAt = result.ResponseTaskAt
+		result.SessionPartial = len(result.Items) > 0
+		for i := range result.Items {
+			result.Items[i].Session = taskcore.ScopeUnavailableObservation()
+			result.Items[i].SessionRow = model.TaskSyncObservation{TaskVersion: result.Items[i].Task.Version, State: "unavailable"}
+		}
+		return result, nil
+	}
+	allObservations := map[string]sp.TaskSessionObservation{}
+	rowObservations := map[string]model.TaskSyncObservation{}
+	sessionClock, ok := s.observer.(interface {
+		TaskObservationTime(context.Context) (time.Time, error)
+	})
+	if !ok {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("session observation clock is unavailable"))
+	}
+	observationTime, err := sessionClock.TaskObservationTime(ctx)
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("observe", err)
+	}
+	if !validPersonalClock(observationTime) {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("invalid session observation clock"))
+	}
+	observationTime = observationTime.UTC()
+	for _, project := range order {
+		observations, partial, observeErr := s.observeExecutionBatchWithPolicy(ctx, sources[project], principal, project, identities[project], observationTime, true, rowObservations)
+		if observeErr != nil {
+			var stage *PersonalTaskError
+			if !errors.As(observeErr, &stage) {
+				observeErr = personalTaskPhase("observe", observeErr)
+			}
+			if ctx.Err() != nil {
+				return PersonalTaskPage{}, observeErr
+			}
+			// An access refusal may reflect a changed inventory. Credential errors
+			// retain their own result; changed project access becomes reset_required.
+			// Storage errors are returned directly without a second attempt.
+			if _, known := operation.KnownFault(observeErr); known && observationAuthorityFailure(observeErr) {
+				if _, err := s.recheckPersonalInventory(ctx, principal, result.InventoryRevision); err != nil {
+					return PersonalTaskPage{}, err
+				}
+			}
+			return PersonalTaskPage{}, observeErr
+		}
+		result.SessionPartial = result.SessionPartial || partial
+		for id, observation := range observations {
+			allObservations[id] = observation
+		}
+	}
+	result.ResponseTaskAt, err = s.recheckPersonalInventory(ctx, principal, result.InventoryRevision)
+	if err != nil {
+		return PersonalTaskPage{}, err
+	}
+	result.ResponseSessionAt, err = sessionClock.TaskObservationTime(ctx)
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("observe", err)
+	}
+	if !validPersonalClock(result.ResponseSessionAt) {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("invalid session response clock"))
+	}
+	result.ResponseSessionAt = result.ResponseSessionAt.UTC()
+	if err := ctx.Err(); err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("recheck", err)
+	}
+	for i := range result.Items {
+		item := &result.Items[i]
+		item.Session = allObservations[item.Task.ID]
+		if item.Session.Observation != "observed" {
+			item.SessionRow = model.TaskSyncObservation{TaskVersion: item.Task.Version, State: "unavailable"}
+			continue
+		}
+		row, exists := rowObservations[item.Task.ID]
+		if !exists {
+			return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("missing personal task row observation"))
+		}
+		item.SessionRow = row
+	}
+	return result, nil
+}
+
+func validPersonalClock(at time.Time) bool {
+	return !at.IsZero() && at.Year() >= 1 && at.Year() <= 9999
+}
+
+func (s *Observations) recheckPersonalInventory(ctx context.Context, principal model.Principal, expected string) (time.Time, error) {
+	var observed time.Time
+	err := s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if err := s.operations.credential(ctx, snapshot.CredentialDAO(), principal); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization); err != nil {
+			return err
+		}
+		reader, ok := snapshot.TaskDAO().(store.PersonalTaskReader)
+		if !ok {
+			return fmt.Errorf("personal task reader is unavailable")
+		}
+		facts, err := reader.PersonalTaskFacts(ctx, principal.UserID)
+		if err != nil {
+			return err
+		}
+		revision, err := taskcore.PersonalTaskRevision(facts)
+		if err != nil {
+			return err
+		}
+		if revision != expected {
+			return &model.Fault{Code: "reset_required", Message: "Tasks changed during this personal inventory; restart the inventory."}
+		}
+		observed, err = snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if !validPersonalClock(observed) {
+			return fmt.Errorf("invalid personal task response clock")
+		}
+		observed = observed.UTC()
+		return nil
+	})
+	return observed, personalTaskPhase("recheck", err)
+}

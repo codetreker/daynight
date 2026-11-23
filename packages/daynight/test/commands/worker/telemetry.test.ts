@@ -3,18 +3,17 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { hasOwnedCommandCleanupFailure, OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import path from "node:path";
 
-const mocks = vi.hoisted(() => ({ cpus: vi.fn(), totalmem: vi.fn(), freemem: vi.fn(), statfs: vi.fn(), stat: vi.fn(), access: vi.fn(), version: vi.fn(), herdr: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cpus: vi.fn(), totalmem: vi.fn(), freemem: vi.fn(), statfs: vi.fn(), stat: vi.fn(), access: vi.fn(), version: vi.fn() }));
 vi.mock("node:os", async (original) => ({ ...await original<object>(), cpus: mocks.cpus, totalmem: mocks.totalmem, freemem: mocks.freemem }));
 vi.mock("node:fs/promises", async (original) => ({ ...await original<object>(), statfs: mocks.statfs, stat: mocks.stat, access: mocks.access }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async (original) => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
-vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({ ...await original<object>(), createHerdrVersionObserver: () => ({ observe: mocks.herdr }) }));
+vi.mock("../../../src/commands/worker/native-version.js", async (original) => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
 
 const operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
@@ -31,43 +30,85 @@ beforeEach(() => {
   mocks.stat.mockResolvedValue({ isDirectory: () => true });
   mocks.access.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));
   mocks.version.mockImplementation(async ({ agent }: { agent: string }) => agent === "codex" ? "0.1.0" : "1.0.0");
-  mocks.herdr.mockResolvedValue("0.9.5");
 });
 afterEach(() => { operations.splice(0).forEach((value) => value.dispose()); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("Worker telemetry", () => {
+  it("keeps unused Copilot out of repeated telemetry and reporter failure cycles", async () => {
+    vi.useRealTimers();
+    mocks.access.mockResolvedValue(undefined);
+    let required = false;
+    const resolveExecutable = vi.fn((provider: string) => {
+      if (provider === "copilot") throw Object.assign(new Error("unavailable"), { code: "EACCES" });
+      return provider;
+    });
+    const runCommand = vi.fn(async (command: import("../../../src/commands/worker/owned-command.js").OwnedCommand) => ({ stderr: "", stdout: command.args.includes("--version")
+      ? command.file === "codex" ? "codex-cli 0.1.0" : "2.1.247 (Claude Code)"
+      : command.file === "codex" ? "app-server --stdio" : "--input-format --output-format --include-partial-messages" }));
+    const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},
+      configuration: { agent: "codex", agentControlMode: "web", args: [], model: null, recoveryLimit: 3 },
+      copilotRequired: () => required, resolveExecutable, runCommand });
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: process.cwd(), machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost,
+      toolPaths: { context: "web", snapshot: () => ({ schemaVersion: 1, observedAt: new Date().toISOString(), entries: [] }) } });
+    let reportSent: (() => void) | undefined;
+    const emit = vi.fn(), send = vi.fn(async (_report: import("../../../src/api/types.js").WorkerReport) => {
+      reportSent?.(); reportSent = undefined;
+      return { observedAt: new Date().toISOString(), lastReportedAt: new Date().toISOString() };
+    });
+    const reporter = createWorkerReporter({ signal: new AbortController().signal, collect: instance.collect, send, emit });
+    const waitForSend = async (count: number) => {
+      if (send.mock.calls.length >= count) return;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([new Promise<void>(resolve => { reportSent = resolve; }), new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`Timed out waiting for report ${count}.`)), 8_000);
+        })]);
+      } finally { if (timeout !== undefined) clearTimeout(timeout); reportSent = undefined; }
+      expect(send).toHaveBeenCalledTimes(count);
+    };
+    const next = async () => { const sent = waitForSend(send.mock.calls.length + 1); reporter.trigger(); await sent; };
+    const copilotEvents = () => emit.mock.calls.map(([event]) => event).filter(event => event.message.includes("assistantHost_copilot"));
+    try {
+      await waitForSend(1);
+      await next(); await next();
+      expect(send).toHaveBeenCalledTimes(3);
+      for (const [report] of send.mock.calls) {
+        expect(report.assistantHost?.providers).toHaveLength(3);
+        expect(report.assistantHost?.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unavailable", model: null, args: [] });
+        expect(report.versions.copilot).toMatchObject({ state: "error", code: "unavailable" });
+      }
+      expect(copilotEvents()).toEqual([]);
+      expect(resolveExecutable.mock.calls.some(([provider]) => provider === "copilot")).toBe(false);
+      expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+      expect(mocks.version).not.toHaveBeenCalled();
+      required = true;
+      await next();
+      expect(copilotEvents().map(event => event.kind)).toEqual(["worker_report_failed"]);
+      required = false;
+      await next(); await next(); await next();
+      expect(copilotEvents().map(event => event.kind)).toEqual(["worker_report_failed", "worker_report_recovered"]);
+      expect(resolveExecutable.mock.calls.filter(([provider]) => provider === "copilot")).toHaveLength(1);
+      expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+    } finally { await reporter.stop(); await assistantHost.close(); }
+  }, 20_000);
+
   it("reports only explicitly supplied tool facts without deriving paths from legacy versions", async () => {
     expect((await finish(collector().collect(operation()))).telemetry).not.toHaveProperty("toolPaths");
     const facts = { schemaVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", entries: [] };
     const snapshot = vi.fn(() => facts);
     expect((await finish(collector({ context: "web", snapshot }).collect(operation()))).telemetry.toolPaths).toEqual(facts);
     expect(snapshot).toHaveBeenCalledOnce();
-    mocks.version.mockClear(); mocks.herdr.mockClear();
+    mocks.version.mockClear();
     const sample = await finish(collector({ context: "web", snapshot }).collect(operation()));
     expect(sample.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
     expect(mocks.version).not.toHaveBeenCalled();
-    expect(mocks.herdr).toHaveBeenCalledOnce();
   });
-  it("projects legacy versions from the selected context's actual recipe only", async () => {
+  it("reports the Web tool selection's actual version", async () => {
     const time = "2026-11-04T00:00:00Z";
-    const actual = (version: string) => ({ selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/copilot", executablePath: "/tool/copilot", interpreterPath: null, source: "bundled" as const, version, checkedAt: time });
-    const observation = (context: "web" | "herdr", version: string) => ({ tool: "copilot" as const, context, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual: actual(version), candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null });
-    const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [observation("web", "web-version"), observation("herdr", "herdr-version")] });
+    const actual = { selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/copilot", executablePath: "/tool/copilot", interpreterPath: null, source: "bundled" as const, version: "web-version", checkedAt: time };
+    const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [{ tool: "copilot" as const, context: "web" as const, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual, candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null }] });
     const sample = await finish(collector({ context: "web", snapshot }).collect(operation()));
     expect(sample.telemetry.versions.copilot).toEqual({ state: "ok", checkedAt: time, value: "web-version" });
-    expect(mocks.version).not.toHaveBeenCalled();
-    expect(mocks.herdr).toHaveBeenCalledOnce();
-  });
-
-  it("keeps Herdr legacy versions tied to running instances when a new selection is ready", async () => {
-    const time = "2026-11-04T00:00:00Z";
-    const actual = { selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/herdr", executablePath: "/tool/herdr", interpreterPath: null, source: "path" as const, version: "new-cli-selection", checkedAt: time };
-    const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [{ tool: "herdr" as const, context: "herdr" as const, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual, candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null }] });
-    const instance = collector({ context: "herdr", snapshot });
-    mocks.herdr.mockResolvedValue(null);
-    expect((await finish(instance.collect(operation()))).telemetry.versions.herdr).toMatchObject({ state: "not_running" });
-    mocks.herdr.mockResolvedValue("running-instance");
-    expect((await finish(instance.collect(operation()))).telemetry.versions.herdr).toMatchObject({ state: "ok", value: "running-instance" });
     expect(mocks.version).not.toHaveBeenCalled();
   });
 
@@ -90,11 +131,11 @@ describe("Worker telemetry", () => {
     expect(sample.telemetry.memory).toMatchObject({ state: "ok", value: { usedBytes: 768, totalBytes: 1024 } });
     expect(sample.telemetry.disk).toMatchObject({ state: "ok", value: { availableBytes: 102400, totalBytes: 409600 } });
     expect(mocks.statfs).toHaveBeenCalledWith(cwd, { bigint: true });
-    expect(sample.telemetry.versions).toMatchObject({ daynight: "1.2.3", codex: { state: "ok", value: "0.1.0" }, herdr: { state: "ok", value: "0.9.5" } });
+    expect(sample.telemetry.versions).toMatchObject({ daynight: "1.2.3", codex: { state: "ok", value: "0.1.0" } });
   });
 
   it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
-    const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("private-token")], undefined);
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
     const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
     const sample = await finish(instance.collect(operation()));
@@ -160,11 +201,10 @@ describe("Worker telemetry", () => {
     expect(updated.telemetry.versions.codex).toMatchObject({ state: "error" });
     expect(updated.telemetry.versions.codex.checkedAt).not.toBe(first.telemetry.versions.codex.checkedAt);
     expect(JSON.stringify(updated.telemetry)).not.toContain("native config");
-    expect(mocks.herdr).toHaveBeenCalledTimes(3);
   });
 
   it("distinguishes confirmed executable absence from an invalid native working directory", async () => {
-    const failure = new HerdrCommandError("Cannot execute", null, null, "", { cause: Object.assign(new Error("sensitive-command"), { code: "ENOENT" }) });
+    const failure = new OwnedCommandError("Cannot execute", null, null, "", { cause: Object.assign(new Error("sensitive-command"), { code: "ENOENT" }) });
     mocks.version.mockRejectedValue(failure);
     const missing = await finish(collector().collect(operation()));
     expect(missing.telemetry.versions.codex.state).toBe("not_installed");
@@ -175,7 +215,7 @@ describe("Worker telemetry", () => {
 
   it("keeps uncertain command cleanup visible and does not start a replacement probe", async () => {
     let monotonic = 0; vi.spyOn(performance, "now").mockImplementation(() => monotonic);
-    const failure = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     mocks.version.mockRejectedValue(failure); const instance = collector();
     const first = await finish(instance.collect(operation()));
     monotonic = 120_000;
@@ -186,10 +226,7 @@ describe("Worker telemetry", () => {
     expect(second.issues.find(({ component }) => component === "codex")?.error).toBe(failure);
   });
 
-  it("propagates runtime cancellation and keeps an absent private daemon separate from errors", async () => {
-    mocks.herdr.mockResolvedValue(null);
-    const sample = await finish(collector().collect(operation()));
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "not_running" });
+  it("propagates runtime cancellation", async () => {
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     const pending = collector().collect(op);
     controller.abort();
@@ -197,18 +234,18 @@ describe("Worker telemetry", () => {
   });
 
   it("preserves unconfirmed native cleanup when runtime cancellation interrupts collection", async () => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     mocks.version.mockRejectedValue(cleanup);
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     const pending = collector().collect(op); controller.abort();
     const failure: unknown = await pending.catch((error: unknown) => error);
-    expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
+    expect(hasOwnedCommandCleanupFailure(failure)).toBe(true);
     expect(failure).toMatchObject({ cause: op.signal.reason });
   });
 
   it.each(["rejection", "synchronous throw"])("joins ordinary probes and preserves cleanup after assistant %s", async mode => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
-    const laterCleanup = new HerdrCommandCleanupError([new Error("another owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
+    const laterCleanup = new OwnedCommandCleanupError([new Error("another owned process remains")], undefined);
     const assistantFailure = new Error("assistant failed");
     const completions = new Map<string, (error?: unknown) => void>();
     mocks.version.mockImplementation(({ agent }: { agent: string }) => new Promise((resolve, reject) => {
@@ -236,7 +273,7 @@ describe("Worker telemetry", () => {
   });
 
   it("keeps reporter stop pending until ordinary cleanup finishes after assistant cancellation", async () => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     const completions: ((error?: unknown) => void)[] = [];
     mocks.version.mockImplementation(() => new Promise((resolve, reject) => {
       completions.push(error => error === undefined ? resolve("1.0.0") : reject(error));
@@ -260,7 +297,7 @@ describe("Worker telemetry", () => {
     const failure: unknown = await observed;
     expect(stoppedBeforeCleanup).toBe(false);
     expect(stoppedBeforeLastProbe).toBe(false);
-    expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
+    expect(hasOwnedCommandCleanupFailure(failure)).toBe(true);
     expect(sent).toBe(0);
   });
 });
@@ -274,9 +311,9 @@ describe("native version cleanup recovery", () => {
     if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Cannot terminate the owned process"); } });
     const parent = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
     try {
-      const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, parent, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, parent, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
       const failure = await finish(result, 110);
-      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      expect(failure).toBeInstanceOf(OwnedCommandCleanupError);
       return { child, failure };
     } finally { parent.dispose(); }
   };
@@ -365,7 +402,7 @@ describe("native version cleanup recovery", () => {
 
   it.each(["termination failure", "legacy cleanup"])("keeps %s unavailable after a close and cache expiry", async mode => {
     const original = await timedOutProbe(mode === "termination failure");
-    const failure = mode === "legacy cleanup" ? new HerdrCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
+    const failure = mode === "legacy cleanup" ? new OwnedCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
     let attempts = 0;
     mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
       if (agent === "codex") { attempts++; throw failure; }
@@ -383,7 +420,7 @@ describe("native version cleanup recovery", () => {
 
   it("confirms assistant and version probes independently and reports the retry's current failure", async () => {
     const host = await timedOutProbe(); const version = await timedOutProbe();
-    const currentFailure = new HerdrCommandError("Retry failed", 2, null, "private diagnostic");
+    const currentFailure = new OwnedCommandError("Retry failed", 2, null, "private diagnostic");
     let hostAttempts = 0; let versionAttempts = 0;
     mocks.access.mockResolvedValue(undefined);
     const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},

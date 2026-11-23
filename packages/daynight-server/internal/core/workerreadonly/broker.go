@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -25,6 +26,7 @@ type Connection struct {
 }
 type pending struct {
 	actor     model.Principal
+	authorize Authorize
 	answer    chan outcome
 	operation string
 	provider  string
@@ -35,7 +37,8 @@ type outcome struct {
 }
 type Broker struct {
 	mu           sync.Mutex
-	authorize    Authorize
+	requester    Authorize
+	producer     Authorize
 	connections  map[string]*Connection
 	disconnected map[string]time.Time
 	count        int
@@ -43,7 +46,16 @@ type Broker struct {
 }
 
 func New(authorize Authorize) *Broker {
-	return &Broker{authorize: authorize, connections: map[string]*Connection{}, disconnected: map[string]time.Time{}}
+	return NewWithAuthorization(authorize, authorize)
+}
+
+// NewWithAuthorization keeps requester inspection separate from the Worker's
+// producer authority at admission, response delivery and channel revalidation.
+func NewWithAuthorization(requester, producer Authorize) *Broker {
+	if requester == nil || producer == nil {
+		panic("Worker read-only authorization callbacks are required")
+	}
+	return &Broker{requester: requester, producer: producer, connections: map[string]*Connection{}, disconnected: map[string]time.Time{}}
 }
 func key(owner, worker string) string { return owner + "/" + worker }
 func (b *Broker) Connect(ctx context.Context, p model.Principal, worker string, h Hello) (*Connection, error) {
@@ -59,7 +71,7 @@ func (b *Broker) Connect(ctx context.Context, p model.Principal, worker string, 
 	if !validID(worker) {
 		return nil, fault("invalid_input", "Worker ID is invalid.")
 	}
-	if e := b.authorize(ctx, p, worker); e != nil {
+	if e := b.producer(ctx, p, worker); e != nil {
 		return nil, e
 	}
 	b.mu.Lock()
@@ -113,7 +125,7 @@ func (b *Broker) Check(ctx context.Context, c *Connection) error {
 	if err := requestContextError(ctx, nil); err != nil {
 		return err
 	}
-	if e := b.authorize(ctx, c.Principal, c.WorkerID); e != nil {
+	if e := b.producer(ctx, c.Principal, c.WorkerID); e != nil {
 		// A caller's interrupted authority read does not invalidate the shared Worker.
 		if ctx.Err() == nil && !errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
 			b.Disconnect(c)
@@ -128,6 +140,11 @@ func (b *Broker) Check(ctx context.Context, c *Connection) error {
 	return nil
 }
 func requestContextError(ctx context.Context, err error) error {
+	// Unknown completion and failed cleanup remain authority failures even when
+	// their driver causes include cancellation or a deadline.
+	if database, _ := store.DatabaseErrorFacts(err); database || unsafeAuthorityCompletion(err) {
+		return err
+	}
 	cause := ctx.Err()
 	if cause == nil {
 		cause = err
@@ -141,7 +158,47 @@ func requestContextError(ctx context.Context, err error) error {
 		return err
 	}
 }
-func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
+
+func unsafeAuthorityCompletion(err error) bool {
+	if transaction, ok := err.(*store.TransactionError); ok && (transaction.Outcome == store.TransactionUnknown || transaction.CleanupFailed) {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if unsafeAuthorityCompletion(cause) {
+				return true
+			}
+		}
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return unsafeAuthorityCompletion(wrapped.Unwrap())
+	}
+	return false
+}
+
+// Requester binds a trusted service authority to requests on the shared channels.
+// The binding remains attached to pending work through producer-driven delivery.
+type Requester struct {
+	broker    *Broker
+	authorize Authorize
+}
+
+func (b *Broker) NewRequester(authorize Authorize) *Requester {
+	if authorize == nil {
+		panic("Worker read-only requester authorization is required")
+	}
+	return &Requester{broker: b, authorize: authorize}
+}
+
+func (r *Requester) Request(ctx context.Context, p model.Principal, worker string, request Request) (Message, error) {
+	return r.broker.request(ctx, p, worker, request, r.authorize)
+}
+
+func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (Message, error) {
+	return b.request(ctx, p, worker, r, b.requester)
+}
+
+func (b *Broker) request(ctx context.Context, p model.Principal, worker string, r Request, authorize Authorize) (result Message, err error) {
 	timeout := OperationTimeout(r.Operation)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -164,7 +221,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	if !validID(worker) {
 		return Message{}, fault("invalid_input", "Worker ID is invalid.")
 	}
-	if e := b.authorize(ctx, p, worker); e != nil {
+	if e := authorize(ctx, p, worker); e != nil {
 		return Message{}, e
 	}
 	b.mu.Lock()
@@ -204,7 +261,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		b.mu.Unlock()
 		return Message{}, fault("invalid_input", "requestId was already used on this connection.")
 	}
-	work := &pending{actor: p, answer: make(chan outcome, 1), operation: r.Operation}
+	work := &pending{actor: p, authorize: authorize, answer: make(chan outcome, 1), operation: r.Operation}
 	if r.Operation == "model.list" {
 		var input ModelInput
 		_ = json.Unmarshal(r.Input, &input)
@@ -235,29 +292,33 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	}()
 	select {
 	case out := <-work.answer:
-		if e := ctx.Err(); e != nil {
-			return Message{}, e
-		}
-		if out.err != nil {
-			return Message{}, out.err
-		}
-		if e := b.authorize(ctx, p, worker); e != nil {
-			return Message{}, e
-		}
-		if e := b.Check(ctx, c); e != nil {
-			return Message{}, e
-		}
-		b.mu.Lock()
-		current := b.connections[k] == c
-		b.mu.Unlock()
-		if !current {
-			return Message{}, fault("offline", "Worker read-only connection changed before delivery.")
-		}
-		return out.message, nil
+		return b.receiveOutcome(ctx, p, worker, c, out, work.authorize)
 	case <-ctx.Done():
 		return Message{}, ctx.Err()
 	}
 }
+func (b *Broker) receiveOutcome(ctx context.Context, p model.Principal, worker string, c *Connection, out outcome, authorize Authorize) (Message, error) {
+	if out.err != nil {
+		return Message{}, out.err
+	}
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
+	}
+	if err := authorize(ctx, p, worker); err != nil {
+		return Message{}, err
+	}
+	if err := b.Check(ctx, c); err != nil {
+		return Message{}, err
+	}
+	b.mu.Lock()
+	current := b.connections[key(p.UserID, worker)] == c
+	b.mu.Unlock()
+	if !current {
+		return Message{}, fault("offline", "Worker read-only connection changed before delivery.")
+	}
+	return out.message, nil
+}
+
 func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 	if e := validateResultEnvelope(m); e != nil {
 		return e
@@ -284,7 +345,7 @@ func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 			return fault("invalid_input", "Model capabilities belong to another Provider.")
 		}
 	}
-	authErr := b.authorize(ctx, work.actor, c.WorkerID)
+	authErr := work.authorize(ctx, work.actor, c.WorkerID)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.connections[key(c.OwnerUserID, c.WorkerID)] != c || c.pending[m.RequestID] != work {

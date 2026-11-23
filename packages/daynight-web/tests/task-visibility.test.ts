@@ -2,11 +2,13 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { isRecentCompletion, recentTaskWindow, timestampNanoseconds } from "../src/features/projects/task-visibility";
+import { isRecentCompletion, recentTaskWindow } from "../src/features/projects/task-visibility";
+import { timestampNanoseconds } from "../src/time/timestamp";
 
 const source = resolve(dirname(fileURLToPath(import.meta.url)), "../src/features/projects/task-visibility.ts");
 const calendarProbe = `
-const { recentTaskWindow, timestampNanoseconds } = await import(process.argv[1]);
+const { recentTaskWindow } = await import(process.argv[1]);
+const { timestampNanoseconds } = await import(process.argv[3]);
 const window = recentTaskWindow(timestampNanoseconds(process.argv[2]));
 const iso = (value) => new Date(Number(value / 1_000_000n)).toISOString();
 process.stdout.write(JSON.stringify({ start: iso(window.start), nextMidnight: iso(window.nextMidnight), hours: Number(window.nextMidnight - window.start) / 3_600_000_000_000 }));
@@ -14,7 +16,7 @@ process.stdout.write(JSON.stringify({ start: iso(window.start), nextMidnight: is
 
 // A fresh process makes each timezone effective in both Node and its Date runtime.
 const calendarIn = (timezone: string, now: string): { start: string; nextMidnight: string; hours: number } =>
-  JSON.parse(execFileSync(process.execPath, ["--input-type=module", "--eval", calendarProbe, source, now], {
+  JSON.parse(execFileSync(process.execPath, ["--input-type=module", "--eval", calendarProbe, source, now, resolve(dirname(fileURLToPath(import.meta.url)), "../src/time/timestamp.ts")], {
     env: { ...process.env, TZ: timezone }, encoding: "utf8", timeout: 10_000,
   }));
 

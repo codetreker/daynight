@@ -23,7 +23,22 @@ type downloadReader interface {
 
 // RegisterDownloadTool exposes authorized attachment snapshots to MCP.
 func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
-	if downloads == nil {
+	return registerDownloadTool(e, downloads, false)
+}
+
+// RegisterScopedDownloadTool requires transaction-bound current policy checks.
+func RegisterScopedDownloadTool(e *Entry, downloads interface {
+	downloadReader
+	Scoped() bool
+}) error {
+	if downloads == nil || !downloads.Scoped() {
+		return errors.New("scoped download service is required")
+	}
+	return registerDownloadTool(e, downloads, true)
+}
+
+func registerDownloadTool(e *Entry, downloads downloadReader, scoped bool) error {
+	if e == nil || downloads == nil {
 		return errors.New("download service is required")
 	}
 	var definitions []*sdk.Tool
@@ -33,7 +48,7 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 	if len(definitions) != 1 || definitions[0].Name != "task_attachment_read" {
 		return errors.New("invalid download tool definition")
 	}
-	return e.registerReadTool(definitions[0], func(raw json.RawMessage) BudgetClass {
+	err := e.registerReadTool(definitions[0], func(raw json.RawMessage) BudgetClass {
 		var input struct {
 			Action string `json:"action"`
 		}
@@ -56,6 +71,18 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 		if len(input.Path) > 4096 {
 			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Attachment path exceeds the MCP read limit."}
 		}
+		if scoped {
+			auth, err := AttachmentAuthorizationFromActor(ctx, actor)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if auth.Principal != actor.Principal {
+				return ToolResult{}, errors.New("download authorization identity mismatch")
+			}
+			if err := auth.Validate(); err != nil {
+				return ToolResult{}, err
+			}
+		}
 		principal := mcptransfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}
 		var result map[string]any
 		var err error
@@ -76,4 +103,14 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 		}
 		return ToolResult{Data: result}, nil
 	})
+	if err != nil {
+		return err
+	}
+	if scoped {
+		if e.scopedTools == nil {
+			e.scopedTools = make(map[string]bool)
+		}
+		e.scopedTools[definitions[0].Name] = true
+	}
+	return nil
 }

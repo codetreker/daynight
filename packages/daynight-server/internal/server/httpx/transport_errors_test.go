@@ -1,12 +1,15 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,5 +119,38 @@ func TestRequestTargetLimitsBeforeRouting(t *testing.T) {
 	}
 	if msg := (&URITooLongError{}).Error(); msg == "" {
 		t.Fatal("empty URI limit diagnostic")
+	}
+}
+
+// The wrapper is shared by every request, so an inbox rejection must not
+// change the logger used by concurrent or later non-inbox rejections.
+func TestRequestTargetLimitKeepsSharedLoggerPerRequest(t *testing.T) {
+	var logs bytes.Buffer
+	handler := LimitRequestTarget(slog.New(slog.NewJSONHandler(&logs, nil)), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("oversized request reached the next handler")
+	}))
+	target := "/" + strings.Repeat("a", transport.MaxRequestTargetBytes)
+	serve := func(inbox bool) {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		if inbox {
+			r = r.WithContext(context.WithValue(r.Context(), inboxRecordKey{}, &InboxRecord{}))
+		}
+		handler.ServeHTTP(&failingResponseWriter{header: http.Header{}}, r)
+	}
+	serve(true)
+	serve(false)
+	const rounds = 32
+	var wg sync.WaitGroup
+	for range rounds {
+		wg.Add(2)
+		go func() { defer wg.Done(); serve(true) }()
+		go func() { defer wg.Done(); serve(false) }()
+	}
+	wg.Wait()
+	if got := strings.Count(logs.String(), "\n"); got != rounds+1 {
+		t.Fatalf("non-inbox write failure records = %d, want %d", got, rounds+1)
+	}
+	if strings.Contains(logs.String(), "private-connection-secret") {
+		t.Fatal("write failure record leaked the connection error")
 	}
 }

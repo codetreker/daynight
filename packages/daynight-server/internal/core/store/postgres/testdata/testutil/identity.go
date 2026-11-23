@@ -86,5 +86,5 @@ func DeviceHash(value string) []byte {
 }
 
 func DeviceCredential(now time.Time) model.PersonalAccessToken {
-	return model.PersonalAccessToken{ID: uuid.NewString(), TokenHash: DeviceHash(uuid.NewString()), Name: "test device", CreatedAt: now}
+	return model.PersonalAccessToken{ScopePolicy: PATPolicy(), ID: uuid.NewString(), TokenHash: DeviceHash(uuid.NewString()), Name: "test device", CreatedAt: now}
 }

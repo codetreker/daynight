@@ -50,6 +50,7 @@ func inspectionCoverage(data json.RawMessage) bool {
 }
 
 type MessagePage struct {
+	ContentPolicy string          `json:"-"`
 	SessionID     string          `json:"sessionId"`
 	HistoryEpoch  string          `json:"historyEpoch"`
 	Source        string          `json:"source"`
@@ -60,18 +61,19 @@ type MessagePage struct {
 	ObservedAt    time.Time       `json:"observedAt"`
 }
 type EntryChunk struct {
-	SessionID    string    `json:"sessionId"`
-	HistoryEpoch string    `json:"historyEpoch"`
-	Source       string    `json:"source"`
-	EntryID      string    `json:"entryId"`
-	Revision     string    `json:"revision"`
-	SHA256       string    `json:"sha256"`
-	ByteLength   string    `json:"byteLength"`
-	Offset       string    `json:"offset"`
-	Fragment     string    `json:"fragment"`
-	NextCursor   *string   `json:"nextCursor"`
-	EOF          bool      `json:"eof"`
-	ObservedAt   time.Time `json:"observedAt"`
+	ContentPolicy string    `json:"-"`
+	SessionID     string    `json:"sessionId"`
+	HistoryEpoch  string    `json:"historyEpoch"`
+	Source        string    `json:"source"`
+	EntryID       string    `json:"entryId"`
+	Revision      string    `json:"revision"`
+	SHA256        string    `json:"sha256"`
+	ByteLength    string    `json:"byteLength"`
+	Offset        string    `json:"offset"`
+	Fragment      string    `json:"fragment"`
+	NextCursor    *string   `json:"nextCursor"`
+	EOF           bool      `json:"eof"`
+	ObservedAt    time.Time `json:"observedAt"`
 }
 type TaskSessionCurrent struct {
 	Status           string                 `json:"status"`

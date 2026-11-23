@@ -14,7 +14,7 @@ const endpoint = { id: endpointId, owner: { kind: "personal", id: userId }, life
 const response = (data: unknown, actor: string | null = userId, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...(actor === null ? {} : { "Daynight-User-ID": actor }) } });
 
 describe("Webhook private-state cleanup in the authenticated application", () => {
-  it.each(["signout", "401", "principal mismatch"] as const)("revokes the old view after %s even when storage enumeration fails, then retries cleanup", async trigger => {
+  it.each(["signout", "401", "principal mismatch"] as const)("handles %s with private storage enumeration unavailable", async trigger => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     let actor = userId, denyStorage = false, privateFailure = false;
     const originalLength = Object.getOwnPropertyDescriptor(Storage.prototype, "length")!.get!;
@@ -48,11 +48,21 @@ describe("Webhook private-state cleanup in the authenticated application", () =>
       fireEvent.click(screen.getByRole("button", { name: "Account menu: Alice" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     } else { privateFailure = true; fireEvent.click(screen.getByRole("button", { name: "Refresh" })); }
+    if (trigger === "principal mismatch") {
+      await screen.findByText("Account changed");
+      expect(screen.getByRole("heading", { name: "Private endpoint", level: 2 })).toBeVisible();
+      expect(document.body.textContent).toContain("authorization=private-marker");
+      expect(sessionStorage.getItem(pendingKey)).not.toBeNull();
+      expect(screen.queryByText("Local recovery records could not be cleared.")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Account menu: Bob" })).toBeNull();
+      expect(fetch.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+      expect(fetch.mock.calls.filter(([url, init]) => url.includes("webhooks") && init?.method !== undefined && init.method !== "GET")).toHaveLength(0);
+      return;
+    }
     await screen.findByText("Local recovery records could not be cleared.");
     await waitFor(() => expect(document.body.textContent).not.toContain("authorization=private-marker"));
     expect(screen.queryByRole("heading", { name: "Private endpoint" })).toBeNull();
     expect(sessionStorage.getItem(pendingKey)).not.toBeNull();
-    if (trigger === "principal mismatch") await screen.findByRole("button", { name: "Account menu: Bob" });
     expect(fetch.mock.calls.filter(([url, init]) => url.includes("webhooks") && init?.method !== undefined && init.method !== "GET")).toHaveLength(0);
     denyStorage = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));

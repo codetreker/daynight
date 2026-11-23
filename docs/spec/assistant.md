@@ -1,6 +1,8 @@
 # 助手
 
-## 当前范围
+## 范围与能力
+
+本文的管理、登记、grant 及独立恢复 v1 合同描述服务端接口。“Bot 本地存储与恢复合同”还包含 Worker 与 Provider 的独立验收要求；服务端接口存在不表示真实 Provider 恢复已通过。未登记恢复身份的 Bot 继续使用既有 Worker 与父 PAT 规则；登记后只接受带恢复证明及承载代次的新运行时写接口。没有对应能力的 Worker 不能启用恢复或退回旧写接口。
 
 Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供公开 Bot CLI、远端 Worker 查询、名字创建的默认解析、幂等定义存储、查询、删除屏障与服务端历史清理，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；`worker run` 组合原生执行托管、恢复和私有资料清理，网页全局侧栏提供助手入口。首次创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用；同请求重放保留原资源的当前状态，包括删除责任，不复活定义。
 
@@ -10,7 +12,7 @@ Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项�
 
 ## 产品入口与托管
 
-登录后的全局侧栏提供助手入口，列表和对话使用 `/bots` 与 `/bots/{id}`。名字创建通过轻量弹窗使用可用默认 Worker、普通目录和 Agent；Worker、目录、Agent、Model 与 Reasoning effort 设置默认折叠。默认摘要显示实际目标与配置来源，阅读默认值不产生显式覆盖。目录浏览使用目标 Worker 的只读通道，只有确认目录或明确选择机器相关选项才绑定 Worker；取消浏览不改变创建请求。弹窗开关不改变当前助手 Session、草稿、阅读位置或生命周期。旧 Worker 缺少 `assistantHost` 时不可作为可用默认候选，不能因在线标签而推导托管支持。现有 Task、Herdr 和独立 Test 入口保持各自身份；不自动迁移 Test，也不恢复已撤销的 Conversations。
+登录后的全局侧栏提供助手入口，列表和对话使用 `/bots` 与 `/bots/{id}`。名字创建通过轻量弹窗使用可用默认 Worker、普通目录和 Agent；Worker、目录、Agent、Model 与 Reasoning effort 设置默认折叠。默认摘要显示实际目标与配置来源，阅读默认值不产生显式覆盖。目录浏览使用目标 Worker 的只读通道，只有确认目录或明确选择机器相关选项才绑定 Worker；取消浏览不改变创建请求。弹窗开关不改变当前助手 Session、草稿、阅读位置或生命周期。旧 Worker 缺少 `assistantHost` 时不可作为可用默认候选，不能因在线标签而推导托管支持。Task、旧 Herdr 只读历史和独立 Test 入口保持各自身份；不自动迁移 Test，也不恢复已撤销的 Conversations。
 
 `worker run` 在同一前台进程中托管 Bot，与任务执行槽和项目准备独立，允许零仓库运行。能力广告来自实际组合的托管模块和当前有效配置；配置变化影响新建默认与首次意图，不修改已冻结 Bot。关闭聊天或浏览器不停止执行，Worker 离线时如实显示不可联系。正常退出等待 Task 和 Bot 的停止结果，重启沿原 Session/native identity 恢复，不重放业务请求；缺失身份、停证或授权时保留错误和恢复资料，不启动空白替代。
 
@@ -26,6 +28,59 @@ Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项�
 - `version` 和 `creationOrder` 为正 int64；HTTP 使用十进制字符串，不能经浮点数转换。时间为 UTC RFC3339。
 - 尚未登记时 `roleConfiguration`、`sessionId` 和 `testExecutionId` 为 null。登记后一个 Bot 只关联一个稳定的独立 Session；恢复改变 generation，不新建空白 Session。
 - Session 保持独立 `testExecutionId` wire 分支，不携带虚构的 Task、claim、project 或 worktree。`startupResult.state=pending` 不证明原生进程已启动或 Worker 当前在线。
+
+## Bot 本地存储与恢复合同
+
+### 数据归属与迁移
+
+在当前服务域及账号作用域内，`bots/<botId>/` 是该 Bot SQLite、执行意图、启动与恢复记录、Controller 票据及 journal、助手任务凭据、近期缓存和原生恢复材料的权威本地位置。路径由同一解析规则派生，创建、续跑、修复和删除使用同一归属。`worker/state.sqlite` 和公共 `controller/executions/` 不再是支持该能力的 Bot 的权威存储；公共索引可重建，清空后仍能从 Bot 目录发现原助手。目录内身份必须匹配服务、owner 和 Bot，不能仅凭目录名字信任内容。服务端继续共用现有数据库和资源设施，以 owner、Bot、Session 和用途隔离权限与期限，不要求独立服务端数据库。
+
+Bot ID 是稳定业务身份；Worker ID 是当前承载实例。业务 cwd、独立 Task、共享 Provider 登录材料各有其所有者。Bot 专属原生副本属于 Bot 私有资料，删除仍需原执行可靠停止；最小删除责任与原回执须保留到两端清理确认，不能随 journal 或整个目录先行删除而丢失重试证据。共享 native home 不在该删除范围内。
+
+迁移先取得 Bot 独占锁并证明旧执行停止，再复制一致 SQLite 快照、已提交 WAL 和关联资源，核对身份、摘要及原生记录。位置切换前只有旧位置可写，原子切换后只有新位置可写；持久迁移阶段支持中断后继续，禁止双写。跨端恢复身份登记及其回执是独立的可核对阶段，不能以本地复制成功推断服务端已接受。身份、原生记录或停证缺失时保留仍可看的材料并报告缺项，不创建同名新线程代替恢复。
+
+### Provider 恢复与能力
+
+每个 Provider 必须声明恢复所需最小文件集、原 `nativeSessionId`、兼容版本和最后已保护轮次。优先让原生会话直接写入 Bot 专属位置；不能安全隔离时，轮次结束并确认写入后生成一致副本，校验成功再替换旧恢复点。仅保存指向公共目录的路径不足以满足恢复要求，也不得复制整个用户 home。隔离 Provider home 必须保持并实测配置、工具发现及当前账号登录语义。
+
+Codex 必须以发生 compact 的线程验证同一 ID resume 后继续下一轮；Claude、Copilot 各自提供真实版本、原生 ID、恢复后下一轮及副作用未重跑的证据。受控适配器不证明原生恢复。单磁盘副本只覆盖公共目录清理，不能覆盖磁盘或整机丢失。首版只承诺同机恢复；跨机需要异机恢复点、工作区交接、目标 Provider 实测与防双执行协议，复制目录或时间线不提供这些证明。
+
+### 独立接管与写入屏障
+
+新 Worker 启动先扫描本机 Bot 目录，再核对服务端归属；按新 workerId 过滤的远端 inventory 不是唯一发现入口。接管须使用当前有效账号认证、持久受保护的恢复身份及相同服务域，验证 Bot 未删除、owner 和 Session 访问仍有效，再取得本机 Bot 独占锁。原 PAT 已失效时不能当作恢复凭据，服务端核验新认证后重新签发新执行授权。该操作独立于普通 Task claim，也不重新认领 Bot 持有的助手业务任务。
+
+旧 Controller 存活时优先核对身份并重新连接；需要新进程时，必须先证明旧执行停止。心跳过期或撤销服务端权限不等于外部命令已停止。接管按预期旧承载代次原子更新 Worker 和执行授权，保持 Bot ID、平台 Session、testExecutionId 及已知 nativeSessionId；拒绝旧代次迟到写入。承载代次与 Controller executionGeneration 分开：接回同一存活 Controller 不凭空制造新原生执行，重新启动沿既有 previousGeneration／stopProof 条件推进。恢复成功并完成当前身份同步前不开放输入。
+
+请求结果未知时，只核对持久原请求及其结果，不分配新请求或新线程、重发业务输入。两个候选接管只能有一个取得同一预期代次；失败者观察原状态。旧命令副作用未知时显示待核对，缓存可读不改变这一限制。
+
+### 字段、版本与失败语义
+
+新增字段通过独立版本化接管／观测合同交换，既有管理 DTO 和 `/grant` 不静默扩展。恢复登记、接管、grant、report 与原操作查询由[独立恢复 v1 协议](../design/assistant.md#服务端恢复-v1-协议)提供；机器定位与可用性由[服务端观测 v1 协议](../design/assistant.md#服务端观测-v1-协议)提供。下表的 Provider 备份字段仍须由其生产方声明能力，不能从恢复回执或在线状态推导。
+
+| 字段／能力 | 语义 |
+| --- | --- |
+| `botRecoveryVersion=1` | 本地独立存储、恢复身份登记及同机接管能力；须同时核对服务端与 Worker 支持。 |
+| `recoveryIdentity` | 绑定 serviceOrigin、ownerUserId、botId 的受保护证明；秘密材料不出现在公开 DTO、日志或时间线。 |
+| `operationId`、`expectedHostingGeneration` | 持久原接管请求 UUID 与精确十进制旧承载代次；不能用当前值盲重放未知写入。 |
+| `workerId`、`hostingGeneration` | 已确认承载 Worker 与单调推进的承载代次；与 Session 的 executionGeneration、connectionEpoch 各有语义。 |
+| `sessionId`、`testExecutionId`、`nativeSessionId` | 原 Session 身份；首次尚无 native ID 可为 null，恢复不以 null 代替已知 ID。 |
+| `provider`、`providerVersion`、`recoveryFormatVersion`、`protectedThroughTurn` | 恢复材料适配版本及最后已校验轮次；未知轮次为 null，不宣称完整备份。 |
+| `machine`、`observedAt`、`freshUntil` | 最后确认机器 ID／显示名与观测时效；离线仍保留定位，不能以当前 Worker 配置猜机器。 |
+| `state`、`reason` | `offline`、`connecting`、`recovering`、`idle`、`working`、`abnormal`，附实际原因；当前 Bot 代次和同步事实决定状态。 |
+
+无能力为 `upgrade_required`；账号认证失效为 `unauthenticated`，错误 owner／服务域为拒绝访问，预期代次或执行权冲突为 `resource_conflict`。缺恢复材料、Provider 不可用、不兼容版本、旧执行未证实停止必须有可区分原因，分别为 `recovery_material_missing`、`provider_unavailable`、`recovery_version_unsupported`、`stop_unconfirmed`。未知结果保持 `outcome_unknown`，不能映射成失败重试许可。旧接口仍维持原错误形状；新增错误通过版本化合同提供。
+
+Worker 心跳过期显示 offline 并保留机器、主机名与最后时间，提示在该机器运行 `daynight worker run`。上线但定位、接管或同步未完成显示 connecting/recovering；已证实缺件或执行权冲突显示 abnormal 及具体补救。idle/working 只取该 Bot 当前代次已同步 Session 的当前轮次；同机其它任务活动和持久 ready 不改变它。首次尚无原生 ID 显示 connecting。已有授权缓存只供阅读，不恢复实时 Working、计时或发送资格。
+
+`GET /api/v1/me/bots/{botId}/observation` 返回独立 `schemaVersion=1` 的观测 DTO，也支持 HEAD；不接受 query。它使用当前有效账号与 Bot 归属授权，不要求原创建 PAT 仍有效，不启动 Provider、不写 Session、不签发 grant，且不返回发送权限。旧 Bot 列表、详情及 Worker inventory 的 DTO 与创建时 Worker 字段保持原义。未升级服务没有此入口时，客户端不得由旧 ready 构造新观测。
+
+观测返回当前承载 `workerId`、可空 `machine`、`provider`、原平台及原生 Session 身份、承载与连接代次、`state`／`reason`、服务端 `observedAt`、可空 `workerLastSeenAt`／`sessionLastSeenAt`／`freshUntil` 和仅工作中有效的 `currentTurnId`。版本及代次为十进制字符串，未知值明确为 null；未登记恢复身份的 `hostingGeneration` 为 null。机器定位不受普通 Worker 查询的 72 小时窗口影响。恢复登记的机器 ID 保持不变，同一机器的新上报名称可以更新显示；不同机器 ID 不覆盖已确认定位。
+
+Worker 报告年龄须严格小于 120 秒；有效在线活动还要求当前 Session 心跳年龄严格小于 30 秒、持久连接租约未到期、相同 Controller fence、年龄严格小于 30 秒的当前 relay 已提交同步采样。`freshUntil` 取所用事实的最早截止时间，客户端到期须撤下实时状态并刷新，不能延续计时。只有其它 relay 的连接时返回 recovering／`session_observation_unavailable`，不从数据库的历史 activity 猜测在线活动。原生记录缺失等已确认启动失败保留其实际错误码，过期的 Provider 预检失败不覆盖当前已同步的 Bot 活动。
+
+### 恢复验证边界
+
+真实 SQLite/WAL、目录和锁验证隔离、迁移各提交点中断、单一写入位置及删除范围。Worker 模块验证清空公共索引、新 workerId、本地发现、登记未知结果、存活 Controller、双候选及旧操作不重发。服务端模块用隔离 PostgreSQL 验证原子接管、旧代拒绝、错误账号及新认证恢复；Provider 逐项以真实 CLI 证明 resume。Web 验证离线机器定位、时效到达、异常原因与缓存只读。缓存清空后原线程继续工作是恢复与展示存储分离的验收条件。规格检查不替代这些实现证据。
 
 ## 默认值与成功偏好
 

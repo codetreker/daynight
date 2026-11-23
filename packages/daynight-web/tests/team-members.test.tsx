@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TeamMembersPanel } from "../src/features/teams/TeamMembersPanel";
+import { cancelAuthNetworkRequests } from "../src/api/client";
 import { navigate } from "../src/app/router";
 import { createTaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { createLocaleRender } from "./helpers/renderWithLocale";
@@ -17,13 +18,13 @@ const profile = (name: string | null) => ({ name, email: null, avatarUrl: null }
 const response = (value: unknown, status = 200, principal = userId) => new Response(stringifyWireJson(value), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": principal } });
 const fail = (code: string) => response({ error: { code, message: "failure", requestId: "request-1" } }, 409);
 
-const setup = (options: { actor?: Role; other?: Role; personal?: boolean; invitations?: readonly unknown[]; teamRead?: () => Response | Promise<Response> | undefined; rosterRead?: () => Response | Promise<Response> | undefined; invitationRead?: () => Response | Promise<Response> | undefined; mutate?: (method: string, body: string) => Response | Promise<Response> } = {}) => {
+const setup = (options: { actor?: Role; other?: Role; personal?: boolean; invitations?: readonly unknown[]; teamRead?: () => Response | Promise<Response> | undefined; rosterRead?: () => Response | Promise<Response> | undefined; invitationRead?: () => Response | Promise<Response> | undefined; mutate?: (method: string, body: string, signal: AbortSignal | null | undefined) => Response | Promise<Response> } = {}) => {
   let actor = options.actor ?? "admin", other = options.other ?? "admin", unavailable = false, forbidden = false, networkFailure = false;
   const changed = vi.fn(), left = vi.fn(), mismatch = vi.fn(), onUnavailable = vi.fn(() => "forgotten" as const);
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: mismatch });
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
-    if (method !== "GET") return Promise.resolve(options.mutate?.(method, String(init?.body)) ?? fail("forbidden"));
+    if (method !== "GET") return Promise.resolve(options.mutate?.(method, String(init?.body), init?.signal) ?? fail("forbidden"));
     if (networkFailure && (url === `/api/v1/teams/${teamId}` || url === `/api/v1/teams/${teamId}/members`)) return Promise.reject(new TypeError("network failure"));
     if (forbidden && (url === `/api/v1/teams/${teamId}` || url === `/api/v1/teams/${teamId}/members`)) return Promise.resolve(response({ error: { code: "forbidden", message: "forbidden", requestId: "request-1" } }, 403));
     if (unavailable && (url === `/api/v1/teams/${teamId}` || url === `/api/v1/teams/${teamId}/members`)) return Promise.resolve(response({ error: { code: "not_found", message: "not_found", requestId: "request-1" } }, 404));
@@ -64,11 +65,12 @@ describe("Team members", () => {
       expect(document.querySelectorAll(".empty-inline")).toHaveLength(0); expect(writes(fixture.fetcher)).toHaveLength(0);
     };
     check(); fixture.rerender(panel(true)); check(); fixture.rerender(panel(false));
-    await waitFor(() => { expect(teamReads).toBe(2); expect(rosterReads).toBe(2); expect(invitationReads).toBe(2); }); check();
+    await waitFor(() => { expect(teamReads).toBe(2); expect(rosterReads).toBe(2); expect(invitationReads).toBe(1); }); check();
     await act(async () => teamRead.resolve(response({ id: teamId, kind: "ordinary", name: "Alpha", version: 1n, createdAt: time, updatedAt: time, membership: membership(userId, "admin") }))); check();
     holdReady = true;
     await act(async () => rosterRead.resolve(response({ items: [{ ...membership(userId, "admin"), profile: profile("Alice") }, { ...membership(otherId, "admin", 9007199254740993n), profile: profile(null) }] }))); check();
     holdReady = false; await act(async () => readyGate.resolve()); check();
+    await waitFor(() => expect(invitationReads).toBe(2));
     await act(async () => invitationRead.resolve(response({ items: [{ ...invitation }] }))); check();
     expect(within(dialog).getByRole("button", { name: "Remove member" })).toBeEnabled();
   });
@@ -77,10 +79,14 @@ describe("Team members", () => {
     await screen.findByText("Alice", { exact: false, selector: ".person-name" });
     const other = row(otherId);
     expect(within(other).getByRole("button", { name: "Remove" })).toBeEnabled();
-    fireEvent.change(within(other).getByRole("combobox"), { target: { value: "member" } });
+    const role = within(other).getByRole("combobox");
+    fireEvent.change(role, { target: { value: "member" } });
+    expect(role).toHaveValue("admin");
+    expect(writes(fixture.fetcher)).toHaveLength(0);
     expect(screen.getByRole("dialog", { name: "Change Team role" })).toHaveTextContent("Administrator → Member");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(other).getByRole("combobox")).toBe(role); expect(role).toHaveValue("admin");
     expect(writes(fixture.fetcher)).toHaveLength(0);
   });
   it("lets members leave but prevents changes to other people", async () => {
@@ -90,6 +96,61 @@ describe("Team members", () => {
     expect(within(row(otherId)).getByRole("button", { name: "Remove" })).toBeDisabled();
     expect(within(row("Alice")).getByRole("button", { name: "Leave Team" })).toBeEnabled();
   });
+  it("explains the last admin exit restriction on hover or focus without opening a confirmation", async () => {
+    const fixture = setup({ other: "member" });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    const leave = within(row("Alice")).getByRole("button", { name: "Leave Team" });
+    const reason = document.getElementById(leave.getAttribute("aria-describedby")!)!;
+    expect(leave).toHaveAttribute("aria-disabled", "true");
+    expect(leave).not.toHaveAttribute("disabled");
+    expect(leave).toHaveAccessibleDescription("At least one admin must remain.");
+    expect(reason).not.toBeVisible();
+    expect(document.querySelector(".team-member-caption")).toBeNull();
+    expect(within(row("Alice")).getByRole("combobox")).toBeDisabled();
+    fireEvent.pointerEnter(leave); expect(reason).toBeVisible();
+    fireEvent.pointerLeave(leave); expect(reason).not.toBeVisible();
+    act(() => leave.focus()); expect(leave).toHaveFocus(); expect(reason).toBeVisible();
+    fireEvent.pointerEnter(leave); fireEvent.pointerLeave(leave); expect(reason).toBeVisible();
+    fireEvent.pointerEnter(leave); act(() => leave.blur()); expect(reason).toBeVisible();
+    fireEvent.pointerLeave(leave); expect(reason).not.toBeVisible();
+    act(() => leave.focus()); expect(reason).toBeVisible();
+    fireEvent.keyDown(leave, { key: "Escape" }); expect(reason).not.toBeVisible(); expect(leave).toHaveFocus();
+    act(() => leave.blur()); act(() => leave.focus()); expect(reason).toBeVisible();
+    fireEvent.click(leave); fireEvent.keyDown(leave, { key: "Enter" }); fireEvent.keyDown(leave, { key: " " });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(writes(fixture.fetcher)).toHaveLength(0);
+    const panel = (active: boolean) => <TeamMembersPanel teamId={teamId} active={active} admission={fixture.scope} onIdentityMismatch={fixture.mismatch} onChanged={fixture.changed} onLeft={fixture.left} />;
+    fixture.rerender(panel(false)); expect(reason).not.toBeVisible();
+    fixture.rerender(panel(true)); expect(reason).not.toBeVisible();
+    act(() => leave.blur()); act(() => leave.focus()); expect(reason).toBeVisible();
+    act(() => leave.blur()); expect(reason).not.toBeVisible();
+    fixture.unmount(); expect(reason).not.toBeInTheDocument();
+  });
+  it.each([
+    { name: "another last admin", actor: "member", other: "admin", personal: false },
+    { name: "multiple admins", actor: "admin", other: "admin", personal: false },
+    { name: "ordinary members", actor: "member", other: "member", personal: false },
+    { name: "Personal Team", actor: "admin", other: "member", personal: true },
+  ] as const)("does not attach the last admin exit reason to $name", async ({ actor, other, personal }) => {
+    setup({ actor, other, personal });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    for (const button of within(document.querySelector(".team-members-list") as HTMLElement).getAllByRole("button")) {
+      expect(button).not.toHaveAttribute("aria-describedby");
+      fireEvent.pointerEnter(button); fireEvent.focus(button);
+    }
+    expect(screen.queryByRole("tooltip", { hidden: true })).toBeNull();
+    expect(screen.queryByText("At least one admin must remain.")).toBeNull();
+  });
+  it("still requires confirmation for an allowed exit and does not submit cancellation", async () => {
+    const fixture = setup();
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    fireEvent.click(within(row("Alice")).getByRole("button", { name: "Leave Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Leave Team" });
+    expect(within(dialog).getByRole("button", { name: "Leave Team" })).toBeEnabled();
+    expect(writes(fixture.fetcher)).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull(); expect(writes(fixture.fetcher)).toHaveLength(0);
+  });
   it("keeps Personal membership immutable", async () => {
     setup({ personal: true });
     await screen.findByText("Personal Team membership and role are fixed.");
@@ -97,6 +158,89 @@ describe("Team members", () => {
     expect(screen.getByRole("button", { name: "Leave Team" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
   });
+  it("settles a member receipt while admission waits and publishes it only after recovery", async () => {
+    const write = Promise.withResolvers<Response>(), gate = Promise.withResolvers<void>(); let held = false;
+    const fixture = setup({ mutate: () => write.promise });
+    const originalReady = fixture.scope.ready.bind(fixture.scope);
+    vi.spyOn(fixture.scope, "ready").mockImplementation(async (signal) => {
+      await originalReady(signal);
+      if (held) await new Promise<void>((resolve, reject) => {
+        const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener("abort", abort, { once: true });
+        void gate.promise.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+      });
+      signal.throwIfAborted();
+    });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" }); await screen.findByText(/No active invitations/);
+    fireEvent.change(within(row(otherId)).getByRole("combobox"), { target: { value: "member" } });
+    const dialog = screen.getByRole("dialog", { name: "Change Team role" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm change" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1));
+    const readsBefore = fixture.fetcher.mock.calls.filter(([, init]) => !init?.method || init.method === "GET").length;
+    held = true;
+    await act(async () => write.resolve(response({ membership: membership(otherId, "member", 9007199254740994n), actorRole: "admin" })));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    expect(fixture.changed).not.toHaveBeenCalled();
+    expect(fixture.fetcher.mock.calls.filter(([, init]) => !init?.method || init.method === "GET")).toHaveLength(readsBefore);
+    fixture.setOther("member"); held = false; await act(async () => gate.resolve());
+    await waitFor(() => expect(fixture.changed).toHaveBeenCalledOnce());
+    await waitFor(() => expect(within(row(otherId)).getByRole("combobox")).toHaveValue("member")); expect(writes(fixture.fetcher)).toHaveLength(1);
+  });
+  it("retains an unpublished invitation receipt when another confirmation is opened", async () => {
+    const inviteId = "00000000-0000-4000-8000-000000000004";
+    const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    const write = Promise.withResolvers<Response>(), gate = Promise.withResolvers<void>(); let held = false;
+    const fixture = setup({ mutate: () => write.promise });
+    const originalReady = fixture.scope.ready.bind(fixture.scope);
+    vi.spyOn(fixture.scope, "ready").mockImplementation(async (signal) => { if (held) await gate.promise; await originalReady(signal); });
+    const invite = await screen.findByRole("button", { name: "Invite member" }); await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    const dialog = screen.getByRole("dialog", { name: "Create Team invitation" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create invitation link" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1)); held = true;
+    await act(async () => write.resolve(response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201)));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" })); fireEvent.click(invite);
+    const next = screen.getByRole("dialog", { name: "Create Team invitation" });
+    expect(within(next).getByRole("button", { name: "Create invitation link" })).toBeDisabled();
+    held = false; await act(async () => gate.resolve());
+    expect(screen.getByRole("dialog", { name: "Create Team invitation" })).toBe(next);
+    fireEvent.click(within(next).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByDisplayValue(link)).toBeVisible(); expect(writes(fixture.fetcher)).toHaveLength(1);
+  });
+
+  it("recovers a confirmed invitation link after publication admission fails without another write", async () => {
+    const inviteId = "00000000-0000-4000-8000-000000000004";
+    const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    const write = Promise.withResolvers<Response>();
+    const fixture = setup({ mutate: () => write.promise });
+    const invite = await screen.findByRole("button", { name: "Invite member" }); await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create invitation link" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1));
+    const originalReady = fixture.scope.ready.bind(fixture.scope); let fail = true;
+    vi.spyOn(fixture.scope, "ready").mockImplementation(async (signal) => { if (fail) { fail = false; throw new Error("publication gate failed"); } await originalReady(signal); });
+    await act(async () => write.resolve(response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201)));
+    expect(await screen.findByText("The operation succeeded, but its result could not be displayed.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry showing result" }));
+    expect(await screen.findByDisplayValue(link)).toBeVisible(); expect(writes(fixture.fetcher)).toHaveLength(1);
+  });
+
+  it("classifies a dispatched member write cancelled by the network lifetime as unknown", async () => {
+    const fixture = setup({ mutate: (_method, _body, signal) => new Promise<Response>((_resolve, reject) => {
+      if (!signal) throw new Error("missing network signal");
+      if (signal.aborted) reject(signal.reason); else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }) });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    fireEvent.click(within(row(otherId)).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove member" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove member" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1));
+    act(() => cancelAuthNetworkRequests());
+    expect(await within(dialog).findByText(/result is unknown/i)).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Remove member" })).toBeNull();
+    expect(fixture.changed).not.toHaveBeenCalled(); expect(writes(fixture.fetcher)).toHaveLength(1);
+  });
+
   it("submits self demotion with the observed version and refreshes context", async () => {
     const fixture = setup({ mutate: () => { fixture.setActor("member"); return response({ membership: membership(userId, "member", 2n), actorRole: "member" }); } });
     await screen.findByText("Alice", { exact: false, selector: ".person-name" });
@@ -321,6 +465,7 @@ describe("Team members", () => {
     await waitFor(() => expect(reads).toBe(2)); expect(check).toBeDisabled();
     fixture.rerender(panel(true)); expect(dialog).toBeVisible(); expect(check).toBeDisabled();
     fixture.rerender(panel(false)); await waitFor(() => expect(reads).toBe(3));
+    await act(async () => {}); expect(reads).toBe(3);
     await act(async () => interrupted.resolve(response({ items: [{ ...invitation }] })));
     expect(dialog).toBeVisible(); expect(within(dialog).getByText(/invitation change was not confirmed/)).toBeVisible();
     expect(screen.queryByText(/original result is still unknown/)).toBeNull();

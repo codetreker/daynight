@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -51,6 +52,45 @@ func taskError(t *testing.T, client *sdk.ClientSession, name string, args map[st
 func taskResourceFault(code string) error {
 	return &model.Fault{Code: code, Message: "Task operation refused."}
 }
+
+func TestMCPGoalLifecycleFaultsAndUnknownCommit(t *testing.T) {
+	for _, code := range []string{"goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "write_outcome_unknown"} {
+		t.Run(code, func(t *testing.T) {
+			f := newTaskResourceFixture(t)
+			current := taskFixtureTask()
+			var failure error = taskResourceFault(code)
+			if code == "write_outcome_unknown" {
+				failure = &taskservice.GoalWriteUnknown{Cause: &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true}}
+			}
+			args := map[string]any{"projectId": f.project, "taskId": current.ID, "ifVersion": "1"}
+			name := "task_set_status"
+			if code == "goal_dependency_referenced" {
+				name = "task_delete"
+				f.operations.wantCalls["Delete"]++
+				f.operations.DeleteFunc = func(_ context.Context, _ model.Principal, _, id string, input taskcore.DeleteTask) error {
+					if id != current.ID || input.Version != 1 {
+						t.Error("delete input changed")
+					}
+					return failure
+				}
+			} else {
+				args["status"] = "done"
+				expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone}, current, failure)
+			}
+			result, envelope := callTaskResource(t, f.client, name, args)
+			fault := object(t, envelope["error"])
+			if !result.IsError || fault["code"] != code {
+				t.Fatalf("Goal lifecycle refusal: %#v", envelope)
+			}
+			if code == "write_outcome_unknown" && fault["writeOutcome"] != "unknown" {
+				t.Fatalf("MCP lost unknown completion: %#v", envelope)
+			}
+			if strings.Contains(fmt.Sprint(envelope), "private-endpoint") {
+				t.Fatalf("Goal refusal leaked endpoint: %#v", envelope)
+			}
+		})
+	}
+}
 func taskResourceStatus(value model.TaskStatus) *model.TaskStatus { return &value }
 func taskResourceString(value string) *string                     { return &value }
 func taskResourceList(value ...string) *[]string                  { return &value }
@@ -67,6 +107,7 @@ func expectTaskGet(t *testing.T, f *taskResourceFixture, result model.Task, err 
 }
 func expectTaskCreate(t *testing.T, f *taskResourceFixture, input taskcore.CreateTask, result model.Task, err error) {
 	t.Helper()
+	input.DefaultAssignedTo = &f.principal.UserID
 	f.operations.wantCalls["Create"]++
 	f.operations.CreateFunc = func(_ context.Context, _ model.Principal, _ string, actual taskcore.CreateTask) (model.Task, error) {
 		if !reflect.DeepEqual(actual, input) {
@@ -404,26 +445,20 @@ func TestMCPTaskCancellationPreservesReadabilityAndSatisfiesDependencies(t *test
 	}
 }
 
-func TestMCPTaskCancellationRequiresReleaseAndRetainsClaimHistory(t *testing.T) {
+func TestMCPTaskCancellationRequiresReleaseAndClearsClaim(t *testing.T) {
 	f := newTaskResourceFixture(t)
 	current := taskFixtureTask()
 	current.Version, current.AllowAgents, current.Status = 3, true, model.TaskInProgress
 	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 3, Status: model.TaskCancelled}, current, taskResourceFault("invalid_transition"))
 	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "3"}, "invalid_transition")
-	claim := uuid.NewString()
-	worker, err := json.Marshal(map[string]any{"claimId": claim, "state": "released"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	cancelled := current
 	stamp := current.UpdatedAt.Add(time.Minute)
 	cancelled.Version, cancelled.Status, cancelled.CancelledAt = 5, model.TaskCancelled, &stamp
-	cancelled.Properties = model.TaskProperties{"worker": worker}
+	cancelled.Properties = model.TaskProperties{}
 	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 4, Status: model.TaskCancelled}, cancelled, nil)
 	resource := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "4", "returnView": "full"})
-	history := object(t, object(t, resource["properties"])["worker"])
-	if resource["status"] != "cancelled" || resource["allowAgents"] != true || history["state"] != "released" || history["claimId"] != claim {
-		t.Fatalf("released cancellation history: %#v", resource)
+	if resource["status"] != "cancelled" || resource["allowAgents"] != true || object(t, resource["properties"])["worker"] != nil {
+		t.Fatalf("released cancellation retained ownership: %#v", resource)
 	}
 }
 
@@ -456,14 +491,18 @@ func TestMCPTaskPropertyBudgetFollowsMode(t *testing.T) {
 	}
 	defer release()
 	schema := taskData(t, f.client, "task_properties", map[string]any{"mode": "schema"})
-	if _, ok := object(t, schema["properties"])["paused"]; !ok {
+	definitions := object(t, schema["properties"])
+	if definitions["paused"] == nil || definitions["blocked"] == nil {
 		t.Fatalf("schema response: %#v", schema)
 	}
 	taskError(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID}, "resource_busy")
 	release()
-	expectTaskGet(t, f, taskFixtureTask(), nil)
+	item := taskFixtureTask()
+	item.Properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
+	expectTaskGet(t, f, item, nil)
 	values := taskData(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID})
-	if values["taskId"] != testTargetID {
+	properties := object(t, values["properties"])
+	if properties["blocked"] != false || properties["paused"] != false || values["taskId"] != testTargetID {
 		t.Fatalf("property response: %#v", values)
 	}
 }
@@ -604,7 +643,7 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	tool := simpleTestTool("invalid_budget", testObjectSchema(), standardOutputSchema())
+	tool := simpleTestTool("invalid_budget", testObjectSchema())
 	err = entry.RegisterTool(tool, BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		t.Error("invalid-budget handler invoked")
 		return ToolResult{}, errors.New("invalid-budget handler invoked")
@@ -629,7 +668,7 @@ func TestMCPTaskWriteAdmission(t *testing.T) {
 	expectTaskGet(t, f, current, nil)
 	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Description: taskResourceString(strings.Repeat("d", 65537))}, nil, nil, current, taskResourceFault("invalid_input"))
 	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "description": strings.Repeat("d", 65537)}, "invalid_input")
-	dependencies := make([]string, 16)
+	dependencies := make([]string, 31)
 	for i := range dependencies {
 		dependencies[i] = uuid.NewString()
 	}

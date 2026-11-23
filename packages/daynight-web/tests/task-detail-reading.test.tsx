@@ -1,11 +1,10 @@
-import { createRef, useState } from 'react';
+import { useState } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { TaskDetailNavigation } from '../src/app/router';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
-import type { AttachmentKeyboardOwner } from '../src/features/task-detail/attachments/AttachmentPreview';
 import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 import { LanguageSelector } from '../src/i18n/LanguageSelector';
 import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale';
@@ -13,7 +12,7 @@ import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale
 const render = createLocaleRender('zh-CN');
 const projectId = '00000000-0000-4000-8000-000000000100';
 const taskId = '00000000-0000-4000-8000-000000000001';
-const root = `/api/v1/projects/${projectId}/tasks/${taskId}/preview/`;
+const root = `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/`;
 const time = '2026-10-21T00:00:00Z';
 const file = (path: string, contentType = 'text/markdown'): Attachment => ({ path, contentType, sizeBytes: 10, createdAt: time, updatedAt: time });
 const deferred = <T,>() => {
@@ -24,21 +23,19 @@ const deferred = <T,>() => {
 };
 const fixture = (items: readonly Attachment[] = [file('plan.md')]): AttachmentApi => ({
   list: vi.fn(async () => ({ items, nextCursor: null })),
-  readText: vi.fn(async (_project, _task, path) => `# Preview ${path}`),
-  checkPreview: vi.fn(async () => {}), put: vi.fn(), remove: vi.fn(),
+  readText: vi.fn(async (_project, _task, path) => `# Preview ${path}`), put: vi.fn(), remove: vi.fn(),
 });
 const reading = (api: AttachmentApi, description = '[方案](plan.md)', id = taskId) => <TaskDetailReading key={id} projectId={projectId} taskId={id} api={api} description={description} overview={(content) => <section aria-label="描述">{content}</section>} />;
 const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概览' }));
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
-  it('shares Task-root Markdown and the existing attachment controller with Steps', async () => {
+  it('opens Task-root Markdown attachments through the existing attachment controller', async () => {
     const api = fixture([file('docs/result.md')]);
-    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md)"
-      overview={(content) => content} steps={(_active, markdown) => markdown('[Step result](docs/result.md) ![Step image](images/chart.png)')} />);
-    fireEvent.click(screen.getByRole('tab', { name: '步骤' }));
-    expect(screen.getByRole('img', { name: 'Step image' })).toHaveAttribute('src', `${root}images/chart.png`);
-    const link = screen.getByRole('link', { name: 'Step result' });
+    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md) ![Overview image](images/chart.png)" overview={(content) => content} />);
+    expect(screen.getByRole('img', { name: 'Overview image' })).toHaveAttribute('src', `${root}images/chart.png`);
+    const link = screen.getByRole('link', { name: 'Overview result' });
+    expect(link.closest('.description-card')).not.toBeNull();
     expect(link).toHaveAttribute('href', `${root}docs/result.md`);
     fireEvent.click(link);
     await screen.findByRole('heading', { name: 'Preview docs/result.md' });
@@ -115,7 +112,7 @@ describe('task description reading', () => {
     expect(other).not.toHaveAttribute('open');
   });
 
-  it('does not treat the controlled route update after an upload as an external reveal', async () => {
+  it('reveals and focuses a successful upload through its controlled route update', async () => {
     const items: Attachment[] = [];
     const api = { ...fixture(), list: vi.fn(async () => ({ items: [...items], nextCursor: null })), put: vi.fn(async (_project: string, _task: string, path: string) => { const item = file(path); items.push(item); return item; }) };
     const Content = () => {
@@ -129,9 +126,9 @@ describe('task description reading', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '目标相对路径' }), { target: { value: 'docs/design/new.md' } });
     fireEvent.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'Preview docs/design/new.md' });
-    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.md', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.md/ })).toHaveFocus();
   });
 
   it('renders Markdown structure, root images, original raw HTML and the existing URL policy', async () => {
@@ -151,6 +148,7 @@ describe('task description reading', () => {
     await waitFor(() => expect(api.list).toHaveBeenCalledOnce());
     view.rerender(reading(api, ''));
     expect(screen.getByText('暂无描述')).toBeVisible();
+    expect(screen.getByText('暂无描述').closest('.description-card')).toBeNull();
     expect(api.list).toHaveBeenCalledOnce();
   });
 
@@ -174,7 +172,7 @@ describe('task description reading', () => {
     expect(api.readText).toHaveBeenCalledOnce();
   });
 
-  it('preserves frame identity and current browser keyboard ownership across description and tab navigation', async () => {
+  it('preserves frame identity across description and tab navigation', async () => {
     const api = fixture([file('mockui/index.html', 'text/html')]);
     render(reading(api, '[原型](mockui/index.html)'));
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
@@ -183,65 +181,41 @@ describe('task description reading', () => {
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(pane()).toHaveFocus();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.list).toHaveBeenCalledOnce();
   });
 
-  it('preserves a loaded frame, upload draft and controller while keyboard ownership changes', async () => {
+  it('preserves a loaded frame, upload draft and controller across updates', async () => {
     const api = fixture([file('mockui/index.html', 'text/html')]);
-    const ownerRoot = createRef<HTMLElement>();
-    const onEscape = vi.fn();
-    const content = (keyboardOwner?: AttachmentKeyboardOwner) => <main ref={ownerRoot}><TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={{ tab: 'attachments', path: 'mockui/index.html' }} overview={(description) => description} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} /></main>;
-    const view = render(content());
+    const content = (description: string) => <main><TaskDetailReading projectId={projectId} taskId={taskId} api={api} description={description} selection={{ tab: 'attachments', path: 'mockui/index.html' }} overview={(description) => description} /></main>;
+    const view = render(content('Description'));
     const frame = await screen.findByTitle('HTML 预览：mockui/index.html') as HTMLIFrameElement;
     fireEvent.load(frame);
-    const frameDocument = frame.contentDocument!;
     screen.getByText('上传文件', { selector: 'summary' }).parentElement!.setAttribute('open', '');
     const fileInput = screen.getByLabelText('选择一个文件') as HTMLInputElement;
     const upload = new File(['draft'], 'draft.txt', { type: 'text/plain' });
     fireEvent.change(fileInput, { target: { files: [upload] } });
     const path = screen.getByRole('textbox', { name: '目标相对路径' });
     fireEvent.change(path, { target: { value: 'draft/未提交.txt' } });
-    view.rerender(content({ root: ownerRoot, onEscape }));
-    fireEvent.keyDown(frameDocument, { key: 'Escape' });
-    expect(onEscape).toHaveBeenCalledOnce();
+    view.rerender(content('Updated description'));
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(screen.getByLabelText('选择一个文件')).toBe(fileInput);
     expect(fileInput.files?.[0]).toBe(upload);
     expect(path).toHaveValue('draft/未提交.txt');
-    view.rerender(content());
-    expect(fireEvent.keyDown(frameDocument, { key: 'Escape' })).toBe(true);
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(api.list).toHaveBeenCalledOnce();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.put).not.toHaveBeenCalled();
   });
 
-  it('keeps an HTML frame unmounted when inventory resolution starts its availability check', async () => {
+  it('mounts the HTML frame only after its inventory resolves', async () => {
     const item = file('mockui/index.html', 'text/html');
     const inventory = deferred<AttachmentPage>();
-    const availability = deferred<void>();
     const title = 'HTML 预览：mockui/index.html';
-    const framesAtCheck: (HTMLElement | null)[] = [];
-    const api = {
-      ...fixture([item]),
-      list: vi.fn(() => inventory.promise),
-      checkPreview: vi.fn(() => {
-        framesAtCheck.push(screen.queryByTitle(title));
-        return availability.promise;
-      }),
-    };
+    const api = { ...fixture([item]), list: vi.fn(() => inventory.promise) };
     render(reading(api, '[原型](mockui/index.html)'));
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
     expect(screen.queryByTitle(title)).toBeNull();
-    expect(api.checkPreview).not.toHaveBeenCalled();
     await act(async () => { inventory.resolve({ items: [item], nextCursor: null }); });
-    expect(framesAtCheck).toEqual([null]);
-    expect(screen.queryByTitle(title)).toBeNull();
-    expect(within(pane()).getByRole('status')).toHaveTextContent('正在加载预览');
-    await act(async () => { availability.resolve(); });
     expect(await screen.findByTitle(title)).toBeVisible();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.list).toHaveBeenCalledOnce();
   });
 
@@ -398,4 +372,21 @@ describe('task description reading', () => {
     showOverview();
     expect(screen.getByRole('heading', { name: '用户 Markdown' })).toBeVisible();
   });
+  it('keeps an attachment draft hidden and inactive while its task is revalidated', async () => {
+    const api = fixture();
+    const content = (available: boolean) => <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="" selection={{ tab: 'attachments', path: null }} overview={value => value} available={available} retainDraftsWhileUnavailable />;
+    const { rerender } = render(content(true));
+    await waitFor(() => expect(api.list).toHaveBeenCalledOnce());
+    const disclosure = screen.getByText('上传文件', { selector: 'summary' }).parentElement!;
+    disclosure.setAttribute('open', '');
+    const input = screen.getByRole('textbox', { name: '目标相对路径' });
+    fireEvent.change(input, { target: { value: 'draft/unsent.md' } });
+    rerender(content(false));
+    expect(input).not.toBeVisible();
+    expect(input).toHaveValue('draft/unsent.md');
+    rerender(content(true));
+    expect(screen.getByRole('textbox', { name: '目标相对路径' })).toBe(input);
+    expect(input).toHaveValue('draft/unsent.md');
+  });
+
 });

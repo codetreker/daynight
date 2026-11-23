@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -17,6 +18,10 @@ var uploadToolsJSON []byte
 
 type uploadOperations interface {
 	Execute(context.Context, transfer.Actor, string, string, mcptransfer.UploadInput) (map[string]any, error)
+}
+
+type ScopedUploadOperations interface {
+	ExecuteScoped(context.Context, model.CredentialAuthorization, transfer.Actor, string, string, mcptransfer.UploadInput) (map[string]any, error)
 }
 
 type uploadArguments struct {
@@ -35,9 +40,30 @@ type uploadArguments struct {
 
 // RegisterUploadTools registers the complete attachment upload lifecycle.
 func RegisterUploadTools(e *Entry, uploads uploadOperations) error {
-	if uploads == nil {
+	if e == nil || uploads == nil {
 		return errors.New("upload service is required")
 	}
+	return registerUploadTools(e, false, func(ctx context.Context, actor RequestActor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {
+		return uploads.Execute(ctx, transfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}, project, task, input)
+	})
+}
+
+// RegisterScopedUploadTools uses the request's authenticated policy and the
+// transfer service's transaction-bound authority checks.
+func RegisterScopedUploadTools(e *Entry, uploads ScopedUploadOperations) error {
+	if e == nil || uploads == nil {
+		return errors.New("scoped upload service is required")
+	}
+	return registerUploadTools(e, true, func(ctx context.Context, actor RequestActor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {
+		auth, err := AttachmentAuthorizationFromActor(ctx, actor)
+		if err != nil {
+			return map[string]any{"writeOutcome": "not_committed"}, err
+		}
+		return uploads.ExecuteScoped(ctx, auth, transfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}, project, task, input)
+	})
+}
+
+func registerUploadTools(e *Entry, scoped bool, execute func(context.Context, RequestActor, string, string, mcptransfer.UploadInput) (map[string]any, error)) error {
 	var definitions []*sdk.Tool
 	if err := json.Unmarshal(uploadToolsJSON, &definitions); err != nil {
 		return fmt.Errorf("decode upload tool: %w", err)
@@ -46,7 +72,7 @@ func RegisterUploadTools(e *Entry, uploads uploadOperations) error {
 		return errors.New("invalid upload tool definition")
 	}
 	handler := typedToolHandler(func(ctx context.Context, actor RequestActor, in uploadArguments) (ToolResult, error) {
-		data, err := uploads.Execute(ctx, transfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}, in.ProjectID, in.TaskID, mcptransfer.UploadInput{
+		data, err := execute(ctx, actor, in.ProjectID, in.TaskID, mcptransfer.UploadInput{
 			Action: in.Action, Path: in.Path, ContentType: in.ContentType, TransferID: in.TransferID,
 			ChunkID: in.ChunkID, Offset: in.Offset, ContentBase64: in.ContentBase64, SHA256: in.SHA256, TotalBytes: in.TotalBytes,
 		})
@@ -92,7 +118,16 @@ func RegisterUploadTools(e *Entry, uploads uploadOperations) error {
 	}, "projectId", "taskId", "action", "path", "contentType", "transferId", "chunkId", "offset", "contentBase64", "sha256", "totalBytes")
 	// Transfer transactions are distinct from the target attachment write.
 	// Only the upload service can classify the latter's outcome.
-	return e.registerToolFor(definitions[0], uploadBudget, handler, false, true)
+	if err := e.registerToolFor(definitions[0], uploadBudget, handler, false, true); err != nil {
+		return err
+	}
+	if scoped {
+		if e.scopedTools == nil {
+			e.scopedTools = make(map[string]bool)
+		}
+		e.scopedTools[definitions[0].Name] = true
+	}
+	return nil
 }
 
 func uploadBudget(raw json.RawMessage) BudgetClass {

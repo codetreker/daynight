@@ -36,7 +36,7 @@ describe("CLI device authorization page", () => {
     await confirm();
     await screen.findByRole("heading", { name: "CLI 已获授权" });
     expect(transport.decide).toHaveBeenCalledExactlyOnceWith(code, "approve", user.id, expect.any(AbortSignal), mismatch);
-    expect(screen.getByRole("link", { name: "管理 CLI 访问权限" })).toHaveAttribute("href", "/account");
+    expect(screen.getByRole("link", { name: "管理 CLI 访问权限" })).toHaveAttribute("href", "/account?tab=tokens");
   });
 
   it("loads a prefilled code without approving and allows denial without the match checkbox", async () => {

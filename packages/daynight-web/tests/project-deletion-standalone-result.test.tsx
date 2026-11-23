@@ -26,7 +26,7 @@ const access = (id: string) => ({ ...directAccessFixture(id, userId, "admin"), t
 const json = (body: unknown, status = 200, headers?: HeadersInit) => new Response(stringifyWireJson(body), { status, headers: viewerHeaders(userId, { "Content-Type": "application/json", ...Object.fromEntries(new Headers(headers)) }) });
 const render = createLocaleRender("en");
 
-beforeEach(() => { browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings`); window.localStorage.clear(); window.sessionStorage.clear(); vi.spyOn(document, "hasFocus").mockReturnValue(true); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
+beforeEach(() => { browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings?tab=management`); window.localStorage.clear(); window.sessionStorage.clear(); vi.spyOn(document, "hasFocus").mockReturnValue(true); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 afterEach(() => { browserNavigation().dispose(); vi.restoreAllMocks(); });
 
 const setup = () => {
@@ -44,10 +44,12 @@ const setup = () => {
     if (path === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access(projectId)));
     if (path === `/api/v1/projects/${projectId}/deletion-preview`) return Promise.resolve(json(preview));
     if (path === `/api/v1/projects/${otherProject}/access`) return Promise.resolve(json(access(otherProject)));
+    if (path === `/api/v1/projects/${otherProject}/tags` && (init?.method === undefined || init.method === "GET")) return Promise.resolve(json({ items: [{ id: "00000000-0000-4000-8000-000000000099", projectId: otherProject, name: "Draft label", version: 1, createdAt: now, updatedAt: now, usage: { tasks: 0, goals: 0 } }], catalogEpoch: "00000000-0000-4000-8000-000000000098", nextCursor: null }));
+    if (path === `/api/v1/projects/${otherProject}/tags/colors/resolve`) return Promise.resolve(json({ catalogEpoch: "00000000-0000-4000-8000-000000000098", items: [{ id: "00000000-0000-4000-8000-000000000099", state: "found", version: 1, color: "#9AA3B2" }] }));
+    if (path === `/api/v1/projects/${otherProject}/tags/resolve`) return Promise.resolve(json({ items: [{ id: "00000000-0000-4000-8000-000000000099", name: "Draft label" }] }));
     if (path === `/api/v1/projects/${otherProject}/task-sync`) return Promise.resolve(taskSyncResponse(graphFixture([task]), { viewerId: userId, actorAccess: access(otherProject), query: taskSyncQuery(new URL(url, location.origin)), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
     if (path === `/api/v1/projects/${otherProject}/task-graph`) return Promise.resolve(resourceResponse(graphFixture([task]), userId));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}`) return Promise.resolve(resourceResponse(task, userId));
-    if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/steps`) return Promise.resolve(json({ projectId: otherProject, taskId, version: 1n, steps: [] }));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/attachments`) return Promise.resolve(json({ items: [], nextCursor: null }));
     if (path === `/api/v1/projects/${otherProject}/task-assignees`) return Promise.resolve(json({ items: [], unresolvedUserIds: [] }));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/sessions`) return Promise.resolve(json({ items: [], nextCursor: null }));
@@ -103,13 +105,14 @@ it("keeps a dispatched refusal across leaving settings and a paused publication"
 
 it("keeps success reachable without navigating away from a newer task draft", async () => {
   const app = setup(); await submit(); await waitFor(() => expect(app.writes()).toBe(1));
-  const path = `/projects/${otherProject}/tasks/${taskId}?tab=steps`;
+  const path = `/projects/${otherProject}/tasks/${taskId}`;
   act(() => navigate(path));
-  const add = await screen.findByRole("button", { name: "Add step" }); await waitFor(() => expect(add).toBeEnabled()); fireEvent.click(add);
-  const draft = screen.getByRole("textbox", { name: "Title" }); fireEvent.change(draft, { target: { value: "Other task draft" } });
+  const edit = await screen.findByRole("button", { name: "Edit tags" }); await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+  const draft = await screen.findByRole("checkbox", { name: "Draft label" }); fireEvent.click(draft);
+  expect(draft).toBeChecked();
   await act(async () => app.pending.resolve(json({ projectId, deleted: true })));
   expect(await screen.findByText(/Project deleted/)).toBeVisible();
-  expect(draft).toHaveValue("Other task draft");
+  expect(draft).toBeChecked();
   expect(window.location.pathname).toBe(`/projects/${otherProject}/tasks/${taskId}`);
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.queryByText("Deletion succeeded, but navigation to projects failed.")).toBeNull();
@@ -118,17 +121,24 @@ it("keeps success reachable without navigating away from a newer task draft", as
   toggle.focus(); await keyboard.keyboard("{Enter}");
   expect(toggle).toHaveFocus(); expect(toggle).toHaveAttribute("aria-expanded", "false");
   expect(screen.getByText(/Project deleted/)).not.toBeVisible();
-  expect(draft).toBeVisible(); expect(draft).toHaveValue("Other task draft");
+  expect(draft).toBeVisible(); expect(draft).toBeChecked();
   await keyboard.keyboard("{Enter}"); expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText(/Project deleted/)).toBeVisible();
-  expect(draft).toHaveValue("Other task draft");
+  expect(draft).toBeChecked();
   expect(screen.queryByRole("button", { name: "Retry navigation" })).toBeNull();
+  const link = screen.getByRole("link", { name: "Return to task project" });
+  link.focus(); await keyboard.keyboard("{Enter}");
+  const confirmation = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+  expect(draft).toBeChecked();
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+  await waitFor(() => expect(link).toHaveFocus());
+  expect(draft).toBeChecked();
   expect(window.location.pathname).toBe(`/projects/${otherProject}/tasks/${taskId}`);
-  expect(draft).toHaveValue("Other task draft");
+  expect(draft).toBeChecked();
   expect(app.writes()).toBe(1);
 });
 
-it("isolates an existing standalone result during failed identity revalidation", async () => {
+it("retains an existing standalone result when focus returns", async () => {
   const app = setup(); await submit(); await waitFor(() => expect(app.writes()).toBe(1));
   act(() => navigate(`/projects/${otherProject}/tasks/${taskId}`));
   await act(async () => app.pending.reject(new TypeError("lost response")));
@@ -136,11 +146,6 @@ it("isolates an existing standalone result during failed identity revalidation",
   app.setIdentityFailure(true);
   vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
   vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  expect(await screen.findByRole("heading", { name: "The current account could not be confirmed" })).toBeVisible();
-  const result = document.querySelector(".standalone-deletion-results")!;
-  expect(result).toHaveAttribute("inert"); expect(result).toHaveAttribute("aria-hidden", "true");
-  expect(screen.queryByRole("button", { name: "Check current state" })).toBeNull();
-  app.setIdentityFailure(false); fireEvent.click(screen.getByRole("button", { name: "Confirm account again" }));
-  expect(await screen.findByText(/project deletion result is unknown/i)).toBeVisible();
+  expect(screen.getByText(/project deletion result is unknown/i)).toBeVisible();
   expect(screen.getByRole("button", { name: "Check current state" })).toBeEnabled();
 });

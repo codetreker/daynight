@@ -27,6 +27,7 @@ func configGCTransactionCleanup(t *testing.T, tx pgx.Tx) {
 }
 
 func TestWebhookConfigGCKeyExpiryWithoutOwner(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -82,6 +83,7 @@ func TestWebhookConfigGCKeyExpiryWithoutOwner(t *testing.T) {
 }
 
 func TestWebhookConfigGCWaitsForUnrelatedTransaction(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -149,6 +151,7 @@ func TestWebhookConfigGCWaitsForUnrelatedTransaction(t *testing.T) {
 }
 
 func TestWebhookConfigGCBusyCandidateDoesNotBlockBatch(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, lockKind := range []string{"endpoint", "project"} {
 		t.Run(lockKind, func(t *testing.T) {
 			s := isolatedStore(t)

@@ -4,23 +4,33 @@ Status: implemented
 
 ## Problem
 
-A Windows tool-selection test can finish its selected executable and file reads,
+A Windows native-tool fixture can finish its selected executable and file reads,
 then fail while removing the fixture's copied executable with `EBUSY`. The
 reported deletion failure does not identify the holder. Immediate rejection
 makes a short-lived sharing denial fail the fixture, while ignoring deletion
-errors would hide a persistent holder and abandon owned resources.
+errors would hide a persistent holder and abandon owned resources. Joining the
+selected process does not release a separate process's sharing handle.
 
 ## Decision
 
 `test/helpers/tool-fixture-cleanup.ts` owns the root-removal function shared by
-`tool-executables.test.ts` and `tool-launchers.test.ts`. Both suites execute
-copied native tools and await this cleanup after disposing their operations.
-Each attempt calls `rm` with `recursive: true`, `force: true`, and `maxRetries: 0`. Only `EBUSY`
-permits another attempt: at most three retries wait 100, 200, and 300 milliseconds.
-Other failures and the last exhausted error are thrown unchanged. The 600
-milliseconds bounds scheduled waiting per root, not filesystem execution or
-wall-clock time. Existing operation disposal and awaited fixture cleanup remain
-in the same order. Test, hook, process, and CI job deadlines are unchanged.
+the platform suites `tool-executables.test.ts` and `tool-launchers.test.ts`,
+`commands/worker/tool-selection.test.ts`, `commands/worker/codex-config.test.ts`,
+and `commands/controller/copilot-owned-process.test.ts`. The platform suites
+dispose their operations before cleanup. On success, the Worker selection
+fixture awaits its selection manager close before removing the root. The Codex
+configuration fixture awaits the RPC's child-close barrier and checks PID absence;
+its operation disposal precedes root removal. The Copilot fixture first awaits
+runtime close and then the child close event under its existing five-second
+deadline; root removal follows in `afterEach`.
+
+Each attempt calls `rm` with `recursive: true`, `force: true`, and `maxRetries: 0`.
+Only `EBUSY` permits another attempt: at most three retries wait 100, 200, and
+300 milliseconds. Other failures and the last exhausted error are thrown
+unchanged. The 600 milliseconds bounds scheduled waiting per root, not filesystem
+execution or wall-clock time. Existing operation disposal and awaited fixture
+cleanup remain in the same order. Test, hook, process, and CI job deadlines are
+unchanged.
 
 The retry follows existing resource completion; it does not replace it. The
 successful promisified `execFile` callback follows the child's `close` event in
@@ -31,6 +41,15 @@ await their file-handle closes before a successful result. Cancellation can
 return before pending filesystem cleanup completes and remains a failure.
 The [tool-resolution decision](../architecture/2026-11-11-worker-tool-path-resolution.md)
 owns the production selection and identity rules.
+
+Windows sharing applies independently of process completion. Node 24.22.3's
+[Windows unlink implementation](https://github.com/nodejs/node/blob/e63cab040c09d43ceef8cb35508c40044614e906/deps/uv/src/win/fs.c#L1137-L1156)
+requests delete access; another handle that omitted delete sharing can refuse
+that request after the configuration child closes. The
+[error mapping](https://github.com/nodejs/node/blob/e63cab040c09d43ceef8cb35508c40044614e906/deps/uv/src/win/error.c#L83-L86)
+classifies sharing and lock violations as `EBUSY` without identifying their owner.
+The Codex fixture retains its frozen Node identity, empty-PATH execution, PID
+absence, and pre-spawn entry-replacement rejection assertions.
 
 The cleanup tests in `tool-executables.test.ts` exercise the shared helper.
 Controlled filesystem failures verify the root retry limit, delay sequence,
@@ -66,7 +85,7 @@ evidence and the fixture's responsibility.
 
 Temporary `EBUSY` failures can recover without a directory-depth multiplier.
 Persistent locks still fail and retain the original filesystem error; no retry
-can establish who held a historical file. The native controls prove only their
-explicitly owned sharing handles. Non-Windows controlled errors do not prove
-Windows file locking. Total CLI job duration and unrelated fixture cleanup
-remain separate concerns.
+can establish who held a historical file or guarantee when it releases. The
+native controls prove only their explicitly owned sharing handles. Non-Windows
+controlled errors do not prove Windows file locking. Total CLI job duration and
+unrelated fixture cleanup remain separate concerns.

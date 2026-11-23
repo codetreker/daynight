@@ -1,3 +1,4 @@
+import { AccountSessionProvider } from "../src/app/AccountSessionProvider";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,7 +31,7 @@ describe("public landing page", () => {
   it("renders all public content before identity resolves and makes only a navigation identity read", async () => {
     const pending = deferred<Response>();
     const fetcher = install(pending.promise);
-    const { unmount } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { unmount } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(m.hero.title.join(""));
     expect(screen.getByRole("link", { name: m.hero.demo })).toHaveAttribute("href", "#demo");
     expect(screen.getByRole("link", { name: m.hero.start })).toHaveAttribute("href", "/setup");
@@ -46,11 +47,11 @@ describe("public landing page", () => {
 
   it("offers sign-in for an anonymous visitor and the workspace for an authenticated visitor", async () => {
     const fetcher = install();
-    const { unmount } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { unmount } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     expect(await screen.findByRole("link", { name: m.navigation.login })).toHaveAttribute("href", "/login");
     unmount();
     fetcher.mockResolvedValue(json(user));
-    renderWithLocale(<LandingPage />, { locale: "en" });
+    renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     expect(await screen.findByRole("link", { name: m.navigation.workspace })).toHaveAttribute("href", "/projects");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(m.hero.title.join(""));
   });
@@ -58,7 +59,7 @@ describe("public landing page", () => {
   it.each(["server", "network", "protocol"] as const)("keeps unknown identity explicit and public actions usable after a %s error", async (kind) => {
     const fetcher = install(kind === "server" ? failure(503) : json({ malformed: true }));
     if (kind === "network") fetcher.mockRejectedValue(new TypeError("Controlled connection failure"));
-    renderWithLocale(<LandingPage />, { locale: "en" });
+    renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     expect(await screen.findByRole("status")).toHaveTextContent(m.navigation.identityFailed);
     expect(screen.getByRole("link", { name: /Sign in \/ workspace/ })).toHaveAttribute("href", "/login");
     expect(screen.getByRole("link", { name: /^Open workspace →$/ })).toHaveAttribute("href", "/projects");
@@ -67,12 +68,12 @@ describe("public landing page", () => {
     expect(screen.getByRole("link", { name: m.hero.start })).toHaveAttribute("href", "/setup");
   });
 
-  it("ignores an aborted navigation hint without replacing the public page", async () => {
+  it("reports an unexpected aborted initialization without replacing the public page", async () => {
     const fetcher = install();
     fetcher.mockRejectedValue(new DOMException("Cancelled", "AbortError"));
-    renderWithLocale(<LandingPage />, { locale: "en" });
+    renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     await act(async () => {});
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(m.navigation.identityFailed);
     expect(screen.getByRole("link", { name: /Sign in \/ workspace/ })).toHaveAttribute("href", "/login");
   });
 
@@ -82,7 +83,7 @@ describe("public landing page", () => {
     metadata.content = "Previous page";
     document.head.append(metadata);
     install();
-    const { setLocale } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { setLocale } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     expect(document.querySelector('meta[name="description"]')).toBe(metadata);
     expect(metadata.content).toBe(m.metadata.description);
     setLocale("zh-CN");
@@ -105,7 +106,7 @@ describe("local interactive product example", () => {
   it("lets visitors inspect every task and follow prerequisites to the blocking work without business requests", async () => {
     const fetcher = install();
     const interaction = userEvent.setup();
-    const { container } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { container } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     const panel = screen.getByRole("tabpanel");
     const detail = container.querySelector(".task-detail")!;
     expect(within(detail as HTMLElement).getByRole("heading", { level: 4 })).toHaveTextContent(m.demo.tasks.email.title);
@@ -127,7 +128,7 @@ describe("local interactive product example", () => {
   it("opens all context documents and completed-example evidence without changing the current task state", async () => {
     install();
     const interaction = userEvent.setup();
-    renderWithLocale(<LandingPage />, { locale: "en" });
+    renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     await interaction.click(scene("context"));
     for (const document of Object.values(m.demo.documents)) {
       await interaction.click(screen.getByRole("button", { name: document.label }));
@@ -147,7 +148,7 @@ describe("local interactive product example", () => {
   it("supports scene keyboard navigation with wrapping, Home, End and visible selected state", async () => {
     install();
     const interaction = userEvent.setup();
-    renderWithLocale(<LandingPage />, { locale: "en" });
+    renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     scene("dependencies").focus();
     await interaction.keyboard("{ArrowRight}");
     expect(scene("evidence")).toHaveFocus();
@@ -168,7 +169,7 @@ describe("local interactive product example", () => {
   it("focuses the demo from both primary actions and preserves native FAQ behavior", async () => {
     install();
     const interaction = userEvent.setup();
-    const { container } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { container } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     await interaction.click(screen.getByRole("link", { name: m.hero.demo }));
     expect(container.querySelector("#demo")).toHaveFocus();
     await interaction.click(screen.getByRole("link", { name: m.closing.demo }));

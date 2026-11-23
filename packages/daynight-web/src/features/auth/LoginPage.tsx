@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useEffect, useState } from "react";
 import { getAuthConfig } from "../../api/auth";
 import type { AuthProvider } from "../../api/auth-types";
@@ -32,7 +33,7 @@ export const LoginPage = ({ invitation = false, device = false, oauth = false, n
     return () => controller.abort();
   }, [attempt]);
   return <div className="auth-page">
-    <aside className="auth-aside"><a className="brand" href="/" aria-label={m.returnHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
+    <aside className="auth-aside"><a className="brand" href="/" aria-label={m.returnHome}><BrandMark className="brand-mark" surface="dark" />daynight</a>
       <div className="auth-copy"><h2>{m.heroTitleFirst}<br />{m.heroTitleSecond}</h2><p>{m.heroDetail}</p><div className="auth-visual" aria-hidden="true">{m.milestones.map((milestone) => <span key={milestone}>{milestone}</span>)}</div></div><p className="auth-caption">{m.heroCaption}</p></aside>
     <main className="auth-main"><section className="auth-card"><a className="inline-link" href="/">{m.returnHome}</a><LanguageSelector /><p className="eyebrow">{m.welcome}</p><h1>{m.title}</h1><p className="subtitle">{invitation ? m.inviteSubtitle : oauth ? locale === "zh-CN" ? "登录后查看客户端请求的访问权限。" : "Sign in to review the access requested by this client." : device ? m.deviceSubtitle : m.subtitle}</p>
       {notice !== undefined && <div className="notice warning" role="status"><p>{notice}</p></div>}

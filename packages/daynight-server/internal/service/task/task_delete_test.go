@@ -11,14 +11,15 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-type taskDeletionCapture func(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+type taskDeletionCapture func(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
 
-func (capture taskDeletionCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
-	return capture(ctx, dao, facts)
+func (capture taskDeletionCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
+	return capture(ctx, dao, actor, facts)
 }
 
 func taskDeletionWorker(t *testing.T, state model.WorkerState) model.TaskProperties {
@@ -52,7 +53,7 @@ func taskDeletionService(t *testing.T, f *taskFailureFixture, target model.Task,
 	captureDAO := &captureDAOMock{taskMockBase: f.database.taskMockBase.withLabel("capture")}
 	f.scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return captureDAO }
 	captureCalls := 0
-	capture := taskDeletionCapture(func(actual context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	capture := taskDeletionCapture(func(actual context.Context, dao store.WebhookCaptureDAO, _ wm.Actor, facts []protocol.Fact) error {
 		captureCalls++
 		if captureCalls > 1 {
 			t.Fatal("unexpected additional deletion capture")
@@ -130,11 +131,11 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 			}
 		})
 	}
-	t.Run("released-worker", func(t *testing.T) {
+	t.Run("unowned-worker", func(t *testing.T) {
 		f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
 		target := f.target
 		target.Status = model.TaskInProgress
-		target.Properties = taskDeletionWorker(t, model.WorkerReleased)
+		target.Properties = model.TaskProperties{}
 		f.expectTask(t, target)
 		f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
 		expectTaskDeletion(t, f, target, false)

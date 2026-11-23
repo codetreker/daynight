@@ -54,3 +54,17 @@ export type ImageAssetAdapter = {
   acquire(signal: AbortSignal, priority?: ImageReadPriority): Promise<VerifiedImageLease>;
   subscribeInvalidation(listener: () => void): () => void;
 };
+export type LocalImageMetadata = ImageSize & {
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  readonly byteLength: number;
+  readonly sha256: string;
+  readonly frameCount: number;
+};
+export type LocalImageAssetAdapter = ImageAssetAdapter & {
+  readonly resource: null;
+  /** Present only after complete byte, container and pixel validation. */
+  readonly metadata: LocalImageMetadata | null;
+  validate(signal: AbortSignal): Promise<LocalImageMetadata>;
+  /** Revokes this byte version, without changing persisted draft or saved references. */
+  release(): void;
+};

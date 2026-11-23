@@ -11,8 +11,10 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Mobile development](#mobile-development)
 - [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
+- [Component delivery and activation](#component-delivery-and-activation)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -27,12 +29,19 @@ earlier Node.js 22 patches cannot load its native binary. Source development and
 publication use Node.js 24 LTS and pnpm 11.28.6: development dependencies and directly executed TypeScript
 scripts have their own runtime requirements. pnpm settings, including
 `engineStrict`, `storeDir` and dependency build permissions, belong in
-`pnpm-workspace.yaml`. Runtime review also requires
+`pnpm-workspace.yaml`. Its exact `minimumReleaseAgeExclude` entry for
+`better-sqlite3@13.1.1` admits the inspected Windows WAL recovery fix before the
+ordinary release-age threshold; the Controller launch decision below owns the
+rationale. Runtime review also requires
 Git, authenticated GitHub CLI and Copilot CLI on PATH. The inspected
-`better-sqlite3` 13.0.3 Linux x64 prebuild requires `GLIBC_2.34` and
+`better-sqlite3` 13.1.1 Linux x64 prebuild requires `GLIBC_2.34` and
 `GLIBCXX_3.4.29`; these observed symbol requirements constrain older distributions
 and do not establish compatibility for other distributions, architectures or
-musl. Native validation must identify its actual operating system and architecture.
+musl. The dependency bundles SQLite 3.54.1, including Windows WAL recovery when
+an exited writer's shared-memory view remains mapped; the
+[Controller launch decision](../.agents/notes/implemented/bug-fix/2026-11-12-submitted-controller-launch.md)
+records the required native behavior. Native validation must identify its actual
+operating system and architecture.
 From the repository root:
 
 ```text
@@ -51,10 +60,12 @@ runs ordinary tests and installed acceptance in independent jobs on Linux,
 Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
 and records its own outcome. The ordinary jobs also typecheck and test the local
 development installer. Both native matrices include `ubuntu-latest`,
-`windows-latest` and `macos-15`, with a 10-minute limit for every job. Windows
-ordinary tests use two independent runners with Vitest's built-in `--shard=1/2`
-and `--shard=2/2`; their execution sets together cover the complete ordinary
-collection. Each Windows runner retains the same preparation and source checks.
+`windows-latest` and `macos-15`. The ordinary macOS job has a 20-minute limit.
+The other ordinary jobs and all installed CLI jobs have 10-minute limits.
+Windows ordinary tests use two independent runners with Vitest's built-in
+`--shard=1/2` and `--shard=2/2`. Their execution sets together cover the complete
+ordinary collection. Each Windows runner uses the same preparation and source
+checks.
 Ordinary suites exclude `.stress.ts` files; explicit local stress commands select those
 workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
@@ -127,7 +138,25 @@ owns the mechanism's alternatives and limits.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
-and the total length.
+and the total length. Task help and invalid-argument matrices use separate
+guarded processes for their import policies. Selected Task read-only matrices
+use the same compiled batch runner and send real loopback HTTP requests. Each
+invocation gets a fresh CLI context and captures its own output. Representative
+grammar cases exercise the cold executable. Git, versioned writes, byte-stream
+contracts, and process lifetime tests also use executable invocations. The
+[Task CLI batching decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
+owns these boundaries.
+
+Task protocol matrices live in `packages/daynight/test/cli/task-protocol.test.ts`;
+native and mixed cases remain in `packages/daynight/test/cli/task.test.ts`. They
+share `test/fixtures/compiled-task.ts` and retain their original case names,
+assertions, timeouts and compiled invocation routes. The protocol file proves
+request and response behavior with real compiled CLI processes and loopback HTTP.
+The native file retains Git, guarded startup and environment behavior, Unicode
+arguments, file and binary transfers, interrupted responses, physical stdout,
+exit wiring and SIGINT. Ambiguous complete cases stay native. Ordinary CI runs
+both files on Linux, Windows and macOS ARM64; classification alone does not
+change platform selection or demonstrate a CI time saving.
 
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
@@ -137,6 +166,18 @@ shared deadline. Exact cursor progression and a bounded response fixture expose
 incorrectly renewed budgets without relying on runner scheduling. The
 [API cursor deadline decision](../.agents/notes/implemented/testing/2026-11-10-api-cursor-deadline.md)
 records this pagination proof.
+
+Update supervisor deadline fixtures keep real subprocesses, IPC and group
+observations while controlling only the cleanup or release timer. They assert
+its original duration and cancellation state, and expire it only after the
+relevant process or IPC barrier. The
+[update deadline decision](../.agents/notes/implemented/testing/2026-11-17-update-cleanup-test-deadlines.md)
+records the proof and its limits.
+The command-timeout scenarios separately release the configured command timer
+after a real fixture heartbeat. Their native cleanup deadlines and process
+observations remain live; the
+[command expiry fixture decision](../.agents/notes/implemented/testing/2026-11-18-updater-fixture-command-expiry.md)
+owns that boundary.
 
 The blocked-sink attachment fixture observes entry into its consumer before
 advancing to the request deadline, then checks the timeout, sink abort and
@@ -159,6 +200,18 @@ boundary. The strict compiled fixture retains unhandled-rejection, teardown-RPC
 and owned-process-exit checks. The
 [startup deadline decision](../.agents/notes/implemented/testing/2026-11-05-native-startup-test-deadlines.md)
 owns this timing boundary.
+The compiled Copilot bridge route-timeout fixture holds the observer's timer
+inside the helper. It releases the timer after the native endpoint request and
+a concurrent text acknowledgement. The SDK, transport, and process joins
+remain real; observer tests check the production deadline separately. The
+[bridge route clock decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-route-clock.md)
+owns this boundary.
+The compiled bridge route and read-authority fixtures that exercise ordinary
+shutdown acknowledge and exit. The retained-media scenario still acknowledges
+without exiting, proving the real signal fallback exactly once; a dedicated
+graceful shutdown scenario checks normal exit without a signal. The
+[bridge shutdown fixture decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-fixture-shutdown.md)
+owns these process lifetimes.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
@@ -169,14 +222,80 @@ trigger reporting before the periodic interval, so elapsed time is measured
 from that request's observed start. The
 [reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
 records the trigger, single-flight and cancellation checks.
+Worker startup integration holds the identity retry until the real instance
+lock and cache fences have been observed. The project-preparation case advances
+the configuration clock at the recorded deadline, while observing persistence
+and inventory with real asynchronous work. The
+[startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
+owns both timing checks. The runtime isolation fixtures use a real managed
+subprocess and hold its output consumer open until the journal records
+unconfirmed closure. The foreground runtime keeps the same coordinator and
+instance lock while task reconciliation advances. An explicit stop retains
+the original resource and blocks rebuild until its output consumer joins and
+closure is recorded. The
+[command closure decision](../.agents/notes/implemented/bug-fix/2026-11-23-worker-owned-command-unknown.md)
+owns the runtime behavior these fixtures verify.
+The management-close and prepared-command save fixtures deliver the exact
+registered deadline after the original writer or close enters its held phase.
+Real file operations, ownership records and lock observations stay in the
+production paths. The
+[observation deadline decision](../.agents/notes/implemented/testing/2026-11-23-worker-observation-deadline-fixtures.md)
+describes their clock and cleanup boundaries.
+Owned-command capture fixtures hold the original output consumer, observe the
+original launcher close and confirm native boundary closure before capturing
+its output join timer. They check the remaining cleanup budget using the actual
+clock read that computed the timer argument and the rounded deadline, plus the specific
+join error while the independent operation watchdog uses real time. Unknown
+responsibility, late errors and stopped persistence retain the original resource
+through release and reconciliation. Native termination grace and escalation
+keep real time. The
+[output join clock decision](../.agents/notes/implemented/testing/2026-11-23-owned-command-output-join-clock.md)
+owns this boundary.
+Worker lifecycle manager fixtures control the wait between observations. The
+local SQLite observer and cloud poll advance independently in ordering-sensitive
+cases. Real SQLite receipts, cancellation and writer joins remain part of
+those cases. A representative fixture exercises the production timers and
+verifies the requested admission and poll intervals.
+The [lifecycle polling decision](../.agents/notes/implemented/testing/2026-11-23-lifecycle-polling-fixtures.md)
+owns the test timing rules.
+Worker reconcile wake tests retain native wake and cancellation. The poll
+completion case controls one Promise delay and asserts its requested interval.
+The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)
+owns that boundary.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+The Worker Git cancellation fixtures release the registered cleanup grace
+after the root has exited and a real descendant holds the original pipe. They
+still join the actual pipe close. The
+[Git cancellation clock decision](../.agents/notes/implemented/testing/2026-11-18-worker-git-cancel-grace-clock.md)
+owns the controlled timer and separate real-time coverage.
+The privileged Worktree cleanup fixture pauses the actual sudo child beside
+its case-owned release file. It observes cancellation and an excluded
+overlapping removal before allowing the child to proceed. The
+[sudo fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-sudo-fixture-handshake.md)
+owns the real-process handshake.
+The PID-reuse observation test replaces only the saved birth in a native
+proof. The live process and inspection stay real. The
+[stale birth fixture decision](../.agents/notes/implemented/testing/2026-11-18-controller-stale-birth-fixture.md)
+owns the identity proof.
+Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
+signals and joined cleanup. On POSIX, the test freezes the stop clock after the
+target process group receives TERM and advances it only after a real inventory
+confirms the group remains live; it checks the requested polling intervals and
+the two-second grace before the real KILL. The deadline case separately captures
+the response timer, checks its configured duration and expires it only after the
+descendant publishes its own readiness and a real process proof confirms it is
+running. Windows retains real Job assignment, termination, inspection and handle
+ownership without the POSIX clock. The [probe timing decision](../.agents/notes/implemented/testing/2026-11-17-bot-cli-probe-test-timing.md)
+records the controlled boundaries and cleanup fallback.
 Real Bot integration owns a 180-second teardown hook because original process
 proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
 hook limit. Each process confirmation probe is joined before another round or
-escalation; only complete teardown restores mocks and environment variables.
+escalation. The polling window controls starting another confirmation, while an
+already started confirmation retains the production per-query budgets; only
+complete teardown restores mocks and environment variables.
 Failed startup records the controlled child's logs, journal and parent/child
 ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
@@ -203,8 +322,26 @@ and validates canonical Base64 plus strict UTF-8 decoding, preserving Unicode
 independently of the console code page. Its sixty-second allowance belongs to a
 ninety-second test; production capture and inspection do not use it as a
 fallback. Mismatch diagnostics retain hashes, lengths and qualification flags
-without raw command text. The child is stopped and its close joined even when
-an assertion fails. The
+without raw command text. The CIM oracle and the Session operation-store's
+icacls public-ACE grant use a shared test-only command runner. It records process
+spawn, deadline, exit and close observations; failures retain bounded phase
+history and output diagnostics with the original command error. CIM script
+checkpoints distinguish PowerShell entry, module initialization/query and output
+conversion. The unused command input is closed explicitly. The CIM command has
+a 60-second deadline and the icacls grant has a 30-second deadline; neither
+command retries failures. The
+[oracle evidence decision](../.agents/notes/implemented/testing/2026-11-18-windows-oracle-phase-evidence.md)
+records the unresolved historical cause and retained independent assertions.
+The Session operation-store's private ACL observation runs in the test's Node
+process through an independent Koffi/Win32 helper. It checks the current-user
+owner, present protected DACL, and exactly one explicit current-user FullControl
+allow ACE with no inheritance flags. Its token, file handle and returned security
+descriptor are released on success and failure; native errors retain their stage
+and Win32 code, including cleanup failures. The real icacls grant and production
+store rejection still prove the unsafe ACL path. The
+[native ACL observer decision](../.agents/notes/implemented/testing/2026-11-19-native-windows-acl-observer.md)
+owns this replacement of the PowerShell readback dependency.
+The child is stopped and its close joined even when an assertion fails. The
 [native Windows proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)
 owns the implementation and its dependency limits; the
 [startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
@@ -230,16 +367,27 @@ global prefix. Ordinary CLI tests own command behavior and its error and
 concurrency cases. The installed suite does not modify the operator's installed
 CLI or require live review credentials.
 
-Ordinary CLI tests require Python 3 and exercise completion behavior through a real
-Bash 4.2 or newer editor on Linux and a real zsh editor on macOS. The completion CI job also runs the module behavior
-matrix on Bash 4.2, modern Bash and zsh. Shell completion has a separate
-real-shell artifact acceptance command. It requires
-Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
-isolated shell executables from the repository root:
+The update supervisor confirms POSIX cleanup only after its invocation's anchor
+has exited, the inherited process group no longer exists, and captured output
+pipes have closed. The 10-second cleanup deadline includes all three checks;
+an unconfirmed cleanup retains the original command error. Descendants that
+leave the inherited process group are outside this guarantee. Windows retains
+attached console handles and uses `taskkill` for tree termination. The
+[cleanup decision](../.agents/notes/implemented/bug-fix/2026-11-13-update-process-group-cleanup.md)
+records the ownership and observation limits.
+
+Ordinary CLI tests retain completion unit tests without launching a real shell
+editor. Real-shell validation has two explicit entries: the complete behavior
+matrix in `shell-module.py`, and the artifact acceptance command
+`pnpm completion:acceptance`. Both require Python 3 on a POSIX host, Bash 4.2,
+a modern Bash and zsh. Linux hosts can prepare isolated shell executables and
+run both suites from the repository root:
 
 ```bash
 bash packages/daynight/scripts/prepare-completion-shells.sh
 source .tmp/shell-completion/environment.sh
+pnpm build
+python3 -u packages/daynight/test/commands/completion/shell-module.py --shell all
 pnpm completion:acceptance
 ```
 
@@ -257,12 +405,22 @@ to the Bash 4.2 executable before running `pnpm completion:acceptance`.
 `DAYNIGHT_TEST_BASH` and `DAYNIGHT_TEST_ZSH` select the other executables and default
 to `bash` and `zsh`. `DAYNIGHT_TEST_ZSH_ROOT` optionally selects an extracted zsh
 toolchain root. `DAYNIGHT_COMPLETION_EVIDENCE` optionally selects the JSON receipt
-path. The command builds the client and runs a Python PTY harness against actual
-Tab insertion in all three shells. It also installs setup into isolated startup
-files and checks interactive shell loading and completion registration. It uses task-local fixtures, with no user
-configuration, review credentials or installed CLI changes.
-A dedicated Ubuntu 24.04 CI job runs this suite separately from the native CLI
-matrix; its result belongs to the tested revision. The
+path. The artifact command builds the client and runs a Python PTY harness
+against actual Tab insertion in all three shells. It also installs setup into isolated startup
+files and checks interactive shell loading and completion registration. The
+module harness additionally owns the complete command, option, directory,
+refusal and setup-error matrix; the artifact suite does not replace it. Both
+use task-local fixtures, with no user configuration, review credentials or
+installed CLI changes. They write `.tmp/completion-module-evidence.json` and
+`.tmp/completion-evidence.json`, respectively, unless the receipt path is overridden.
+The dedicated Ubuntu 24.04 job in the
+[`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+is triggered by `main` pushes and `workflow_dispatch` to run both suites; main
+concurrency can replace a pending run before it starts.
+Its result belongs to that workflow's checked-out revision and does not gate
+ordinary PR `checks`. The `daynight-completion-acceptance` artifact contains
+both available JSON receipts. Upload runs after the module harness starts,
+including when its failure prevents the later artifact suite from running. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
@@ -276,26 +434,28 @@ records the explicit image selection and its limits. Hosted capacity failures
 require diagnosis within this ARM64 runner policy, and a supported label still
 requires real allocation and complete native test results.
 Each native job resolves the latest available Node.js 24 patch.
-The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
-separate runtime matrix. Runtime jobs depend on module detection and the
-ordinary `verify` matrix, so they wait for ordinary verification on Linux,
-Windows and macOS. They do not depend on installed acceptance and check the
-Ubuntu-produced packed artifact with Node.js
-`22.14.0`, the latest `22` and `24` releases, and current
-`node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
-and exercises CLI commands, interactive prompt dependencies and SQLite. These
-checks cover the published package and its production dependency graph without
-requiring the source-development toolchain on each supported runtime.
+An independent Ubuntu `prepare-runtime-package` job builds and packs the Node.js
+24 artifact from the current workflow checkout. It depends only on module
+detection; the runtime matrix depends on detection and this producer, independently
+of both native matrices. Runtime jobs download the current run's artifact and use
+Node.js `22.14.0`, the latest `22` and `24` releases, and current `node`. Each
+runtime installs it in a fresh npm consumer with `--engine-strict` and exercises
+CLI commands, interactive prompt dependencies and SQLite. These checks cover the
+published package and its production dependency graph without requiring the
+source-development toolchain on each supported runtime. The independent producer
+requires an additional dependency installation and build; elapsed time depends
+on the critical path and runner allocation. The [runtime package decision](../.agents/notes/implemented/testing/2026-11-18-independent-runtime-package.md)
+records the trade-off.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
-native platform, the runtime compatibility matrix and the dedicated Linux shell
-completion job. Both native matrices need only module detection, so ordinary
-validation does not gate installed validation. Each job owns its checkout,
+native platform and the runtime compatibility matrix. Both native matrices need
+only module detection, so ordinary validation does not gate installed validation.
+Each job owns its checkout,
 toolchain, dependencies, environment recorder, build, fixtures, cleanup and
 artifacts. The Windows ordinary phase has two independent matrix entries; the
 other native phases each have one. Final `checks` requires actual success from
-all selected ordinary, installed, runtime and completion jobs, including both
+all selected ordinary, installed, runtime package and runtime jobs, including both
 Windows ordinary shards. The two macOS jobs use separate workspaces, so their fixed
 receipt paths need no phase handoff or clearing. A failure or cancellation in
 either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
@@ -303,15 +463,16 @@ records the original parallel model; the [independent macOS validation decision]
 owns the current macOS topology and its allocation trade-off. The
 [Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
 owns the Windows ordinary allocation and completeness checks.
-Main pushes run every module. The checkout includes the required history.
+Main pushes select every module, subject to workflow concurrency. The checkout
+includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
 reads the selected file sequentially and records its byte count, SHA-256 and
-preparation duration. Resolution, preparation and native execution share one
-10-second gh budget; expired preparation or an over-budget native result fails
-the probe. The version child uses isolated project-local configuration/state and
-disabled telemetry. A separate diagnostic artifact uploads after validation even
-when environment discovery fails. Ordinary environment and diagnostic artifacts
+preparation duration. The gh preparation has a separate 20-second deadline; an
+expired or failed preparation stops the probe before launch. The version command
+then receives its own full 10-second execution budget. Its child uses isolated
+project-local configuration/state and disabled telemetry. A separate diagnostic
+artifact uploads after validation even when environment discovery fails. Ordinary environment and diagnostic artifacts
 use `daynight-cli-tests-*` and `daynight-cli-tests-probes-*` names; installed
 receipts and diagnostics use `daynight-cli-installed-*` and
 `daynight-cli-installed-probes-*`. The installed receipts include the environment,
@@ -445,10 +606,30 @@ them. Cases proving file persistence after reopen, WAL snapshots, separate live
 connections, filesystem errors, instance locking or cross-process recovery use
 real file databases in `*.integration.test.ts` suites. Ordinary `pnpm test` and
 the CLI CI matrix run both kinds with the existing platform and failure checks.
-Git repositories, IPC and Controller pending-content files retain their own
-private filesystem fixtures. The
+Git repositories, IPC, Controller resource files and historical body migration
+sources retain their own private filesystem fixtures. Current timeline bodies use
+the same SQL owner in memory and file cases; capacity stress probes run separately
+from ordinary test selection. The
 [memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
 owns storage selection and connection ownership.
+The image release receipt fixture keeps a real competing SQLite writer. Only
+the tested journal connection uses a short busy wait after checking its
+production default. The
+[image receipt contention decision](../.agents/notes/implemented/testing/2026-11-18-image-receipt-busy-budget.md)
+owns the write-failure and recovery proof.
+Controller startup ownership contention keeps the real default SQLite busy
+wait. The fixture holds only the subsequent retry so IPC cancellation reaches
+the waiting Controller before a second synchronous acquisition. The
+[Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
+owns the cancellation boundary.
+The Controller IPC waiter-capacity regression observes all 32 authenticated
+response-waiter registrations before probing rejection. Its controlled schedule
+holds duplicate client frames to verify that first native dispatch alone does
+not establish capacity. Finalization cancels and joins requests and the
+Controller before deleting the SQLite fixture; the ordinary test deadline stays
+unchanged. The
+[IPC admission decision](../.agents/notes/implemented/testing/2026-11-19-ipc-waiter-admission-barrier.md)
+owns the ordering proof and its historical attribution limits.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -465,10 +646,33 @@ SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
-subjects. Worker worktree cases separately copy file-owned starting repositories
-for the files and reftable backends. The concurrent fetched-commit case keeps
-both real preparations within its fetch barriers and uses a case-local 30-second
-watchdog for native Git execution. Its commit, shared-ref and private-ref cleanup
+subjects. Worker worktree cases copy private starting repositories from
+file-owned files and reftable seeds. Legacy Worktree migration uses its own
+seeds with no linked checkout or migration state. Each case still creates its
+native registrations, manifests and database evidence in the private copy.
+The [migration fixture decision](../.agents/notes/implemented/testing/2026-11-18-worktree-migration-seeds.md)
+owns this boundary. Partial resource scans that need existing
+registrations create them with native Git and publish their manifests in the
+private repository. They exercise real inventory, inspection, and cleanup
+without setting up a remote. The
+[scan fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-worktree-scan-fixtures.md)
+explains the split from preparation and remote coverage. Terminal cleanup
+cases that start from a registered checkout use the same native registration
+and manifest fixture, with independent managers and original fault boundaries.
+The [cleanup fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-worktree-cleanup-fixtures.md)
+owns the shared fixture. The
+[native sudo fixture decision](../.agents/notes/implemented/testing/2026-11-23-native-sudo-worktree-setup.md)
+covers the permission and pointer cases that start from existing registration.
+The terminal synthetic busy-root case captures only the promise backoff following
+its selected root's EBUSY, checks the five production durations, and advances each
+wait asynchronously. Real root identity reads, Git registration, the final error
+and retry ownership checks remain observed; native holders and sudo cases retain
+real timers. The [busy backoff clock decision](../.agents/notes/implemented/testing/2026-11-24-worktree-busy-backoff-clock.md)
+owns this timing boundary.
+The concurrent
+fetched-commit case keeps both real preparations within its fetch barriers and
+uses a case-local 30-second watchdog for native Git execution. Its commit,
+shared-ref and private-ref cleanup
 assertions remain in that workflow; discovery-only cases retain their separate
 preparation hooks and default behavior budget. The
 [concurrent fetch budget decision](../.agents/notes/implemented/testing/2026-11-09-worker-concurrent-fetch-budget.md)
@@ -545,9 +749,22 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
+independent `.tmp/dev-builds/build-*/` snapshot. Each resolved physical package
+has its own `.dev-store/<id>/node_modules/<package-name>/` directory, with links
+to its dependencies inside the snapshot. This preserves package names needed by
+native shared-library lookup and keeps different versions and peer resolutions
+separate. Dependency file symlinks are materialized; no dependency link points
+back to the source checkout's mutable `node_modules`.
+
+Before atomically replacing the installed symlink, the installer verifies the
+snapshot's version and runs separate Node processes that process a tiny in-memory
+image with sharp, query an in-memory better-sqlite3 database, and load Koffi.
+A native verification failure names the module and leaves the previous entry and
+snapshot available. These checks require no `LD_LIBRARY_PATH` workaround or
+system libvips installation. `--build-info` reports the
 source checkout, commit, dirty state, version, build time and snapshot directory.
+The [native dependency requirements](spec/development-snapshot-native-layout.md)
+define closure independence, failure behavior and runtime acceptance.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
 while any execution can use them. Removing a worktree also removes its snapshots;
@@ -596,13 +813,10 @@ to preserve the original Agent PATH. Installation never adds these settings.
 The selected Daynight configuration root is preserved when a mapped target runs,
 so choosing a different executable does not silently choose another account.
 
-Only `daynight` and `dn` can be mapped. New Controller processes and new Herdr
-workspaces receive private executable shims, with targets resolved before PATH
-injection. Herdr's daemon environment is not redirected. Already-running Agent processes keep their mapping. New or resumed Controller
-processes read the current configuration; new Herdr workspaces receive the current
-mapping. Retained Herdr workspaces keep their environment, while a newly started
-Codex process receives the current launch policy. Editing configuration alone does
-not rewrite an already-running process. Ordinary terminals and the separate PR reviewer do
+Only `daynight` and `dn` can be mapped. New or resumed Controller processes
+receive private executable shims with targets resolved before PATH injection.
+Already-running Agent processes keep their mapping. Editing configuration alone
+does not rewrite a running process. Ordinary terminals and the separate PR reviewer do
 not receive these aliases. Provider settings or shell startup files can override
 PATH. For Codex, Daynight reads the native effective configuration for the Agent's
 working directory before starting or resuming it. An explicit native
@@ -612,9 +826,7 @@ retained. Daynight supplies this PATH and DN_CONFIG_DIR as explicit policy value
 so restoring a login-shell snapshot preserves the mapping. Other policy fields,
 including inheritance and include/exclude filters, are unchanged; include-only
 filters can still exclude these variables. The Web Controller reuses its native
-app-server connection. Herdr uses a bounded, session-free app-server inspection
-with the same environment and ordered configuration flags after native
-preflight. Unsupported profile inspection, failed configuration reads or
+app-server connection. Failed configuration reads or
 unconfirmed probe cleanup stop that launch instead of selecting a default PATH.
 No inspection is added when aliases are absent. Verify
 `command -v daynight` and `daynight --build-info` from the actual
@@ -640,11 +852,12 @@ bash deployment/localhost/up.sh
 ```
 
 The command uses the public base YAML mounted read-only under the selected
-server root and requires the five authentication settings in that private file.
+server root and requires the configured origins and authentication settings in that private file.
 Explicit server environment variables override YAML. It builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
-`/readyz`. Open the configured public origin and log in through UniAuth. APIs and
-trusted attachment previews share that origin. For CLI access to this local test
-deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,
+`/readyz`. Configure the same-site HTTPS origins, DNS, certificates and external
+proxy described in the deployment guide, then open the public origin and log in
+through UniAuth. APIs use the main origin and attachment previews use Task origins.
+For CLI access, set `serverUrl` to the public origin in `~/.daynight/config.yml`,
 remove any credential belonging to another origin, then run `daynight login`.
 Production CLI access defaults to `https://daynight.cc`; automation can provision
 an origin and its matching PAT through the same configuration file.
@@ -657,7 +870,9 @@ API examples, logs, updates and volume removal.
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
-`DAYNIGHT_TEST_DATABASE_URL` to an isolated database and run:
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
+PostgreSQL and Redis instances, and `DAYNIGHT_TEST_AZURITE_CONNECTION_STRING` to
+an isolated Azurite instance as described in the [server validation guide](../packages/daynight-server/README.md#validate). Then run:
 
 ```bash
 bash scripts/check.sh
@@ -748,7 +963,8 @@ Build production Web resources
 once, then run `bash scripts/integration.sh` from the Go module. The runner owns
 a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
 explicit URL must identify the invoking test environment's isolated instance.
-It also prepares real authentication, records the source and binary identity,
+Each run also owns an isolated Redis container for current monitoring. It
+prepares real authentication, records the source and binary identity,
 and bounds startup, execution and cleanup. `bash scripts/integration.sh --cleanup`
 independently reconciles saved runs after interruption and preserves their
 original failure or unknown command outcome. Safe build/result JSON and streamed
@@ -829,23 +1045,39 @@ records the trade-offs; [Web requirements](../docs/spec/daynight-web.md#日常�
 own the complete outcomes. With the Go API running on loopback, use:
 
 ```text
-pnpm web:dev
+DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787 pnpm web:dev
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
 pnpm web:test:browser
 ```
 
+The [Web development setup](../packages/daynight-web/README.md#development) defines the
+matching Go origin, callback, DNS and Cookie requirements for Vite.
+
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
 requires generated assets. Web quality runs full Web typechecking, the module
 harness, the production Docker Web build, the Vitest/V8 suite and a statement
-gate strictly greater than 90%; it does not start the Go service or an installed
-CLI. `pnpm web:test:browser` separately runs the controlled
+gate strictly greater than 90%. The Docker check requires Buildx and executes
+the complete `web` target with `--output=type=cacheonly`; it retains build cache
+without exporting or loading an unused image. Quality validation does not start
+the Go service or an installed CLI. The harness includes the [native select ownership check](design/native-select.md#所有权检查)
+and its controlled-fixture tests. It scans every production TS/TSX and CSS input,
+including unreferenced files, and fails on native creation or internal styling
+outside the common owner, nonstatic wrapper tokens, and parsing or cleanup
+errors. Run the production scan alone with
+`pnpm --filter @codetreker/daynight-web test:select-policy`; `pnpm web:test` and
+CI quality both retain the harness check. It proves direct source ownership;
+rendered geometry and native interaction retain their browser checks.
+`pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
-`checks` gate alongside the independent Web browser job; both must succeed when
-Web validation is selected.
+`checks` gate and must succeed when Web validation is selected. The assistant
+browser suite runs separately in the
+[`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+on `main` pushes or manual dispatch; ordinary Web unit and quality commands do
+not invoke it.
 
 For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
@@ -855,6 +1087,13 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Mobile development
+
+The private [mobile workspace](../packages/mobile/README.md) shares React Native
+source across iOS and Android. Its Expo development server and verification
+commands are independent of the Web and server builds. The package guide owns
+the platform prerequisites and the distinction between bundle and device checks.
 
 ## Public Markdown image integration
 
@@ -882,6 +1121,9 @@ policy. Its service/DNS exceptions compare both original and final addresses
 and ports; protected targets remain denied after DNAT in INPUT and FORWARD.
 Actual host addresses/routes and the two owned Docker containers/networks,
 including their labels, addresses and aliases, supply the deployment inventory.
+For a nonstandard hosts row containing this runner's FQDN and short name, both
+names and all their host-resolver addresses enter the protected inventory;
+unrecognized or unresolvable rows stop setup before network mutation.
 The trusted external-image profile binds its policy identity to the installed
 rule digest.
 Source shutdown adds a separate deny and verifies per-protocol counter increases
@@ -890,6 +1132,9 @@ fabricating DNS, peer or TLS results. All namespace processes, network links,
 firewall entries and changes to host forwarding have an owned cleanup receipt.
 Cleanup confirms process exit with pidfds before deleting namespace names;
 unconfirmed exit keeps the names and guards and produces a failed receipt.
+The runner records build and environment completion only after command
+quiescence, verifies its fixture ownership before closing the runtime, and leaves
+unconfirmed resources for independent recovery after the runner has stopped.
 
 The workflow uploads only the run directory's `results/`, including source
 revision, image identities and hashes, network observations and cleanup
@@ -907,12 +1152,24 @@ PYTHONDONTWRITEBYTECODE=1 python3 packages/daynight/scripts/external-image-netwo
 bash -n packages/daynight/scripts/external-image-network.sh
 ```
 
+The ordinary CLI transport tests in `test/scripts/external-image-auth.test.ts`
+load the fixed public test certificates and keys from
+`packages/daynight/test/fixtures/external-image-auth/`; they require curl and
+Node.js, with no runtime OpenSSL provisioning. These materials serve only
+loopback listeners. The app certificate covers `app.daynight.localhost` and
+`preview.daynight.localhost`, the provider certificate covers `github.com`, and
+the untrusted app certificate uses a separate self-signed root. Tests retain
+certificate identity checks, real verified TLS, Secure cookies, OAuth/SSO,
+HTTP/WebSocket forwarding and untrusted-root rejection. The
+[certificate fixture decision](../.agents/notes/implemented/testing/2026-11-20-fixed-external-image-tls-fixtures.md)
+owns validity and replacement requirements.
+
 ## Product E2E
 
 `packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
 production Web and full Go Server from the current checkout, builds the pinned
-unmodified UniAuth command and Console, and starts a dedicated PostgreSQL
-instance and auth runtime on dedicated networks. The database network is internal;
+unmodified UniAuth command and Console, and starts dedicated PostgreSQL and Redis
+instances and an auth runtime on dedicated networks. The database network is internal;
 a private ingress bridge publishes loopback ports, and the application removes
 its default route before starting services.
 
@@ -936,6 +1193,37 @@ before uploading only result and log directories; it does not upload private
 credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
 system does not require an external database, auth deployment or GitHub account.
 
+## Component delivery and activation
+
+Plan PR boundaries separately from runtime activation. Before grouping changes
+in one PR because behavior must switch together, identify the smallest set of
+effects that must take effect together and the invariant they protect. Test the
+proposed PR boundary against a concrete intermediate state: if a complete
+supporting capability with its own meaningful verification merges first, what
+would fail when that revision is built, started or run before the switch? If
+that state is safe, review and merge the capability separately. Keep the final
+switch focused on the changes that actually need to take effect together.
+
+Check what the intermediate revision actually runs, including startup and data
+changes. A registered database migration may execute at server startup even
+when no new route is mounted. Preserve any required coordination of data
+migrations, running processes and traffic; separate source PRs do not remove
+those constraints. Avoid adding flags or temporary adapters solely to split a PR.
+
+Plan service deployment, artifact publication, and client adoption separately.
+A published CLI does not upgrade installed clients or restart Workers, and a
+server deployment does not refresh open Web tabs. Identify the version and
+capability combinations covered by the applicable support policy, and preserve
+their required behavior through each rollout step. If a change would break a
+supported combination, establish and verify a compatible path or confirm a
+support change before exposing the new behavior.
+
+[Product E2E](#product-e2e) verifies the Server, CLI and Web built from one
+source revision. That evidence covers the tested combination. Verify required
+mixed-version combinations separately in a controlled environment. Code
+acceptance does not depend on production deployment or actual client adoption
+unless those operations are explicitly part of the deliverable.
+
 ## Local stress validation
 
 Routine CI excludes stress workloads. Run these explicit local entrypoints when
@@ -943,7 +1231,7 @@ full-scale evidence is needed:
 
 | Workload | Repository-root command | Prerequisites |
 |---|---|---|
-| CLI rendering and Session-v2 archives | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files |
+| CLI rendering, Session-v2 archives and Controller capacity/transport | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files |
 | Go query, archive and repeated-write checks | `pnpm server:test:stress` | Isolated PostgreSQL and server test environment |
 | Web graph, model and geometry checks | `pnpm web:test:stress` | Web workspace dependencies |
 
@@ -951,6 +1239,24 @@ Stress configurations and Go stress entrypoints refuse a nonempty `CI`
 environment. Ordinary Go discovery omits the `stress` build tag and ordinary
 Vitest discovery omits `.stress.ts` files. Local measurements establish only
 their recorded source and host.
+
+For Codex output fairness, run
+`pnpm test:stress test/commands/controller/output-responsiveness.stress.ts`.
+It uses a synthetic native stdout producer and an independent authenticated IPC
+client against the assembled Controller runtime, with real tool projection and
+SQLite. Finite cases use 400 ten-character deltas (38,000 notification bytes),
+both without backlog and with approximately 2,200 events / 55 MB retained without
+ACK, using single and per-frame producer writes. A separate sustained case keeps
+producing until the observation response. The output records actual pipe chunks,
+consumption/request/response timing, remaining input, ordered content hash and
+independently checked outbox byte totals. Native Windows and Node 24 evidence is
+required for the original pipe scenario; controlled provider/relay behavior does
+not establish real model or service performance. Client response latency uses
+the client's own clock; causal handoff and parent-local observations prove that
+output consumption precedes the request while input remains. Absolute timestamps
+from different processes are diagnostic, since their clock origins may differ.
+The existing Codex media-stream stress suite retains its separate resource
+responsibility.
 
 ## Package versions
 
@@ -1074,8 +1380,9 @@ Deletions and both sides of renames count. The
 Go API integration by server and production Web build inputs, and product E2E by
 its framework and production build inputs; the
 [root routing table](../README.md#ci-selection) owns the summary map. Mixed
-changes select their union, and unknown paths select all jobs. Selected jobs
-validate the source and tests in their ordinary event checkout. Remote test PRs
+changes select their union, and unknown paths select all application jobs in
+`checks`. This includes the independent shell/browser workflow's path. Selected
+jobs validate the source and tests in their ordinary event checkout. Remote test PRs
 do not replace test files or produce an additional composed checkout commit.
 The [checkout-source decision](../.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
 owns this input boundary; each runner retains its own source/artifact receipts,
@@ -1087,8 +1394,10 @@ tests and fixtures do not. Server inputs also select the independent Go API
 integration job. Production Web source, resources and build configuration, root
 Node inputs and dependency patches select API integration because its production
 Server embeds the resulting Web bundle. Root Node inputs and patches select CLI,
-Web and product E2E as well, while preserving the Go module job's directory
-ownership. CLI-only changes do not select API integration. Documentation and
+Web, Mobile and product E2E as well, while preserving the Go module job's
+directory ownership. Mobile package inputs select only Mobile because API
+integration and product E2E do not consume its bundles. CLI-only changes do
+not select API integration. Documentation and
 instruction exclusions remain effective inside directories, except for bundled
 CLI source resources. Deployment changes select Web and do not become API or
 product E2E inputs merely because their environments use Docker.
@@ -1099,11 +1408,13 @@ final gate still run; publication validates its frozen artifact separately.
 Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
-Windows and macOS ARM64, plus Node compatibility and shell checks. The Go module
-job runs its PostgreSQL-backed module gate and uploads coverage. The independent
+Windows and macOS ARM64, plus Node compatibility. Completion unit tests remain
+in the ordinary CLI suite. The Go module job runs its PostgreSQL-backed module
+gate and uploads coverage. The independent
 `verify-server-startup-shutdown` job uses the same server selection, waits only
 for detection, and owns its PostgreSQL-backed command lifecycle tests and
-command-package coverage. Selected Go module and startup/shutdown jobs must both
+command-package coverage. Both coverage jobs provide isolated Azurite to execute
+offline migration mechanisms and command paths. Selected Go module and startup/shutdown jobs must both
 actually succeed. The independent Linux `verify-api-integration` job waits only
 for detection, prepares its own Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
 unit tests before production Web preparation and the explicit normal API suite. Its always-run
@@ -1111,9 +1422,13 @@ reconciliation step retains original command and cleanup failures; it uploads
 only safe API build/result/log evidence. The
 [API integration decision](../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
 owns the scheduling and build-input rationale. Web quality owns full
-typechecking, harness, production Docker Web build and coverage; its separate
-browser job owns frontend fixtures. Product E2E waits only for detection and
-prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
+typechecking, harness, production Docker Web build and coverage. The independent
+Linux `verify-mobile` job waits only for detection, installs the mobile package
+from the frozen workspace lockfile, and checks TypeScript, Expo SDK dependency
+compatibility and Metro bundle export for iOS and Android. Native compilation
+and device interaction are outside this check. Product E2E
+waits only for detection and prepares its own Node.js, pnpm, Go, Chromium,
+database and complete auth system.
 It rebuilds every runtime product from the checked-out source, even on a
 build-dependency cache hit.
 
@@ -1126,16 +1441,41 @@ normal completion, failure or runner termination. Original scenario and cleanup
 failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
 and `*/logs/**`, with 30-day retention.
 
-Final `checks` wait for every independent job. Failure and cancellation are
-rejected; selected API integration, Web and product E2E jobs must equal `success`,
-so an unexpected skip cannot pass their gate. Routine CI excludes stress
+Final `checks` wait for every job in that workflow. Failure and cancellation are
+rejected; selected CLI, Go module, startup/shutdown, API integration, Web quality,
+Mobile and product E2E jobs must equal `success`, so an unexpected skip cannot pass their
+gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref; main pushes queue
-without cancelling an active run. Documentation-only PRs run routing tests and
+Workflow concurrency cancels an older PR run for the same ref. Each workflow has
+its own group for main: the running run continues, and a new pending run replaces
+the older pending run. Intermediate commits can therefore be skipped; runner
+availability still controls job scheduling. Manual shell/browser runs on main
+share that workflow's main group.
+Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
+
+The separate [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+contains `verify-completion` and `verify-web-browser`. A `main` push or
+`workflow_dispatch` triggers both jobs, without module detection or a PR trigger;
+main concurrency can replace a pending run before either job starts.
+Each job checks out its event's source and installs its own locked dependencies.
+Shell validation retains the Bash 4.2, modern Bash and zsh behavior matrix and
+artifact acceptance. Browser validation retains the complete assistant suite,
+locked Playwright Chromium, its private Vite host and failure evidence. Their
+job deadlines, failure propagation and resource cleanup remain independent.
+Ordinary CLI tests and Web quality do not launch either suite, and final `checks`
+has no dependency on either job. Product E2E's Chromium installation, selection,
+execution and gate remain part of `checks`.
+
+A successful PR `checks` result therefore does not establish hosted shell or
+assistant-browser success for that PR. A `main` run validates the integrated
+revision; manual dispatch and the explicit local commands provide additional
+results for their own revisions and environments. The
+[workflow decision](../.agents/notes/implemented/testing/2026-11-12-shell-browser-workflow.md)
+records this trade-off and the preserved suite ownership.
 
 To validate routing rules locally without application dependencies, run:
 
@@ -1148,7 +1488,8 @@ node --test .github/scripts/*.test.mts
 Use the development commands above for application changes. `pnpm check` covers
 CLI type checking and ordinary tests; `pnpm acceptance` exercises the installed
 package. Native CI records environment and fixture preparation evidence, and
-shell completion writes `.tmp/completion-evidence.json`. Match each result to
+shell completion writes `.tmp/completion-module-evidence.json` and
+`.tmp/completion-evidence.json`. Match each result to
 its tested revision, environment and scope; a local result does not establish a
 successful hosted run. A failed scenario or cleanup remains a failure.
 

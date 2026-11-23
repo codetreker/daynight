@@ -35,7 +35,7 @@ type workerDocument struct {
 	AgentControlMode model.WorkerAgentControlMode `json:"agentControlMode"`
 	WorktreeID       string                       `json:"worktreeId"`
 	Phase            model.WorkerPhase            `json:"phase"`
-	Herdr            *herdrDocument               `json:"herdr"`
+	Herdr            json.RawMessage              `json:"herdr,omitempty"`
 	NativeSessionID  *string                      `json:"nativeSessionId"`
 	ClaimedAt        string                       `json:"claimedAt"`
 }
@@ -48,12 +48,24 @@ func encodeWorker(worker *model.WorkerClaim) *workerDocument {
 		Machine: machineDocument{ID: worker.Machine.ID, Name: worker.Machine.Name}, Platform: worker.Platform, Agent: worker.Agent, AgentControlMode: worker.AgentControlMode,
 		WorktreeID: worker.WorktreeID, Phase: worker.Phase, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC().Format(time.RFC3339Nano)}
 	if worker.Herdr != nil {
-		value.Herdr = &herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
+		value.Herdr, _ = json.Marshal(herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID})
+	} else if worker.AgentControlMode == model.AgentControlModeHerdr {
+		value.Herdr = json.RawMessage(`null`)
 	}
 	return value
 }
 
 func decodeWorker(data []byte) (*model.WorkerClaim, error) {
+	return decodeWorkerDocument(data, false)
+}
+
+// decodeStoredWorker recognizes historical execution modes independently of
+// admission policy, so changing new-claim support cannot make old tasks unreadable.
+func decodeStoredWorker(data []byte) (*model.WorkerClaim, error) {
+	return decodeWorkerDocument(data, true)
+}
+
+func decodeWorkerDocument(data []byte, stored bool) (*model.WorkerClaim, error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil, fmt.Errorf("properties.worker must be an object")
 	}
@@ -99,16 +111,21 @@ func decodeWorker(data []byte) (*model.WorkerClaim, error) {
 		return nil, err
 	}
 	worker.AgentControlMode = model.WorkerAgentControlMode(mode)
-	if !worker.AgentControlMode.Supports(worker.Agent) {
+	if stored && worker.AgentControlMode != model.AgentControlModeHerdr && worker.AgentControlMode != model.AgentControlModeWeb ||
+		!stored && !worker.AgentControlMode.SupportsNewClaim(worker.Agent) {
 		return nil, fmt.Errorf("properties.worker has an unsupported agent control mode and agent combination")
 	}
 	if !worker.State.Valid() || !worker.Platform.Valid() || !worker.Agent.Valid() || !worker.Phase.Valid() {
 		return nil, fmt.Errorf("properties.worker has invalid state, platform, agent or phase")
 	}
-	if _, exists := fields["herdr"]; !exists {
+	herdrRaw, exists := fields["herdr"]
+	if !stored && exists {
+		return nil, fmt.Errorf("properties.worker.herdr is not accepted for new execution")
+	}
+	if stored && !exists && worker.AgentControlMode != model.AgentControlModeWeb {
 		return nil, fmt.Errorf("properties.worker.herdr is required")
 	}
-	if !bytes.Equal(bytes.TrimSpace(fields["herdr"]), []byte("null")) {
+	if exists && !bytes.Equal(bytes.TrimSpace(herdrRaw), []byte("null")) {
 		herdr, err := jsonobject.Decode(fields["herdr"], "properties.worker.herdr", "session", "workspaceId", "paneId")
 		if err != nil {
 			return nil, err

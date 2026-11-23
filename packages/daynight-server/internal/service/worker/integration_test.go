@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
@@ -37,14 +39,37 @@ func serviceWorkerReport() model.WorkerReport {
 		CPU:      model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerCPU{Model: "Test CPU", LogicalProcessors: 4, UsagePercent: 25})},
 		Memory:   model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerMemory{UsedBytes: 1024, TotalBytes: 4096})},
 		Disk:     model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerDisk{AvailableBytes: 2048, TotalBytes: 8192})},
-		Versions: model.WorkerVersions{Daynight: "1.0.0", Herdr: model.WorkerProbe[string]{State: "not_running", CheckedAt: now}, Codex: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}},
+		Versions: model.WorkerVersions{Daynight: "1.0.0", Codex: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}},
 	}}
 }
 
-func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
+func openWorkerIntegrationStore(t *testing.T) *postgres.Store {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	database, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	return database
+}
+
+func TestWorkerSnapshots(t *testing.T) {
+	database := openWorkerIntegrationStore(t)
+	t.Run("unknown_empty_and_stale_observations", func(t *testing.T) {
+		testWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t, database)
+	})
+	t.Run("pagination_clock_and_expired_detail", func(t *testing.T) {
+		testWorkerSnapshotsPaginationClockAndExpiredDetail(t, database)
+	})
+}
+
+func testWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
 	workers := NewWorkers(database)
-	ctx := context.Background()
+	ctx := t.Context()
 	id := uuid.NewString()
 	report := serviceWorkerReport()
 	for range 2 {
@@ -88,9 +113,10 @@ func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
 	}
 }
 
-func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
+func testWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
+	ctx := t.Context()
 	workers := NewWorkers(database)
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	for _, id := range ids {
@@ -121,7 +147,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 		t.Fatalf("pagination lost or repeated workers: %v", seen)
 	}
 	var lastReported time.Time
-	if err := database.Pool.QueryRow(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '121 seconds' WHERE worker_id=$1 RETURNING last_seen_at", ids[0]).Scan(&lastReported); err != nil {
+	if err := database.Pool.QueryRow(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '121 seconds' WHERE user_id=$1 AND worker_id=$2 RETURNING last_seen_at", principal.UserID, ids[0]).Scan(&lastReported); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -130,7 +156,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 			t.Fatalf("reads refreshed or misreported the liveness clock: %+v, %v", detail, err)
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE worker_id=$1", ids[0]); err != nil {
+	if _, err := database.Pool.Exec(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE user_id=$1 AND worker_id=$2", principal.UserID, ids[0]); err != nil {
 		t.Fatal(err)
 	}
 	_, err := workers.Get(ctx, principal, ids[0])
@@ -138,10 +164,10 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 }
 
 func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	workers := NewWorkers(database)
-	ctx := context.Background()
-	id := uuid.NewString()
+	ctx := t.Context()
+	principal := workerRefusalPrincipal()
+	id := refusalWorkerID
+	workers := NewWorkers(forbiddenWorkerStore{t: t})
 	_, err := workers.Report(ctx, model.Principal{}, id, serviceWorkerReport())
 	requireFault(t, err, "unauthenticated")
 	_, err = workers.List(ctx, model.Principal{}, model.PageRequest{Limit: 1})
@@ -156,19 +182,33 @@ func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = workers.Get(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
-	_, err = workers.Get(ctx, principal, id)
+
+	missing := &missingWorkerCompletion{t: t, ctx: ctx, principal: principal, worker: id,
+		observed: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
+	detail, err := NewWorkers(missing).Get(ctx, principal, id)
 	requireFault(t, err, "not_found")
-	database.Close()
-	for _, invoke := range []func() error{
-		func() error { _, err := workers.Report(ctx, principal, id, serviceWorkerReport()); return err },
-		func() error { _, err := workers.List(ctx, principal, model.PageRequest{Limit: 1}); return err },
-		func() error { _, err := workers.Get(ctx, principal, id); return err },
-	} {
+	if !errors.Is(err, model.ErrNotFound) || !reflect.DeepEqual(detail, WorkerDetailResult{}) ||
+		!slices.Equal(missing.calls, []string{"snapshot", "clock", "workerDAO", "worker", "completion"}) {
+		t.Fatalf("confirmed missing Worker result: %+v, calls=%v, error=%v", detail, missing.calls, err)
+	}
+
+	database, cause := closedWorkerTestStore(t)
+	workers = NewWorkers(database)
+	check := func(operation, phase string, result, zero any, err error) {
+		t.Helper()
 		var stored *store.Error
-		if err := invoke(); !errors.As(err, &stored) || errors.Unwrap(err) == nil {
-			t.Fatalf("storage failure was hidden: %v", err)
+		if !reflect.DeepEqual(result, zero) || !errors.As(err, &stored) || errors.Unwrap(err) != stored ||
+			stored.Phase != phase || !stored.DatabaseFailure || stored.MissingRow || stored.SQLState != "" ||
+			!errors.Is(err, cause) || !strings.HasPrefix(err.Error(), operation+": ") {
+			t.Fatalf("%s storage failure was hidden: result=%+v error=%v store=%+v", operation, result, err, stored)
 		}
 	}
+	report, err := workers.Report(ctx, principal, id, serviceWorkerReport())
+	check("report worker", "begin worker snapshot", report, WorkerReportResult{}, err)
+	page, err := workers.List(ctx, principal, model.PageRequest{Limit: 1})
+	check("list workers", "begin snapshot", page, WorkerPage{}, err)
+	detail, err = workers.Get(ctx, principal, id)
+	check("get worker", "begin snapshot", detail, WorkerDetailResult{}, err)
 }
 
 func cloudWorkerConfiguration(projectID string) model.WorkerConfiguration {
@@ -176,7 +216,7 @@ func cloudWorkerConfiguration(projectID string) model.WorkerConfiguration {
 	if projectID != "" {
 		projects = append(projects, model.WorkerProjectConfiguration{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}})
 	}
-	return model.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: projects}
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: projects}
 }
 
 func importWorkerConfiguration(t *testing.T, workers *Workers, principal model.Principal, workerID string, value model.WorkerConfiguration) WorkerReportResult {

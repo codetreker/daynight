@@ -9,6 +9,11 @@ import (
 )
 
 func KnownFault(err error) (*model.Fault, bool) {
+	// This explicit availability envelope does not claim rollback or authorize
+	// resubmission. Preserve it even when its cause carries an unknown commit.
+	if fault, ok := err.(*model.Fault); ok && fault.Code == "lifecycle_unavailable" {
+		return fault, true
+	}
 	if failed, _ := store.DatabaseErrorFacts(err); failed {
 		return nil, false
 	}
@@ -47,19 +52,47 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
-		case "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
+		case "lifecycle_unsupported", "worker_disabled", "disable_incomplete", "safety_blocked", "stale_instance", "stale_intent", "stale_report", "operation_resolved_not_committed":
+			return fault, true
+		case "insufficient_scope":
+			// A second independent failure makes the refusal's outcome uncertain.
+			if !containsJoinedError(err) {
+				return fault, true
+			}
+			return nil, false
+		case "project_repository_conflict", "project_repository_identity_unavailable":
+			return fault, true
+		case "goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch", "goal_dependency_target_unavailable":
+			return fault, true
+		case "task_unfinished_children", "task_parent_terminal", "task_parent_immutable":
+			return fault, true
+		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
+			return fault, true
+		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
+			return fault, true
+		case "github_repository_mismatch", "github_grant_changed", "github_admin_changed", "github_not_connected", "github_connection_unavailable", "impact_changed":
 			return fault, true
 		case "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path":
 			return fault, true
-		case "resource_busy", "list_changed", "configuration_not_initialized", "invalid_search_expression", "search_changed", "search_timeout", "transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "resource_limit_exceeded", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost", "monitoring_unavailable", "monitoring_write_outcome_unknown":
+		case "worker_platform_task_mode_upgrade_required", "worker_platform_task_mode_unsupported", "worker_task_tag_filter_unsupported", "resource_busy", "list_changed", "configuration_not_initialized", "invalid_search_expression", "search_changed", "search_timeout", "transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "resource_limit_exceeded", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			return fault, true
 		case "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete":
 			return fault, true
-		case "personal_team_immutable", "team_not_empty", "write_outcome_unknown", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "permission_denied", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "unsupported_protocol", "unsupported_content_kind", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "invalid_payload", "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "capacity_exhausted", "unauthenticated", "forbidden", "last_admin", "identity_mismatch", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large", "message_not_found", "clock_not_advanced", "message_outcome_unknown":
+		case "personal_team_immutable", "team_not_empty", "write_outcome_unknown", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "permission_denied", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "unsupported_protocol", "unsupported_content_kind", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "invalid_payload", "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "capacity_exhausted", "unauthenticated", "forbidden", "last_admin", "identity_mismatch", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "user_not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large", "message_not_found", "clock_not_advanced", "message_outcome_unknown", "inbox_gone", "service_unavailable":
 			return fault, true
 		}
 	}
 	return nil, false
+}
+
+func containsJoinedError(err error) bool {
+	for err != nil {
+		if _, ok := err.(interface{ Unwrap() []error }); ok {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func onlyPropertyValidation(err error) bool {

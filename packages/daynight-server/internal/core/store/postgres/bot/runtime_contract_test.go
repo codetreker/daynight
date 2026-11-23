@@ -327,6 +327,24 @@ func TestBotStorageDeletionAndScopedPagination(t *testing.T) {
 	if len(tail.Items) != 1 || tail.HasMore || !ids[tail.Items[0].ID] || seen[tail.Items[0].ID] {
 		t.Fatalf("worker tail repeated or lost a definition: %+v", tail)
 	}
+	globalOrder := []string{page.Items[0].ID, page.Items[1].ID, tail.Items[0].ID, foreignBot.ID, otherWorkerBot.ID}
+	stamp := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	mustQueryExec(t, database, `UPDATE bots SET created_at=$1::timestamptz + (seed.position - 1) * interval '1 second'
+		FROM unnest($2::uuid[]) WITH ORDINALITY AS seed(id, position) WHERE bots.id=seed.id`, stamp, globalOrder)
+	globalFirst := readPage(principal.UserID, nil, Page{Limit: 2})
+	if len(globalFirst.Items) != 2 || !globalFirst.HasMore ||
+		globalFirst.Items[0].ID != globalOrder[0] || globalFirst.Items[1].ID != globalOrder[1] {
+		t.Fatalf("global first page lost the expected Bot IDs: %+v", globalFirst)
+	}
+	boundary := globalFirst.Items[1]
+	if !boundary.CreatedAt.Equal(stamp.Add(time.Second)) {
+		t.Fatalf("global continuation timestamp changed: %v", boundary.CreatedAt)
+	}
+	globalTail := readPage(principal.UserID, nil, Page{Limit: 2, After: &Position{CreatedAt: boundary.CreatedAt, ID: boundary.ID}})
+	if len(globalTail.Items) != 2 || globalTail.HasMore ||
+		globalTail.Items[0].ID != globalOrder[2] || globalTail.Items[1].ID != otherWorkerBot.ID {
+		t.Fatalf("global continuation repeated, lost or leaked a Bot: %+v", globalTail)
+	}
 	page = readPage(principal.UserID, nil, Page{Limit: 10})
 	if len(page.Items) != 4 || page.HasMore {
 		t.Fatalf("owner list excluded its other Worker: %+v", page)

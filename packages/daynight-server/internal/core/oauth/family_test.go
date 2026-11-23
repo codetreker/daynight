@@ -49,13 +49,21 @@ func (d *familyDAO) IssueFamily(ctx context.Context, issue store.OAuthFamilyIssu
 	d.issue = issue
 	return d.issueErr
 }
-func (d *familyDAO) AuthenticateAccess(_ context.Context, hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *familyDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	if !d.allowAuthentication {
 		d.t.Fatal("unexpected AuthenticateAccess call")
 	}
 	d.authenticated = true
-	d.authHash, d.resource, d.scope, d.now = hash, resource, scope, now
+	d.authHash, d.resource, d.scope, d.now = hash, bindings[0].Resource, bindings[0].Scope, now
 	return d.identity, d.authErr
+}
+func (d *familyDAO) LockAccess(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	d.t.Fatal("unexpected LockAccess")
+	return nil
+}
+func (d *familyDAO) ReadAccess(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	d.t.Fatal("unexpected ReadAccess")
+	return nil
 }
 func (d *familyDAO) RevokeFamily(context.Context, string, time.Time) (bool, error) {
 	d.t.Fatal("unexpected RevokeFamily call")
@@ -155,7 +163,7 @@ func TestIssueFamilyRejectsInvalidInputsAndSuppressesSecretsOnError(t *testing.T
 func TestAuthenticateAccessValidatesTokenAndResource(t *testing.T) {
 	now := time.Now()
 	token := secret.Random(model.OAuthAccessPrefix)
-	identity := store.OAuthAccessIdentity{GrantID: uuid.NewString(), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
+	identity := store.OAuthAccessIdentity{GrantID: uuid.NewString(), ExpiresAt: time.Now().Add(24 * time.Hour), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
 	dao := &familyDAO{t: t, allowAuthentication: true, identity: identity}
 	got, err := AuthenticateAccess(context.Background(), dao, token, "https://daynight.example/mcp", now)
 	if err != nil || got != identity || !dao.authenticated || !bytes.Equal(dao.authHash, secret.Hash(token)) || dao.resource != "https://daynight.example/mcp" || dao.scope != Scope || !dao.now.Equal(now.UTC().Truncate(time.Microsecond)) {
@@ -237,15 +245,15 @@ func newAuthenticationReader(t *testing.T, wantCalls int) *authenticationReader 
 	return d
 }
 
-func (d *authenticationReader) AuthenticateAccess(ctx context.Context, hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *authenticationReader) AuthenticateAccess(ctx context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	d.t.Helper()
 	d.actualCalls++
 	if d.actualCalls > d.wantCalls {
 		d.t.Errorf("unexpected authentication DAO call %d", d.actualCalls)
 		return store.OAuthAccessIdentity{}, nil
 	}
-	if ctx != d.context || !bytes.Equal(hash, d.hash) || resource != d.resource || scope != d.scope || now != d.now {
-		d.t.Errorf("authentication DAO arguments: context=%v hash=%x resource=%q scope=%q now=%v; want context=%v hash=%x resource=%q scope=%q now=%v", ctx, hash, resource, scope, now, d.context, d.hash, d.resource, d.scope, d.now)
+	if ctx != d.context || !bytes.Equal(hash, d.hash) || len(bindings) != 1 || bindings[0] != (store.OAuthBinding{Resource: d.resource, Scope: d.scope}) || now != d.now {
+		d.t.Errorf("authentication DAO arguments: context=%v hash=%x resource=%q scope=%q now=%v; want context=%v hash=%x resource=%q scope=%q now=%v", ctx, hash, bindings[0].Resource, bindings[0].Scope, now, d.context, d.hash, d.resource, d.scope, d.now)
 	}
 	return d.identity, d.err
 }
@@ -258,7 +266,7 @@ func TestAuthenticateAccessPreservesReaderInputsAndResults(t *testing.T) {
 	const resource = "https://daynight.example/mcp"
 	now := time.Date(2026, 11, 6, 8, 1, 2, 123456789, time.FixedZone("test", 3600))
 	wantTime := time.Date(2026, 11, 6, 7, 1, 2, 123456000, time.UTC)
-	identity := store.OAuthAccessIdentity{GrantID: uuid.NewString(), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
+	identity := store.OAuthAccessIdentity{GrantID: uuid.NewString(), ExpiresAt: time.Now().Add(24 * time.Hour), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
 	failure := errors.New("authentication storage failed")
 	for _, tc := range []struct {
 		name     string

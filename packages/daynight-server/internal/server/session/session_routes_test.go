@@ -13,10 +13,75 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
 )
+
+func TestControllerImageRefusalKeepsConnectionAndPreservesFenceFailures(t *testing.T) {
+	for _, kind := range []string{"business", "revoked", "wrong_fence"} {
+		t.Run(kind, func(t *testing.T) {
+			f := sessionHTTPSetup(t)
+			conn, snapshot := f.controller(t, uuid.NewString())
+			requestID, captureID := uuid.NewString(), uuid.NewString()
+			f.backend.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+				calls.Handle = func(ctx context.Context, message sp.ControllerMessage) (map[string]any, error) {
+					if err := f.require(ctx != nil && message.ControllerFence == snapshot.ControllerFence, "Handle lost the connected fence"); err != nil {
+						return nil, err
+					}
+					switch message.Type {
+					case "image_capture":
+						if err := f.require(message.RequestID == requestID && message.Action == "query" && string(message.MediaBody) == `{"captureId":"`+captureID+`"}`, "Handle changed parsed capture request"); err != nil {
+							return nil, err
+						}
+						if kind == "revoked" {
+							return nil, &model.Fault{Code: "forbidden", Message: "Controller authority was revoked."}
+						}
+						return nil, &sessioncore.CaptureRequestError{Code: "capture_not_found", Message: "Capture was not found."}
+					case "heartbeat":
+						return nativeFrame(snapshot.ControllerFence, map[string]any{"type": "heartbeat_ack"}), nil
+					case "events":
+						return nativeFrame(snapshot.ControllerFence, map[string]any{"type": "events_ack", "batchId": message.BatchID, "sourceEpoch": message.SourceEpoch, "lastAckedSourceSeq": "1"}), nil
+					default:
+						return nil, f.require(false, "unexpected controller message")
+					}
+				}
+			})
+			frame := nativeFrame(snapshot.ControllerFence, map[string]any{"type": "image_capture", "requestId": requestID, "action": "query", "body": map[string]any{"captureId": captureID}})
+			if kind == "wrong_fence" {
+				frame["connectionEpoch"] = "99"
+			} else {
+				f.nextCall("Handle")
+			}
+			sessionWSWrite(t, conn, frame)
+			if kind != "business" {
+				errorFrame := sessionWSKind(t, conn, "error")
+				if kind == "revoked" && string(errorFrame["code"]) != `"forbidden"` || kind == "wrong_fence" && string(errorFrame["code"]) != `"session_conflict"` {
+					t.Fatal("wrong channel error", errorFrame)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if _, _, err := conn.Read(ctx); err == nil || ctx.Err() != nil {
+					t.Fatal("connection did not close", err)
+				}
+				return
+			}
+			result := sessionWSKind(t, conn, "image_capture_result")
+			if string(result["requestId"]) != `"`+requestID+`"` || string(result["action"]) != `"query"` || string(result["result"]) != "null" || string(result["error"]) != `{"code":"capture_not_found","message":"Capture was not found."}` {
+				t.Fatal("incorrect image refusal", result)
+			}
+			f.ControllerWrite(t, conn, sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence})
+			sessionWSKind(t, conn, "heartbeat_ack")
+			epoch, batch := uuid.NewString(), uuid.NewString()
+			state := sp.State{InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle"}
+			f.ControllerWrite(t, conn, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: batch, Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}}})
+			sessionWSKind(t, conn, "events_ack")
+		})
+	}
+}
 
 func TestControllerChannelRejectsInvalidGrantsBeforeUpgrade(t *testing.T) {
 	for _, kind := range []string{"unknown", "expired", "consumed", "revoked"} {

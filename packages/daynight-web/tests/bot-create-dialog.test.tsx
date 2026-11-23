@@ -267,6 +267,33 @@ it('keeps composition Escape inside the form without cancelling the draft', asyn
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+it('leaves popup Escape to the native control while stopping the outer handler', async () => {
+  mount(); await flush(); advanced(); name('Kept draft');
+  const select = screen.getByRole('combobox', { name: 'Worker' });
+  const originalMatches = select.matches.bind(select);
+  const matches = vi.spyOn(select, 'matches').mockImplementation(query => query === ':open' || originalMatches(query));
+  const outer = vi.fn(); document.addEventListener('keydown', outer);
+  try {
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    fireEvent(select, escape); await flush();
+    expect(escape.defaultPrevented).toBe(false);
+    expect(outer).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(assistantNameInput()).toHaveValue('Kept draft');
+    expect(api.createBot).not.toHaveBeenCalled();
+  } finally {
+    document.removeEventListener('keydown', outer);
+    matches.mockRestore();
+  }
+});
+
+it('ignores an Escape reported as IME key code 229', async () => {
+  mount(); await flush(); name('Composition draft');
+  fireEvent.keyDown(assistantNameInput(), { key: 'Escape', keyCode: 229 }); await flush();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(assistantNameInput()).toHaveValue('Composition draft');
+});
+
 it('settles a confirmed creation during a pause and protects later edits on resume', async () => {
   const pending = deferred<api.BotDefinition>();
   vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });
@@ -399,4 +426,60 @@ it('retries confirmed identity admission when another pause starts at the ready 
   act(() => resume()); await flush();
   expect(assistantCreateSubmit()).toBeEnabled();
   expect(api.getBot).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled();
+});
+
+it('ends confirmed creation admission after a retained scope observes a different principal', async () => {
+  const { getTask, pauseAuthRequests } = await import('../src/api/client');
+  const { createTaskCacheScope } = await import('../src/features/task-cache/project-cache');
+  const { pendingBotCreation, rememberConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+  let resume = () => {};
+  const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const request = { id: wid(3), name: 'Helper' };
+  rememberBotCreation(scope, request); rememberConfirmedBotCreation(scope, request, bot);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Daynight-User-ID': wid(2) } })));
+  await expect(getTask(wid(4), wid(5), new AbortController().signal, { userId: owner, onPrincipalMismatch: scope.principalMismatch })).rejects.toMatchObject({ kind: 'protocol', code: 'principal_mismatch' });
+  const ready = scope.ready.bind(scope); let attempts = 0, exceeded = false;
+  vi.spyOn(scope, 'ready').mockImplementation(async signal => {
+    if (++attempts > 10) { exceeded = true; resume(); throw new Error('Identity admission retried indefinitely'); }
+    return ready(signal);
+  });
+  const unresolvedChanged = vi.fn();
+  const view = renderWithLocale(<BotCreateDialog unresolvedRequest={request} onUnresolvedRequestChange={unresolvedChanged} onClose={onClose} onCreated={onCreated} />, { locale: 'en', taskCache: { scope } });
+  try {
+    await flush();
+    expect(attempts).toBeGreaterThan(0); expect(exceeded).toBe(false);
+    expect(scope.hasIdentityMismatch).toBe(true); expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+    expect(pendingBotCreation(scope)).toEqual(request); expect(unresolvedChanged).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
+  } finally { view.unmount(); resume(); scope.dispose(); }
+});
+
+it('retains a confirmed creation when identity changes between readiness and publication', async () => {
+  const { getTask } = await import('../src/api/client');
+  const { createTaskCacheScope } = await import('../src/features/task-cache/project-cache');
+  const { confirmedBotCreations, pendingBotCreation, rememberConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+  const mismatch = vi.fn();
+  const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: mismatch });
+  const request = { id: wid(3), name: 'Helper' };
+  rememberBotCreation(scope, request); rememberConfirmedBotCreation(scope, request, bot);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Daynight-User-ID': wid(2) } })));
+  const ready = scope.ready.bind(scope); let triggered = false, failure: unknown;
+  vi.spyOn(scope, 'ready').mockImplementation(async signal => {
+    await ready(signal);
+    if (!triggered) {
+      triggered = true;
+      try { await getTask(wid(4), wid(5), new AbortController().signal, { userId: owner, onPrincipalMismatch: scope.principalMismatch }); }
+      catch (error) { failure = error; }
+    }
+  });
+  const unresolvedChanged = vi.fn();
+  const view = renderWithLocale(<BotCreateDialog unresolvedRequest={request} onUnresolvedRequestChange={unresolvedChanged} onClose={onClose} onCreated={onCreated} />, { locale: 'en', taskCache: { scope } });
+  try {
+    await flush();
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(failure).toMatchObject({ kind: 'protocol', code: 'principal_mismatch' });
+    expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+    expect(pendingBotCreation(scope)).toEqual(request); expect(confirmedBotCreations(scope)).toEqual([{ request, bot }]);
+    expect(unresolvedChanged).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled();
+  } finally { view.unmount(); scope.dispose(); }
 });

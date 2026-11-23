@@ -15,27 +15,52 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestControllerChannelFailureDiagnostics(t *testing.T) {
-	for _, phase := range []string{"controller_connect", "controller_source", "controller_fence", "controller_handle", "controller_poll"} {
-		t.Run(phase, func(t *testing.T) {
+	for _, scenario := range []struct {
+		name, phase     string
+		online, upgrade bool
+	}{
+		{"connect", "controller_connect", false, false},
+		{"source", "controller_source", false, false},
+		{"fence", "controller_fence", false, false},
+		{"handle", "controller_handle", false, false},
+		{"poll", "controller_poll", false, false},
+		{"online connect", "controller_connect", true, false},
+		{"online upgrade refusal", "controller_connect", true, true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			phase := scenario.phase
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			failure := &model.Fault{Code: "not_found", Message: "Session was not found.", Cause: &store.Error{Phase: "read image upload", MissingRow: true, Cause: errors.New("PRIVATE-DATABASE-CANARY")}}
+			if scenario.upgrade {
+				failure.Code, failure.Message = "upgrade_required", "This Session requires online relay version 1."
+			}
 			fence := sp.ControllerFence{Fence: sp.Fence{SessionID: "11111111-1111-4111-8111-111111111111", ClaimID: "22222222-2222-4222-8222-222222222222", ExecutionGeneration: "1"}, ConnectionEpoch: "3"}
 			routes := newRoutes(serviceCalls{
 				AuthenticateController: func(context.Context, string) error { return nil },
 				Connect: func(context.Context, string, sp.ControllerMessage, string, int) (sp.Snapshot, error) {
+					if scenario.online {
+						t.Fatal("online admission used the legacy connect operation")
+					}
 					if phase == "controller_connect" {
 						return sp.Snapshot{}, failure
 					}
 					return sp.Snapshot{ControllerFence: fence}, nil
+				},
+				ConnectOnline: func(_ context.Context, _ string, _ sp.ControllerMessage, _ string, _ int, relay, body bool) (sessioncore.OnlineConnection, error) {
+					if !scenario.online || !relay || body {
+						t.Fatal("online admission capabilities changed")
+					}
+					return sessioncore.OnlineConnection{}, failure
 				},
 				SourceSeq: func(context.Context, sp.ControllerFence) (int64, error) {
 					if phase == "controller_source" {
@@ -56,7 +81,11 @@ func TestControllerChannelFailureDiagnostics(t *testing.T) {
 			handler := httpx.RequestLogging(logger, http.HandlerFunc(routes.controllerChannel))
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { defer close(done); handler.ServeHTTP(w, r) }))
 			defer server.Close()
-			conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{Subprotocols: []string{sp.Protocol}, HTTPHeader: http.Header{"Authorization": []string{"Bearer dncontroller_PRIVATE-TOKEN-CANARY"}, "X-Request-Id": []string{"controller-diagnostics-test"}}})
+			headers := http.Header{"Authorization": []string{"Bearer dncontroller_PRIVATE-TOKEN-CANARY"}, "X-Request-Id": []string{"controller-diagnostics-test"}}
+			if scenario.online {
+				headers.Set("Daynight-Online-Relay-Version", "1")
+			}
+			conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{Subprotocols: []string{sp.Protocol}, HTTPHeader: headers})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -68,7 +97,14 @@ func TestControllerChannelFailureDiagnostics(t *testing.T) {
 			var response map[string]any
 			err = wsjson.Read(ctx, conn, &response)
 			if phase == "controller_connect" {
-				if err == nil {
+				if scenario.upgrade {
+					if err != nil || response["type"] != "error" || response["code"] != "upgrade_required" || response["message"] != failure.Message || response["sessionId"] != fence.SessionID || response["claimId"] != fence.ClaimID {
+						t.Fatalf("upgrade refusal contract changed: %+v %v", response, err)
+					}
+					if err = wsjson.Read(ctx, conn, &response); err == nil {
+						t.Fatal("channel remained open after upgrade refusal")
+					}
+				} else if err == nil {
 					t.Fatalf("connect failure unexpectedly sent a public frame: %+v", response)
 				}
 			} else {

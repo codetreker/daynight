@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ApiError } from "../../api/client";
+import { HorizontalTabList } from "../../ui/horizontal-tab-list/HorizontalTabList";
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
+import { CopyButton } from "../../ui/copy-button/CopyButton";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ApiError, isAbortError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import type { CurrentUser } from "../../api/auth-types";
 import { getWebhookSecret, type WebhookActiveEndpoint, type WebhookCatalog, type WebhookEndpointSummary, type WebhookOwner, type WebhookSecret, type WebhookSubscription } from "../../api/webhooks";
 import { navigate, webhookUrl, type WebhookRoute } from "../../app/router";
@@ -74,7 +77,13 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     }
   }
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? idleSnapshot);
-  const deletedByReceipt = intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
+  const writePauseRevisions = useRef(new Map<string, number>()), publicationStopRevisions = useRef(new Map<string, number>()), postWriteRead = useRef<AbortController | null>(null), publication = useRef<AbortController | null>(null), editRevision = useRef(0);
+  const [publicationRevision, setPublicationRevision] = useState(0);
+  const publicationReady = useRef<(() => void) | null>(null);
+  const writeContexts = useRef(new Map<string, { readonly modal: Modal | null; readonly edit: number; readonly interaction: number; readonly revision: number; readonly stopRevision: number }>());
+  const presentationGuards = useRef(new Map<string, () => boolean>());
+  const mayPresent = () => !authRequestsPaused() && (scope === null || ((!writePauseRevisions.current.has(scope) || writePauseRevisions.current.get(scope) === authRequestsPauseRevision()) && (!publicationStopRevisions.current.has(scope) || publicationStopRevisions.current.get(scope) === controller?.getStopRevision()) && (presentationGuards.current.get(scope)?.() ?? true)));
+  const deletedByReceipt = mayPresent() && intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
   const endpoint = sourceEndpoint?.id === deletedByReceipt ? null : sourceEndpoint;
   const historyEndpointId = route.endpointId ?? data.endpointId;
   const historyContextKey = owner === null || ownerAuthorization?.readable !== true || historyEndpointId === null || admission.isInvalidated ? null : JSON.stringify([window.location.origin, admission.userId, owner.kind, owner.id, historyEndpointId, ownerAuthorization.readKey]);
@@ -91,9 +100,16 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const visibleItems = data.items === null ? null : data.items.filter(item => item.id !== deletedByReceipt);
   live.current = { active: canRead, owner, endpoint, endpointId: historyEndpointId, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true };
   const [modal, setModal] = useState<Modal | null>(null), [menu, setMenu] = useState<string | null>(null), [rotation, setRotation] = useState<"overlap" | "immediate">("overlap"), [secret, setSecret] = useState<{ readonly scope: string; readonly value: WebhookSecret } | null>(null), [secretBusy, setSecretBusy] = useState(false), [secretError, setSecretError] = useState<unknown>(null), [copyStatus, setCopyStatus] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
+  const modalRef = useRef(modal); modalRef.current = modal;
   const secretSequence = useRef(0), handled = useRef(new Set<string>()), lifecycle = useRef(0), listRef = useRef<HTMLElement>(null);
   const writeFences = useRef(new Map<string, WebhookReadFence | null>());
   const saveListPosition = useWebhookListPosition(listRef, JSON.stringify([scope, query]), route.endpointId !== null, visibleItems !== null);
+  useEffect(() => {
+    const unsubscribe = subscribeAuthPause(() => postWriteRead.current?.abort());
+    return () => { unsubscribe(); postWriteRead.current?.abort(); postWriteRead.current = null; publication.current?.abort(); publication.current = null; publicationReady.current = null; };
+  }, []);
+  useLayoutEffect(() => { postWriteRead.current?.abort(); postWriteRead.current = null; }, [selectionKey]);
+  useEffect(() => { if (canRead) publicationReady.current?.(); }, [canRead]);
   useEffect(() => { const generation = ++lifecycle.current; return () => { queueMicrotask(() => { if (lifecycle.current === generation) { for (const value of controllers.current.values()) value.dispose(); controllers.current.clear(); } }); }; }, []);
   useEffect(() => { setModal(null); setMenu(null); setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); setLocalError(null); secretSequence.current++; }, [scope]);
   useEffect(() => { setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); secretSequence.current++; }, [endpoint?.id, endpoint?.signing.activeKeyId, endpoint?.capabilities.readSecret, route.tab, route.endpointId, secretAreaVisible]);
@@ -108,12 +124,12 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   useEffect(() => { if (sourceEndpoint !== null && (!sourceEndpoint.capabilities.manage || !sourceEndpoint.capabilities.readSecret)) controller?.forgetCurrentProjection(); }, [sourceEndpoint?.id, sourceEndpoint?.capabilities.manage, sourceEndpoint?.capabilities.readSecret]);
   useEffect(() => { if (modal !== null && modal.kind !== "create" && (endpoint?.id === modal.endpoint.id && !endpoint.capabilities.manage || data.detailError !== null && endpoint === null)) setModal(null); }, [endpoint, modal]);
   useEffect(() => {
-    if (intent.phase !== "confirmed" || intent.result === null || intent.prepared === null || handled.current.has(intent.prepared.operationId)) return;
+    if (intent.phase !== "confirmed" || intent.result === null || intent.prepared === null || handled.current.has(intent.prepared.operationId) || !mayPresent()) return;
     handled.current.add(intent.prepared.operationId); setSecret(null); secretSequence.current++;
     if (intent.result.operation.kind === "endpoint.delete") data.withdraw(intent.result.operation.endpointId);
     if (modal?.scope === scope) setModal(null);
     if (intent.prepared.kind === "endpoint.create" && owner !== null) navigate(webhookUrl({ owner: owner.kind, teamId: owner.kind === "team" ? owner.id : null, endpointId: intent.result.operation.endpointId, tab: "configuration" }));
-  }, [intent]);
+  }, [intent, publicationRevision]);
   useEffect(() => {
     const close = (event: MouseEvent) => { if (!(event.target instanceof Element) || !event.target.closest(".row-actions")) setMenu(null); };
     document.addEventListener("click", close); return () => document.removeEventListener("click", close);
@@ -133,34 +149,79 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const authorization = management ? directories.observeManagementRestricted(requestedOwner, authorizationKey) : directories.observeOwnerDenied(requestedOwner, authorizationKey);
     if (authorization.key !== authorizationKey) { setLocalError(error); directories.refresh(); }
   };
+  const deferConfirmation = (targetScope: string, original: WebhookIntentController, outcome: WebhookIntentState, fence: WebhookReadFence | null, requestedOwner: WebhookOwner) => {
+    const context = writeContexts.current.get(targetScope), operationId = outcome.prepared?.operationId;
+    if (context === undefined || operationId === undefined || isAbortError(outcome.error) || original.getStopRevision() !== context.stopRevision) return;
+    const work = new AbortController(); publication.current?.abort(); publication.current = work; publicationReady.current = null;
+    const signal = AbortSignal.any([work.signal, admission.signal]);
+    const unsubscribe = original.subscribeStop(() => work.abort());
+    signal.addEventListener("abort", () => { unsubscribe(); if (publication.current === work) { publication.current = null; publicationReady.current = null; } }, { once: true });
+    const sameContext = () => !signal.aborted && !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && original.getSnapshot().prepared?.operationId === operationId && writeContexts.current.get(targetScope) === context && original.getStopRevision() === context.stopRevision && interactionSequence.current === context.interaction && modalRef.current === context.modal && editRevision.current === context.edit;
+    const publish = () => {
+      if (publication.current !== work) return;
+      if (!sameContext()) { publication.current = null; publicationReady.current = null; work.abort(); return; }
+      if (authRequestsPaused()) {
+        publicationReady.current = null;
+        void waitForAuthRequests(signal).then(() => { if (sameContext()) { publicationReady.current = publish; publish(); } }, error => { if (sameContext()) setLocalError(error); });
+        return;
+      }
+      if (!live.current.active) return;
+      try {
+        presentationGuards.current.set(targetScope, sameContext);
+        writePauseRevisions.current.set(targetScope, authRequestsPauseRevision());
+        if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) original.forgetCurrentProjection();
+        data.refreshCurrent(); directories.refresh(); setPublicationRevision(value => value + 1);
+      } catch (error) { if (sameContext()) setLocalError(error); }
+      finally { unsubscribe(); if (publication.current === work) { publication.current = null; publicationReady.current = null; } }
+    };
+    void (async () => {
+      try { await waitForAuthRequests(signal); await admission.ready(signal); if (sameContext()) { publicationReady.current = publish; publish(); } }
+      catch (error) { if (sameContext()) setLocalError(error); }
+      finally { if (publication.current === work && publicationReady.current !== publish && !authRequestsPaused()) { unsubscribe(); publication.current = null; } }
+    })();
+  };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (controller === null || scope === null || owner === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
+    if (controller === null || scope === null || owner === null || authRequestsPaused() || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
     const state = controller.getSnapshot();
     if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
     if (!isBusy(state)) {
+      postWriteRead.current?.abort(); postWriteRead.current = null; publication.current?.abort(); publication.current = null; publicationReady.current = null;
+      writePauseRevisions.current.set(scope, authRequestsPauseRevision()); presentationGuards.current.delete(scope);
       if (input.kind === "delivery.redeliver" && !live.current.catalog.service.dispatchEnabled) throw webhookAdmissionError("WebhookAdmissionUnavailable");
       const expansion = webhookExpansion(input, live.current.endpoint);
       if (expansion && !live.current.catalog.service.configurationExpansionAvailable) throw webhookAdmissionError("WebhookExpansionUnavailable");
       operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
+      publicationStopRevisions.current.set(scope, controller.getStopRevision());
+      writeContexts.current.set(scope, { modal, edit: editRevision.current, interaction: interactionSequence.current, revision: authRequestsPauseRevision(), stopRevision: controller.getStopRevision() });
     }
     const fence = writeFences.current.get(scope) ?? null;
     const submittedKind = input.kind, submittedEndpointId = input.kind === "delivery.redeliver" ? input.endpointId : null;
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key, readAuthorizationKey = directories.getAuthorization(owner).readKey;
+    const revision = writePauseRevisions.current.get(scope), context = writeContexts.current.get(scope), interaction = context?.interaction;
     const outcome = await controller.submit(input);
+    if (writeContexts.current.get(scope) !== context || publicationStopRevisions.current.get(scope) !== controller.getStopRevision() || outcome.prepared !== null && controller.getSnapshot().prepared?.operationId !== outcome.prepared.operationId) return outcome;
+    if (authRequestsPaused() || revision !== authRequestsPauseRevision() || writePauseRevisions.current.get(scope) !== revision) {
+      if (outcome.phase === "confirmed" && writePauseRevisions.current.get(scope) === revision) deferConfirmation(scope, controller, outcome, fence, requestedOwner);
+      return outcome;
+    }
     // A receipt read requires owner access; a rejected management request only
     // disproves administrator authority for forbidden, not Project eligibility
     // refusals or the member's redacted reads.
     if (submittedKind !== "delivery.redeliver" || outcome.phase !== "rejected") observeDenial(outcome.error, requestedOwner, outcome.phase === "rejected" ? authorizationKey : readAuthorizationKey, outcome.phase === "rejected");
     if (submittedKind !== "delivery.redeliver") observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
     if (submittedKind === "delivery.redeliver" && submittedEndpointId !== null && outcome.phase === "rejected") {
-      const sameOwner = () => !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && directories.getAuthorization(requestedOwner).readable;
+      const readController = new AbortController(); postWriteRead.current = readController;
+      const unsubscribe = controller.subscribeStop(() => readController.abort());
+      readController.signal.addEventListener("abort", unsubscribe, { once: true });
+      const sameOwner = () => !readController.signal.aborted && !authRequestsPaused() && revision === authRequestsPauseRevision() && interactionSequence.current === interaction && controller.getSnapshot().prepared?.operationId === outcome.prepared?.operationId && !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && directories.getAuthorization(requestedOwner).readable;
       if (sameOwner()) void (async () => {
         try {
-          const read = await data.readEndpoint(submittedEndpointId);
+          const read = await data.readEndpoint(submittedEndpointId, readController.signal);
           if (read !== null && sameOwner() && live.current.endpointId === submittedEndpointId && !data.accept(read.endpoint, read.fence)) controller.forgetCurrentProjection();
         } catch (error) { if (sameOwner() && live.current.endpointId === submittedEndpointId) setLocalError(error); }
-        finally { if (sameOwner()) { data.refreshCurrent(); directories.refresh(); } }
-      })();
+        finally { unsubscribe(); if (sameOwner()) { data.refreshCurrent(); directories.refresh(); } if (postWriteRead.current === readController) postWriteRead.current = null; }
+      })().catch(error => { if (sameOwner()) setLocalError(error); });
+      else { unsubscribe(); if (postWriteRead.current === readController) postWriteRead.current = null; }
     }
     if (outcome.phase === "confirmed") {
       if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
@@ -169,10 +230,26 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     return outcome;
   };
   const reconcile = async () => {
-    if (controller === null || owner === null || !canRead) return;
-    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey;
+    if (controller === null || owner === null || !canRead || authRequestsPaused()) return;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey, revision = authRequestsPauseRevision(), stopRevision = controller.getStopRevision(), operationId = controller.getSnapshot().prepared?.operationId;
+    if (scope !== null) {
+      const previous = writeContexts.current.get(scope);
+      if (previous === undefined) {
+        writePauseRevisions.current.set(scope, revision);
+        writeContexts.current.set(scope, { modal, edit: editRevision.current, interaction: interactionSequence.current, revision, stopRevision });
+      } else if (previous.stopRevision !== stopRevision) writeContexts.current.set(scope, { ...previous, stopRevision });
+      publicationStopRevisions.current.set(scope, stopRevision);
+    }
+    const context = scope === null ? undefined : writeContexts.current.get(scope);
+    if (scope !== null && context !== undefined) presentationGuards.current.set(scope, () => writeContexts.current.get(scope) === context && controller.getStopRevision() === stopRevision && controller.getSnapshot().prepared?.operationId === operationId && modalRef.current === context.modal && editRevision.current === context.edit && interactionSequence.current === context.interaction);
     const outcome = await controller.reconcile();
+    if (controller.getStopRevision() !== stopRevision || scope !== null && writeContexts.current.get(scope) !== context || controller.getSnapshot().prepared?.operationId !== operationId) return;
+    if (authRequestsPaused() || revision !== authRequestsPauseRevision()) {
+      if (outcome.phase === "confirmed" && scope !== null) deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner);
+      return;
+    }
     observeDenial(outcome.error, requestedOwner, authorizationKey, false);
+    if (outcome.phase === "confirmed" && scope !== null && !mayPresent()) { deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner); return; }
     if (outcome.phase === "confirmed") { data.refreshCurrent(); directories.refresh(); }
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
@@ -211,17 +288,18 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     try { await navigator.clipboard.writeText(displayedSecret); setCopyStatus(m.copied); }
     catch { const node = document.getElementById("webhook-secret"); if (node !== null) { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); } setCopyStatus(m.copyManual); }
   };
-  const actions: WebhookFormActions = { state: intent, expansionAvailable: catalog.service.configurationExpansionAvailable, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
+  const actions: WebhookFormActions = { state: intent, expansionAvailable: catalog.service.configurationExpansionAvailable, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !authRequestsPaused() && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), onDraftChange: () => { editRevision.current++; }, opener: modal?.opener ?? null };
   const validModal = manageOwner && modal?.scope === scope && (modal.kind === "create" ? manageOwner : endpoint?.id === modal.endpoint.id && endpoint.capabilities.manage) ? modal : null;
   const tabKeys: readonly WebhookRoute["tab"][] = ["configuration", "subscriptions", "deliveries"];
+  const tabRevealKey = JSON.stringify([route.owner, route.teamId, route.endpointId, route.tab, m.configuration, m.subscriptions, m.deliveries, endpoint?.subscriptions.length]);
   const tabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? tabKeys.length - 1 : (index + (event.key === "ArrowRight" ? 1 : tabKeys.length - 1)) % tabKeys.length;
-    navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab: tabKeys[next]! })); document.getElementById(`webhook-tab-${tabKeys[next]}`)?.focus();
+    navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab: tabKeys[next]! })); document.getElementById(`webhook-tab-${tabKeys[next]}`)?.focus({ preventScroll: true });
   };
-  return <section className="webhooks" aria-label="Webhooks">
+  return <section className="webhooks" aria-label="Webhooks" onChangeCapture={event => { if (event.target instanceof Element && event.target.closest("dialog")) editRevision.current++; }}>
     <div className="heading"><div className="heading-text"><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div><span tabIndex={createRestriction === undefined ? undefined : 0} title={createRestriction}><button className="button primary" type="button" disabled={!createAllowed} title={createRestriction} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus" size={15}/>{m.new}</button></span></div>
-    <div className="scope-bar"><div className="scope-group" role="group" aria-label={m.owner}><button className={`scope-button ${route.owner === "personal" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "personal"} onClick={() => selectOwner("personal", null)}><WebhookIcon name="user" size={15}/>{m.personal}</button><button className={`scope-button ${route.owner === "team" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "team"} onClick={() => selectOwner("team", null)}><WebhookIcon name="team" size={16}/>{m.team}</button></div><div className="scope-context"><WebhookIcon name={route.owner === "team" ? "team" : "user"} size={13}/>{route.owner === "team" ? <select className="filter webhook-team-select" aria-label={m.chooseTeam} value={route.teamId ?? ""} onChange={event => selectOwner("team", event.target.value === "" ? null : event.target.value)}><option value="">{m.chooseTeam}</option>{route.teamId !== null && !directories.teams?.some(team => team.id === route.teamId) && <option value={route.teamId}>{route.teamId}</option>}{directories.teams?.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select> : <strong>{ownerLabel}</strong>}<span className="context-divider"/><span>{route.owner === "team" ? m.scopeTeam : m.scopePersonal}</span>{route.owner === "team" && (ownerAuthorization?.status === "admin" || ownerAuthorization?.status === "member") && <span className="role-label">{manageOwner ? m.administrator : m.member}</span>}</div></div>
+    <div className="scope-bar"><div className="scope-group" role="group" aria-label={m.owner}><button className={`scope-button ${route.owner === "personal" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "personal"} onClick={() => selectOwner("personal", null)}><WebhookIcon name="user" size={15}/>{m.personal}</button><button className={`scope-button ${route.owner === "team" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "team"} onClick={() => selectOwner("team", null)}><WebhookIcon name="team" size={16}/>{m.team}</button></div><div className="scope-context"><WebhookIcon name={route.owner === "team" ? "team" : "user"} size={13}/>{route.owner === "team" ? <NativeSelect density="filter" wrapperClassName="webhook-team-select" aria-label={m.chooseTeam} value={route.teamId ?? ""} onChange={event => selectOwner("team", event.target.value === "" ? null : event.target.value)}><option value="">{m.chooseTeam}</option>{route.teamId !== null && !directories.teams?.some(team => team.id === route.teamId) && <option value={route.teamId}>{route.teamId}</option>}{directories.teams?.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</NativeSelect> : <strong>{ownerLabel}</strong>}<span className="context-divider"/><span>{route.owner === "team" ? m.scopeTeam : m.scopePersonal}</span>{route.owner === "team" && (ownerAuthorization?.status === "admin" || ownerAuthorization?.status === "member") && <span className="role-label">{manageOwner ? m.administrator : m.member}</span>}</div></div>
     {route.error !== null && <div className="inline-error" role="alert">{m.invalidNavigation}</div>}
     {!catalog.service.configurationExpansionAvailable && <p className="hint webhook-maintenance">{m.maintenance}</p>}
     {directories.error !== null && <div className="webhook-directory-error"><WebhookError error={directories.error}/><button className="text-button" type="button" onClick={directories.refresh}>{m.retry}</button></div>}
@@ -231,7 +309,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     <div className={`management-grid ${route.endpointId !== null ? "has-mobile-detail" : ""}`}>
       <section className="panel list-panel" aria-labelledby="webhook-list-title" ref={listRef}>
         <div className="panel-heading"><h2 id="webhook-list-title">{m.endpoints}{visibleItems !== null && <span className="count">{visibleItems.length}</span>}</h2><button className="button ghost icon-only" type="button" aria-label={m.refresh} disabled={!canRead || data.refreshing} onClick={() => { data.refresh(); directories.refresh(); }}>{data.refreshing ? <span className="spinner"/> : <WebhookIcon name="refresh"/>}</button></div>
-        <div className="panel-tools"><div className="search-wrap"><WebhookIcon name="search" size={15}/><input type="search" aria-label={m.search} placeholder={m.search} value={filter.q} maxLength={200} onChange={event => setFilter({ q: event.target.value })}/></div><select className="filter" aria-label={m.all} value={filter.enabled} onChange={event => setFilter({ enabled: event.target.value as typeof filter.enabled })}><option value="all">{m.all}</option><option value="enabled">{m.enabled}</option><option value="paused">{m.paused}</option></select></div>
+        <div className="panel-tools"><div className="search-wrap"><WebhookIcon name="search" size={15}/><input data-touch-text="responsive" type="search" aria-label={m.search} placeholder={m.search} value={filter.q} maxLength={200} onChange={event => setFilter({ q: event.target.value })}/></div><NativeSelect density="filter" wrapperClassName="webhook-status-select" aria-label={m.all} value={filter.enabled} onChange={event => setFilter({ enabled: event.target.value as typeof filter.enabled })}><option value="all">{m.all}</option><option value="enabled">{m.enabled}</option><option value="paused">{m.paused}</option></NativeSelect></div>
         {route.endpointId === null && data.error !== null && <><WebhookError error={data.error}/><button className="text-button webhook-list-retry" type="button" disabled={!canRead} onClick={data.refresh}>{m.retry}</button></>}
         <div className="endpoint-list">{owner === null ? <WebhookState title={m.chooseTeam}/> : ownerAuthorization?.status === "absent" ? route.endpointId === null ? <div role="alert"><WebhookState title={m.teamUnavailable}/></div> : <WebhookState title={m.loadError}/> : visibleItems === null ? data.error === null ? <WebhookSkeleton/> : <WebhookState title={m.loadError}/> : visibleItems.length === 0 ? <WebhookState title={filter.q === "" && filter.enabled === "all" ? m.emptyTitle : m.noMatches} description={filter.q === "" && filter.enabled === "all" ? m.emptyCopy : m.noMatchesCopy}>{filter.q === "" && filter.enabled === "all" && <button className="button primary" type="button" disabled={!createAllowed} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus"/>{m.new}</button>}</WebhookState> : visibleItems.map(item => <WebhookRow key={item.id} item={item} selected={data.endpointId === item.id} menu={menu === item.id} onSelect={() => select(item.id)} onMenu={() => setMenu(menu === item.id ? null : item.id)} canManage={canRead && manageOwner && !blockedIntent(intent)} onAction={(action, opener) => { void rowAction(item, action, opener); }}/> )}</div>
         {visibleItems !== null && visibleItems.length > 0 && <div className="list-note"><WebhookIcon name="lock" size={11}/><span>{data.pendingQuery ? m.previousResults : data.nextCursor === null ? m.complete : m.partial}</span>{data.nextCursor !== null && <button className="text-button" type="button" disabled={!canRead || data.refreshing} onClick={data.more}>{m.more}</button>}</div>}
@@ -241,18 +319,18 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
         {route.endpointId !== null && data.error !== null && <><WebhookError error={data.error}/><button className="text-button" type="button" onClick={data.refresh} disabled={!canRead}>{m.retry}</button></>}
         {data.endpoint?.lifecycle === "deleted" ? <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: "configuration" }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-name"><h2>{m.deleted}</h2><div className="detail-id">{data.endpoint.id}</div></div><div className="detail-status"><span className="badge paused">configVersion {data.endpoint.configVersion}</span><time className="quiet">{data.endpoint.deletedAt}</time></div></div>
-          <div className="tabs" role="tablist" aria-label="Webhook"><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected={route.tab === "deliveries"} aria-controls="webhook-panel-deliveries" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries" }))}>{m.deliveries}</button></div>
+          <HorizontalTabList className="endpoint-tabs" label="Webhook" revealKey={tabRevealKey}><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected={route.tab === "deliveries"} aria-controls="webhook-panel-deliveries" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries" }))}>{m.deliveries}</button></HorizontalTabList>
           <div className="tab-panel">{owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={data.endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}</div>
         </> : standaloneHistory && owner !== null && ownerAuthorization !== null && historyEndpointId !== null ? <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: "configuration" }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-name"><h2>{m.deliveryHistory}</h2><div className="detail-id">{historyEndpointId}</div></div>{historyContextKind === "retained-history" && <p className="hint">{m.retainedHistory}</p>}</div>
-          <div className="tabs" role="tablist" aria-label="Webhook"><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected aria-controls="webhook-panel-deliveries">{m.deliveries}</button></div>
+          <HorizontalTabList className="endpoint-tabs" label="Webhook" revealKey={tabRevealKey}><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected aria-controls="webhook-panel-deliveries">{m.deliveries}</button></HorizontalTabList>
           <div className="tab-panel"><WebhookDeliveriesPanel owner={owner} endpoint={{ kind: historyContextKind, id: historyEndpointId }} admission={admission} active={canRead} visible authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: historyEndpointId, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/></div>
         </> : endpoint === null ? route.endpointId !== null && route.error === null ? <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: route.tab }))}><WebhookIcon name="left" size={12}/>{m.back}</button></div>
           <div role={ownerAuthorization?.status === "absent" ? "alert" : undefined}><WebhookState title={unavailableDetailTitle}/></div>
         </> : <div className="empty-detail"><div><WebhookIcon name="webhook" size={30}/><p>{m.selectDetail}</p></div></div> : <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: route.tab }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-heading-top"><div className="detail-name"><h2>{endpoint.name}</h2><div className="detail-id">{endpoint.id}</div></div><button className="button ghost icon-only" type="button" aria-label={`${m.edit} ${endpoint.name}`} disabled={!manage} title={!endpoint.capabilities.manage ? m.readOnlyReason : undefined} onClick={event => open({ kind: "edit", endpoint }, event.currentTarget)}><WebhookIcon name="edit"/></button></div><div className="detail-status"><span className={`badge ${endpoint.enabled ? "success" : "paused"}`}>{endpoint.enabled ? <span className="status-dot"/> : <WebhookIcon name="pause" size={10}/>} {endpoint.enabled ? m.enabled : m.paused}</span><span className="quiet">{m.method}</span></div></div>
-          <div className="tabs" role="tablist" aria-label="Webhook">{tabKeys.map((tab, index) => <button id={`webhook-tab-${tab}`} className="tab" type="button" role="tab" key={tab} aria-selected={route.tab === tab} aria-controls={`webhook-panel-${tab}`} tabIndex={route.tab === tab ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab }))}>{tab === "subscriptions" ? `${m[tab]} ` : m[tab]}{tab === "subscriptions" && <span className="count">{endpoint.subscriptions.length}</span>}</button>)}</div>
+          <HorizontalTabList className="endpoint-tabs" label="Webhook" revealKey={tabRevealKey}>{tabKeys.map((tab, index) => <button id={`webhook-tab-${tab}`} className="tab" type="button" role="tab" key={tab} aria-selected={route.tab === tab} aria-controls={`webhook-panel-${tab}`} tabIndex={route.tab === tab ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab }))}>{tab === "subscriptions" ? `${m[tab]} ` : m[tab]}{tab === "subscriptions" && <span className="count">{endpoint.subscriptions.length}</span>}</button>)}</HorizontalTabList>
           <div className="tab-panel">
             {owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: endpoint.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}
             <div id={`webhook-panel-${route.tab === "deliveries" ? "configuration" : route.tab}`} role="tabpanel" aria-labelledby={`webhook-tab-${route.tab === "deliveries" ? "configuration" : route.tab}`} hidden={route.tab === "deliveries"}>
@@ -261,7 +339,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
               <div className="field-view"><div className="field-label">{m.owner}</div><div className="field-value type-value"><WebhookIcon name={route.owner === "team" ? "team" : "user"}/>{route.owner === "team" ? m.ownerTeam : m.ownerPersonal} · {ownerLabel}</div></div>
               <div className="field-view"><div className="field-label">{m.url}</div><div className="value-box"><span>{endpoint.destination.url ?? endpoint.destination.displayUrl}</span></div></div>
               <div className="field-view"><div className="field-label">{m.protocol}</div><div className="protocol-line"><span className="quiet-chip">CloudEvents 1.0</span><span className="quiet-chip">Standard Webhooks</span><span className="quiet-chip">HMAC-SHA256</span></div></div>
-              <div className="section-divider"/><div className="field-view"><div className="field-label">{m.signing}<button className="text-button" type="button" disabled={!manage} onClick={event => { setSecret(null); secretSequence.current++; open({ kind: "rotate", endpoint }, event.currentTarget); }}>{m.rotate}</button></div><div className="value-box secret-row"><span className="secret-value" id="webhook-secret">{displayedSecret ?? "whsec_••••••••••••••••••••••••"}</span><div className="secret-actions"><button className="button ghost icon-only" type="button" aria-label={displayedSecret === null ? m.showSecret : m.hideSecret} disabled={!canRead || !manageOwner || !endpoint.capabilities.readSecret || secretBusy} onClick={() => { void reveal(); }}><WebhookIcon name="eye" size={13}/></button><button className="button ghost icon-only" type="button" aria-label={m.copy} disabled={!canRead || !manageOwner || !endpoint.capabilities.readSecret || secretBusy} onClick={() => { void copy(); }}><WebhookIcon name="copy" size={13}/></button></div></div><p className="hint">{m.secretHelper}</p>{secretError !== null && <WebhookError error={secretError}/>} {copyStatus !== null && <p className="hint" role="status">{copyStatus}</p>}</div>
+              <div className="section-divider"/><div className="field-view"><div className="field-label">{m.signing}<button className="text-button" type="button" disabled={!manage} onClick={event => { setSecret(null); secretSequence.current++; open({ kind: "rotate", endpoint }, event.currentTarget); }}>{m.rotate}</button></div><div className="value-box secret-row"><span className="secret-value" id="webhook-secret">{displayedSecret ?? "whsec_••••••••••••••••••••••••"}</span><div className="secret-actions"><button className="button ghost icon-only" type="button" aria-label={displayedSecret === null ? m.showSecret : m.hideSecret} disabled={!canRead || !manageOwner || !endpoint.capabilities.readSecret || secretBusy} onClick={() => { void reveal(); }}><WebhookIcon name="eye" size={13}/></button><CopyButton label={m.copy} disabled={!canRead || !manageOwner || !endpoint.capabilities.readSecret || secretBusy} onClick={() => { void copy(); }} /></div></div><p className="hint">{m.secretHelper}</p>{secretError !== null && <WebhookError error={secretError}/>} {copyStatus !== null && <p className="hint" role="status">{copyStatus}</p>}</div>
               <div className="field-view"><div className="field-label">{m.subscriptionSummary}<button className="text-button" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: endpoint.id, tab: "subscriptions" }))}>{m.edit}<WebhookIcon name="chevron" size={11}/></button></div><div className="protocol-line">{endpoint.subscriptions.length === 0 ? <span className="tiny">—</span> : [...new Map(endpoint.subscriptions.map(sub => [sub.projectId, sub.projectName])).entries()].map(([id, name]) => <span className="quiet-chip" key={id}>{name ?? id}</span>)}</div></div>
               <div className="detail-footer"><span className="tiny">{m.createdAt} <time>{endpoint.createdAt}</time></span><button className="button ghost danger-text small" type="button" disabled={!manage} onClick={event => open({ kind: "delete", endpoint }, event.currentTarget)}><WebhookIcon name="trash" size={12}/>{m.delete}</button></div>
             </> : <><div className="subscription-heading"><h3>{m.subTitle}</h3><button className="text-button" type="button" disabled={!manage || !catalog.service.configurationExpansionAvailable} onClick={event => open({ kind: "subscription", endpoint, subscription: null }, event.currentTarget)}><WebhookIcon name="plus" size={12}/>{m.addSub}</button></div>{endpoint.subscriptions.length === 0 ? <WebhookState icon="code" title={m.noSubscriptions} description={m.noSubscriptionsCopy}/> : endpoint.subscriptions.map(subscription => <div className={`subscription-card ${subscription.eligibility !== "eligible" ? "revoked-card" : ""}`} key={subscription.id}><div className="subscription-top"><div><div className="project-name"><WebhookIcon name={subscription.eligibility === "eligible" ? "grid" : "lock"} size={11}/> {subscription.projectName ?? subscription.projectId}</div><div className="project-owner">{m.eligibility[subscription.eligibility]}</div></div><div className="subscription-controls"><button className="button ghost icon-only" type="button" aria-label={`${m.editSub} ${subscription.projectName ?? subscription.projectId}`} disabled={!manage} onClick={event => open({ kind: "subscription", endpoint, subscription }, event.currentTarget)}><WebhookIcon name="edit" size={12}/></button><button className="button ghost icon-only" type="button" aria-label={`${m.remove} ${subscription.projectName ?? subscription.projectId}`} disabled={!manage} onClick={event => open({ kind: "remove-subscription", endpoint, subscription }, event.currentTarget)}><WebhookIcon name="close" size={12}/></button></div></div><div className="subscription-events">{subscription.eventTypes.map(event => <span className="event-chip" key={event}>{event}</span>)}</div>{subscription.eligibility === "confirmation_required" && <button className="text-button" type="button" disabled={!manage || !catalog.service.configurationExpansionAvailable || !directories.projects?.some(project => project.id === subscription.projectId)} onClick={event => open({ kind: "confirm-subscription", endpoint, subscription }, event.currentTarget)}>{m.confirm}</button>}</div>)}</>}
@@ -270,7 +348,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
         </>}
       </aside>
     </div>
-    {validModal?.kind === "create" || validModal?.kind === "edit" ? <WebhookConfigurationDialog endpoint={validModal.kind === "create" ? null : validModal.endpoint} projects={directories.projects} projectLabels={projectLabels} actions={actions} onReview={async () => { if (owner === null || validModal.kind !== "edit") return null; const read = await data.readEndpoint(validModal.endpoint.id); if (read === null || !data.accept(read.endpoint, read.fence)) return null; return read.endpoint.lifecycle === "active" && read.endpoint.capabilities.manage ? read.endpoint : null; }}/> : validModal?.kind === "subscription" ? <WebhookSubscriptionDialog endpoint={validModal.endpoint} subscription={validModal.subscription} projects={directories.projects} projectLabels={projectLabels} actions={actions}/> : validModal !== null && <WebhookDialog title={validModal.kind === "delete" ? m.deleteTitle : validModal.kind === "rotate" ? m.rotateTitle : validModal.kind === "remove-subscription" ? m.removeSubTitle : m.confirm} opener={validModal.opener} onClose={() => setModal(null)} footer={<><button className="button" type="button" onClick={() => setModal(null)}>{m.cancel}</button><button className={`button ${validModal.kind === "delete" || validModal.kind === "remove-subscription" ? "danger" : "primary"}`} type="button" disabled={!actions.canSubmit} onClick={() => {
+    {validModal?.kind === "create" || validModal?.kind === "edit" ? <WebhookConfigurationDialog catalog={catalog} endpoint={validModal.kind === "create" ? null : validModal.endpoint} projects={directories.projects} projectLabels={projectLabels} actions={actions} onReview={async () => { if (owner === null || validModal.kind !== "edit") return null; const read = await data.readEndpoint(validModal.endpoint.id); if (read === null || !data.accept(read.endpoint, read.fence)) return null; return read.endpoint.lifecycle === "active" && read.endpoint.capabilities.manage ? read.endpoint : null; }}/> : validModal?.kind === "subscription" ? <WebhookSubscriptionDialog catalog={catalog} endpoint={validModal.endpoint} subscription={validModal.subscription} projects={directories.projects} projectLabels={projectLabels} actions={actions}/> : validModal !== null && <WebhookDialog title={validModal.kind === "delete" ? m.deleteTitle : validModal.kind === "rotate" ? m.rotateTitle : validModal.kind === "remove-subscription" ? m.removeSubTitle : m.confirm} opener={validModal.opener} onClose={() => setModal(null)} footer={<><button className="button" type="button" onClick={() => setModal(null)}>{m.cancel}</button><button className={`button ${validModal.kind === "delete" || validModal.kind === "remove-subscription" ? "danger" : "primary"}`} type="button" disabled={!actions.canSubmit} onClick={() => {
       const target = validModal.endpoint;
       const input: WebhookIntentInput = validModal.kind === "delete" ? { kind: "endpoint.delete", endpointId: target.id, ifVersion: target.configVersion, body: {} } : validModal.kind === "rotate" ? { kind: "signing-secret.rotate", endpointId: target.id, ifVersion: target.configVersion, destinationRevision: target.destinationRevision, body: { mode: rotation } } : { kind: "endpoint.patch", endpointId: target.id, ifVersion: target.configVersion, destinationRevision: target.destinationRevision, body: validModal.kind === "confirm-subscription" ? { confirmProjectIds: [validModal.subscription!.projectId] } : { subscriptions: target.subscriptions.filter(sub => sub.id !== validModal.subscription!.id).map(({ id, projectId, eventTypes }) => ({ id, projectId, eventTypes })) } };
       void submit(input).catch(setLocalError);

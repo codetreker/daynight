@@ -31,6 +31,58 @@ const mutate = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker monitoring response contracts', () => {
+  it('reads a directly reported observation through the existing envelope', async () => {
+    const sampleId = workerId(20), revision = workerId(21);
+    const receivedAt = '2026-11-17T03:00:00.123Z', expiresAt = '2026-11-17T04:00:00.123Z';
+    const value = detail();
+    Object.assign(value, { runId: sampleId, revision, receivedAt, expiresAt });
+    Object.assign(value.data, { runId: sampleId, capturedAt: receivedAt });
+    Object.assign(value.data.capacity, { observedAt: receivedAt, limit: 3, occupied: 2, available: 1, breakdown: { active: 1, retained: 1 } });
+    Object.assign(value.data.currentFailures[0]!, { error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false } });
+    const summaries = query();
+    Object.assign(summaries.items[0]!, { revision, receivedAt, expiresAt });
+    Object.assign(summaries.items[0]!.summary, { capturedAt: receivedAt });
+    Object.assign(summaries.items[0]!.summary.capacity, { observedAt: receivedAt, limit: 3, occupied: 2, available: 1, breakdown: { active: 1, retained: 1 } });
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(workerResponse(value)).mockResolvedValueOnce(workerResponse(summaries)));
+    expect(await getWorkerMonitoring(id, signal, admission)).toEqual(value);
+    expect(await queryWorkerMonitoring([id], signal, admission)).toEqual(summaries);
+  });
+  it('accepts the fixed archive capacity diagnostic and rejects private details', () => {
+    const error = { type: 'operation', code: 'archive-quota-exceeded', cause: 'Session archive capacity was exceeded (quota_exceeded).', causeTruncated: false };
+    for (const path of [['data', 'currentFailures', '0', 'error'], ['data', 'delivery', 'lastFailure', 'error']]) {
+      const value = mutate(path, error);
+      expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+      expect(() => parseWorkerMonitoringDetail(mutate(path, { ...error, cause: `${error.cause} private path` }))).toThrow();
+    }
+  });
+  it('accepts only the fixed Markdown repair diagnostic', () => {
+    const error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
+    const value = mutate(['data', 'currentFailures', '0', 'error'], error);
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    expect(() => parseWorkerMonitoringDetail(mutate(['data', 'currentFailures', '0', 'error'], { ...error, cause: `${error.cause} private path` }))).toThrow();
+  });
+  it('preserves optional complete capacity breakdown independently of visible responsibilities', () => {
+    const value = detail();
+    Object.assign(value.data.capacity, { breakdown: { active: 0, retained: 1 } });
+    value.data.reservations = [];
+    value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    const summary = query(); Object.assign(summary.items[0]!.summary.capacity, { breakdown: { active: 0, retained: 1 } });
+    expect(parseWorkerMonitoringQuery(summary, [id])).toEqual(summary);
+    for (const breakdown of [null, {}, { active: 1 }, { active: -1, retained: 2 }, { active: 0.5, retained: 0.5 }, { active: 1, retained: 1 }, { active: 0, retained: 1, extra: 0 }]) {
+      expect(() => parseWorkerMonitoringDetail(mutate(['data', 'capacity', 'breakdown'], breakdown))).toThrow();
+    }
+    expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
+  });
+
+  it('accepts the fixed ownership diagnostic and rejects copied error details', () => {
+    const error = { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false };
+    const value = mutate(['data', 'currentFailures', '0', 'error'], error);
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    expect(() => parseWorkerMonitoringDetail(mutate(['data', 'currentFailures', '0', 'error'], { ...error, cause: 'private path' }))).toThrow();
+  });
+
   it('accepts only canonical claim worktree locations and preserves absence', () => {
     expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
     for (const worktree of [
@@ -61,7 +113,7 @@ describe('Worker monitoring response contracts', () => {
     expect(parseWorkerMonitoringQuery(missing, [id])).toEqual(missing);
   });
   it('accepts restricted and budgeted associations, preserving permitted capacity', () => {
-    const value = detail(); value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
+    const value = detail(); value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
     value.data.activities[0]!.association = { kind: 'labels-omitted' } as typeof association;
     expect(parseWorkerMonitoringDetail(value)).toEqual(value);
     const project = { kind: 'project', projectId };

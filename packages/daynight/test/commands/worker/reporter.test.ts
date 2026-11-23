@@ -1,6 +1,7 @@
+import { receivedReceipt } from "../../helpers/worker-received-configuration.js";
 import { ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
-import type { WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
+import type { ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt } from "../../../src/api/worker-configuration.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
@@ -9,7 +10,7 @@ import type { WorkerReport, WorkerTaskReference, WorkerTelemetry } from "../../.
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
 import type { WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
-import { HerdrCommandCleanupError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -20,7 +21,7 @@ const telemetry: WorkerTelemetry = {
   cpu: { state: "ok", checkedAt: timestamp, value: { model: "CPU", logicalProcessors: 4, usagePercent: 12 } },
   memory: { state: "ok", checkedAt: timestamp, value: { usedBytes: 100, totalBytes: 200 } },
   disk: { state: "ok", checkedAt: timestamp, value: { availableBytes: 300, totalBytes: 400 } },
-  versions: { daynight: "0.26.1", herdr: { state: "not_running", checkedAt: timestamp }, codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
+  versions: { daynight: "0.26.1", codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
 };
 const deferred = <T>() => {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -48,11 +49,11 @@ const timedOutProbe = async (terminationFailure?: Error) => {
   const spawn = vi.fn(() => child);
   const operation = createOperation({ limits: { totalMs: 100, requestMs: 10 } });
   try {
-    const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, operation, spawn, { cleanupWithinDeadline: true })
+    const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, operation, spawn, { cleanupWithinDeadline: true })
       .catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(100);
     const error = await result;
-    expect(error).toBeInstanceOf(HerdrCommandCleanupError);
+    expect(error).toBeInstanceOf(OwnedCommandCleanupError);
     return { child, error, spawn };
   } finally { operation.dispose(); }
 };
@@ -173,6 +174,17 @@ it.each(["codex", "assistantHost_codex", "assistantHost_claude", "assistantHost_
   await reporter.stop();
 });
 
+it.each([false, true])("identifies a configuration report capacity failure while preserving uncertainty (%s)", async outcomeUnconfirmed => {
+  const f = fixture();
+  const error = new ApiError({ operation: "worker.configuration.report" }, "protocol", { status: 413, outcomeUnconfirmed, cause: new Error("private proxy response") });
+  const configuration = { capture: () => ({ bootstrap: null, observation: null }), send: vi.fn().mockRejectedValue(error), accept: vi.fn() };
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration });
+  await settle();
+  expect(f.emit.mock.calls[0]![0].message).toContain(`"category":"configuration_report_capacity_413${outcomeUnconfirmed ? "_outcome_unconfirmed" : ""}"`);
+  expect(configuration.accept).not.toHaveBeenCalled();
+  await reporter.stop();
+});
+
 it("logs changed failure categories without changing claim state", async () => {
   const f = fixture(); f.collect.mockRejectedValueOnce(new TypeError("private")).mockRejectedValueOnce(new RangeError("private"));
   const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(30_000);
@@ -241,7 +253,7 @@ it("keeps cleanup uncertainty visible and prevents replacement attempts after ca
   const f = fixture(), blocked = deferred<WorkerTelemetrySample>();
   f.collect.mockImplementationOnce(() => blocked.promise);
   const reporter = f.start();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   const stopping = reporter.stop();
   const rejected = expect(stopping).rejects.toBe(uncertainty);
   blocked.reject(uncertainty); await rejected;
@@ -252,7 +264,7 @@ it("keeps cleanup uncertainty visible and prevents replacement attempts after ca
 
 it("keeps reporting partial probe failures while retaining genuine cleanup uncertainty", async () => {
   const f = fixture();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: uncertainty }] });
   const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(60_000);
   expect(f.collect).toHaveBeenCalledTimes(3); expect(f.send).toHaveBeenCalledTimes(3);
@@ -264,7 +276,7 @@ it("preserves cleanup uncertainty returned as a field issue during cancellation"
   const f = fixture(), blocked = deferred<WorkerTelemetrySample>();
   f.collect.mockImplementationOnce(() => blocked.promise);
   const reporter = f.start();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   const stopping = reporter.stop(); const rejected = expect(stopping).rejects.toBe(uncertainty);
   blocked.resolve({ telemetry, issues: [{ component: "codex", code: "unavailable", error: uncertainty }] });
   await rejected;
@@ -274,8 +286,8 @@ it("preserves cleanup uncertainty returned as a field issue during cancellation"
 
 it("preserves each distinct cleanup failure without accumulating repeated cached issues", async () => {
   const f = fixture();
-  const codex = new HerdrCommandCleanupError([new Error("private codex output")], undefined);
-  const copilot = new HerdrCommandCleanupError([new Error("private copilot output")], undefined);
+  const codex = new OwnedCommandCleanupError([new Error("private codex output")], undefined);
+  const copilot = new OwnedCommandCleanupError([new Error("private copilot output")], undefined);
   f.collect.mockResolvedValue({ telemetry, issues: [
     { component: "codex", code: "unavailable", error: codex }, { component: "copilot", code: "unavailable", error: copilot },
   ] });
@@ -309,7 +321,7 @@ it.each(["no close", "exit only", "another child", "termination failed", "legacy
   async (kind) => {
     const f = fixture(), terminationFailure = new Error("Cannot terminate owned process");
     const probe = await timedOutProbe(kind === "termination failed" ? terminationFailure : undefined);
-    const failure = kind === "legacy error" ? new HerdrCommandCleanupError([new Error("Cleanup has no acknowledgement")], undefined) : probe.error;
+    const failure = kind === "legacy error" ? new OwnedCommandCleanupError([new Error("Cleanup has no acknowledgement")], undefined) : probe.error;
     f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: failure }] });
     const reporter = f.start(); await settle();
     if (kind === "exit only") probe.child.emit("exit", 0, null);
@@ -425,7 +437,7 @@ it("drains a finite prompt cycle on the same reporter and stops after unchanged 
   const projects = ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555"];
   const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId, workerId });
   source.setDemand(projects);
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
     observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
     prompts: { ok: true as const, results: selectors!.map(selector => selector.knownRevision === null
@@ -447,7 +459,7 @@ it("ends prompt catchup on a global read failure while retaining the native ackn
   const f = fixture();
   const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
   source.setDemand(["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]);
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const accept = vi.fn(async () => {});
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
     observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
@@ -464,7 +476,7 @@ it("ends prompt catchup on a global read failure while retaining the native ackn
 it("does not retry a failed prompt batch when a new demand arrived in flight", async () => {
   const f = fixture();
   const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
-  const blocked = deferred<WorkerCloudReportReceipt>();
+  const blocked = deferred<ReceivedWorkerConfigurationReportReceipt>();
   const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => blocked.promise);
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
     configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
@@ -482,7 +494,7 @@ it("uses the latest inventory after a delayed cloud configuration preparation", 
   const f = fixture(), preparation = deferred<void>();
   const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
   const capture = () => ({ bootstrap: null, observation: null });
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept: async () => {} } });
   reporter.publishInventory({ observedAt: timestamp, claims: [claim()] });
@@ -498,7 +510,7 @@ it("keeps partial inventory invalidated while a timed-out probe is confirmed dur
   f.collect.mockResolvedValueOnce({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] })
     .mockResolvedValue({ telemetry, issues: [] });
   const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
     configuration: { prepare, capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {} } });
@@ -518,7 +530,7 @@ it("keeps partial inventory invalidated while a timed-out probe is confirmed dur
 
 it("exchanges cloud configuration without a task inventory and acknowledges only the sent immutable snapshot", async () => {
   const f = fixture();
-  const pending = deferred<WorkerCloudReportReceipt>();
+  const pending = deferred<ReceivedWorkerConfigurationReportReceipt>();
   const failure = { code: "unavailable" as const, category: "agent" as const, phase: "validate" as const, occurredAt: timestamp };
   const captureValue = {
     bootstrap: null,
@@ -526,7 +538,7 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
   };
   const capture = vi.fn(() => captureValue);
   const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => pending.promise);
-  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: ReceivedWorkerConfigurationReceipt) => {});
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
   await settle();
   expect(f.send).not.toHaveBeenCalled(); expect(send).toHaveBeenCalledOnce();
@@ -536,11 +548,11 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
   captureValue.observation.items.length = 0;
   expect(sent.observation?.baseRevision).toBe("0"); expect(sent.observation?.items).toHaveLength(1);
   expect(Object.isFrozen(sent.observation?.items[0]?.lastFailure)).toBe(true);
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   pending.resolve({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt });
   await settle();
   expect(accept.mock.calls[0]![0]).toBe(captureValue);
-  expect(accept).toHaveBeenCalledWith(captureValue, receipt);
+  expect(accept).toHaveBeenCalledWith(captureValue, receipt, send.mock.calls[0]![2], expect.any(String));
   await reporter.stop();
 });
 
@@ -548,10 +560,10 @@ it("captures current configuration after an unknown send outcome instead of repl
   const f = fixture();
   let revision = "1";
   const capture = vi.fn(() => ({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: revision, items: [] } }));
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   send.mockRejectedValueOnce(new Error("unknown cloud mutation outcome"));
-  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: ReceivedWorkerConfigurationReceipt) => {});
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
   await settle(); expect(accept).not.toHaveBeenCalled();
   revision = "2"; reporter.trigger(); await settle();
@@ -559,7 +571,7 @@ it("captures current configuration after an unknown send outcome instead of repl
   expect(send.mock.calls.map(([, sent]) => sent.observation?.desiredRevision)).toEqual(["1", "2"]);
   expect(accept).toHaveBeenCalledOnce();
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
-  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt);
+  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt, send.mock.calls[1]![2], expect.any(String));
   await reporter.stop();
 });
 
@@ -567,7 +579,7 @@ it("keeps bootstrap reporting independent of runtime application and joins recei
   const f = fixture(), committed = deferred<void>();
   const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
   const capture = vi.fn(() => ({ bootstrap, observation: null }));
-  const receipt = { desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false });
   const send = vi.fn(async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const accept = vi.fn(() => committed.promise);
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
@@ -590,20 +602,56 @@ it("reconciles an unknown import before capturing a fresh report within the same
   const capture = vi.fn((): WorkerCloudReport => targetPresent
     ? { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } }
     : { bootstrap: cloudValue, observation: null });
-  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   send.mockImplementationOnce(async () => { needsReconciliation = true; throw new Error("Import response lost"); });
-  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: ReceivedWorkerConfigurationReceipt) => {});
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept } });
   await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).not.toHaveBeenCalled();
   reporter.trigger(); await settle();
   expect(prepare).toHaveBeenCalledTimes(2); expect(capture).toHaveBeenCalledOnce();
-  expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
+  expect(f.collect).toHaveBeenCalledOnce();
   expect(prepare.mock.calls[1]![0].limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
   reconciled.resolve(); await settle();
+  expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
   expect(send).toHaveBeenCalledTimes(2);
   expect(send.mock.calls[0]![1]).toEqual({ bootstrap: cloudValue, observation: null });
   expect(send.mock.calls[1]![1]).toEqual({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
   await reporter.stop();
+});
+
+
+it("summarizes the same failure every five minutes with actual occurrences despite changing request IDs", async () => {
+  const f = fixture();
+  let requests = 0;
+  f.send.mockImplementation(async () => { throw new ApiError({ operation: "report" }, "response", {
+    status: 503, cause: new Error("private provider data"), serverError: { code: "service_unavailable", requestId: `request-${++requests}`, message: "private response" },
+  }); });
+  const reporter = f.start(); await settle();
+  await vi.advanceTimersByTimeAsync(270_000);
+  expect(f.send).toHaveBeenCalledTimes(10);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed"]);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_failure_summary"]);
+  expect(JSON.parse(f.emit.mock.calls[1]![0].message)).toMatchObject({ occurrences: 11, request_id: "request-11" });
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_failure_summary", "worker_report_failure_summary"]);
+  expect(JSON.parse(f.emit.mock.calls[2]![0].message)).toMatchObject({ occurrences: 21, request_id: "request-21" });
+  f.send.mockResolvedValue({ observedAt: timestamp, lastReportedAt: timestamp });
+  reporter.trigger(); await settle();
+  expect(JSON.parse(f.emit.mock.calls[3]![0].message)).toMatchObject({ failures: 21 });
+  expect(JSON.stringify(f.emit.mock.calls)).not.toContain("private");
+  await reporter.stop();
+});
+
+it("keeps successful configuration exchange independent of a failing observer and reports that failure at stop", async () => {
+  const f = fixture(), observerFailure = new Error("observer failed"), accept = vi.fn(async () => "persisted" as const);
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }),
+      send: async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }) }),
+      accept, observe: () => { throw observerFailure; } } });
+  await settle();
+  expect(accept).toHaveBeenCalledOnce(); expect(f.emit).not.toHaveBeenCalled();
+  await expect(reporter.stop()).rejects.toBe(observerFailure);
 });

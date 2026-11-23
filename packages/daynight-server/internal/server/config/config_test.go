@@ -14,7 +14,7 @@ func TestDefaultsAndEnvironment(t *testing.T) {
 		t.Fatalf("unexpected defaults: %+v %+v", c, metrics)
 	}
 	values := map[string]string{
-		"DAYNIGHT_LISTEN_ADDR": "[::1]:4000", "DAYNIGHT_PUBLIC_ORIGIN": "http://localhost:4000",
+		"DAYNIGHT_LISTEN_ADDR": "[::1]:4000", "DAYNIGHT_PUBLIC_ORIGIN": "http://app.daynight.test:4000", "DAYNIGHT_PREVIEW_ORIGIN": "http://preview.daynight.test:4000",
 		"DAYNIGHT_STARTUP_TIMEOUT": "2s", "DAYNIGHT_SHUTDOWN_TIMEOUT": "300ms",
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_METRICS_LISTEN_ADDR": "0.0.0.0:4001",
 	}
@@ -27,10 +27,10 @@ func TestDefaultsAndEnvironment(t *testing.T) {
 	if err := metrics.ApplyEnvironment(lookup, mark); err != nil {
 		t.Fatal(err)
 	}
-	if c.ListenAddress != values["DAYNIGHT_LISTEN_ADDR"] || c.PublicOrigin != values["DAYNIGHT_PUBLIC_ORIGIN"] || c.StartupTimeout != 2*time.Second || c.ShutdownTimeout != 300*time.Millisecond || !c.AllowHTTPTestOrigin || metrics.MetricsListenAddress != values["DAYNIGHT_METRICS_LISTEN_ADDR"] {
+	if c.ListenAddress != values["DAYNIGHT_LISTEN_ADDR"] || c.PublicOrigin != values["DAYNIGHT_PUBLIC_ORIGIN"] || c.PreviewOrigin != values["DAYNIGHT_PREVIEW_ORIGIN"] || c.StartupTimeout != 2*time.Second || c.ShutdownTimeout != 300*time.Millisecond || !c.AllowHTTPTestOrigin || metrics.MetricsListenAddress != values["DAYNIGHT_METRICS_LISTEN_ADDR"] {
 		t.Fatalf("environment ignored: %+v %+v", c, metrics)
 	}
-	for field, variable := range map[string]string{"listen_address": "DAYNIGHT_LISTEN_ADDR", "public_origin": "DAYNIGHT_PUBLIC_ORIGIN", "startup_timeout": "DAYNIGHT_STARTUP_TIMEOUT", "shutdown_timeout": "DAYNIGHT_SHUTDOWN_TIMEOUT", "allow_http_test_origin": "DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN", "metrics_listen_address": "DAYNIGHT_METRICS_LISTEN_ADDR"} {
+	for field, variable := range map[string]string{"listen_address": "DAYNIGHT_LISTEN_ADDR", "public_origin": "DAYNIGHT_PUBLIC_ORIGIN", "preview_origin": "DAYNIGHT_PREVIEW_ORIGIN", "startup_timeout": "DAYNIGHT_STARTUP_TIMEOUT", "shutdown_timeout": "DAYNIGHT_SHUTDOWN_TIMEOUT", "allow_http_test_origin": "DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN", "metrics_listen_address": "DAYNIGHT_METRICS_LISTEN_ADDR"} {
 		if marks[field] != variable {
 			t.Errorf("missing provenance for %s: %v", field, marks)
 		}
@@ -68,6 +68,7 @@ func TestServerValidation(t *testing.T) {
 		}
 	}
 	c.PublicOrigin = "https://example.test"
+	c.PreviewOrigin = "https://preview.example.test"
 	for _, address := range []string{"127.0.0.1:0", "127.0.0.1:65535", "[::1]:8787"} {
 		c.ListenAddress = address
 		if err := c.Validate(); err != nil {

@@ -45,6 +45,7 @@ type TextPart struct {
 }
 
 type SendMessage struct {
+	Origin                          string       `json:"origin,omitempty"`
 	Content                         []TextPart   `json:"content"`
 	ExpectedTurnID                  *string      `json:"expectedTurnId"`
 	Target                          *ImageTarget `json:"target,omitempty"`
@@ -137,8 +138,22 @@ func positiveSequence(value string) bool {
 	return err == nil
 }
 
+// Message origins are optional for old callers, but an explicit value must name
+// a supported source. They describe presentation and do not grant authority.
+func messageObject(data []byte, keys ...string) (map[string]json.RawMessage, error) {
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	if origin, present := raw["origin"]; present {
+		if !enum("user", "daynight")(origin) {
+			return nil, errInvalid
+		}
+		keys = append(keys, "origin")
+	}
+	return object(data, keys...)
+}
+
 func validateSend(data []byte) error {
-	fields, err := object(data, "content", "expectedTurnId")
+	fields, err := messageObject(data, "content", "expectedTurnId")
 	if err != nil {
 		return err
 	}

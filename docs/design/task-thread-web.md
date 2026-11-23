@@ -15,7 +15,7 @@
 | `src/features/task-thread/json.ts` | 响应流、fatal UTF-8、错误传输限额和原始 JSON 来源解析 |
 | `src/features/task-thread/api.ts` | Thread 路由、身份头、HTTP 结果、dispatch 边界及确认资源 |
 | `src/features/task-thread/controller.ts` | 页面内存、订阅、请求代际、连续读取、历史、草稿、发送与容量 |
-| `src/ui/ChatMarkdown.tsx`、`useTimelineScroll.ts`、`reading-text-anchor.ts` | Session与Discussion共用的纯Markdown和阅读锚点原语 |
+| `src/ui/markdown/ChatMarkdown.tsx`、`useTimelineScroll.ts`、`reading-text-anchor.ts` | Session 与 Discussion 共用的聊天 Markdown 适配器和阅读锚点原语 |
 | `src/features/task-thread/TaskDiscussion.tsx` | controller 生命周期、活动页签/可见性和不可变 snapshot 的 React 订阅 |
 | `DiscussionTimeline.tsx`、`DiscussionComposer.tsx`、`ThreadMessageDetails.tsx` | 时间线、撰写区、引用与原生详情 dialog |
 | `src/features/task-thread/presentation.tsx` | 账号标签、来源、摘要、图标与安全错误详情 |
@@ -85,17 +85,19 @@ incoming保留完整连续缓冲区间，包括已经在visible出现的回执�
 
 composer 保存完整原始 body，不 trim、重排换行或破坏代码缩进。空白仅用于可用性校验，另拒绝 NUL、非法 Unicode 和原始 UTF-8 超过 64 KiB。Ctrl/Command+Enter 发言，IME composing 不触发。同一 controller 最多一个 POST；等待结果期间仍可编辑草稿和回复。
 
-发送捕获 body、replyTo、账号及草稿/回复 revision。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed，再等待同 UID 认证准入；之后的本地取消或准入失败不能改成 unknown。确认资源只占一个在途槽及一条消息预留；真正scope退休仍阻止旧资源发布。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
+发送捕获 body、replyTo、账号、草稿/回复 revision 和导航上下文。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed；发送 promise 和 busy 随本地结果结算，不等待同 UID 发布准入。controller 持有确认资源及可取消的独立发布工作；临时阻塞保留资源，恢复后重新准入，退休时取消工作。待发布回执占一条消息预留并阻止下一次 POST，避免在新发送替换状态时丢失已确认回执，但不阻止编辑。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
 
-准入后按 ID 合并消息。仅当各自 revision 仍等于发送快照时清空草稿或回复，不清理后续编辑。201 的 displayName 不要求等于页面当前名称，改名可以与发言同时发生。
+准入后按 ID 合并消息。清空草稿和回复还须原 controller 存活、导航位置与待决选择保持提交时上下文，且草稿和回复的 revision 都等于发送快照；切换讨论页签或后续编辑不会被旧结果清除。准备及派发前的认证等待使用该发送自己的取消信号；已派发后取消不能推断回滚，未确认仍为 unknown。201 的 displayName 不要求等于页面当前名称，改名可以与发言同时发生。
 
 有效 4xx 和经过验证的 clock_not_advanced 是明确拒绝；已 dispatch 的网络失败、超时、generic 5xx、message_outcome_unknown 或无法验证的成功资源是未知结果。二者均不自动重发。未知结果保留草稿和真实状态，普通刷新只 GET；相同正文不能证明是原发送，再次点击发送是新的追加。
 
 ## 阅读、键盘与验证
 
-Discussion沿用任务详情公共页头和操作。宽屏横向留白按讨论区所在容器宽度计算；普通960px详情弹层保留30px边距，独立页/全屏保留原有1080px默认、1280px宽屏阅读上限；600px及以下的窄屏间距和发送按钮10px字号保持。时间线与composer分配独立可用空间，长正文换行，代码/表格局部横向滚动，窄屏消息动作始终可达。忙碌、禁用和选中由控件表达，实际错误清楚展示；双语文案由typed inspection catalogs拥有。
+Discussion 沿用任务详情公共页头和操作。宽屏横向留白按讨论区所在容器宽度计算；普通 960px 详情弹层保留 30px 边距，独立页/全屏保留原有 1080px 默认、1280px 宽屏阅读上限。600px 及以下，时间线左右各留 17px，消息保留 27px 头像和 9px 间距。正文和输入使用共享 16px 档，发送按钮、业务状态和错误使用 14px 档，时间及附属计数使用 12px 档；各宽度保持所选档位。时间线与 composer 分配独立可用空间，长正文换行，代码/表格局部横向滚动。忙碌、禁用和选中由控件表达，实际错误清楚展示；双语文案由 typed inspection catalogs 拥有。
 
-Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 footnote ID，不接收 raw HTML。外链仅 http/https/mailto，使用 noopener noreferrer；图片呈现替代内容，不加载附件或原生资源。滚动复用阅读意图与文本锚点；向上阅读停止跟随，历史 prepend 和 composer 变高保留锚点，明确查看新消息才恢复底部跟随。
+消息标题将作者、可选 provider 徽标和短时间组成身份组，将回复与详情组成操作组。600px 及以下，身份组可收缩并在自己的列内换行，长作者名和完整账号标签保留全部文本；操作组不收缩，固定在标题尾部并与身份组顶端对齐。两个实际按钮各为 30×30 CSS px，间隔 4px，始终显示且保持同一行。身份组上下各留 4px，标题随身份内容增高，正文仍占消息主列的完整宽度。超过 600px，身份组使用 `display: contents` 保留作者、徽标、时间和操作原有的标题换行布局，按钮为 25×25 CSS px、间隔 2px，仅在消息悬停或含焦点时显示。共享时间线将该布局应用到 Task 和 Goal 的独立页、弹窗及全屏；回复与详情继续调用原控制器操作，保留草稿和子 dialog 的焦点契约。
+
+Markdown 通过聊天适配器使用[公共渲染器](shared-markdown.md)，保留 GFM、可见软换行、隔离的脚注及受限静态 Mermaid 图表，raw HTML 作为文本。外链仅 http/https/mailto，使用 noopener noreferrer；图片呈现替代内容，不加载附件或原生资源。滚动复用阅读意图与文本锚点；向上阅读停止跟随，历史 prepend 和 composer 变高保留锚点，明确查看新消息才恢复底部跟随。
 
 原生消息详情 dialog 拥有 capture 阶段的 Escape/Tab、父 owner inert 及关闭后焦点恢复，同时报告子层占用给 Surface 键盘、焦点回收和遮罩处理。临时检查保持同一 dialog 挂载，不重复调用 showModal 或释放父 owner 的 inert；隐藏页面、准入阻塞和任务/账号失效时禁止向旧 opener 恢复焦点。子层 Escape 只关闭详情，不能退出任务全屏或关闭父任务。
 
@@ -105,4 +107,4 @@ Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 
 
 功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、条数窗口边界、完整大消息页、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
 
-[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存原职责划分、复用和窗口容量的取舍；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录保留条数窗口并移除读取字节准入的职责。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存原职责划分、复用和窗口容量的取舍；[发送结算决策](../../.agents/notes/implemented/bug-fix/2026-11-11-thread-post-publication.md)记录回执与发布准入的分离；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录保留条数窗口并移除读取字节准入的职责；[窄屏消息操作决策](../../.agents/notes/implemented/bug-fix/2026-11-20-discussion-touch-targets.md)记录身份换行与固定操作区的取舍。

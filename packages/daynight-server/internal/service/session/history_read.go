@@ -63,6 +63,9 @@ func historyArchiveContent(archive core.HistoryArchive) (string, []sp.TimelineEn
 		if err != nil || manifest.Timeline.SHA256 != v2.HashBytes(data) || manifest.Timeline.ByteLength != strconv.Itoa(len(data)) {
 			return "", nil, nil, historyFault("source_corrupt", "The Session archive timeline is invalid.")
 		}
+		if manifest.ContentPolicy == "task_body" && !sp.TaskBodyEntries(timeline.Entries) {
+			return "", nil, nil, historyFault("source_corrupt", "The Task body archive contains excluded entries.")
+		}
 		resources := make([]sp.Resource, 0, len(manifest.Resources))
 		for _, resource := range manifest.Resources {
 			resources = append(resources, resource.Resource)
@@ -143,6 +146,13 @@ func (s *History) Read(ctx context.Context, p model.Principal, project, task, id
 		}
 		hash := v2.HashBytes(archive.Bytes())
 		page, err := core.BuildHistoryPage(id, hash, "archive", hash, entries, resources, in.Before, in.Limit, in.Conversation, in.ResponseOverhead, historyObservationTime(observed))
+		if err == nil {
+			var manifest struct {
+				ContentPolicy string `json:"contentPolicy"`
+			}
+			_ = json.Unmarshal(archive.Bytes(), &manifest)
+			page.ContentPolicy = manifest.ContentPolicy
+		}
 		if err != nil {
 			return page, err
 		}
@@ -192,6 +202,13 @@ func (s *History) Entry(ctx context.Context, p model.Principal, project, task, i
 			} else if err == nil {
 				hash := v2.HashBytes(archive.Bytes())
 				result, err = core.BuildEntryChunk(id, hash, "archive", hash, entries, in.Cursor, historyObservationTime(observed))
+				if err == nil {
+					var manifest struct {
+						ContentPolicy string `json:"contentPolicy"`
+					}
+					_ = json.Unmarshal(archive.Bytes(), &manifest)
+					result.ContentPolicy = manifest.ContentPolicy
+				}
 			}
 		}
 	} else {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient, createOperation } from "../../src/api/index.js";
-import { parseWebhookEndpoint, parseWebhookPayload, parseWebhookReceipt, parseWebhookMutation, parseWebhookSecret, parseWebhookDelivery } from "../../src/api/webhook.js";
+import { parseWebhookEndpoint, parseWebhookEndpointPage, parseWebhookPayload, parseWebhookReceipt, parseWebhookMutation, parseWebhookSecret, parseWebhookDelivery } from "../../src/api/webhook.js";
 
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const endpointId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -49,6 +49,8 @@ describe("webhook API boundaries", () => {
   it("rejects inconsistent full and metadata-only disclosure", () => {
     const view = { id: deliveryId, endpointId, eventId: operationId, owner, eventType: "task.created", resource: { projectId: operationId, taskId: operationId, stepId: null, messageId: null, displayName: null }, occurredAt: time, resourceVersion: "1", target: { destinationRevision: "1", url: null, displayUrl: "https://example.test/…" }, generation: "1", state: "pending", attemptCount: 0, automaticAttemptCount: 0, manualOperationCount: 0, nextAttemptAt: null, lastAttemptAt: null, expiresAt: time, automaticExpiresAt: time, payloadExpiresAt: time, lastAcknowledgedAt: null, lastResult: null, payloadAvailable: true, disclosure: "full" };
     expect(parseWebhookDelivery(view, owner, endpointId, deliveryId).eventType).toBe("task.created");
+    const historicalStep = { ...view, eventType: "task.step_updated", resource: { ...view.resource, stepId: "00000001" } };
+    expect(parseWebhookDelivery(historicalStep, owner, endpointId, deliveryId)).toMatchObject({ eventType: "task.step_updated", resource: { stepId: "00000001" } });
     expect(() => parseWebhookDelivery({ ...view, eventType: null }, owner, endpointId)).toThrow();
     expect(() => parseWebhookDelivery({ ...view, lastResult: { category: "http_error", code: "HTTP", httpStatus: 999, durationMs: null } }, owner, endpointId)).toThrow();
     expect(() => parseWebhookDelivery({ ...view, disclosure: "metadata_only" }, owner, endpointId)).toThrow();
@@ -59,6 +61,28 @@ describe("webhook API boundaries", () => {
     const deleted = { id: endpointId, owner, lifecycle: "deleted", configVersion: "1", deletedAt: time };
     expect(parseWebhookEndpoint(deleted, owner, endpointId)).toEqual(deleted);
     expect(() => parseWebhookEndpoint({ ...deleted, name: "secret" }, owner, endpointId)).toThrow();
+  });
+  it("returns the optional creation key on active endpoints and list items", () => {
+    const active = { id: endpointId, owner, lifecycle: "active", configVersion: "1", deletedAt: null, clientKey: "assistant-task-inbox:1", name: "Inbox", enabled: true, destinationRevision: "1", destination: { kind: "http", adapterVersion: "1", url: null, displayUrl: "https://example.test/…" }, signing: { scheme: "standard-webhooks-v1", activeKeyId: operationId, overlapUntil: null }, subscriptions: [], capabilities: { manage: false, readSecret: false, redeliver: false }, createdAt: time, updatedAt: time };
+    expect(parseWebhookEndpoint(active, owner, endpointId)).toMatchObject({ lifecycle: "active", clientKey: "assistant-task-inbox:1" });
+    expect(parseWebhookEndpoint({ ...active, clientKey: null }, owner, endpointId)).toMatchObject({ clientKey: null });
+    const { clientKey: _omitted, ...legacy } = active;
+    expect(parseWebhookEndpoint(legacy, owner, endpointId)).toMatchObject({ clientKey: null });
+    for (const clientKey of ["", "has space", "x".repeat(201), 1]) expect(() => parseWebhookEndpoint({ ...active, clientKey }, owner, endpointId)).toThrow();
+    const item = { id: endpointId, owner, clientKey: "inbox", name: "Inbox", enabled: true, configVersion: "1", destination: active.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: null, lastResult: null };
+    const tombstone = { id: endpointId, owner, lifecycle: "deleted", configVersion: "2", deletedAt: time };
+    expect(parseWebhookEndpoint(tombstone, owner, endpointId)).toEqual(tombstone);
+    for (const clientKey of [null, "assistant-task-inbox:1"]) expect(() => parseWebhookEndpoint({ ...tombstone, clientKey }, owner, endpointId)).toThrow();
+    expect(parseWebhookEndpointPage({ items: [item, { ...item, id: deliveryId, clientKey: null }], nextCursor: null }, owner).items.map(i => i.clientKey)).toEqual(["inbox", null]);
+    expect(() => parseWebhookEndpointPage({ items: [{ ...item, clientKey: "a b" }], nextCursor: null }, owner)).toThrow();
+  });
+  it("preserves a verified endpoint_exists refusal without copying details", async () => {
+    const operation = createOperation(); operations.push(operation);
+    const requestId = "client-key-refusal";
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code: "endpoint_exists", message: "exists", requestId, details: { endpointId, configVersion: "3" } } }), { status: 409, headers: { "content-type": "application/json", "Daynight-User-ID": userId, "X-Request-ID": requestId } }));
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
+    await expect(api.webhookRequest({ userId, path: "/me/webhooks", method: "POST", body: {}, confirmedOperationId: operationId, parse: value => value })).rejects.toMatchObject({ status: 409, code: "endpoint_exists", requestId, confirmedRefusal: true });
+    expect(fetch).toHaveBeenCalledOnce();
   });
   it("validates exact payload bytes and rejects forged or noncanonical wrappers", () => {
     expect(parseWebhookPayload(envelope, owner, endpointId, deliveryId)).toEqual(envelope);

@@ -1,4 +1,4 @@
-import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from '../../api/client';
 import { getThreadPage, isThreadScopeLoss, postThreadMessage, ThreadPostError } from './api';
 import { compareThreadPositions, isThreadBody, mergeThreadMessage, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadQuery, type ThreadScope } from './contract';
 
@@ -53,10 +53,13 @@ export type ThreadControllerOptions = {
   readonly lifetime: AbortSignal;
   readonly ready: (signal: AbortSignal) => Promise<void>;
   readonly principalMismatch: () => void;
+  readonly captureNavigation?: () => () => boolean;
   readonly limits?: ThreadLimits;
   readonly api?: { readonly list: typeof getThreadPage; readonly post: typeof postThreadMessage };
 };
-type ConfirmedPost = { readonly message: ThreadMessage; readonly draftRevision: number; readonly replyRevision: number; readonly replyTo: string | null };
+type ConfirmedPost = { readonly message: ThreadMessage; readonly draftRevision: number; readonly replyRevision: number; readonly replyTo: string | null; readonly navigationCurrent: () => boolean };
+type PostOperation = { readonly controller: AbortController; readonly historyGeneration: number; dispatched: boolean };
+type Publication = { readonly controller: AbortController; readonly confirmed: ConfirmedPost };
 
 export class ThreadController {
   private readonly options: ThreadControllerOptions;
@@ -71,6 +74,8 @@ export class ThreadController {
   // POST echoes do not extend the fetched history range; its next boundary must still expose interleaved messages.
   private windowIds = new Set<string>();
   private windowRevision = 0;
+  private historyGeneration = 0;
+  private historyBlocked = false;
   private cursor: Pick<ThreadMessage, 'id' | 'createdAt'> | null = null;
   private initialized = false;
   private forwardHasMoreAfter = false;
@@ -97,7 +102,9 @@ export class ThreadController {
   private remoteOutcome: ThreadRemoteOutcome = 'idle';
   private reserved = false;
   private confirmed: ConfirmedPost | null = null;
-  private publishing = false;
+  private postOperation: PostOperation | null = null;
+  private publication: Publication | null = null;
+  private readonly unsubscribePause: () => void;
   private postTask: Promise<void> | null = null;
   private forwardTask: Promise<void> | null = null;
   private historyTask: Promise<void> | null = null;
@@ -116,6 +123,10 @@ export class ThreadController {
     this.limits = options.limits === undefined ? THREAD_LIMITS : options.limits;
     this.api = options.api === undefined ? { list: getThreadPage, post: postThreadMessage } : options.api;
     this.view = this.makeView();
+    this.unsubscribePause = subscribeAuthPause(() => {
+      if (this.postOperation !== null && !this.postOperation.dispatched) this.postOperation.controller.abort();
+      this.cancelReads(); this.emit();
+    });
     options.lifetime.addEventListener('abort', this.retire, { once: true });
     if (options.lifetime.aborted) this.retire();
   }
@@ -123,7 +134,7 @@ export class ThreadController {
   snapshot = (): ThreadView => this.view;
   getMessage = (id: string): ThreadMessage | null => this.visible.get(id) ?? this.incoming.get(id) ?? this.references.get(id) ?? null;
   private paused = (): boolean => this.admissionBlocked || authRequestsPaused();
-  private readable = (): boolean => !this.retired && this.active && this.documentVisible && !this.paused();
+  private readable = (): boolean => !this.retired && !this.historyBlocked && this.active && this.documentVisible && !this.paused();
   private live = (): void => { if (this.retired || this.lifetime.signal.aborted || this.options.lifetime.aborted) aborted(); };
   private makeView = (): ThreadView => ({
     visible: ordered(this.visible.values()), incomingCount: [...this.incoming.keys()].filter(id => !this.visible.has(id)).length, consumedAfterId: this.cursor?.id ?? null,
@@ -132,7 +143,7 @@ export class ThreadController {
     loadingOlder: this.historyDirection === 'older', loadingNewer: this.historyDirection === 'newer', referenceLoading: this.referenceTarget,
     readError: this.readError, historyError: this.historyError, referenceError: this.referenceError, postError: this.postError,
     draft: this.draft, replyTo: this.replyTo, replyMessage: this.replyTo === null ? null : this.getMessage(this.replyTo),
-    sending: this.postTask !== null || this.confirmed !== null, postOutcome: this.postOutcome, remoteOutcome: this.remoteOutcome,
+    sending: this.postTask !== null, postOutcome: this.postOutcome, remoteOutcome: this.remoteOutcome,
     detailsMessage: this.detailsId === null ? null : this.getMessage(this.detailsId), active: this.active, retired: this.retired,
     authPaused: this.paused(), catchupPaused: this.catchupPaused, revision: this.revision,
     capacityBlocked: !this.retired && !this.reserved && !this.canReserve(),
@@ -148,6 +159,11 @@ export class ThreadController {
     this.clearTimer();
     for (const kind of ['forward', 'history', 'reference'] as const) { this.generations[kind]++; this.tickets.get(kind)?.controller.abort(); this.tickets.delete(kind); }
     this.forwardTask = null; this.historyTask = null; this.referenceTask = null; this.referenceTarget = null; this.historyDirection = null;
+  };
+  private cancelPublication = (): void => { const publication = this.publication; this.publication = null; publication?.controller.abort(); };
+  private suspendPostWork = (): void => {
+    if (this.postOperation !== null && !this.postOperation.dispatched) this.postOperation.controller.abort();
+    this.cancelPublication();
   };
   private ticket = (kind: ReadKind, window?: HistoryWindow): Ticket => {
     const ticket = { kind, controller: new AbortController(), generation: ++this.generations[kind], ...(window === undefined ? {} : { window }) };
@@ -267,17 +283,40 @@ export class ThreadController {
     this.emit(); if (this.readable()) void this.refresh();
   };
   setAdmissionBlocked = (blocked: boolean): void => {
-    if (this.retired || this.admissionBlocked === blocked) return;
+    if (this.retired) return;
+    if (this.admissionBlocked === blocked) {
+      if (!blocked && this.view.authPaused && !this.paused()) { this.emit(); this.startPublication(); if (this.readable()) void this.refresh(); }
+      return;
+    }
     this.admissionBlocked = blocked;
-    if (blocked) this.cancelReads();
+    if (blocked) { this.cancelReads(); this.suspendPostWork(); }
     this.emit();
-    if (!blocked) { if (this.confirmed !== null) void this.publishConfirmed(); if (this.readable()) void this.refresh(); }
+    if (!blocked) { this.startPublication(); if (this.readable()) void this.refresh(); }
   };
   setFollowing = (following: boolean): void => { if (this.retired || following === this.following) return; this.following = following; this.emit(); };
   setReadingAnchor = (id: string | null): void => { if (this.retired || id === this.readingAnchor) return; this.readingAnchor = id; this.emit(); };
   setDraft = (draft: string): void => { if (this.retired || draft === this.draft) return; this.draft = draft; this.draftRevision++; this.emit(); };
   setReply = (id: string | null): void => { if (this.retired || id === this.replyTo) return; this.replyTo = id; this.replyRevision++; const item = id === null ? null : this.getMessage(id); if (item !== null) this.cacheReference(item); this.emit(); };
   closeDetails = (): void => { if (this.detailsId === null) return; this.detailsId = null; this.emit(); };
+  resetHistory = (): void => {
+    if (this.retired) return;
+    this.historyBlocked = true; this.historyGeneration++; this.cancelReads(); this.cancelPublication();
+    if (this.postOperation !== null && !this.postOperation.dispatched) this.postOperation.controller.abort();
+    this.confirmed = null;
+    if (this.postOperation === null) this.reserved = false;
+    this.visible.clear(); this.incoming.clear(); this.references.clear(); this.windowIds.clear(); this.windowRevision++;
+    this.cursor = null; this.initialized = false; this.forwardHasMoreAfter = false;
+    this.following = true; this.readingAnchor = null; this.latestReceipt = null;
+    this.hasMoreBefore = false; this.hasMoreAfter = false; this.catchupPaused = false;
+    this.replyTo = null; this.replyRevision++; this.detailsId = null;
+    this.readError = null; this.historyError = null; this.referenceError = null;
+    this.emit();
+  };
+  admitHistory = (): void => {
+    if (this.retired || !this.historyBlocked) return;
+    this.historyBlocked = false; this.emit();
+    if (this.readable()) void this.refresh();
+  };
   refresh = (): Promise<void> => {
     if (!this.readable()) return Promise.resolve();
     if (this.forwardTask !== null) return this.forwardTask;
@@ -318,7 +357,7 @@ export class ThreadController {
         this.forwardHasMoreAfter = page.hasMoreAfter;
         const last = items.at(-1);
         if (last !== undefined) this.cursor = { id: last.id, createdAt: last.createdAt };
-        this.readError = null; this.emit();
+        this.readError = null; this.emit(); this.startPublication();
         if (!page.hasMoreAfter || page.items.length === 0) break;
       } while (this.readable());
     } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'read'); }
@@ -415,54 +454,66 @@ export class ThreadController {
     this.referenceError = null; this.emit();
   };
   send = (): Promise<void> => {
-    if (!this.view.canSend) return this.postTask ?? Promise.resolve();
+    if (!this.view.canSend || !this.readable()) return this.postTask ?? Promise.resolve();
     const reserved = this.pruned(this.visible, 'oldest', false, true); if (reserved === null) return Promise.resolve();
     this.applyVisible(reserved, this.rangeMessages()); this.reserved = true; this.postError = null; this.postOutcome = 'waiting_auth'; this.remoteOutcome = 'not_sent';
     const input: PostThreadInput = this.replyTo === null ? { body: this.draft } : { body: this.draft, replyTo: this.replyTo };
-    const captured = { draftRevision: this.draftRevision, replyRevision: this.replyRevision, replyTo: this.replyTo };
-    const task = this.runPost(input, captured); this.postTask = task; this.emit(); return task;
+    const captured = { draftRevision: this.draftRevision, replyRevision: this.replyRevision, replyTo: this.replyTo, navigationCurrent: this.options.captureNavigation?.() ?? (() => true) };
+    const operation: PostOperation = { controller: new AbortController(), historyGeneration: this.historyGeneration, dispatched: false }; this.postOperation = operation;
+    const task = this.runPost(operation, input, captured); this.postTask = task; this.emit(); return task;
   };
-  private runPost = async (input: PostThreadInput, captured: Omit<ConfirmedPost, 'message'>): Promise<void> => {
+  private runPost = async (operation: PostOperation, input: PostThreadInput, captured: Omit<ConfirmedPost, 'message'>): Promise<void> => {
+    const signal = AbortSignal.any([this.lifetime.signal, operation.controller.signal]);
+    const current = () => { this.live(); signal.throwIfAborted(); if (this.postOperation !== operation) aborted(); };
     try {
-      await this.options.ready(this.lifetime.signal); this.live();
-      const message = await this.api.post(this.options.scope, input, this.lifetime.signal, {
-        ...this.admission(this.live),
-        onDispatch: () => { this.live(); this.postOutcome = 'sending'; this.remoteOutcome = 'dispatched'; this.emit(); },
-        onConfirmed: (message: ThreadMessage) => { this.live(); this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); },
+      await this.options.ready(signal); current();
+      const message = await this.api.post(this.options.scope, input, signal, {
+        assertCurrent: current,
+        onPrincipalMismatch: () => { current(); if (this.paused()) aborted(); this.options.principalMismatch(); this.retire(); },
+        onDispatch: () => { current(); operation.dispatched = true; this.postOutcome = 'sending'; this.remoteOutcome = 'dispatched'; this.emit(); },
+        onConfirmed: (message: ThreadMessage) => { current(); if (operation.historyGeneration === this.historyGeneration) this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); },
       });
-      this.live();
-      if (this.confirmed === null) { this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); }
-      await this.publishConfirmed();
+      current();
+      if (this.confirmed === null) { if (operation.historyGeneration === this.historyGeneration) this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); }
     } catch (error) {
-      if (!this.retired && this.remoteOutcome !== 'confirmed') {
+      if (!this.retired && this.postOperation === operation && this.remoteOutcome !== 'confirmed') {
         const outcome = error instanceof ThreadPostError ? error.outcome : this.remoteOutcome === 'dispatched' ? 'unknown' : 'not_sent';
         this.remoteOutcome = outcome; this.postOutcome = outcome === 'unknown' ? 'unknown' : 'refused';
+        if (!this.paused()) this.handle(error, 'post');
+        else if (outcome !== 'not_sent') this.postError = failure(error);
+      } else if (!this.retired && this.postOperation === operation && !this.paused()) this.handle(error, 'read', 'admit');
+    } finally {
+      if (this.postOperation === operation) {
+        this.postOperation = null; this.postTask = null; if (this.confirmed === null) this.reserved = false; this.emit(); this.startPublication();
       }
-      this.handle(error, this.remoteOutcome === 'confirmed' ? 'read' : 'post', this.remoteOutcome === 'confirmed' ? 'admit' : 'post');
-    } finally { this.postTask = null; if (this.confirmed === null) this.reserved = false; this.emit(); }
+    }
   };
-  private publishConfirmed = async (): Promise<void> => {
-    if (this.publishing || this.confirmed === null || this.retired) return;
-    this.publishing = true;
+  private startPublication = (): void => {
+    if (this.publication !== null || this.postOperation !== null || this.confirmed === null || this.retired || this.admissionBlocked) return;
+    const publication = { controller: new AbortController(), confirmed: this.confirmed }; this.publication = publication;
+    void this.publishConfirmed(publication);
+  };
+  private publishConfirmed = async (publication: Publication): Promise<void> => {
     try {
-      await this.options.ready(this.lifetime.signal); this.live();
-      if (this.admissionBlocked) return;
-      const confirmed = this.confirmed; if (confirmed === null) return;
+      const signal = AbortSignal.any([this.lifetime.signal, publication.controller.signal]);
+      await this.options.ready(signal); this.live(); signal.throwIfAborted();
+      if (this.paused() || this.publication !== publication || this.confirmed !== publication.confirmed) return;
+      const confirmed = publication.confirmed;
       const item = combine(this.getMessage(confirmed.message.id) ?? undefined, confirmed.message);
       const next = new Map(this.visible); next.set(item.id, item);
-      this.reserved = false;
-      const trimmed = this.pruned(next, 'oldest', true);
+      const trimmed = this.pruned(next, 'oldest', true, false);
       if (trimmed === null) return protocol();
-      this.latestReceipt = item.id; this.applyVisible(trimmed, this.rangeMessages()); this.enrich([item]);
-      if (this.draftRevision === confirmed.draftRevision) { this.draft = ''; this.draftRevision++; }
-      if (this.replyRevision === confirmed.replyRevision && this.replyTo === confirmed.replyTo) { this.replyTo = null; this.replyRevision++; }
+      this.reserved = false; this.latestReceipt = item.id; this.applyVisible(trimmed, this.rangeMessages()); this.enrich([item]);
+      if (confirmed.navigationCurrent() && this.draftRevision === confirmed.draftRevision && this.replyRevision === confirmed.replyRevision && this.replyTo === confirmed.replyTo) {
+        this.draft = ''; this.draftRevision++; this.replyTo = null; this.replyRevision++;
+      }
       this.confirmed = null; this.postError = null; this.emit();
-    } catch (error) { this.handle(error, 'read', 'admit'); }
-    finally { this.publishing = false; }
+    } catch (error) { if (this.publication === publication && !this.paused()) { this.handle(error, 'read', 'admit'); this.emit(); } }
+    finally { if (this.publication === publication) this.publication = null; }
   };
   retire = (): void => {
     if (this.retired) return;
-    this.retired = true; this.lifetime.abort(); this.options.lifetime.removeEventListener('abort', this.retire); this.cancelReads();
+    this.retired = true; this.lifetime.abort(); this.unsubscribePause(); this.cancelPublication(); this.options.lifetime.removeEventListener('abort', this.retire); this.cancelReads();
     this.visible.clear(); this.incoming.clear(); this.references.clear(); this.windowIds.clear(); this.cursor = null;
     this.draft = ''; this.replyTo = null; this.detailsId = null; this.readError = null; this.historyError = null; this.referenceError = null; this.postError = null;
     this.confirmed = null; this.reserved = false; this.latestReceipt = null; this.readingAnchor = null; this.hasMoreBefore = false; this.hasMoreAfter = false;

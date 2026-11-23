@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import { focusBotControl } from '../helpers/bot-heading';
 import type { BotViewportOptions } from './bots-viewport-session';
 
@@ -14,7 +14,7 @@ async function install(page: Page, options?: BotViewportOptions) {
   const writes: string[] = [];
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     if (request.method() !== 'GET') {
       writes.push(`${request.method()} ${path}`);
       return send({ error: { code: 'method_not_allowed', message: 'No HTTP writes are expected.', requestId: 'assistant-browser-fixture' } }, 405);
@@ -157,48 +157,37 @@ for (const locale of ['en', 'zh-CN'] as const) {
   });
 }
 
-// docs/spec/bot-session-view.md: lifecycle and cleanup. Headless Chromium keeps
-// every tab focused, so controlled focus signals exercise the production account
-// revalidation and HTTP failure path; this does not prove native OS focus events.
-test('retains the assistant DOM and draft through an account confirmation failure', async ({ page }, info) => {
+test('retains the assistant DOM and draft when another page changes account', async ({ page, context }, info) => {
   const writes = await install(page);
   await open(page, 'en');
   const input = page.locator(`${pane} textarea`);
   await expect(input).toBeEnabled();
   await input.fill('Draft retained while confirming the same account');
   const original = await input.elementHandle(), timeline = await page.locator(`${pane} .session-timeline`).elementHandle();
-  let fail = true, rechecks = 0;
+  let rechecks = 0;
   await page.route('**/api/v1/me', async route => {
     rechecks++;
-    await route.fulfill({ status: fail ? 503 : 200, json: fail ? { error: { code: 'unavailable', message: 'Account check unavailable', requestId: 'account-browser-fixture' } } : profile, headers: { 'Daynight-User-ID': BOT_USER } });
+    await route.fulfill({ json: profile, headers: { 'Daynight-User-ID': BOT_USER } });
   });
+  const other = await context.newPage();
+  await other.route('**/api/v1/me', route => route.fulfill({ json: profile, headers: { 'Daynight-User-ID': BOT_USER } }));
   try {
-    await page.evaluate(() => {
-      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
-      window.dispatchEvent(new Event('blur'));
-    });
-    await expect(page.locator(`${pane} .session-actions button[type="submit"]`)).toBeDisabled();
-    await page.evaluate(() => {
-      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
-      window.dispatchEvent(new Event('focus'));
-    });
-    await expect.poll(() => rechecks).toBeGreaterThan(0);
-    const dialog = page.getByRole('dialog', { name: 'Confirm current account' });
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('The current account could not be confirmed');
+    await other.goto('/bots');
+    await other.evaluate(id => localStorage.setItem('daynight.activeUser', JSON.stringify(id)), botId(999));
+    await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
     await expect(input).toHaveValue('Draft retained while confirming the same account');
     expect(await input.evaluate((node, before) => node === before, original)).toBe(true);
     await expect(page.locator(`${pane} .session-actions button[type="submit"]`)).toBeDisabled();
+    await expect.poll(() => page.evaluate(() => window.botViewport.metrics.closed)).toBeGreaterThan(0);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
     await page.screenshot({ path: info.outputPath('identity-paused.png') });
-    fail = false;
-    await dialog.getByRole('button', { name: 'Confirm account again' }).click();
-    await expect(dialog).toHaveCount(0);
     await expect(input).toBeEnabled();
-    await expect(input).toHaveValue('Draft retained while confirming the same account');
+    await input.fill('Local edit after account change');
+    await expect(input).toHaveValue('Local edit after account change');
     expect(await input.evaluate((node, before) => node === before, original)).toBe(true);
     expect(await page.locator(`${pane} .session-timeline`).evaluate((node, before) => node === before, timeline)).toBe(true);
+    expect(rechecks).toBe(0);
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
-  } finally { await page.evaluate(() => { Reflect.deleteProperty(document, 'hasFocus'); }); }
+  } finally { await other.close(); }
 });

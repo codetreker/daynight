@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { SESSION_PROTOCOL } from "../../../session/protocol.js";
 import { parseRegistrationResponse, parseControllerGrantResponse, parseCurrentSessionResponse, type RegistrationRequest, type ControllerGrantRequest, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import type { LocalTask, WebExecutionState } from "./web-types.js";
-export const createWorkerSessionApi = (serverOrigin: string, serverToken: string) => {
+import { requireWorkerNetworkToken, workerManagementToken } from "../management-network.js";
+export const createWorkerSessionApi = (serverOrigin: string, serverToken: string | undefined, options: { managementOnly?: boolean } = {}) => {
+  const token = workerManagementToken(serverToken, options.managementOnly);
   const request = async (target: string, body: unknown, signal: AbortSignal, method = "POST", timeoutMs = 30_000): Promise<unknown> => {
-    const response = await fetch(`${serverOrigin}${target}`, { method, headers: { authorization: `Bearer ${serverToken}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
+    const response = await fetch(`${serverOrigin}${target}`, { method, headers: { authorization: `Bearer ${requireWorkerNetworkToken(token)}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
     const chunks: Uint8Array[] = []; let size = 0;
     if (response.body !== null) { const reader = response.body.getReader(); try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > 2 * 1024 * 1024) { await reader.cancel(); throw new Error("Session registration response exceeds its limit."); } chunks.push(value); } } finally { reader.releaseLock(); } }
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -16,7 +18,7 @@ export const createWorkerSessionApi = (serverOrigin: string, serverToken: string
   const prefix = (task: LocalTask): string => `/api/v1/projects/${task.projectId}/tasks/${task.taskId}/sessions`;
   return {
     supportsStartupReports: async (signal: AbortSignal): Promise<boolean> => {
-      const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${serverToken}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
+      const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${requireWorkerNetworkToken(token)}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
       if (!response.ok) throw new Error("Startup reporting capability could not be confirmed.");
       const value = await response.json() as { startupReportVersion?: unknown };
       return value.startupReportVersion === 1;
@@ -26,7 +28,7 @@ export const createWorkerSessionApi = (serverOrigin: string, serverToken: string
       if (result.status !== "not_registered" || result.claimId !== identity.claimId) throw new Error("The original Web launch provenance is missing; an existing or superseded Session cannot be recreated or deleted. Restore its execution evidence.");
     },
     verifySupport: async (provider: string, signal: AbortSignal): Promise<void> => {
-      const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${serverToken}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
+      const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${requireWorkerNetworkToken(token)}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
       if (!response.ok) throw new Error("This service has not confirmed Web session protocol support; no claim was submitted.");
       const value = await response.json() as { protocol?: unknown; schemaVersion?: unknown; projectionVersion?: unknown; providers?: unknown };
       if (value.protocol !== SESSION_PROTOCOL || value.schemaVersion !== 1 || value.projectionVersion !== 1 || !Array.isArray(value.providers) || !value.providers.includes(provider)) throw new Error("The service Web session protocol or provider is incompatible; no claim was submitted.");

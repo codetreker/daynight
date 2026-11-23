@@ -85,6 +85,7 @@ func maintenanceFaultPool(t *testing.T, base *Store, fault *maintenanceReplyFaul
 }
 
 func TestWebhookMaintenanceRollbackDeadlineAndCancellation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, mode := range []string{"deadline", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			base := isolatedStore(t)
@@ -144,6 +145,7 @@ func TestWebhookMaintenanceRollbackDeadlineAndCancellation(t *testing.T) {
 }
 
 func TestWebhookMaintenanceCommitReplyUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	base := isolatedStore(t)
 	if _, err := base.Pool.Exec(context.Background(), `CREATE TABLE maintenance_commit_probe(id integer)`); err != nil {
 		t.Fatal(err)

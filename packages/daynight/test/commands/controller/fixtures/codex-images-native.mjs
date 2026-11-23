@@ -1,14 +1,26 @@
 import { createInterface } from "node:readline";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 const out = value => process.stdout.write(JSON.stringify(value) + "\n");
 const mode = process.env.CODEX_IMAGES_MODE ?? "normal";
 let last = null;
+const deferredConfigurations = [];
 for await (const line of createInterface({ input: process.stdin })) {
   const request = JSON.parse(line), { id, method, params } = request;
   if (process.env.CODEX_IMAGES_LOG) appendFileSync(process.env.CODEX_IMAGES_LOG, line + "\n");
   if (method === "initialize") out({ id, result: process.env.CODEX_IMAGES_COMPATIBLE === "1" ? { userAgent: "daynight/0.167.0 (Mac OS)", platformOs: "macos" } : { userAgent: "controlled-fixture", platformOs: process.platform } });
   if (method === "thread/start" || method === "thread/resume") out({ id, result: { model: "fixture-vision", modelProvider: "controlled", thread: { id: "images-thread", cwd: process.cwd() } } });
   if (method === "thread/read") out({ id, result: { thread: { id: "images-thread", cwd: process.cwd() } } });
+  if (method === "fixture/settings") out({ method: "thread/settings/updated", params: { threadId: "images-thread", threadSettings: { model: params.model, modelProvider: "controlled", cwd: process.cwd() } } });
+  if (method === "fixture/approval") out({ id: "fixture-approval", method: "item/commandExecution/requestApproval", params: { threadId: "images-thread", turnId: params.turnId, itemId: "pending-command", command: "date", cwd: process.cwd(), availableDecisions: ["accept", "cancel"] } });
+  if (method === "fixture/release-config") for (const response of deferredConfigurations.splice(0)) out(response);
+  if (method === "config/read") {
+    const route = process.env.CODEX_IMAGES_ROUTE_FILE ? readFileSync(process.env.CODEX_IMAGES_ROUTE_FILE, "utf8").trim() : "https://example.test";
+    if (route === "error") out({ id, error: { code: -32603, message: "secret-config-canary" } });
+    else {
+      const response = { id, result: { config: { model: "fixture-vision", model_provider: "controlled", model_providers: { controlled: { base_url: route === "defer" ? "https://example.test" : route, wire_api: "responses" } } } } };
+      if (route === "defer") deferredConfigurations.push(response); else out(response);
+    }
+  }
   if (method === "model/list") out({ id, result: { data: [{ id: "fixture-vision", model: "fixture-vision", inputModalities: mode === "no-modality" ? ["text"] : ["text", "image"] }], nextCursor: null } });
   if (method === "skills/list") out({ id, result: { data: [] } });
   if (method === "configRequirements/read") out({ id, result: { requirements: null } });

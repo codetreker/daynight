@@ -26,20 +26,24 @@ func TestTaskProposedStateMigrationPreservesFourStateResources(t *testing.T) {
 		mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests','[{"url":"https://example.test/pr/1","title":"Retained"}]')`, id)
 		mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, id, prerequisite)
 	}
-	snapshot := func() string {
+	snapshot := func(typed bool) string {
 		t.Helper()
+		dependencyExpr := `to_jsonb(d)`
+		if typed {
+			dependencyExpr += ` - 'dependency_type' - 'goal_edge_id'`
+		}
 		var result string
-		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(to_jsonb(t)-'type'-'parent_id' ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(to_jsonb(d) ORDER BY task_id,depends_on_task_id) FROM task_dependencies d))::text`).Scan(&result)
+		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(to_jsonb(t)-'type'-'parent_id'-'ancestor_deleted_at' ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d))::text`).Scan(&result)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return result
 	}
-	before := snapshot()
+	before := snapshot(false)
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if after := snapshot(); after != before {
+	if after := snapshot(true); after != before {
 		t.Fatalf("proposed migration changed existing resources: before=%s after=%s", before, after)
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Default proposed')`, queryID(30), project.ID)

@@ -1,4 +1,5 @@
-import { operationErrorMessage } from './operation-error';
+import { operationErrorMessage, OperationRequestError } from './operation-error';
+import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import type { SessionComposerPresentation } from './session-presentation-slots';
@@ -12,6 +13,9 @@ import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, sessionRespondGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import { useSessionControlMessages } from './controls-messages';
+import { ComposerAttachments, type ComposerAttachmentsBinding } from './ComposerAttachments';
+import { useDraftMessages } from './drafts/draft-messages';
+import { useSessionImageScope } from './images/SessionImageScope';
 
 type CommandIntent = { readonly id: string; readonly name: string; readonly sessionId: string | undefined };
 const parseCommand = (text: string) => /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(text.trimStart());
@@ -23,12 +27,15 @@ function classifySubmission(text: string, commands: readonly SessionNativeComman
   return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
 }
 
-export function SessionComposer({ state, connected, canInteract = true, actionAdmitted = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, operationProgress = new Map(), settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
+export function SessionComposer({ state, connected, canInteract = true, actionAdmitted = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, attachments, onDraftChange, onSend, onCancel, operationProgress = new Map(), visibleReceiptIds, checkableReceiptIds, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
   readonly presentation?: SessionComposerPresentation; readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly canInteract?: boolean; readonly actionAdmitted?: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
+  readonly attachments?: ComposerAttachmentsBinding;
   readonly operationProgress?: SessionOperationProgress;
+  readonly visibleReceiptIds?: ReadonlySet<string>;
+  readonly checkableReceiptIds?: ReadonlySet<string>;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
   readonly onUpdateSetting?: (id: string, value: string, revision: string) => Promise<void>;
   readonly onExecuteCommand?: (id: string, args: string, revision: string, draftText?: string) => Promise<void>;
@@ -36,6 +43,16 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   readonly onSend: (text: string) => Promise<void>; readonly onCancel: () => Promise<void>;
 }) {
   const m = useSessionMessages(), menuId = useId();
+  const imageMessages = useDraftMessages();
+  const imageScope = useSessionImageScope();
+  const imagePreviewOpen = !!imageScope?.previewAssetKey && imageScope.active && !imageScope.suspended;
+  const filesRef = useRef<HTMLInputElement>(null), dragDepth = useRef(0);
+  const [imageDrop, setImageDrop] = useState(false);
+  const hasImages = !!attachments && (attachments.view.items.length > 0 || attachments.view.rejectedCandidates.length > 0 || attachments.view.overflowRejectedCount > 0);
+  const imagesManaged = attachments?.view.active ?? false;
+  const imageReadOnly = attachments?.view.loading || (attachments?.view.readOnly ?? attachments?.view.frozen ?? false);
+  const imageEditable = active && canInteract && !imageReadOnly;
+  useEffect(() => { if (!active) { dragDepth.current = 0; setImageDrop(false); } }, [active]);
   const controlMessages = useSessionControlMessages(state.snapshot?.identity.provider);
   const [controlView, setControlView] = useState<ControlsView>(null);
   const [compactMenus, setCompactMenus] = useState(false);
@@ -50,7 +67,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     return () => { window.removeEventListener('resize', update); viewport?.removeEventListener('resize', update); };
   }, [active, presentation?.compactMenus]);
   const [keyboardHint, setKeyboardHint] = useState({ hovered: false, focused: false, dismissed: false });
-  const keyboardHintVisible = active && !suppressKeyboardHint && !keyboardHint.dismissed && (keyboardHint.hovered || keyboardHint.focused);
+  const keyboardHintVisible = active && !suppressKeyboardHint && !imagePreviewOpen && !keyboardHint.dismissed && (keyboardHint.hovered || keyboardHint.focused);
   useEffect(() => {
     if (!keyboardHintVisible) return;
     const dismiss = (event: KeyboardEvent) => {
@@ -63,6 +80,9 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     return () => document.removeEventListener('keydown', dismiss, true);
   }, [keyboardHintVisible]);
   const [commandIndex, setCommandIndex] = useState(0), [commandsDismissed, dismissCommands] = useState(false);
+  useLayoutEffect(() => {
+    if (imagePreviewOpen) { setControlView(null); dismissCommands(true); setKeyboardHint(current => ({ ...current, dismissed: true })); }
+  }, [imagePreviewOpen]);
   const [candidateExplicit, setCandidateExplicit] = useState(false);
   const commandHighlightSource = useRef<'keyboard' | 'pointer'>('keyboard');
   const commandPointer = useRef<{ x: number; y: number } | null>(null);
@@ -88,8 +108,15 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   const [cancelling, setCancelling] = useState(false);
   const [interruptedTurn, setInterruptedTurn] = useState<string | null>(null);
   const [errorCause, setError] = useState<string | Error | null>(null);
-  const error = operationErrorMessage(errorCause, state.operations, m.operationFailed);
   const errorKind = useRef<'send' | 'cancel'>('send');
+  const errorOperation = errorCause instanceof OperationRequestError ? state.operations.get(errorCause.operationId) : undefined;
+  const receiptState = errorOperation && operationPresentation(errorOperation, operationProgress);
+  const receiptOwnsError = errorCause instanceof OperationRequestError && errorKind.current === 'send' && errorOperation?.kind === 'send_message'
+    && visibleReceiptIds?.has(errorOperation.operationId) && (
+      errorCause.outcome === 'unknown' && receiptState === 'unknown'
+      || errorCause.outcome === 'terminal' && ['failed', 'rejected', 'expired'].includes(receiptState ?? '')
+    );
+  const error = receiptOwnsError ? null : operationErrorMessage(errorCause, state.operations, m.operationFailed);
   const previousSubmission = useRef<SessionDraft['submission']>(null);
   useEffect(() => {
     const operationId = previousSubmission.current?.operationId;
@@ -130,15 +157,19 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     const reserveInput = () => {
       const style = getComputedStyle(surface), field = getComputedStyle(input), actions = getComputedStyle(footer);
       const pixels = (value: string) => Number.parseFloat(value) || 0;
-      const error = surface.querySelector<HTMLElement>('.session-error');
+      const error = surface.querySelector<HTMLElement>(':scope > .session-error');
       const errorStyle = error ? getComputedStyle(error) : null;
       const minimum = pixels(field.minHeight) + footer.offsetHeight + pixels(actions.marginTop) + pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth) + (error ? error.offsetHeight + pixels(errorStyle!.marginTop) : 0);
       surface.style.minHeight = `${minimum}px`;
     };
     reserveInput();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveInput);
+    let frame: number | null = null;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      // The measured surface is also observed; publish its minimum next frame.
+      if (frame === null) frame = requestAnimationFrame(() => { frame = null; reserveInput(); });
+    });
     observer?.observe(surface); observer?.observe(footer);
-    return () => observer?.disconnect();
+    return () => { observer?.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
   }, [active, error]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;
@@ -311,6 +342,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     finally { setRefreshing(false); }
   }
   async function executeCommand(command: SessionNativeCommand, args: string) {
+    if (hasImages || imageReadOnly) { setError(imageMessages.command); return; }
     if (authPaused || !connected || pending || commandInFlight.current) return;
     if (command.id === '$model' || command.id === '$permissions') {
       if (args.trim()) { setError(m.commandUnavailable); return; }
@@ -327,6 +359,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     finally { commandInFlight.current = false; setCommandPending(false); }
   }
   function chooseCommand(command: SessionNativeCommand) {
+    if (hasImages || imageReadOnly) { setError(imageMessages.command); return; }
     if (!canInteract || authPaused || !connected || pending || commandPending) return;
     const matches = commands.filter(candidate => candidate.name === command.name);
     if (!command.available || matches.length !== 1 || matches[0]?.id !== command.id) { setError(m.commandUnavailable); return; }
@@ -335,16 +368,18 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     } else void executeCommand(command, '');
   }
   const sendReady = canInteract && sessionSendGate(state, connected);
-  const sendAllowed = actionAdmitted && sendReady && !authPaused;
+  const sendAllowed = actionAdmitted && sendReady && !authPaused && (!imagesManaged || attachments!.view.canSend);
   const cancelReady = canInteract && sessionCancelGate(state, connected);
   const interruptRequested = interruptedTurn !== null && snapshot?.currentTurnId === interruptedTurn;
   const cancelAllowed = actionAdmitted && cancelReady && !authPaused && !interruptRequested;
   const latest = useRef({ sendAllowed, pending, cancelAllowed, cancelling }); latest.current = { sendAllowed, pending, cancelAllowed, cancelling };
   let notice: string | null = null;
-  const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
+  const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown' && !(operation.kind === 'send_message' && visibleReceiptIds?.has(operation.operationId)));
+  const ownedUnknownInput = [...state.operations.values()].some(operation => operation.kind === 'send_message' && operationPresentation(operation, operationProgress) === 'unknown' && visibleReceiptIds?.has(operation.operationId));
   const unknownControl = [...state.operations.values()].some(operation => ['update_setting', 'refresh_controls'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
   if (unknownInput) notice = m.operationUnknown;
   else if (unknownControl) notice = m.settingUnknown;
+  else if (ownedUnknownInput) notice = null;
   else if (sessionNoticeOwned) notice = null;
   else if (!connected || state.recoveryRequired || !snapshot?.synchronized) notice = m.sessionSynchronizing;
   else if (hasPendingControls(state) || hasPendingOperation(state, 'execute_command') || hasPendingOperation(state, 'send_message')) notice = null;
@@ -356,7 +391,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   else if (!sendReady) notice = m.readOnly;
   useLayoutEffect(() => {
     if (!active) return;
-    const form = formRef.current!, section = form.closest('.task-agent-session');
+    const form = formRef.current!, section = form.closest<HTMLElement>('.task-agent-session');
     const taskBody = form.closest<HTMLElement>('.task-detail-body');
     const standalone = form.closest<HTMLElement>('.test-session-shell .content');
     const owner = taskBody ?? standalone;
@@ -377,9 +412,11 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
         const childStyle = getComputedStyle(child);
         required += (child.matches('.session-composer-surface, .session-command-menu') ? pixels(childStyle.minHeight) : child.offsetHeight) + pixels(childStyle.marginTop) + pixels(childStyle.marginBottom);
       }
+      form.style.setProperty('--session-composer-min-height', `${Math.ceil(required)}px`);
       for (const child of section.children) {
         if (child instanceof HTMLElement && child !== form && !child.classList.contains('session-timeline-shell')) required += outerHeight(child);
       }
+      section.style.setProperty('--session-receipt-panel-min-height', `${Math.ceil(required + 72)}px`);
       if (tabs) required += outerHeight(tabs);
       if (standalone) {
         const page = section.parentElement!;
@@ -397,16 +434,17 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     if (tabs) observer?.observe(tabs);
     for (const child of form.querySelectorAll('.session-composer-surface, .session-composer-footer, .session-command-heading')) observer?.observe(child);
     if (standalone) for (const child of section.parentElement!.children) if (child !== section) observer?.observe(child);
-    return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); };
+    return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); form.style.removeProperty('--session-composer-min-height'); section.style.removeProperty('--session-receipt-panel-min-height'); };
   }, [active, compactMenus, showCommands, controlView, text, error, notice]);
   async function send() {
     const currentIntent = commandIntent.current?.sessionId === snapshot?.sessionId && commandIntent.current?.name === parseCommand(currentText.current)?.[1] ? commandIntent.current : null;
     const currentSubmission = classifySubmission(currentText.current, commands, currentIntent);
+    if (currentSubmission.kind !== 'message' && (hasImages || imageReadOnly)) { setError(imageMessages.command); return; }
     if (currentSubmission.kind === 'invalid') { setError(m.commandUnavailable); return; }
     if (currentSubmission.kind === 'command') {
       await executeCommand(currentSubmission.command, currentSubmission.args); return;
     }
-    if (!latest.current.sendAllowed || latest.current.pending || commandInFlight.current || !currentText.current.trim()) return;
+    if (!latest.current.sendAllowed || latest.current.pending || commandInFlight.current || !currentText.current.trim() && !hasImages) return;
     const submitted = currentText.current;
     const revision = localRevision.current;
     const input = inputRef.current, form = formRef.current;
@@ -418,8 +456,8 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     focusCleanups.current.add(stopTracking);
     let accepted = false;
     setPending(true); latest.current.pending = true; setError(null);
-    try { await onSend(submitted.trim()); accepted = true; if (!draft && localRevision.current === revision) setText(''); }
-    catch (cause) { errorKind.current = 'send'; setError(cause instanceof Error ? cause : m.failure); }
+    try { await onSend(imagesManaged ? submitted : submitted.trim()); accepted = true; if (!draft && localRevision.current === revision) setText(''); }
+    catch (cause) { errorKind.current = 'send'; setError(imagesManaged || cause instanceof Error && cause.message.startsWith('image_') ? imageMessages.issue(cause instanceof Error ? cause.message : '') : cause instanceof Error ? cause : m.failure); }
     finally {
       stopTracking(); focusCleanups.current.delete(stopTracking);
       setPending(false); latest.current.pending = false;
@@ -434,7 +472,28 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     finally { setCancelling(false); latest.current.cancelling = false; }
   }
   const commandSendAllowed = actionAdmitted && canInteract && !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
-  const input = <textarea readOnly={!canInteract} aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
+  const addFiles = (files: readonly File[], value = currentText.current) => {
+    if (!attachments || !imageEditable || files.length === 0) return;
+    void attachments.addFiles(files, value).catch(cause => setError(imageMessages.issue(cause instanceof Error ? cause.message : '')));
+  };
+  const input = <textarea data-touch-text="coarse" readOnly={!canInteract || imageReadOnly} aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onPaste={event => {
+      const files = Array.from(event.clipboardData.files);
+      if (!files.length || !attachments || !imageEditable) return;
+      if (composing.current) { setError(imageMessages.composing); return; }
+      event.preventDefault();
+      const plain = event.clipboardData.getData('text/plain');
+      let value = currentText.current;
+      if (plain) {
+        const field = event.currentTarget, start = field.selectionStart;
+        value = value.slice(0, start) + plain + value.slice(field.selectionEnd);
+        // Native insertion joins the textarea undo history; setRangeText does not.
+        let inserted = false;
+        try { inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, plain); } catch { /* Older engines still support the selection-preserving fallback. */ }
+        if (!inserted) field.setRangeText(plain, start, field.selectionEnd, 'end');
+        if (currentText.current !== value) setText(value);
+      }
+      addFiles(files, value);
+    }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
       if (event.key === 'Tab' && event.shiftKey) {
         // Remove candidates before the browser and outer focus boundaries compute Tab order.
@@ -452,17 +511,30 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
         <button type="button" className="session-control-trigger session-model-trigger" aria-label={m.model} data-pending={modelPending || undefined} disabled={!canInteract} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}><span className="session-model-label">{modelLabel}</span><span className="session-control-caret" aria-hidden="true">▾</span></button>
         <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} disabled={!canInteract} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
         <button type="button" className="session-control-trigger session-command-trigger" aria-label={m.commands} disabled={!canInteract} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
+        {attachments ? <button className="session-control-trigger session-add-images" type="button" aria-label={imageMessages.add} title={`${imageMessages.add} · ${imageMessages.limits}`} disabled={!imageEditable || attachments.view.loading} onClick={() => filesRef.current?.click()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 5-5 4 4 4-6 5 7" /></svg></button> : null}
       </div>;
   const activityProps = { suppressStatus: sessionNoticeOwned, snapshot, connected, active, commandPending: commandPending || hasPendingOperation(state, 'execute_command'), interruptRequested, interruptPending: cancelling || hasPendingOperation(state, 'cancel'), interruptAllowed: cancelAllowed, onInterrupt: () => void cancel() };
   const activity = <SessionActivity {...activityProps} />;
-  const submit = <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>;
-  return <form ref={formRef} className={`session-composer session-composer-adaptive${compactMenus ? ' session-composer-compact-menus' : ''}`} onPointerDownCapture={() => { keyboardMenuInteraction.current = false; }} onKeyDownCapture={() => { keyboardMenuInteraction.current = true; }} onClickCapture={event => { keyboardMenuInteraction.current = event.detail === 0; }} onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
-    if (event.key !== 'Escape' || !(controlView || showCommands)) return;
+  const submit = <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim() && !hasImages || imageReadOnly}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>;
+  return <form ref={formRef} data-image-drop={imageDrop || undefined} onDragEnter={event => {
+    if (!attachments || !imageEditable || !Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault(); dragDepth.current++; setImageDrop(true);
+  }} onDragOver={event => {
+    if (attachments && imageEditable && Array.from(event.dataTransfer.types).includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }
+  }} onDragLeave={event => {
+    if (!imageDrop) return;
+    event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setImageDrop(false);
+  }} onDrop={event => {
+    if (!attachments || !Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault(); dragDepth.current = 0; setImageDrop(false);
+    if (imageEditable) addFiles(Array.from(event.dataTransfer.files));
+  }} className={`session-composer session-composer-adaptive${compactMenus ? ' session-composer-compact-menus' : ''}`} onPointerDownCapture={() => { keyboardMenuInteraction.current = false; }} onKeyDownCapture={() => { keyboardMenuInteraction.current = true; }} onClickCapture={event => { keyboardMenuInteraction.current = event.detail === 0; }} onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
+    if (event.defaultPrevented || event.key !== 'Escape' || !(controlView || showCommands)) return;
     event.stopPropagation();
-    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current || isNativeSelectPopupOpen(event.target)) return;
     event.preventDefault(); closeControls();
   }}>
-    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} operationProgress={operationProgress} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
+    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} operationProgress={operationProgress} view={controlView} disabled={!controlsAllowed} nativeSelectTouchMode={presentation?.nativeSelectTouchMode} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
     {showCommands ? <div ref={commandMenuRef} className="session-command-menu">
       <div className="session-command-heading"><strong>{m.nativeCommands}</strong><div className="session-command-actions"><button type="button" className="inline-link" disabled={!controlsAllowed || refreshing || !onRefreshControls} aria-busy={refreshing} onClick={() => void refreshCommands()}>{refreshing ? m.refreshingCommands : controls?.commandsError ? m.reloadCommands : m.refreshCommands}</button><button type="button" className="inline-link session-command-close" onClick={closeControls}>{m.close}</button></div></div>
       <div className="session-command-body" ref={commandBodyRef}>
@@ -473,7 +545,10 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">
+    {attachments ? <ComposerAttachments binding={attachments} active={active} editable={imageEditable} canRecover={active && canInteract && !authPaused} checkableReceiptIds={checkableReceiptIds} /> : null}
+    {imageDrop ? <span className="session-image-drop-hint">{imageMessages.drop}</span> : null}
     {input}
+    {attachments ? <input ref={filesRef} className="session-image-file-input" type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label={imageMessages.add} tabIndex={-1} onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; addFiles(files); }} /> : null}
     {presentation?.renderAttachments ? <div className="session-composer-attachments">{presentation.renderAttachments({ text, inputRef, setText, snapshot, active, connected, authPaused })}</div> : null}
     <div className={`session-composer-footer${presentation?.renderFooter ? '' : ' session-composer-footer-default'}`} data-submit-wide={pending || activityProps.commandPending || activityProps.interruptPending || snapshot?.activity === 'working' || snapshot?.activity === 'waiting_input' || undefined}>
       {presentation?.renderFooter ? presentation.renderFooter({ settings, activity, submit }) : <>{settings}<SessionActivity {...activityProps} render={(status, interrupt) => <>{status}<div className="session-primary-actions">{interrupt}{submit}</div></>} /></>}

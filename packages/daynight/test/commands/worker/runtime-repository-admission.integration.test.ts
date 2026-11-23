@@ -1,3 +1,4 @@
+import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -14,21 +15,24 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
+  closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), backend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/native-version.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: mocks.backend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: mocks.launcher }));
 vi.mock("../../../src/commands/worker/backends/session-api.js", () => ({ createWorkerSessionApi: () => ({ verifySupport: mocks.verify, verifyUnregistered: vi.fn(async () => {}) }) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
-vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
+vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const serverOrigin = "https://daynight.example";
@@ -73,22 +77,22 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const frozen = webStore.register({ projectId: retainedProjectId, taskId, claimId, worktreeId, project: retainedProject, serverOrigin, workerId, userId,
     configuration: { agent: "codex", agentControlMode: "web", model: "retained-model", args: [], recoveryLimit: 2 } }, Date.now());
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(8), name: "original" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false,
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false,
     native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
   let observationRevision = 0n;
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(observationRevision), observationAccepted }) };
   });
   const remote = {
-    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), reportConfiguration: report, report: vi.fn(),
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), reportConfiguration: report, report: vi.fn(),
     project: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })), resolveProject: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })),
     ownInventory: vi.fn(async () => [task]), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
@@ -96,7 +100,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const prepareRepository = vi.fn(async () => {}), dispose = vi.fn(async () => {});
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.backend.mockReturnValue({ advance, cleanup });
+  mocks.backend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });

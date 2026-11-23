@@ -15,7 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
@@ -65,6 +65,10 @@ func TestHistoricalUpgradePreservesMaterialsAndCreatesOAuthTables(t *testing.T) 
 		if currentFacts[key] != facts[key] {
 			t.Fatalf("upgrade changed %s: before=%s after=%s", key, facts[key], currentFacts[key])
 		}
+	}
+	var typedEdges int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies WHERE dependency_type='task' AND goal_edge_id IS NULL`).Scan(&typedEdges); err != nil || typedEdges != 1 {
+		t.Fatalf("upgrade did not preserve the legacy task edge type: count=%d err=%v", typedEdges, err)
 	}
 	var currentLedger string
 	var versions []int64
@@ -169,25 +173,30 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	s := &Store{Pool: pool}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, session := identitySession(uuid.NewString(), "historical:"+uuid.NewString())
+	session.CreatedAt = now.Add(-time.Hour)
 	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, user.ID, user.UniAuthID, now)
 	mustQueryExec(t, s, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, session.ID, user.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
 	p := model.Principal{Kind: model.SessionCredential, UserID: user.ID, CredentialID: session.ID}
 	finite := deviceStoreCredential(now)
 	finite.ExpiresAt = storeTokenExpiry(now.Add(30 * 24 * time.Hour))
 	finite.UserID = p.UserID
-	if err := testIdentityWrite(s, ctx, func(scope IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, finite) }); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, finite.ID, finite.UserID, finite.TokenHash, finite.Name, finite.CreatedAt, finite.ExpiresAt); err != nil {
 		t.Fatal(err)
 	}
 	var before string
-	if err := pool.QueryRow(ctx, `SELECT row_to_json(p)::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	var after string
-	if err := pool.QueryRow(ctx, `SELECT row_to_json(p)::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
 		t.Fatalf("optional expiry changed historical credential: %v", err)
+	}
+	var descriptionNull bool
+	if err := pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=$1`, finite.ID).Scan(&descriptionNull); err != nil || !descriptionNull {
+		t.Fatalf("historical token description is not null: %v", err)
 	}
 	var patRequired, sessionRequired bool
 	if err := pool.QueryRow(ctx, `SELECT (SELECT attnotnull FROM pg_attribute WHERE attrelid='personal_access_tokens'::regclass AND attname='expires_at'),(SELECT attnotnull FROM pg_attribute WHERE attrelid='sessions'::regclass AND attname='expires_at')`).Scan(&patRequired, &sessionRequired); err != nil || patRequired || !sessionRequired {
@@ -205,7 +214,11 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	if _, err := testAuthenticate(s, ctx, model.PATCredential, finite.TokenHash, future); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("historical finite expiry lost: %v", err)
 	}
-	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, session.ExpiresAt); !errors.Is(err, model.ErrNotFound) {
+	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, future); err != nil {
+		t.Fatalf("application clock expired a live browser session: %v", err)
+	}
+	mustQueryExec(t, s, `UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, session.ID)
+	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("session became nonexpiring: %v", err)
 	}
 	if err := testIdentityWrite(s, ctx, func(scope IdentityScope) error { return scope.IdentityDAO().CleanupCredentials(ctx, future) }); err != nil {
@@ -236,7 +249,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	if err := json.Unmarshal(encoded, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	delete(legacy, "preferPlatformSpecificTasks")
+	delete(legacy, "platformTaskMode")
 	encoded, err = json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -246,17 +259,21 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	rows := func() []string {
 		t.Helper()
 		var result []string
-		if err := pool.QueryRow(ctx, `SELECT array_agg((to_jsonb(w) || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT array_agg(((to_jsonb(w)-'archive_sessions'-'alias_value'-'alias_version') || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
 			t.Fatal(err)
 		}
 		return result
 	}
 	before := rows()
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {
 		t.Fatal("preference migration changed existing worker, configuration, or observation facts")
+	}
+	var aliasesInitialized bool
+	if err := pool.QueryRow(ctx, `SELECT bool_and(alias_value IS NULL AND alias_version=1) FROM workers`).Scan(&aliasesInitialized); err != nil || !aliasesInitialized {
+		t.Fatalf("historical workers did not acquire initial aliases: initialized=%v err=%v", aliasesInitialized, err)
 	}
 	var present bool
 	if err := pool.QueryRow(ctx, `SELECT desired_configuration->'preferPlatformSpecificTasks'='false'::jsonb FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID).Scan(&present); err != nil || !present {
@@ -267,7 +284,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 		if err != nil {
 			return err
 		}
-		if resource.Desired == nil || resource.Desired.Value.PreferPlatformSpecificTasks || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
+		if resource.Desired == nil || !resource.Desired.ValueValid || resource.Desired.Value.PlatformTaskMode != "" || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
 			t.Fatalf("migrated resource differs: %+v", resource)
 		}
 		uninitialized, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, uninitializedID)
@@ -278,7 +295,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {
@@ -380,10 +397,16 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT pg_get_expr(adbin,adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='webhook_deliveries'::regclass AND a.attname='queue_order'`).Scan(&defaultExpr); err != nil || !strings.Contains(defaultExpr, "webhook_delivery_queue_order_seq") {
 		t.Fatalf("queue default %q: %v", defaultExpr, err)
 	}
-	// Current Task DAO reads typed columns; supply their structural shape while
-	// keeping this test's webhook ledger at version 50 for the 50-to-51 proof.
-	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid`); err != nil {
+	// Current Task DAO reads typed columns, dependencies and tag references, and
+	// capture writes event actors; supply their structural shape while keeping
+	// the webhook ledger at version 50 for the 50-to-51 proof.
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid; ALTER TABLE tasks ADD COLUMN ancestor_deleted_at timestamptz`); err != nil {
 		t.Fatal(err)
+	}
+	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL, dependencyTypesSQL, webhookEventActorSQL} {
+		if _, err = pool.Exec(ctx, schema); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tasks := taskservice.NewTasks(upgraded, &webhook.Capturer{})
 	status := model.TaskTodo

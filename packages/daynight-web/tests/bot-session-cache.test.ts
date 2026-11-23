@@ -1,11 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { BotSessionCache, botSessionKey } from '../src/features/bots/session-cache';
+import { BotSessionCache, botSessionKey, clearBotStoredSessionState } from '../src/features/bots/session-cache';
+import { retryImageDraftScopeCleanup } from '../src/features/task-agent-session/drafts/draft-store-cleanup';
 import { BotSessionStorage } from '../src/features/bots/session-storage';
 import { useSessionDisplayPreference } from '../src/features/task-agent-session/useSessionDisplayPreference';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 const caches: BotSessionCache[] = [];
-afterEach(() => { caches.splice(0).forEach(cache => cache.close()); sessionStorage.clear(); localStorage.clear(); });
+afterEach(async () => { caches.splice(0).forEach(cache => cache.close()); vi.restoreAllMocks(); await retryImageDraftScopeCleanup(); sessionStorage.clear(); localStorage.clear(); });
 function fixture(storage: Storage | null = null) {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage, createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api });
@@ -208,4 +209,14 @@ it('revokes other mounted caches in the same scope and clears an explicit cold d
   expect(first.snapshot()).toEqual([]); expect(first.isRevoked(binding.botId)).toBe(true);
   await expect(original.client.send('late')).rejects.toThrow();
   expect(localStorage.getItem(displayKey)).toBeNull(); expect(sessionStorage.getItem(taskKey)).toBe('task draft');
+});
+
+it('cleans stored image drafts on Session deletion and keeps its permanent access tombstone', async () => {
+  const { SessionDraftStore } = await import('../src/features/task-agent-session/drafts/draft-store');
+  const db = new SessionDraftStore(), binding = botBinding(41);
+  const identity = { target: { serverOrigin: window.location.origin, actorUserId: binding.ownerUserId, fence: { sessionId: binding.sessionId, testExecutionId: binding.testExecutionId, executionGeneration: '1' }, expectedNativeSessionId: null }, resolver: { kind: 'session' as const, sessionId: binding.sessionId, testExecutionId: binding.testExecutionId } };
+  const initial = await db.openOwner(identity);
+  expect(await clearBotStoredSessionState(binding.ownerUserId, binding.botId, binding.sessionId, null, 'deleted')).toBeNull();
+  await expect(db.read(initial.owner)).rejects.toMatchObject({ code: 'blocked' });
+  await expect(db.reauthorizeOwner(identity)).rejects.toMatchObject({ code: 'blocked' }); db.close();
 });

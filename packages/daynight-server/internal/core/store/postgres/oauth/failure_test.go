@@ -63,7 +63,7 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 	cause := &pgconn.PgError{Code: "08006", Message: "connection failure"}
 	fail := databaseStep{err: cause}
 	ok := databaseStep{}
-	grant := databaseStep{values: []any{"grant", "user", "client", []byte(`{}`), "resource", "scope", now.Add(-time.Hour), now.Add(time.Hour), nil}}
+	grant := databaseStep{values: []any{"grant", "user", "client", []byte(`{}`), "resource", "scope", now.Add(-time.Hour), now.Add(time.Hour), nil, nil}}
 	expiredClient := databaseStep{values: []any{"client", []byte(`{}`), now.Add(-9 * 24 * time.Hour), now.Add(-8 * 24 * time.Hour), now.Add(-24 * time.Hour)}}
 	activeClient := databaseStep{values: []any{"client", []byte(`{}`), now, now, now.Add(7 * 24 * time.Hour)}}
 	fresh := databaseStep{values: []any{now}}
@@ -102,15 +102,28 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"credential cleanup second spare", []databaseStep{{values: []any{0}}, ok, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
 		{"credential cleanup third spare", []databaseStep{{values: []any{0}}, ok, ok, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
 		{"rotation consume", []databaseStep{fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
-		{"rotation access", []databaseStep{ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
-		{"rotation refresh", []databaseStep{ok, ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
+		{"rotation grant", []databaseStep{ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
+		{"rotation access", []databaseStep{ok, ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
+		{"rotation refresh", []databaseStep{ok, ok, ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
 		{"revocation read", []databaseStep{fail}, func(d *DAO) error { _, err := d.RevokeFamily(ctx, "grant", now); return err }},
 		{"revocation update", []databaseStep{grant, fail}, func(d *DAO) error { _, err := d.RevokeFamily(ctx, "grant", now); return err }},
 		{"revocation access delete", []databaseStep{grant, ok, fail}, func(d *DAO) error { _, err := d.RevokeFamily(ctx, "grant", now); return err }},
-		{"access authentication", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthenticateAccess(ctx, nil, "resource", "scope", now); return err }},
-		{"access grant lock", []databaseStep{fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
-		{"access token lock", []databaseStep{lockedID, fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
-		{"access recheck", []databaseStep{lockedID, lockedID, fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
+		{"access authentication", []databaseStep{fail}, func(d *DAO) error {
+			_, err := d.AuthenticateAccess(ctx, nil, []store.OAuthBinding{{Resource: "resource", Scope: "scope"}}, now)
+			return err
+		}},
+		{"access grant lock", []databaseStep{fail}, func(d *DAO) error {
+			return d.LockAccess(ctx, actor, []store.OAuthBinding{{Resource: "resource", Scope: "scope"}}, now)
+		}},
+		{"access token lock", []databaseStep{lockedID, fail}, func(d *DAO) error {
+			return d.LockAccess(ctx, actor, []store.OAuthBinding{{Resource: "resource", Scope: "scope"}}, now)
+		}},
+		{"access read", []databaseStep{fail}, func(d *DAO) error {
+			return d.ReadAccess(ctx, actor, []store.OAuthBinding{{Resource: "resource", Scope: "scope"}}, now)
+		}},
+		{"access recheck", []databaseStep{lockedID, lockedID, fail}, func(d *DAO) error {
+			return d.LockAccess(ctx, actor, []store.OAuthBinding{{Resource: "resource", Scope: "scope"}}, now)
+		}},
 		{"grant inspection", []databaseStep{fail}, func(d *DAO) error { _, err := d.InspectGrant(ctx, "grant", true); return err }},
 		{"client references", []databaseStep{fail}, func(d *DAO) error { _, err := d.ActiveClientReferences(ctx, "client", now); return err }},
 	} {

@@ -36,6 +36,10 @@ it("shares one real installation while retaining private mutable package bytes, 
         if (help.error) throw help.error;
         expect({ status: help.status, stderr: help.stderr }).toEqual({ status: 0, stderr: "" });
         expect(help.stdout).toContain("--type"); expect(help.stdout).toContain("--parent"); expect(help.stdout).toContain("--force");
+        const tagHelp = crossSpawn.sync(launcher, ["tag", "delete", "--help"], { cwd: fixture.receipt.root, env: { ...process.env, HOME: fixture.receipt.root, USERPROFILE: fixture.receipt.root }, encoding: "utf8", timeout: 10_000, windowsHide: true });
+        if (tagHelp.error) throw tagHelp.error;
+        expect({ status: tagHelp.status, stderr: tagHelp.stderr }).toEqual({ status: 0, stderr: "" });
+        expect(tagHelp.stdout).toContain("--if-version"); expect(tagHelp.stdout).toContain("--confirm");
       }
     }
     await rm(manual(first.receipt.entryPath));

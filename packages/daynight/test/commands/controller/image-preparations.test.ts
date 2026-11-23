@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, rm, appendFile, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, appendFile, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -10,10 +10,14 @@ import { validateImageFile } from "../../../src/commands/controller/media/image-
 import type { ImageDecoder } from "../../../src/commands/controller/media/image-decoder.js";
 import type { SessionCommand } from "../../../src/session/protocol.js";
 import type { ImageUploadSpec } from "../../../src/session/image-values.js";
-const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null }));
+const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null, statfs: vi.fn(), oversizedMediaPath: null as string | null }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, writeSync: (...args: unknown[]) => {
+  return { ...fs, lstatSync: (...args: Parameters<typeof fs.lstatSync>) => {
+    const value = fs.lstatSync(...args);
+    if (value === undefined || args[0] !== faults.oversizedMediaPath) return value;
+    return new Proxy(value, { get: (target, key) => key === "size" ? typeof value.size === "bigint" ? 2_306_867_201n : 2_306_867_201 : Reflect.get(target, key) });
+  }, writeSync: (...args: unknown[]) => {
     if (faults.partialWrite) {
       faults.partialWrite = false;
       fs.writeSync(args[0] as number, args[1] as Uint8Array, 0, 3, args[4] as number);
@@ -21,12 +25,13 @@ vi.mock("node:fs", async original => {
     }
     return Reflect.apply(fs.writeSync, fs, args);
   }, statfsSync: (...args: Parameters<typeof fs.statfsSync>) => {
+    faults.statfs();
     const value = fs.statfsSync(...args);
     return faults.freeBytes === null ? value : { ...value, bavail: faults.freeBytes / BigInt(value.bsize) };
   } };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; faults.statfs.mockClear(); faults.oversizedMediaPath = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (imageDecoder: ImageDecoder = validateImageFile) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-preparation-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "i-")); roots.push(home);
@@ -46,7 +51,136 @@ const registerSource = (f: Awaited<ReturnType<typeof fixture>>) => {
   f.store.registerImageCaptureRequest(request); return request;
 };
 
-test("durable source release returns both shared slots after a free-space failure", async () => {
+test.each(["absent", "overcommitted", "unreadable"] as const)("media admission, sealing and restart ignore an %s retired ledger above the old execution ceiling", async ledgerState => {
+  const f = await fixture(), ledgerFile = path.join(f.home, "controller", "media", "budget.sqlite");
+  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  if (ledgerState === "overcommitted") {
+    const db = new Database(ledgerFile);
+    try {
+      db.exec("CREATE TABLE allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0))");
+      db.prepare("INSERT INTO allocations VALUES(?,?)").run(f.ticket.executionId, 2_306_867_201);
+      db.prepare("INSERT INTO allocations VALUES(?,?)").run(randomUUID(), 8_589_934_593);
+    } finally { db.close(); }
+  } else if (ledgerState === "unreadable") await mkdir(ledgerFile);
+  const originalLedger = ledgerState === "overcommitted" ? await readFile(ledgerFile) : null;
+  const media = f.store.media(), retained = path.join(`${f.file}.media-staging`, "retained.bin");
+  await writeFile(retained, "retained source", { mode: 0o600 });
+  // The filesystem boundary supplies the old cumulative size without allocating GiB.
+  faults.oversizedMediaPath = retained;
+  try {
+    await media.prepare(f.spec);
+    expect(await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") })).toMatchObject({ acceptedOffset: f.spec.byteLength });
+    expect(await media.complete(f.spec)).toMatchObject({ state: "validated" });
+    const spool = media.createSpool(f.bytes.length);
+    try { spool.write(f.bytes); spool.seal(); expect(await readFile(spool.path)).toEqual(f.bytes); } finally { spool.remove(); }
+    await media.close(); f.store.close();
+    const reopened = openControllerLifecycleStore(f.file, f.ticket, f.options), recovered = reopened.media();
+    try { expect(await recovered.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64"), eof: true }); }
+    finally { await recovered.close(); reopened.close(); }
+    expect(await readFile(retained, "utf8")).toBe("retained source");
+    if (originalLedger) expect(await readFile(ledgerFile)).toEqual(originalLedger);
+    else if (ledgerState === "absent") await expect(stat(ledgerFile)).rejects.toMatchObject({ code: "ENOENT" });
+    else expect((await stat(ledgerFile)).isDirectory()).toBe(true);
+  } finally { faults.oversizedMediaPath = null; await f.store.stopMedia(); f.store.close(); }
+});
+
+test("native staging, reserved Markdown staging and upload completion share one decoder without losing images", async () => {
+  let entered!: () => void, finish!: () => void, active = 0, peak = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const calls: string[] = [];
+  const f = await fixture(async (request, signal) => {
+    calls.push(request.inputPath); active++; peak = Math.max(peak, active);
+    try { if (calls.length === 1) { entered(); await gate; } signal?.throwIfAborted(); return await validateImageFile(request); }
+    finally { active--; }
+  });
+  const media = f.store.media(), native = registerSource(f), markdown = registerSource(f);
+  const { writeFile } = await import("node:fs/promises");
+  const inputPath = path.join(f.home, "native.png"); await writeFile(inputPath, f.bytes, { mode: 0o400 });
+  const source = media.reserveCaptureSource(markdown.captureId, markdown.attemptId);
+  await source.runWriter(filename => appendFile(filename, f.bytes));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const stage = (request: typeof native, filename: string) => media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: filename, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+  const nativeWork = stage(native, inputPath);
+  const pending: Promise<unknown>[] = [nativeWork];
+  try {
+    await started;
+    const markdownWork = stage(markdown, source.outputPath), uploadWork = media.complete(f.spec);
+    pending.push(markdownWork, uploadWork);
+    // Observe both outcomes immediately, including a refusal before the gate opens.
+    const outcomes = Promise.allSettled(pending);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(calls).toHaveLength(1);
+    finish();
+    expect(await outcomes).toEqual([
+      { status: "fulfilled", value: expect.objectContaining({ sha256: f.spec.sha256 }) },
+      { status: "fulfilled", value: expect.objectContaining({ sha256: f.spec.sha256 }) },
+      { status: "fulfilled", value: expect.objectContaining({ state: "validated" }) },
+    ]);
+    expect(peak).toBe(1); expect(calls).toHaveLength(3);
+    await source.release();
+    expect(await media.readCapture({ captureId: markdown.captureId, attemptId: markdown.attemptId, sha256: f.spec.sha256, byteLength: f.spec.byteLength, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ data: f.bytes.toString("base64") });
+    expect(await media.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64") });
+  } finally { finish(); await Promise.allSettled(pending); await media.close(); f.store.close(); }
+});
+
+test("release removes a queued upload and stop joins the active decoder before closing media", async () => {
+  let entered!: () => void, finish!: () => void, calls = 0, aborted = false;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const f = await fixture(async (request, signal) => {
+    calls++; signal?.addEventListener("abort", () => { aborted = true; }, { once: true }); entered(); await gate;
+    signal?.throwIfAborted(); return validateImageFile(request);
+  });
+  const media = f.store.media(), requests = [registerSource(f), registerSource(f)];
+  const sources = requests.map(request => media.reserveCaptureSource(request.captureId, request.attemptId));
+  await Promise.all(sources.map(source => source.runWriter(filename => appendFile(filename, f.bytes))));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const stage = (index: number) => media.stageCapture({ captureId: requests[index]!.captureId, attemptId: requests[index]!.attemptId, imageId: requests[index]!.occurrence.imageId, inputPath: sources[index]!.outputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+  const active = stage(0), pending: Promise<unknown>[] = [active];
+  let stopping: Promise<void> | undefined;
+  try {
+    await started;
+    const upload = media.complete(f.spec), queued = stage(1); pending.push(upload, queued);
+    const outcomes = Promise.allSettled(pending);
+    await expect(media.release({ uploadId: f.spec.uploadId })).resolves.toMatchObject({ state: "released" });
+    expect(await upload).toMatchObject({ state: "failed" });
+    let closed = false;
+    stopping = media.close().then(() => { closed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(aborted).toBe(true); expect(closed).toBe(false); expect(calls).toBe(1);
+    expect(await readFile(sources[0]!.outputPath)).toEqual(f.bytes);
+    finish(); await stopping;
+    expect(await outcomes).toEqual([
+      { status: "rejected", reason: expect.any(Error) },
+      { status: "fulfilled", value: expect.objectContaining({ state: "failed" }) },
+      { status: "rejected", reason: expect.objectContaining({ message: "Controller media stopped." }) },
+    ]);
+    expect(calls).toBe(1);
+  } finally { finish(); await Promise.allSettled(pending); await stopping; await media.close(); f.store.close(); }
+});
+
+test("queued capture checks the current attempt before copying or decoding its source", async () => {
+  let entered!: () => void, finish!: () => void, calls = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const f = await fixture(async (request, signal) => { calls++; entered(); await gate; signal?.throwIfAborted(); return validateImageFile(request); });
+  const media = f.store.media(), request = registerSource(f), source = media.reserveCaptureSource(request.captureId, request.attemptId);
+  await source.runWriter(filename => appendFile(filename, f.bytes));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const active = media.complete(f.spec);
+  let pending: Promise<unknown> | undefined;
+  try {
+    await started;
+    pending = media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: source.outputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+    const refusal = expect(pending).rejects.toThrow("attempt conflict");
+    f.store.retryImageCaptureRequest(request.captureId, randomUUID());
+    // A read here would fail differently; stale queued work must stop at identity.
+    await rm(source.outputPath);
+    finish(); await active; await refusal;
+    expect(calls).toBe(1);
+    await source.release();
+  } finally { finish(); await Promise.allSettled([active, ...(pending ? [pending] : [])]); await media.close(); f.store.close(); }
+});
+
+test("durable source release returns both shared slots without a free-space probe", async () => {
   const f = await fixture(), media = f.store.media(), requests = [registerSource(f), registerSource(f)];
   const leases = requests.map(request => media.reserveCaptureSource(request.captureId, request.attemptId));
   const db = new Database(f.file, { readonly: true });
@@ -55,12 +189,11 @@ test("durable source release returns both shared slots after a free-space failur
   try {
     expect(media.tryAcquireMediaBlock()).toBeNull();
     faults.freeBytes = 0n;
-    for (const lease of leases) await expect(lease.release()).rejects.toThrow("free-space budget exceeded");
+    for (const lease of leases) await expect(lease.release()).resolves.toBeUndefined();
     for (const request of requests) {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture-source:${request.captureId}:${request.attemptId}`) as { value: string };
       expect(JSON.parse(row.value)).toMatchObject({ released: true });
     }
-    faults.freeBytes = null;
     const uploadBlock = media.tryAcquireMediaBlock(), readBlock = media.tryAcquireMediaBlock();
     if (uploadBlock) blocks.push(uploadBlock); if (readBlock) blocks.push(readBlock);
     expect(uploadBlock).not.toBeNull(); expect(readBlock).not.toBeNull();
@@ -78,10 +211,11 @@ test("durable source release returns both shared slots after a free-space failur
     await capture.release();
     expect(await media.readCapture({ captureId: request.captureId, attemptId: request.attemptId, ...validated, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ data: f.bytes.toString("base64"), eof: true });
     await media.close(); await media.close();
+    expect(faults.statfs).not.toHaveBeenCalled();
   } finally { faults.freeBytes = null; blocks.forEach(block => block.close()); db.close(); await media.close(); f.store.close(); }
 });
 
-test.each(["writer", "stage"] as const)("source release keeps its shared slot until the %s joins despite a later budget failure", async phase => {
+test.each(["writer", "stage"] as const)("source release keeps its shared slot until the %s joins without disk forecasting", async phase => {
   let finish!: () => void, entered!: () => void, joined = false, aborted = false;
   const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
   const f = await fixture(async request => { entered(); await gate; const result = await validateImageFile(request); joined = true; return result; });
@@ -105,7 +239,8 @@ test.each(["writer", "stage"] as const)("source release keeps its shared slot un
     expect(joined).toBe(false); expect(settled).toBe(false); expect(media.tryAcquireMediaBlock()).toBeNull();
     if (phase === "writer") expect(aborted).toBe(true);
     finish(); await work;
-    expect(await releasing).toEqual(expect.objectContaining({ message: "Controller media storage free-space budget exceeded." }));
+    expect(await releasing).toBeUndefined();
+    expect(faults.statfs).not.toHaveBeenCalled();
     expect(joined).toBe(true);
     await expect(stat(source.outputPath)).rejects.toMatchObject({ code: "ENOENT" });
     faults.freeBytes = null;
@@ -129,9 +264,10 @@ test("source release retains its shared slot until the released marker is durabl
     finally { available!.close(); }
   } finally { db.close(); transfer.close(); await media.close(); await media.close(); f.store.close(); }
 });
-test("preparation persists exact chunk receipts, fully decodes, and does not publish service availability", async () => {
+test("preparation persists exact chunk receipts and fully decodes with no free-space prediction", async () => {
   const f = await fixture(); const media = f.store.media();
   try {
+    faults.freeBytes = 0n;
     expect(await media.prepare(f.spec)).toMatchObject({ state: "receiving", acceptedOffset: "0", validated: null });
     const chunk = { uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") };
     expect(await media.write(chunk)).toMatchObject({ acceptedOffset: f.spec.byteLength });
@@ -140,6 +276,9 @@ test("preparation persists exact chunk receipts, fully decodes, and does not pub
     const complete = await media.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
     expect(complete).toMatchObject({ state: "validated", validated: { width: 23, height: 19, frameCount: 1, sha256: f.spec.sha256 } });
     expect(complete).not.toHaveProperty("resource");
+    const spool = media.createSpool(f.bytes.length);
+    try { spool.write(f.bytes); spool.seal(); expect(await readFile(spool.path)).toEqual(f.bytes); } finally { spool.remove(); }
+    expect(faults.statfs).not.toHaveBeenCalled();
     expect(await media.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64"), eof: true });
     await expect(media.prepare({ ...f.spec, name: "changed.png" })).rejects.toThrow("conflict");
   } finally { await media.close(); f.store.close(); }
@@ -214,7 +353,8 @@ test("release cancels and joins a decoder before removing its private original",
 });
 
 test("undispatched leases can be reacquired but unknown native and resume pins survive close and restart", async () => {
-  const f = await fixture(); const media = f.store.media();
+  const decoder = vi.fn(validateImageFile);
+  const f = await fixture(decoder); const media = f.store.media();
   await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
   await media.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
   const resourceId = randomUUID(); const input = { content: [{ type: "image" as const, imageId: f.spec.imageId, uploadId: f.spec.uploadId, resourceId, sha256: f.spec.sha256, byteLength: f.spec.byteLength }], expectedTurnId: null, target: f.spec.target, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
@@ -222,10 +362,16 @@ test("undispatched leases can be reacquired but unknown native and resume pins s
   f.store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: input, intent: command });
   try {
     const first = await media.acquireInput(input, command.operationId); const firstImage = first.input.content.find(part => part.type === "image")!;
+    expect(firstImage.validated).toEqual({ mediaType: "image/png", byteLength: f.spec.byteLength, sha256: f.spec.sha256, width: 23, height: 19, frameCount: 1 });
+    expect(Object.isFrozen(firstImage.validated)).toBe(true);
+    first.verify();
     await expect(media.acquireInput(input, command.operationId)).rejects.toThrow("already has");
     first.close(); await expect(readFile(firstImage.localPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(media.read({ resourceId, offset: "0", limit: 524288 })).rejects.toThrow("unavailable");
     const second = await media.acquireInput(input, command.operationId); const retained = second.input.content.find(part => part.type === "image")!;
+    expect(retained.validated).toEqual(firstImage.validated);
+    second.verify();
+    expect(decoder).toHaveBeenCalledOnce();
     const original = path.join(`${f.file}.pending-content`, "blobs", `${createHash("sha256").update(resourceId).digest("hex")}.bin`);
     const [originalStat, nativeStat] = await Promise.all([stat(original), stat(retained.localPath)]);
     expect([nativeStat.dev, nativeStat.ino]).toEqual([originalStat.dev, originalStat.ino]);
@@ -256,4 +402,69 @@ test("ENOSPC retains the confirmed offset and restart removes only the uncommitt
     expect(await recovered.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") })).toMatchObject({ acceptedOffset: f.spec.byteLength });
     expect(await recovered.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 })).toMatchObject({ state: "validated" });
   } finally { await recovered.close(); reopened.close(); }
+});
+
+test("sealed capture reads over-limit stored geometry without relaxing new image validation", async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const { writeFile } = await import("node:fs/promises");
+  const inputPath = path.join(f.home, "original.png"); await writeFile(inputPath, f.bytes, { mode: 0o400 });
+  try {
+    const validated = await media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+    const stored = { ...validated, width: 16385 };
+    const db = new Database(f.file);
+    try { db.prepare("UPDATE image_captures SET validated=? WHERE capture_id=?").run(JSON.stringify(stored), `${request.captureId}:${request.attemptId}`); } finally { db.close(); }
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, stored)).not.toThrow();
+    const { parseValidatedImage } = await import("../../../src/session/image-values.js");
+    expect(() => parseValidatedImage(stored)).toThrow();
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, { ...stored, sha256: "b".repeat(64) })).toThrow();
+  } finally { await media.close(); f.store.close(); }
+});
+
+test.skipIf(process.platform === "win32")("capture staging and sealed reads reject linked files while preserving the original bytes", async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const inputPath = path.join(f.home, "original.png"), linked = path.join(f.home, "linked.png");
+  await writeFile(inputPath, f.bytes, { mode: 0o400 }); await symlink(inputPath, linked);
+  const input = { captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 };
+  try {
+    await expect(media.stageCapture({ ...input, inputPath: linked })).rejects.toThrow(/private regular file/);
+    expect(media.captureStatus(request.captureId, request.attemptId)).toBeNull();
+    const validated = await media.stageCapture({ ...input, inputPath });
+    const db = new Database(f.file, { readonly: true });
+    let filename: string;
+    try { filename = (db.prepare("SELECT filename FROM image_captures WHERE capture_id=?").get(`${request.captureId}:${request.attemptId}`) as { filename: string }).filename; } finally { db.close(); }
+    const capturePath = path.join(`${f.file}.media-staging`, filename);
+    await rm(capturePath); await symlink(inputPath, capturePath);
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, validated)).toThrow(/private regular file/);
+    await expect(media.readCapture({ ...input, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).rejects.toThrow(/private regular file/);
+    expect(await readFile(inputPath)).toEqual(f.bytes);
+  } finally { await media.close(); f.store.close(); }
+});
+
+// Windows refuses to rename a directory containing an open spool writer; POSIX
+// exercises those replacements while Windows covers the other live boundaries.
+for (const directory of ["root", "native", "wire"] as const) for (const operation of ["prepare", "source", "spool", "spool-write"] as const) test.skipIf(process.platform === "win32" && operation === "spool-write" && directory !== "native")(`live ${directory} replacement refuses ${operation} before touching an external directory`, async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const root = `${f.file}.media-staging`, linked = directory === "root" ? root : path.join(root, directory);
+  const retained = `${linked}.retained`, outside = path.join(f.home, "outside");
+  const spool = operation === "spool-write" ? media.createSpool(f.bytes.length) : undefined;
+  let moved = false, replaced = false;
+  try {
+    await mkdir(outside, { mode: 0o700 }); await rename(linked, retained); moved = true;
+    await symlink(outside, linked, process.platform === "win32" ? "junction" : "dir"); replaced = true;
+    if (operation === "prepare") await expect(media.prepare(f.spec)).rejects.toThrow(/directory|symbolic/i);
+    else if (operation === "source") expect(() => media.reserveCaptureSource(request.captureId, request.attemptId)).toThrow(/directory|symbolic/i);
+    else if (operation === "spool") expect(() => media.createSpool(f.bytes.length)).toThrow(/directory|symbolic/i);
+    else expect(() => spool!.write(f.bytes)).toThrow(/directory|symbolic/i);
+    expect(await readdir(outside)).toEqual([]);
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.prepare("SELECT upload_id FROM image_preparations WHERE upload_id=?").get(f.spec.uploadId)).toBeUndefined();
+      expect(db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture-source:${request.captureId}:${request.attemptId}`)).toBeUndefined();
+    } finally { db.close(); }
+  } finally {
+    if (replaced) await rm(linked, { recursive: true });
+    if (moved) await rename(retained, linked);
+    if (spool) { spool.write(f.bytes); spool.seal(); expect(Buffer.concat([...spool.read()])).toEqual(f.bytes); spool.remove(); }
+    await media.close(); f.store.close();
+  }
 });

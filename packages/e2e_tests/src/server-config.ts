@@ -4,6 +4,7 @@ import path from 'node:path';
 export type ServerConfiguration = {
   listenAddress: string;
   publicOrigin: string;
+  previewOrigin: string;
   databaseURL: string;
   storageRoot: string;
   authURL: string;
@@ -17,7 +18,7 @@ export const writeServerConfig = async (root: string, values: ServerConfiguratio
   await mkdir(configDirectory, { mode: 0o700 });
   // JSON is a YAML 1.2 flow document; serialize the whole mapping to preserve types and credentials.
   const configuration = {
-    server: { listen_address: values.listenAddress, public_origin: values.publicOrigin, allow_http_test_origin: true },
+    server: { listen_address: values.listenAddress, public_origin: values.publicOrigin, preview_origin: values.previewOrigin, allow_http_test_origin: true },
     database: { url: values.databaseURL },
     storage: { root: values.storageRoot },
     uniauth: { url: values.authURL, app_id: values.appId, app_secret: values.appSecret, callback_url: values.callbackURL, allow_loopback_http: true },

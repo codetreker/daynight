@@ -6,7 +6,7 @@ import type { CodexRpc } from "./codex-rpc.js";
 import type { NativeReadPolicy } from "./types.js";
 
 type Request = CodexRpc["request"];
-type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void> };
+type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void>; assertNativeDispatch?(): void };
 type Startup = { initialized: unknown; remoteControl: unknown; response: unknown; nativeSessionId: string; nativeCwd: string };
 type StartedReceipt = { responded: boolean; response: unknown; notified: boolean; notification: unknown };
 const forbidden = () => Object.assign(new Error("Native Codex local Read authority is unavailable."), { code: "source_forbidden" });
@@ -109,19 +109,21 @@ export class CodexReadAuthority {
     this.options.publish(null);
   }
 
-  async request(method: string, params: unknown, onLateResponse?: Parameters<Request>[2]): Promise<unknown> {
+  async request(method: string, params: unknown, onLateResponse?: Parameters<Request>[2], consume?: Parameters<Request>[3]): Promise<unknown> {
     const allowed = unchangedRequests[method], raw = record(params);
     const unchanged = readMethods.has(method) || allowed && raw.threadId === this.policy?.nativeSessionId && Object.keys(raw).every(key => allowed.includes(key));
     if (this.installed && !unchanged) {
       this.invalidate();
       await this.options.drain?.();
+      this.options.assertNativeDispatch?.();
     }
     let started: StartedReceipt | undefined;
     if (method === "thread/start" && !this.installed && !this.invalid) {
       if (this.startedReceipt) this.invalidate();
       else started = this.startedReceipt = { responded: false, response: undefined, notified: false, notification: undefined };
     }
-    const pending = onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
+    const pending = consume ? this.options.request(method, params, onLateResponse, consume)
+      : onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
     if (!started) return pending;
     try {
       const response = await pending;

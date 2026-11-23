@@ -13,11 +13,11 @@ const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const operations: Operation[] = [];
 const task = (id = taskId, assignedTo: string | null = null): Task => ({ type: "task", parentId: null,
-  id, projectId, assignedTo, title: "Task", description: "", properties: {}, status: "todo", allowAgents: false, requiredPlatform: null,
+  id, projectId, assignedTo, title: "Task", description: "", tags: [], properties: {}, status: "todo", allowAgents: false, requiredPlatform: null,
   version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
 });
 const graph = (assignedTo: string | null): TaskGraph => {
-  const { projectId: _project, title, description: _description, version: _version, properties: _properties, ...node } = task(taskId, assignedTo);
+  const { projectId: _project, title, description: _description, tags: _tags, version: _version, properties: _properties, ...node } = task(taskId, assignedTo);
   return { project, observedAt: time, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ ...node, type: "task", titlePreview: title, titleTruncated: false }] };
 };
 const response = (value: unknown, principal?: string | string[], status = 200): Response => {

@@ -19,12 +19,12 @@ schema and connection pool. Each original fixture boundary resets ordinary data
 before the case executes; child cleanups finish before another reset. The parent
 closes the Store and drops its schema after all children finish.
 
-The package-local reset enumerates and qualifies ordinary tables once. It
-preserves the migration ledger and the four snapshot seed tables, truncates
-mutable tables without cascading, and restores every sequence's captured value
-and `is_called`. Standalone sequences are included because truncating an owning
-table cannot reset them. Reset errors and outstanding acquired connections stop
-fixture reuse. Cases do not enter parallel scheduling.
+The fixture inventories mutable tables once and excludes the migration ledger
+and four snapshot seed tables. The [shared table reset](2026-11-11-session-store-group-fixtures.md#decision)
+truncates populated tables and their inbound foreign-key closure. The Task
+fixture restores every sequence's captured value and `is_called`, including
+standalone sequences and resets that find no rows. Reset errors and outstanding
+acquired connections stop reuse. Cases do not enter parallel scheduling.
 
 Original scope callbacks, transaction commits, independent connection reads,
 lock barriers and cancellation remain real. A reset commits before a case

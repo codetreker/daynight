@@ -1,13 +1,15 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { TaskDetail } from '../src/api/types';
+import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { installGraphMeasurements } from './graph-measurements';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => null }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
@@ -28,51 +30,52 @@ const initial = [
   detailFixture(projectId, id(2), { parentId: goalId, title: 'Active task', status: 'in_progress', dependsOn: [id(1), id(4)], externalDependsOn: [id(4)], properties: { paused: true } }),
   detailFixture(projectId, id(3), { parentId: goalId, title: 'Cancelled task', status: 'cancelled', dependsOn: [id(1)], properties: { paused: true } }),
   detailFixture(projectId, id(4), { title: 'External task', status: 'cancelled', properties: { paused: true } }),
-  detailFixture(projectId, id(5), { parentId: goalId, title: 'False task', properties: { paused: false } }),
-  detailFixture(projectId, id(6), { parentId: goalId, title: 'Absent task', properties: {} }),
+  detailFixture(projectId, id(5), { parentId: goalId, title: 'False task', dependsOn: [id(1)], properties: { paused: false } }),
+  detailFixture(projectId, id(6), { parentId: goalId, title: 'Absent task', dependsOn: [id(1)], properties: {} }),
 ];
 const change = (tasks: TaskDetail[], target: number, patch: Partial<TaskDetail>) => tasks.map(item => item.id === id(target) ? { ...item, ...patch } : item);
 const noop = () => {};
-const surface = (tasks: TaskDetail[], presentation: 'dialog' | 'page') => <GoalDetailSurface projectId={projectId} taskId={goalId} detail={goal} resourceState={task}
-  snapshot={snapshotFixture(tasks)} presentation={presentation} fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} />;
-const row = (n: number) => document.querySelector(`[data-goal-task-id="${id(n)}"]`)!;
+const surface = (tasks: TaskDetail[], presentation: 'dialog' | 'page') => {
+  const snapshot = snapshotFixture(tasks);
+  return <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}><GoalDetailSurface projectId={projectId} taskId={goalId} detail={goal} resourceState={task}
+    snapshot={snapshot} presentation={presentation} goalChildren={{ graphRootId: id(1), task: null }} fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} /></TaskExecutionClockProvider>;
+};
+const row = (n: number) => document.querySelector(`[data-id="${id(n)}"] .task-node`)!;
 const badge = (element: Element) => element.querySelector('.task-paused-badge');
 let root: HTMLDivElement;
 beforeEach(() => { root = document.createElement('div'); root.id = 'root'; document.body.append(root); });
 afterEach(() => { root.remove(); });
 
-it.each(['dialog', 'page'] as const)('shows Goal row and graph pauses from the current snapshot in %s presentation', async (presentation) => {
+it.each(['dialog', 'page'] as const)('shows restored Goal graph pauses from the current snapshot in %s presentation', async (presentation) => {
   installGraphMeasurements();
   const view = renderWithLocale(surface(initial, presentation), { locale: 'en', taskCache: true, container: root });
-  fireEvent.click(document.querySelector('.goal-detail-disclosure')!);
-  for (const n of [1, 2, 3]) expect(badge(row(n))).toHaveTextContent('Paused');
-  for (const n of [5, 6]) expect(badge(row(n))).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'View dependencies' }));
   const graph = document.querySelector('.task-chain-dialog')!;
   await waitFor(() => expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(4));
-  expect(within(graph as HTMLElement).getByText('2 paused')).toBeVisible();
+  for (const n of [1, 2, 3]) expect(badge(row(n))).toHaveTextContent('Blocked');
+  for (const n of [5, 6]) expect(badge(row(n))).toBeNull();
+  expect(within(graph as HTMLElement).getByText('2 blocked')).toBeVisible();
   const close = graph.querySelector<HTMLButtonElement>('.task-chain-close')!;
   close.focus();
 
   let next = change(initial, 2, { status: 'done' });
   view.rerender(surface(next, presentation));
   expect(document.querySelector('.task-chain-dialog')).toBe(graph);
-  expect(within(graph as HTMLElement).getByText('1 paused')).toBeVisible();
-  expect(badge(row(2))).toHaveTextContent('Paused');
+  expect(within(graph as HTMLElement).getByText('1 blocked')).toBeVisible();
+  expect(badge(row(2))).toHaveTextContent('Blocked');
   expect(close).toHaveFocus();
   next = change(next, 3, { properties: { paused: false } });
   view.rerender(surface(next, presentation));
   expect(graph.querySelector('.task-pause-count')).toBeNull();
   expect(badge(row(3))).toBeNull();
-  expect(badge(row(1))).toHaveTextContent('Paused');
+  expect(badge(row(1))).toHaveTextContent('Blocked');
   next = change(next, 2, { status: 'todo' });
   view.rerender(surface(next, presentation));
-  expect(within(graph as HTMLElement).getByText('1 paused')).toBeVisible();
+  expect(within(graph as HTMLElement).getByText('1 blocked')).toBeVisible();
   next = change(next, 2, { properties: {} });
   view.rerender(surface(next, presentation));
   expect(graph.querySelector('.task-pause-count')).toBeNull();
   expect(badge(row(2))).toBeNull();
   await waitFor(() => expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2));
-  expect(document.querySelector('.goal-detail-disclosure')).toHaveAttribute('aria-expanded', 'true');
+  expect(document.querySelector('[data-goal-task-id]')).toBeNull();
   expect(document.querySelector('.task-chain-dialog')).toBe(graph);
 });

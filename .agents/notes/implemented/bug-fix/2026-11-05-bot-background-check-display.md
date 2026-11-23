@@ -33,7 +33,9 @@ continues to own the shared fullscreen boundary and responsive focus behavior.
 Selection-specific detail revalidation uses the separate
 [current-action admission decision](../architecture/2026-11-09-bot-current-action-admission.md).
 It preserves resident display without entering the authentication transport pause;
-this decision continues to own actual background identity checks.
+this decision continues to own retained display during feature-specific background reads.
+
+The later [document account synchronization decision](../architecture/2026-11-11-document-account-sync.md) replaces foreground account revalidation; feature-specific visibility and resource checks retain their own lifecycles.
 
 ## Alternatives
 
@@ -50,7 +52,7 @@ cache and transport recovery already own those states.
 
 Unchanged checks preserve the rendered interface throughout the wait and recovery,
 not only after success. Temporary admission pauses still gate business requests and publication while
-identity checks and recovery reads continue; real resource changes, failures and
+feature-specific background reads continue; real resource changes, failures and
 revocations retain their own semantics.
 Long pauses, buffer exhaustion and actual disconnections can require a new channel;
 the retained pane and client continue to own recovery and cursor replay. The

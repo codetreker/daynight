@@ -42,7 +42,7 @@ func rotateFamilyForTest(t *testing.T, ctx context.Context, db *postgres.Store, 
 		if err != nil {
 			return err
 		}
-		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: hash, AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour)})
+		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: hash, AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt})
 	})
 	return err
 }
@@ -101,11 +101,11 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 			t.Error("family revocation did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", threadTx.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", threadTx.Conn().PgConn().PID())
 	if err := threadTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", botTx.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", botTx.Conn().PgConn().PID())
 	if err := botTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 	}()
 	for {
 		var count int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT expires_at FROM oauth_access_tokens%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT g.id::text FROM oauth_grants%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count == 2 {
@@ -192,7 +192,7 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
-		_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, secret.Hash(access), grant.Resource, grant.Scope, time.Now())
+		_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: grant.Resource, Scope: grant.Scope}}, time.Now())
 		return err
 	})
 	if !errors.Is(err, model.ErrNotFound) {
@@ -252,7 +252,7 @@ func TestGrantLifecycleConcurrentReplayAndBinding(t *testing.T) {
 		t.Fatalf("refresh binding: %#v", current)
 	}
 	newAccess, newRefresh := secret.Hash("rotated-access"), secret.Hash("rotated-refresh")
-	check(t, firstDAO.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: newAccess, RefreshHash: newRefresh, AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour)}))
+	check(t, firstDAO.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: newAccess, RefreshHash: newRefresh, AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt}))
 	second, err := db.Pool.Begin(ctx)
 	check(t, err)
 	defer second.Rollback(context.Background())
@@ -292,14 +292,14 @@ func TestGrantLifecycleConcurrentReplayAndBinding(t *testing.T) {
 			t.Error("replay waiter did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants", first.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", first.Conn().PgConn().PID())
 	check(t, first.Commit(ctx))
 	check(t, testutil.ReceiveQueryResult(t, ctx, done))
 	read, err := db.Pool.Begin(ctx)
 	check(t, err)
 	defer read.Rollback(context.Background())
 	for _, hash := range [][]byte{secret.Hash(access), newAccess} {
-		_, err := oauthpg.NewDAO(read).AuthenticateAccess(ctx, hash, grant.Resource, grant.Scope, time.Now())
+		_, err := oauthpg.NewDAO(read).AuthenticateAccess(ctx, hash, []store.OAuthBinding{{Resource: grant.Resource, Scope: grant.Scope}}, time.Now())
 		missing(t, err)
 	}
 	var revoked bool
@@ -349,7 +349,7 @@ func TestGrantLifecycleWaitRechecksExpiry(t *testing.T) {
 			t.Error("expiry waiter did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants", holder.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", holder.Conn().PgConn().PID())
 	var expiry time.Time
 	check(t, holder.QueryRow(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()+interval '20 milliseconds' WHERE id=$1 RETURNING expires_at`, grant.ID).Scan(&expiry))
 	_, err = holder.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.005)`, expiry)

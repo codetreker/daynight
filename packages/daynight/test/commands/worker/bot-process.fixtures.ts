@@ -7,15 +7,23 @@ import { openBotExecutionStore } from "../../../src/commands/worker/bots/executi
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import type { BotConfiguration, BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import type { prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import type { ControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 export const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const cleanups: (()=>void)[] = [];
 export const cleanupBotProcesses = () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
-export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configuration: Partial<BotConfiguration> = {}) => {
+export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configuration: Partial<BotConfiguration> = {}, persistent = false, dedicated = false) => {
   const root=path.resolve(import.meta.dirname,"../../../../../.tmp/bot-process"); mkdirSync(root,{recursive:true});
   const home=mkdtempSync(path.join(root,"h-")); cleanups.push(()=>rmSync(home,{recursive:true,force:true})); vi.stubEnv("DN_CONFIG_DIR",path.join(home,"state"));
-  const database=createMemoryDatabase(),store=openBotStore(database,{onMigration:()=>{}}),executions=openBotExecutionStore(database,{onMigration:()=>{}}); cleanups.push(()=>store.close(),()=>executions.close());
+  const database = persistent ? path.join(home, "worker.sqlite") : createMemoryDatabase();
+  const storeOptions = { onMigration:()=>undefined, ...(dedicated ? { storageStateDirectory: resolveBotPaths(resolveConfigurationPaths(home).stateDirectory, id(3)).directory } : {}) };
+  let store=openBotStore(database,storeOptions),executions=openBotExecutionStore(database,{onMigration:()=>{}});
+  cleanups.push(()=>store.close(),()=>executions.close());
+  const reopen = () => { if (!persistent) throw new Error("Persistent fixture required."); executions.close(); store.close(); store=openBotStore(database,storeOptions); executions=openBotExecutionStore(database,{onMigration:()=>{}}); };
   const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
   let bot:BotDefinition={id:id(3),workerId:id(2),ownerUserId:id(1),version:"1",name:"Only a name",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:id(2),cwd:home,provider,model:null,args:[],...configuration},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
   store.observe(owner,bot,1);
@@ -26,9 +34,12 @@ export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configur
   const environment={HOME:"/real/home",PATH:"/native/bin",CODEX_HOME:"/real/codex",DN_CONFIG_DIR:resolveConfigurationPaths(home).stateDirectory};
   const release=vi.fn(async()=>{}), prepareEnvironment=vi.fn(async()=>({environment,aliasDirectory:null,bindings:[],release}));
   let ticket:ControllerLaunchTicket;
-  const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
+  const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); await options.onSpawned({ pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) }); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
   const observe=vi.fn(async(t:ControllerLaunchTicket)=>snapshot(t));
-  const api={register,grant,readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
-  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,dependencies:{prepareEnvironment,launch,observe,...extra}});
-  return {home,owner,store,executions,current,register,grant,prepareEnvironment,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
+  const prepareStorage=vi.fn<typeof prepareControllerStorage>(()=>({kind:"prepared",snapshot:null,legacyTimelineCleanupPending:false}));
+  const api={register,grant,registerRecovery:vi.fn(async()=>{}),readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
+  let admission = true;
+  const selectToolLaunch = vi.fn(async (agent: "codex" | "copilot") => frozenToolLaunch(agent));
+  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3, jobLeases?: ControllerJobLeases, reconcileHosting?: (record: BotRecord) => boolean)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,canAdmitNewExecution:()=>admission,...(reconcileHosting === undefined ? {} : { reconcileHosting }),jobLeases:jobLeases ?? { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },selectToolLaunch,dependencies:{prepareEnvironment,launch,observe,prepareStorage,reconcileLaunch:async ({ticket}: {ticket:ControllerLaunchTicket})=>({kind:"observed" as const,snapshot:await observe(ticket)}),...extra}});
+  return {home,owner,get store(){return store;},get executions(){return executions;},reopen,current,register,grant,prepareEnvironment,prepareStorage,release,launch,observe,selectToolLaunch,setAdmission:(value:boolean)=>{admission=value;},process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
 };

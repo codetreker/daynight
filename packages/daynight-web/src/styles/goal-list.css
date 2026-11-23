@@ -1,16 +1,62 @@
 .goal-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-.goal-list-row { display: flex; align-items: center; gap: 15px; width: 100%; min-width: 0; padding: 17px 18px; border: 1px solid var(--line); border-radius: 8px; background: #fff; text-align: left; }
-.goal-list-row:hover { background: #fcfcff; }
-.goal-list-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 8px; background: #f4f3fd; color: #6b65bc; font-size: 20px; }
+.goal-list-card { container: goal-list-card / inline-size; min-width: 0; overflow: hidden; border: 1px solid var(--row-border); border-radius: 8px; background: #fff; }
+.goal-list-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 62px; padding-right: 18px; }
+.goal-list-summary { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 60px; padding: 8px 7px 8px 15px; cursor: pointer; }
+.goal-list-toggle { display: grid; place-items: center; flex: none; width: 22px; min-height: 34px; margin-inline: -4px; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; }
+.goal-list-toggle > .goal-disclosure { flex: none; width: 14px; height: 14px; color: var(--task-helper); }
+.goal-list-toggle:focus-visible { outline: 2px solid var(--task-focus); outline-offset: -2px; border-radius: 6px; }
+.goal-list-icon { flex: none; width: 20px; height: 20px; fill: none; stroke: #6b65bc; stroke-width: 1.4; }
 .goal-list-main { flex: 1; min-width: 0; }
-.goal-list-title { display: block; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
-.goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 5px; font-size: 10px; color: #758196; }
-.goal-list-progress { flex: none; width: 145px; font-size: 10px; color: #758196; text-align: right; font-variant-numeric: tabular-nums; }
+.goal-list-title { display: block; max-width: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-sm); font-weight: 650; line-height: 1.5; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.goal-list-title:hover { text-decoration: underline; }
+.goal-list-title:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 2px; border-radius: 2px; }
+.goal-list-main .goal-title-line { align-items: baseline; }
+.goal-list-main .goal-list-title { min-width: 0; }
+.goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 3px; font-size: var(--text-xs); color: var(--task-helper); }
+.goal-list-meta > span:empty { display: none; }
+.goal-list-meta > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.goal-list-meta .completion-time-label { margin-inline-start: 0; }
+.goal-list-progress { flex: none; width: 145px; font-size: var(--text-xs); color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
-.goal-list-track i { background: #78ac94; }
-.goal-list-track .goal-list-cancelled { background: #c8bbd3; }
-@media (max-width: 740px) {
-  .goal-list-row { flex-wrap: wrap; padding: 13px 12px; gap: 10px; }
-  .goal-list-main { flex-basis: calc(100% - 65px); }
-  .goal-list-progress { margin-left: 44px; width: auto; flex: 1; text-align: left; }
+.goal-list-track i { background: var(--task-done-ink); }
+.goal-list-session { flex: none; min-width: 0; max-width: 40%; cursor: pointer; }
+.goal-list-session .session-status-slot { width: auto; max-width: 100%; flex-basis: auto; padding-right: 16px; }
+.goal-list-session .session-status-label { position: relative; }
+.goal-list-session .session-status-action:active .session-status-label { color: var(--task-status); }
+.goal-list-session .session-status-progress .session-status-label { padding: 0; border: 0; border-radius: 0; background: transparent; line-height: 1.5; }
+.goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); background: #fcfcfe; }
+.goal-list-contents .goal-task-list { container-type: inline-size; padding-block-end: 0; }
+.goal-list-empty { margin: 0; padding: 16px 18px; font-size: var(--text-sm); color: var(--task-helper); }
+@container goal-list-card (max-width: 740px) {
+  .goal-list-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 32px 32px; padding: 0 12px 8px 0; gap: 0 6px; }
+  .goal-list-summary { grid-column: 1 / -1; width: 100%; }
+  .goal-list-session { grid-column: 2; max-width: 100%; }
+  .goal-list-summary { flex-wrap: wrap; padding: 11px 4px 11px 15px; }
+  .goal-list-icon { display: none; }
+  .goal-list-main { flex-basis: calc(100% - 22px); }
+  .goal-list-id.task-row-id-group { display: inline-grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: end; }
+  .goal-list-id .task-row-id { min-width: 0; }
+  .goal-list-id .task-row-copy-feedback { grid-column: 1 / -1; width: 0; min-width: 100%; }
+  .goal-list-progress { margin-left: 22px; max-width: calc(100% - 22px); flex: 0 1 145px; text-align: left; }
 }
+
+@container goal-list-card (max-width: 600px) {
+  .goal-list-summary { padding-left: 11px; }
+}
+
+@container (max-width: 250px) {
+  .goal-list-contents .goal-task-row { flex-wrap: wrap; }
+  .goal-list-contents .goal-task-main { flex-basis: 100%; }
+  .goal-list-contents .goal-task-status { flex: 1 1 100%; min-width: 0; max-width: 100%; flex-direction: row; flex-wrap: wrap; }
+}
+
+.goal-list-detail, .goal-list-graph { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 1px solid #ddddee; border-radius: 6px; background: #fff; color: #6862b2; cursor: pointer; }
+.goal-list-detail:hover, .goal-list-graph:hover { background: #eeedff; border-color: #b8b4e1; }
+.goal-list-detail:focus-visible, .goal-list-graph:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 2px; }
+
+.goal-list-row :is(.task-paused-badge, .task-pause-count) { font-size: var(--text-sm); }
+.goal-list-row :is(.goal-in-progress, .completion-time-label, .task-assignee-identity, .assignee-former, .chain-worker-active),
+.goal-list-session :is(.session-status-label, .session-status-annotation) { font-size: var(--text-xs); }
+.goal-list-row .chain-worker-active { line-height: 1.5; }
+.goal-list-session .session-status-label { white-space: normal; overflow-wrap: anywhere; display: inline-flex; flex-direction: column; align-items: flex-end; }
+.goal-list-session .session-status-annotation { position: static; height: auto; line-height: 1.5; white-space: normal; }

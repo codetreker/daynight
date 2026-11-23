@@ -30,3 +30,40 @@ it.each(calls.filter((call) => call.write))("keeps successful $name HTTP confirm
   await expect(invoke({ userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn(), onWriteConfirmed })).rejects.toMatchObject({ kind: "protocol", status: 200 });
   expect(onWriteConfirmed).toHaveBeenCalledOnce();
 });
+
+it('ends detail publication after a committed transaction meets a real principal mismatch', async () => {
+  const { createTaskSessionWorld } = await import('./helpers/taskSessions');
+  const { TaskDetailSessions } = await import('../src/features/task-detail/TaskDetailSession');
+  const { pauseAuthRequests } = await import('../src/api/client');
+  const { fixtureTaskEpoch, viewerHeaders } = await import('./helpers/taskSync');
+  const { wireResponse } = await import('./helpers/wireJson');
+  let resume = () => {}; const world = createTaskSessionWorld({ onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const sessions = new TaskDetailSessions(world.scope); const initial = detailFixture(project, task, { title: 'Retained' });
+  let mismatchRequest = false, sawMismatch = false, attempts = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => mismatchRequest
+    ? wireResponse(initial, { headers: viewerHeaders('99999999-9999-4999-8999-999999999999') })
+    : wireResponse(initial,
+      { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': fixtureTaskEpoch(project) }) })));
+  try {
+    await world.sync([initial]); sessions.subscribe(project, task, () => {}); sessions.observe(project, task, world.node(project, task));
+    sessions.load(project, task, 1); await vi.waitFor(() => expect(sessions.snapshot(project, task).detail?.title).toBe('Retained'));
+    const transact = world.scope.detailTransaction.bind(world.scope); const ready = world.scope.ready.bind(world.scope);
+    vi.spyOn(world.scope, 'detailTransaction').mockImplementation(async <T,>(...args: Parameters<typeof transact<T>>) => {
+      const result = await transact<T>(...args);
+      if (!sawMismatch) {
+        sawMismatch = true; mismatchRequest = true;
+        await expect(getTask(project, task, signal(), { userId: TEST_VIEWER_ID, onPrincipalMismatch: world.scope.principalMismatch })).rejects.toMatchObject({ code: 'principal_mismatch' });
+      }
+      return result;
+    });
+    vi.spyOn(world.scope, 'ready').mockImplementation(async currentSignal => {
+      if (world.scope.hasIdentityMismatch && ++attempts > 2) throw new Error('Permanent mismatch was retried');
+      return ready(currentSignal);
+    });
+    sessions.load(project, task, 2, 'refresh');
+    await vi.waitFor(() => expect(attempts).toBeGreaterThan(0));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(attempts).toBe(1); expect(world.scope.signal.aborted).toBe(false);
+    expect(sessions.snapshot(project, task).detail?.title).toBe('Retained');
+  } finally { resume(); sessions.dispose(); world.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals(); }
+});

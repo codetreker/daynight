@@ -14,6 +14,7 @@ import { isTaskVersion } from "./json";
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
 import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, taskTypeFields, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
+import { parseTaskTags } from "./task-tags";
 
 const projectSettings = (value: unknown): Project["settings"] => {
   const data = record(value);
@@ -112,6 +113,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     title: nonemptyString(data.title),
     description: string(data.description),
     properties: parseTaskProperties(data.properties),
+    tags: parseTaskTags(data.tags),
     ...taskStatusFields(data),
     version,
     ...taskDependencies(data),
@@ -131,7 +133,6 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (worker?.state === "released" && parsed.status !== "todo" && parsed.status !== "cancelled") return malformed();
   return parsed;
 };
 
@@ -139,11 +140,10 @@ export type ServerError = {
   readonly code: string;
   readonly requestId: string;
   readonly serverMessage?: string;
-  readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
   readonly writeOutcome?: "not_committed";
 };
 
-export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
+export const parseServerError = (value: unknown, includeServerMessage = false): ServerError => {
   const data = record(record(value).error);
   const code = string(data.code);
   const requestId = string(data.requestId);
@@ -153,11 +153,7 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
   const writeOutcome = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue) &&
     (detailsValue as Record<string, unknown>).writeOutcome === "not_committed" ? "not_committed" as const : undefined;
   const withOutcome = (error: ServerError): ServerError => writeOutcome === undefined ? error : { ...error, writeOutcome };
-  if (includeSteps && code === "steps_limit_exceeded") {
-    const details = record(data.details);
-    return withOutcome({ code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } });
-  }
-  return withOutcome({ code, requestId, ...(includeSteps ? { serverMessage: message } : {}) });
+  return withOutcome({ code, requestId, ...(includeServerMessage ? { serverMessage: message } : {}) });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

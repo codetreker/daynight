@@ -9,7 +9,7 @@ import type { AgentControlMode } from "../../api/types.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
-import { parseServerConfiguration } from "../../config/server.js";
+import { normalizeServerUrl, parseServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
 import { pathsOverlap, type PathApi } from "../../platform/filesystem.js";
 import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
@@ -18,6 +18,8 @@ import { validateRepositoryRoot } from "../../repository/location.js";
 import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
 import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
+import type { WorkerConfigurationIdentity } from "./configuration-model.js";
+import { ConfigurationFileOperationError, WorkerConfigurationSourceError } from "./configuration-failure.js";
 
 export { resolveCloudNative } from "./config.js";
 
@@ -42,28 +44,58 @@ const text = (value: unknown, field: string): string => {
   if (typeof value !== "string" || value.trim() === "" || !value.isWellFormed() || /\p{Cc}/u.test(value)) throw new TypeError(`${field} must be nonempty text without control characters.`);
   return value;
 };
+const validateSource = <T>(validate: () => T): T => {
+  try { return validate(); }
+  catch (error) {
+    if (error instanceof WorkerConfigurationSourceError || !(error instanceof Error)) throw error;
+    throw new WorkerConfigurationSourceError(error.message, { cause: error });
+  }
+};
 const sourceMapping = (source: string | undefined, paths: WorkerPaths): Record<string, unknown> =>
-  parseConfigurationDocument(source === undefined ? "{}" : source, paths).mapping;
+  validateSource(() => parseConfigurationDocument(source === undefined ? "{}" : source, paths).mapping);
 const workerMapping = (root: Record<string, unknown>): Record<string, unknown> => Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
 
 const readSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
   try { return await readConfigurationSource(paths, signal); }
-  catch (error) { if (error instanceof MissingConfigurationFileError) return undefined; throw error; }
+  catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if (error instanceof MissingConfigurationFileError) return undefined;
+    // The configuration reader wraps its direct readFile failure with an actionable message.
+    throw new ConfigurationFileOperationError("read", error, error instanceof Error ? error.cause : error);
+  }
 };
 
-export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => {
+export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => validateSource(() => {
   const worker = workerMapping(sourceMapping(source, paths));
-  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "web";
+  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be web; remove it or set it to web in the local configuration.");
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
   return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
-};
+});
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
   signal?.throwIfAborted();
   return parseWorkerLocalConfiguration(await readSource(paths, signal), paths);
+};
+
+export class WorkerBootstrapIdentityError extends WorkerConfigurationSourceError {
+  constructor(readonly field: "serverUrl" | "workerId") {
+    super(`The local bootstrap ${field} does not match the running Worker's identity.`);
+    this.name = "WorkerBootstrapIdentityError";
+  }
+}
+
+export const validateWorkerBootstrapIdentity = (
+  local: WorkerLocalConfiguration, paths: WorkerPaths, identity: Pick<WorkerConfigurationIdentity, "serverOrigin" | "workerId">,
+): void => {
+  if (local.serverUrl !== normalizeServerUrl(identity.serverOrigin)) throw new WorkerBootstrapIdentityError("serverUrl");
+  const root = sourceMapping(local.source, paths);
+  if (!Object.hasOwn(root, "workerId")) return;
+  const workerId = typeof root.workerId === "string" ? canonicalId(root.workerId) : null;
+  if (workerId === null) throw new WorkerConfigurationSourceError("Configuration workerId must be a hyphenated UUID.");
+  if (workerId !== identity.workerId) throw new WorkerBootstrapIdentityError("workerId");
 };
 
 const matchesRemote = (remote: unknown, expected: string): boolean => {
@@ -173,6 +205,8 @@ export const parseWorkerCloudBootstrap = async (
 ): Promise<WorkerCloudValue> => {
   signal.throwIfAborted();
   const worker = workerMapping(sourceMapping(source, paths));
+  if (worker.agentControlMode === "herdr") throw new WorkerConfigurationSourceError("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
+  if (typeof worker.toolPaths === "object" && worker.toolPaths !== null && Object.hasOwn(worker.toolPaths, "herdr")) throw new WorkerConfigurationSourceError("worker.toolPaths.herdr is no longer supported; remove it from the local configuration.");
   const repositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(repositories)) throw new TypeError("worker.repositories must be a sequence.");
   if (repositories.length > 128) throw new RangeError("worker.repositories must contain at most 128 Projects.");
@@ -190,15 +224,15 @@ export const parseWorkerCloudBootstrap = async (
   }
   signal.throwIfAborted();
   return parseWorkerCloudValue({
-    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
-    toolPaths: parseLocalToolPaths(worker.toolPaths),
+    toolPaths: (({ codex, copilot }) => ({ codex, copilot }))(parseLocalToolPaths(worker.toolPaths)),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
+    archiveSessions: Object.hasOwn(worker, "archiveSessions") ? worker.archiveSessions : workerConfigurationDefaults.archiveSessions,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, { controlMode: true, toolPaths: true });
+  }, true, { controlMode: false, toolPaths: true, archiveSessions: true });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>

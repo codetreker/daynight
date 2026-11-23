@@ -280,6 +280,12 @@ export class BotDisplaySnapshotStore {
         if (BigInt(candidate.lastEventSeq) < BigInt(previous.preview.lastEventSeq)) return 'stale';
         const revisions = new Map(previous.preview.entries.map(entry => [entry.entryId, entry.revision]));
         if (candidate.entries.some(entry => revisions.has(entry.entryId) && BigInt(entry.revision) < BigInt(revisions.get(entry.entryId)!))) return 'stale';
+        // Both previews have passed the same codec, which fixes their field order.
+        // Compare only after the locked lease checks: a peer may have changed disk.
+        if (JSON.stringify({ ...candidate, savedAt: 0 }) === JSON.stringify({ ...previous.preview, savedAt: 0 })) {
+          lease.historyKey = historyKey;
+          return account.memoryOnly ? 'memory' : 'saved';
+        }
       }
       const historyVersion = sameHistory ? previous.historyVersion : crypto.randomUUID();
       const records = account.value.records.filter(row => row.preview.botId !== lease.botId);

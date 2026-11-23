@@ -13,42 +13,52 @@ import (
 )
 
 type listCursor struct {
-	Type               model.TaskType      `json:"type,omitempty"`
-	Parent             *string             `json:"parent,omitempty"`
-	Version            int                 `json:"version"`
-	Kind               string              `json:"kind"`
-	UserID             string              `json:"userId,omitempty"`
-	ProjectID          string              `json:"projectId"`
-	TeamID             string              `json:"teamId,omitempty"`
-	Status             *string             `json:"status"`
-	Ready              *bool               `json:"ready"`
-	AllowAgents        *bool               `json:"allowAgents"`
-	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
-	PlatformSpecific   *bool               `json:"platformSpecific,omitempty"`
-	AutomaticCandidate bool                `json:"automaticCandidate,omitempty"`
-	WorkerID           *string             `json:"workerId"`
-	WorkerUserID       *string             `json:"workerUserId"`
-	AssignedTo         json.RawMessage     `json:"assignedTo,omitempty"`
-	CreatedAt          time.Time           `json:"createdAt"`
-	ID                 string              `json:"id"`
+	CandidateWorkerID          *string             `json:"candidateWorkerId,omitempty"`
+	CandidateWorkerUserID      *string             `json:"candidateWorkerUserId,omitempty"`
+	CandidateTagFilterIdentity string              `json:"candidateTagFilter,omitempty"`
+	TagFilterIdentity          string              `json:"tagFilter"`
+	Type                       model.TaskType      `json:"type,omitempty"`
+	Parent                     *string             `json:"parent,omitempty"`
+	ParentTask                 *string             `json:"parentTask,omitempty"`
+	Version                    int                 `json:"version"`
+	Kind                       string              `json:"kind"`
+	UserID                     string              `json:"userId,omitempty"`
+	ProjectID                  string              `json:"projectId"`
+	TeamID                     string              `json:"teamId,omitempty"`
+	Status                     *string             `json:"status"`
+	Ready                      *bool               `json:"ready"`
+	AllowAgents                *bool               `json:"allowAgents"`
+	CompatiblePlatform         *model.TaskPlatform `json:"compatiblePlatform"`
+	PlatformSpecific           *bool               `json:"platformSpecific,omitempty"`
+	AutomaticCandidate         bool                `json:"automaticCandidate,omitempty"`
+	WorkerID                   *string             `json:"workerId"`
+	WorkerUserID               *string             `json:"workerUserId"`
+	AssignedTo                 json.RawMessage     `json:"assignedTo,omitempty"`
+	CreatedAt                  time.Time           `json:"createdAt"`
+	ID                         string              `json:"id"`
 }
 
 type ListScope struct {
-	Type               model.TaskType
-	Parent             *string
-	Kind               string
-	UserID             string
-	ProjectID          string
-	TeamID             string
-	Status             *string
-	Ready              *bool
-	AllowAgents        *bool
-	CompatiblePlatform *model.TaskPlatform
-	PlatformSpecific   *bool
-	AutomaticCandidate bool
-	WorkerID           *string
-	WorkerUserID       *string
-	AssignedTo         model.TaskAssignmentFilter
+	CandidateWorkerID          *string
+	CandidateWorkerUserID      *string
+	CandidateTagFilterIdentity string
+	TagFilterIdentity          string
+	Type                       model.TaskType
+	Parent                     *string
+	ParentTask                 *string
+	Kind                       string
+	UserID                     string
+	ProjectID                  string
+	TeamID                     string
+	Status                     *string
+	Ready                      *bool
+	AllowAgents                *bool
+	CompatiblePlatform         *model.TaskPlatform
+	PlatformSpecific           *bool
+	AutomaticCandidate         bool
+	WorkerID                   *string
+	WorkerUserID               *string
+	AssignedTo                 model.TaskAssignmentFilter
 }
 
 func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
@@ -91,7 +101,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	}
 	id, err := model.CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
-		cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
+		cursor.TagFilterIdentity != scope.TagFilterIdentity || cursor.CandidateTagFilterIdentity != scope.CandidateTagFilterIdentity || !model.EqualOptional(cursor.CandidateWorkerID, scope.CandidateWorkerID) || !model.EqualOptional(cursor.CandidateWorkerUserID, scope.CandidateWorkerUserID) || cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || !model.EqualOptional(cursor.ParentTask, scope.ParentTask) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
 		!model.EqualOptional(cursor.Ready, scope.Ready) || !model.EqualOptional(cursor.AllowAgents, scope.AllowAgents) || !model.EqualOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !model.EqualOptional(cursor.PlatformSpecific, scope.PlatformSpecific) || cursor.AutomaticCandidate != scope.AutomaticCandidate || !model.EqualOptional(cursor.WorkerID, scope.WorkerID) || !model.EqualOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
@@ -100,7 +110,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 }
 
 func EncodeListCursor(scope ListScope, createdAt time.Time, id string) (string, error) {
-	cursor := listCursor{Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, TeamID: scope.TeamID, Status: scope.Status,
+	cursor := listCursor{CandidateWorkerID: scope.CandidateWorkerID, CandidateWorkerUserID: scope.CandidateWorkerUserID, CandidateTagFilterIdentity: scope.CandidateTagFilterIdentity, TagFilterIdentity: scope.TagFilterIdentity, Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, TeamID: scope.TeamID, Status: scope.Status,
 		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, PlatformSpecific: scope.PlatformSpecific, AutomaticCandidate: scope.AutomaticCandidate, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
 	if scope.Kind == "tasks" {
 		assignment, err := TaskAssignmentScope(scope.AssignedTo)
@@ -108,7 +118,7 @@ func EncodeListCursor(scope ListScope, createdAt time.Time, id string) (string, 
 			return "", err
 		}
 		cursor.Version = 3
-		cursor.Type, cursor.Parent = scope.Type, scope.Parent
+		cursor.Type, cursor.Parent, cursor.ParentTask = scope.Type, scope.Parent, scope.ParentTask
 		cursor.AssignedTo, err = json.Marshal(assignment)
 		if err != nil {
 			return "", err

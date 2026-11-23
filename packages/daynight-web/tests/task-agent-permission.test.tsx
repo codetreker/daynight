@@ -17,7 +17,7 @@ const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Automatic tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, status: 'todo', version: 9007199254740993n,
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, status: 'todo', version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graphTask = (value: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
@@ -94,7 +94,7 @@ describe('confirmed automatic execution header control', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Attachments' })); const draft = screen.getByRole('textbox', { name: 'Attachment draft' });
     fireEvent.change(draft, { target: { value: 'Retained' } });
     fireEvent.click(screen.getByRole('switch')); fireEvent.click(screen.getByRole('button', { name: 'Enable automatic execution' }));
-    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function), onWriteRejected: expect.any(Function) }));
     expect(screen.getByRole('switch')).toBeDisabled(); expect(screen.getByRole('switch')).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'To do' })).toBeDisabled();
     await act(async () => pending.resolve({ ...detail, allowAgents: true, version: detail.version + 1n }));

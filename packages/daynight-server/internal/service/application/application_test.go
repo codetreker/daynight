@@ -13,9 +13,11 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -34,6 +36,9 @@ func (m *strictObservations) unexpected(name string) error {
 	m.t.Helper()
 	m.t.Errorf("unexpected observation operation %s", name)
 	return errors.New("unexpected observation operation: " + name)
+}
+func (m *strictObservations) PersonalTasks(context.Context, model.Principal, int, *string) (task.PersonalTaskPage, error) {
+	return task.PersonalTaskPage{}, m.unexpected("PersonalTasks")
 }
 func (m *strictObservations) ObserveGet(context.Context, model.Principal, string, string) (task.ObservedTask, error) {
 	return task.ObservedTask{}, m.unexpected("ObserveGet")
@@ -67,18 +72,28 @@ func (m *strictIdentity) CallbackURL() string {
 	m.unexpected("CallbackURL")
 	return ""
 }
+func (m *strictIdentity) PreviewSSO() *identity.PreviewSSO {
+	m.unexpected("PreviewSSO")
+	return nil
+}
 func (m *strictIdentity) Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error) {
 	return model.Principal{}, m.unexpected("Authenticate")
+}
+func (m *strictIdentity) AuthenticateBrowserActivity(context.Context, string, string) (model.Principal, error) {
+	return model.Principal{}, m.unexpected("AuthenticateBrowserActivity")
 }
 func (m *strictIdentity) ValidateLogin(string, string) error { return m.unexpected("ValidateLogin") }
 func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
 	return identitycore.LoginStart{}, m.unexpected("StartLogin")
 }
-func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
+func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error) {
 	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
 }
 func (m *strictIdentity) User(context.Context, model.Principal) (model.User, error) {
 	return model.User{}, m.unexpected("User")
+}
+func (m *strictIdentity) PatchUser(context.Context, model.Principal, model.UserProfilePatch) (model.User, error) {
+	return model.User{}, m.unexpected("PatchUser")
 }
 func (m *strictIdentity) Logout(context.Context, model.Principal) error {
 	return m.unexpected("Logout")
@@ -86,8 +101,26 @@ func (m *strictIdentity) Logout(context.Context, model.Principal) error {
 func (m *strictIdentity) CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error) {
 	return identitycore.MintedPAT{}, m.unexpected("CreatePAT")
 }
+func (m *strictIdentity) ListBrowserSessions(context.Context, model.Principal, string, int) (identitycore.BrowserSessionPage, error) {
+	return identitycore.BrowserSessionPage{}, m.unexpected("ListBrowserSessions")
+}
+func (m *strictIdentity) GetBrowserSession(context.Context, model.Principal, string) (model.Session, error) {
+	return model.Session{}, m.unexpected("GetBrowserSession")
+}
+func (m *strictIdentity) RevokeBrowserSession(context.Context, model.Principal, string, string, string) error {
+	return m.unexpected("RevokeBrowserSession")
+}
 func (m *strictIdentity) ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
 	return nil, m.unexpected("ListPATs")
+}
+func (m *strictIdentity) CreatePATV2(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("CreatePATV2")
+}
+func (m *strictIdentity) ListPATsV2(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
+	return nil, m.unexpected("ListPATsV2")
+}
+func (m *strictIdentity) UpdatePATDescription(context.Context, model.Principal, string, string, *string, *string) (string, *string, error) {
+	return "", nil, m.unexpected("UpdatePATDescription")
 }
 func (m *strictIdentity) RevokePAT(context.Context, model.Principal, string) error {
 	return m.unexpected("RevokePAT")
@@ -116,6 +149,10 @@ func (m *strictIdentity) LogoutDevice(context.Context, model.Principal) error {
 
 func (m *strictIdentity) PersonalTeamID(context.Context, model.Principal) (string, error) {
 	return "", m.unexpected("PersonalTeamID")
+}
+
+func (m *strictIdentity) EnsureUser(context.Context, model.User) (model.User, error) {
+	return model.User{}, m.unexpected("EnsureUser")
 }
 
 var errAssemblyResourceCall = errors.New("unexpected assembly resource call")
@@ -153,6 +190,10 @@ func (f *borrowedFiles) TryAcquireResidency(context.Context, string) (io.Closer,
 	return nil, f.unexpected("TryAcquireResidency")
 }
 
+func (f *borrowedFiles) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
+	return nil, f.unexpected("TryAcquireArchive")
+}
+
 func (f *borrowedFiles) AcquireGate(context.Context, filestorage.GateDomain, string) (io.Closer, error) {
 	return nil, f.unexpected("AcquireGate")
 }
@@ -180,7 +221,7 @@ func (f *borrowedFiles) Close() error {
 
 type assemblyCapturer struct{ t *testing.T }
 
-func (c *assemblyCapturer) CaptureBatch(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error {
+func (c *assemblyCapturer) CaptureBatch(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error {
 	c.t.Error("assembly invoked webhook capture")
 	return errAssemblyResourceCall
 }
@@ -239,18 +280,18 @@ func verifySharedEngine(t *testing.T, app *Application) {
 func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 	t.Run("production constructors", func(t *testing.T) {
 		database, files := borrowedDependencies(t)
-		app := New(database, files, nil, "https://daynight.test/callback", time.Second)
+		preview, err := identity.NewPreviewSSO(database, "https://daynight.test", "https://preview.daynight.test", "https://daynight.test/callback")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := New(database, files, nil, "https://daynight.test/callback", preview, time.Second)
 		actual, ok := app.Identity.(*identity.Identity)
-		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" {
+		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" || actual.PreviewSSO() != preview {
 			t.Fatalf("production Identity = %#v", app.Identity)
 		}
 		observations, ok := app.TaskObservations.(*task.Observations)
 		if !ok || observations == nil {
 			t.Fatalf("production TaskObservations = %#v", app.TaskObservations)
-		}
-		steps, ok := app.TaskSteps.(*task.TaskSteps)
-		if !ok || steps == nil {
-			t.Fatalf("production TaskSteps = %#v", app.TaskSteps)
 		}
 		verifySharedEngine(t, app)
 	})
@@ -261,21 +302,24 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		const callbackURL = "https://daynight.test/callback"
-		marker := identity.New(database, client, callbackURL)
+		preview, err := identity.NewPreviewSSO(database, "https://daynight.test", "https://preview.daynight.test", callbackURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker := identity.NewWithPreviewSSO(database, client, callbackURL, preview)
 		observationMarker := task.NewObservations(database, nil)
 		capturer := &assemblyCapturer{t: t}
-		var projects *project.Projects
+		var projects *project.AppProjects
 		var tasks *task.Tasks
-		var steps *task.TaskSteps
 		var attachments *attachment.Attachments
 		var projectEngine *sessioncore.Engine
 		var observer task.SessionObserver
-		projectCalls, taskCalls, stepCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0, 0
-		app := assemble(database, files, client, callbackURL, time.Second, constructors{
-			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string) *identity.Identity {
+		projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0
+		app := assemble(database, files, client, callbackURL, preview, time.Second, constructors{
+			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string, actualPreview *identity.PreviewSSO) *identity.Identity {
 				identityCalls++
-				if writer != database || actualClient != client || actualCallback != callbackURL {
-					t.Error("Identity received another writer, client or callback")
+				if writer != database || actualClient != client || actualCallback != callbackURL || actualPreview != preview {
+					t.Error("Identity received another writer, client, callback or preview module")
 				}
 				return marker
 			},
@@ -287,13 +331,13 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				observer = actualObserver
 				return observationMarker
 			},
-			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
+			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
 				projectCalls++
 				if actual != database {
 					t.Error("Projects received another business store")
 				}
 				projectEngine = engine
-				projects = project.NewProjects(actual, engine)
+				projects = project.NewAppProjects(actual, engine)
 				return projects
 			},
 			tasks: func(actual store.Transactions, capture task.Capturer) *task.Tasks {
@@ -304,14 +348,6 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				tasks = task.NewTasks(actual, capture)
 				return tasks
 			},
-			taskSteps: func(actual task.StepsStore, captures ...task.Capturer) *task.TaskSteps {
-				stepCalls++
-				if actual != database || len(captures) != 1 || captures[0] != capturer {
-					t.Error("TaskSteps received another business store or Capturer")
-				}
-				steps = task.NewTaskSteps(actual, captures...)
-				return steps
-			},
 			attachments: func(reader store.SnapshotReader, writer store.AttachmentMutationWriter, storage filestorage.Storage) *attachment.Attachments {
 				attachmentCalls++
 				if reader != database || writer != database || storage != files {
@@ -321,10 +357,10 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				return attachments
 			},
 		}, capturer)
-		if projectCalls != 1 || taskCalls != 1 || stepCalls != 1 || attachmentCalls != 1 || identityCalls != 1 || observationCalls != 1 {
-			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d TaskSteps=%d Attachments=%d Identity=%d Observations=%d", projectCalls, taskCalls, stepCalls, attachmentCalls, identityCalls, observationCalls)
+		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 || identityCalls != 1 || observationCalls != 1 {
+			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d Identity=%d Observations=%d", projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls)
 		}
-		if app.Identity != marker || app.TaskObservations != observationMarker || observer != app.Engine || app.TaskSteps != steps || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
+		if app.Identity != marker || app.TaskObservations != observationMarker || observer != app.Engine || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
 			t.Fatal("application replaced a constructor result or shared dependency")
 		}
 		verifySharedEngine(t, app)
@@ -341,14 +377,12 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			database, files := borrowedDependencies(t)
 			var taskCapture task.Capturer
-			var stepCapture task.Capturer
-			var steps *task.TaskSteps
-			taskCalls, stepCalls := 0, 0
-			app := assemble(database, files, nil, "", time.Second, constructors{
-				identity:         identity.New,
+			taskCalls := 0
+			app := assemble(database, files, nil, "", nil, time.Second, constructors{
+				identity:         identity.NewWithPreviewSSO,
 				taskObservations: task.NewObservations,
-				projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
-					return project.NewProjects(actual, engine)
+				projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
+					return project.NewAppProjects(actual, engine)
 				},
 				tasks: func(actual store.Transactions, capture task.Capturer) *task.Tasks {
 					taskCalls++
@@ -358,26 +392,39 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 					taskCapture = capture
 					return task.NewTasks(actual, capture)
 				},
-				taskSteps: func(actual task.StepsStore, captures ...task.Capturer) *task.TaskSteps {
-					stepCalls++
-					if actual != database || len(captures) != 1 {
-						t.Error("TaskSteps received another business store or Capturer count")
-					} else {
-						stepCapture = captures[0]
-					}
-					steps = task.NewTaskSteps(actual, captures...)
-					return steps
-				},
 				attachments: attachment.NewAttachments,
 			}, tc.capture...)
 			selected, ok := taskCapture.(*webhook.Capturer)
-			if !ok || selected == nil || stepCapture != taskCapture {
-				t.Error("Tasks and TaskSteps did not receive the same default Capturer")
+			if !ok || selected == nil {
+				t.Error("Tasks did not receive the default Capturer")
 			}
-			if taskCalls != 1 || stepCalls != 1 || steps == nil || app.TaskSteps != steps {
-				t.Fatalf("constructor results differ: Tasks calls=%d TaskSteps calls=%d result=%p output=%v", taskCalls, stepCalls, steps, app.TaskSteps)
+			if taskCalls != 1 || app.Tasks == nil {
+				t.Fatalf("constructor results differ: Tasks calls=%d output=%v", taskCalls, app.Tasks)
 			}
 			verifySharedEngine(t, app)
 		})
 	}
+}
+
+func (m *strictIdentity) DeviceScopeCatalog() (scopepolicy.CatalogSnapshot, bool) {
+	m.unexpected("DeviceScopeCatalog")
+	return scopepolicy.CatalogSnapshot{}, false
+}
+func (m *strictIdentity) ListScopedPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
+	return nil, m.unexpected("ListScopedPATs")
+}
+func (m *strictIdentity) CreateScopedPAT(context.Context, model.Principal, string, identitycore.CreatePAT, *string, string, []scopepolicy.ScopeID) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("CreateScopedPAT")
+}
+func (m *strictIdentity) UpdateScopedPAT(context.Context, model.Principal, string, string, int64, string, []scopepolicy.ScopeID) (model.PersonalAccessToken, error) {
+	return model.PersonalAccessToken{}, m.unexpected("UpdateScopedPAT")
+}
+func (m *strictIdentity) InspectDeviceV2(context.Context, model.Principal, string) (identitycore.DeviceInspectionV2, error) {
+	return identitycore.DeviceInspectionV2{}, m.unexpected("InspectDeviceV2")
+}
+func (m *strictIdentity) DecideDeviceV2(context.Context, model.Principal, string, string, string, string, []scopepolicy.ScopeID) error {
+	return m.unexpected("DecideDeviceV2")
+}
+func (m *strictIdentity) PatchUserAuthorized(context.Context, model.CredentialAuthorization, model.UserProfilePatch, identity.ProfileScopeRecheck) (model.User, error) {
+	return model.User{}, m.unexpected("PatchUserAuthorized")
 }

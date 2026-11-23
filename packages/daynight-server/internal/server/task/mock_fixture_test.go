@@ -95,6 +95,7 @@ type taskServiceMock struct {
 	*serviceCalls
 	CreateFunc         func(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	UpdateFunc         func(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error)
+	ReplaceTagsFunc    func(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	DeleteFunc         func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatusFunc      func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	GetFunc            func(context.Context, model.Principal, string, string) (model.Task, error)
@@ -108,7 +109,6 @@ type taskServiceMock struct {
 	UpdateWorkerFunc   func(context.Context, model.Principal, string, string, taskcore.UpdateWorker) (model.Task, error)
 	ReleaseWorkerFunc  func(context.Context, model.Principal, string, string, taskcore.ReleaseWorker) (model.Task, error)
 	WithdrawWorkerFunc func(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error)
-	ResumeWorkerFunc   func(context.Context, model.Principal, string, string, taskcore.ResumeWorker) (model.Task, error)
 }
 
 func (mock *taskServiceMock) Create(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 taskcore.CreateTask) (model.Task, error) {
@@ -125,6 +125,13 @@ func (mock *taskServiceMock) Update(arg0 context.Context, arg1 model.Principal, 
 		return result, err
 	}
 	return mock.UpdateFunc(arg0, arg1, arg2, arg3, arg4)
+}
+
+func (mock *taskServiceMock) ReplaceTags(ctx context.Context, principal model.Principal, projectID, id string, version int64, tags *[]string) (model.Task, error) {
+	if err := mock.check("ReplaceTags", mock.ReplaceTagsFunc != nil); err != nil {
+		return model.Task{}, err
+	}
+	return mock.ReplaceTagsFunc(ctx, principal, projectID, id, version, tags)
 }
 
 func (mock *taskServiceMock) Delete(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.DeleteTask) error {
@@ -230,83 +237,6 @@ func (mock *taskServiceMock) WithdrawWorker(arg0 context.Context, arg1 model.Pri
 	return mock.WithdrawWorkerFunc(arg0, arg1, arg2, arg3, arg4)
 }
 
-func (mock *taskServiceMock) ResumeWorker(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.ResumeWorker) (model.Task, error) {
-	if err := mock.check("ResumeWorker", mock.ResumeWorkerFunc != nil); err != nil {
-		var result model.Task
-		return result, err
-	}
-	return mock.ResumeWorkerFunc(arg0, arg1, arg2, arg3, arg4)
-}
-
-var _ taskhttp.StepService = (*stepsServiceMock)(nil)
-
-type stepsServiceMock struct {
-	*serviceCalls
-	GetFunc       func(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
-	ListFunc      func(context.Context, model.Principal, string, string) (taskservice.StepsDocument, error)
-	AddFunc       func(context.Context, model.Principal, string, string, taskservice.AddTaskStep) (taskservice.StepsWriteResult, error)
-	UpdateFunc    func(context.Context, model.Principal, string, string, string, taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error)
-	SetStatusFunc func(context.Context, model.Principal, string, string, string, taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error)
-	DeleteFunc    func(context.Context, model.Principal, string, string, string, taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error)
-	MoveFunc      func(context.Context, model.Principal, string, string, string, taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error)
-}
-
-func (mock *stepsServiceMock) Get(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 string) (taskservice.StepDocument, error) {
-	if err := mock.check("Get", mock.GetFunc != nil); err != nil {
-		var result taskservice.StepDocument
-		return result, err
-	}
-	return mock.GetFunc(arg0, arg1, arg2, arg3, arg4)
-}
-
-func (mock *stepsServiceMock) List(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string) (taskservice.StepsDocument, error) {
-	if err := mock.check("List", mock.ListFunc != nil); err != nil {
-		var result taskservice.StepsDocument
-		return result, err
-	}
-	return mock.ListFunc(arg0, arg1, arg2, arg3)
-}
-
-func (mock *stepsServiceMock) Add(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
-	if err := mock.check("Add", mock.AddFunc != nil); err != nil {
-		var result taskservice.StepsWriteResult
-		return result, err
-	}
-	return mock.AddFunc(arg0, arg1, arg2, arg3, arg4)
-}
-
-func (mock *stepsServiceMock) Update(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 string, arg5 taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error) {
-	if err := mock.check("Update", mock.UpdateFunc != nil); err != nil {
-		var result taskservice.StepsWriteResult
-		return result, err
-	}
-	return mock.UpdateFunc(arg0, arg1, arg2, arg3, arg4, arg5)
-}
-
-func (mock *stepsServiceMock) SetStatus(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 string, arg5 taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error) {
-	if err := mock.check("SetStatus", mock.SetStatusFunc != nil); err != nil {
-		var result taskservice.StepsWriteResult
-		return result, err
-	}
-	return mock.SetStatusFunc(arg0, arg1, arg2, arg3, arg4, arg5)
-}
-
-func (mock *stepsServiceMock) Delete(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 string, arg5 taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error) {
-	if err := mock.check("Delete", mock.DeleteFunc != nil); err != nil {
-		var result taskservice.StepsWriteResult
-		return result, err
-	}
-	return mock.DeleteFunc(arg0, arg1, arg2, arg3, arg4, arg5)
-}
-
-func (mock *stepsServiceMock) Move(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 string, arg5 taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
-	if err := mock.check("Move", mock.MoveFunc != nil); err != nil {
-		var result taskservice.StepsWriteResult
-		return result, err
-	}
-	return mock.MoveFunc(arg0, arg1, arg2, arg3, arg4, arg5)
-}
-
 var _ taskhttp.ThreadService = (*threadsServiceMock)(nil)
 
 type threadsServiceMock struct {
@@ -341,6 +271,9 @@ func newTaskServiceMock(t *testing.T) *taskServiceMock {
 		}
 		if mock.UpdateFunc != nil {
 			methods = append(methods, "Update")
+		}
+		if mock.ReplaceTagsFunc != nil {
+			methods = append(methods, "ReplaceTags")
 		}
 		if mock.DeleteFunc != nil {
 			methods = append(methods, "Delete")
@@ -380,40 +313,6 @@ func newTaskServiceMock(t *testing.T) *taskServiceMock {
 		}
 		if mock.WithdrawWorkerFunc != nil {
 			methods = append(methods, "WithdrawWorker")
-		}
-		if mock.ResumeWorkerFunc != nil {
-			methods = append(methods, "ResumeWorker")
-		}
-		return methods
-	}
-	return mock
-}
-
-func newStepsServiceMock(t *testing.T) *stepsServiceMock {
-	t.Helper()
-	mock := &stepsServiceMock{serviceCalls: newServiceCalls(t)}
-	mock.required = func() []string {
-		var methods []string
-		if mock.GetFunc != nil {
-			methods = append(methods, "Get")
-		}
-		if mock.ListFunc != nil {
-			methods = append(methods, "List")
-		}
-		if mock.AddFunc != nil {
-			methods = append(methods, "Add")
-		}
-		if mock.UpdateFunc != nil {
-			methods = append(methods, "Update")
-		}
-		if mock.SetStatusFunc != nil {
-			methods = append(methods, "SetStatus")
-		}
-		if mock.DeleteFunc != nil {
-			methods = append(methods, "Delete")
-		}
-		if mock.MoveFunc != nil {
-			methods = append(methods, "Move")
 		}
 		return methods
 	}

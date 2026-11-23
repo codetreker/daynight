@@ -31,7 +31,6 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	worker.Telemetry.Disk = model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: stamp, Value: &model.WorkerDisk{AvailableBytes: 1 << 40, TotalBytes: 1 << 41}}
 	version := testutil.WorkerStoredUTF8(256)
 	worker.Telemetry.Versions = model.WorkerVersions{Daynight: version,
-		Herdr:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 		Codex:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 		Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 	}
@@ -39,8 +38,16 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	for index := range runtimeProjects {
 		runtimeProjects[index] = model.WorkerRuntimeProject{ProjectID: testutil.QueryID(1000 + index)}
 	}
-	worker.Telemetry.RuntimeConfiguration = &model.WorkerRuntimeConfiguration{SchemaVersion: 1, Projects: runtimeProjects}
 	modelName, unavailable := "gpt-5", "not_found"
+	worker.Telemetry.RuntimeConfiguration = &model.WorkerRuntimeConfiguration{
+		SchemaVersion: 1,
+		Native: &model.WorkerRuntimeNative{
+			Agent:           model.AgentCodex,
+			Model:           model.WorkerConfigurationValue{Value: &modelName, Source: "local"},
+			ReasoningEffort: model.WorkerConfigurationValue{Source: "native"},
+		},
+		Projects: runtimeProjects,
+	}
 	worker.Telemetry.AssistantHost = &model.WorkerAssistantHost{
 		ProtocolVersion: 1, ObservedAt: stamp, DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot,
 		Providers: []model.WorkerAssistantProvider{
@@ -52,6 +59,11 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	first := testutil.PutWorkerSnapshot(t, database, worker)
 	if first.TaskSnapshot.State != model.WorkerTasksUnavailable || first.TaskSnapshot.ObservedAt != nil || first.TaskSnapshot.Items == nil || !reflect.DeepEqual(first.Telemetry, worker.Telemetry) {
 		t.Fatalf("initial unknown inventory changed: %#v", first)
+	}
+	persisted := testutil.ReadWorkerSnapshot(t, database, worker.UserID, worker.WorkerID, stamp)
+	if runtime := persisted.Telemetry.RuntimeConfiguration; runtime == nil || runtime.Native == nil ||
+		runtime.Native.Model.Source != "local" || runtime.Native.Model.Value == nil || *runtime.Native.Model.Value != modelName {
+		t.Fatalf("persisted runtime configuration lost the local model selection: %#v", runtime)
 	}
 	worker.CreatedAt = stamp.Add(time.Hour)
 	worker.LastReportedAt = stamp.Add(time.Second)
@@ -77,8 +89,13 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	}
 	worker.LastReportedAt = stamp.Add(4 * time.Second)
 	worker.Telemetry.AssistantHost = nil
+	worker.Telemetry.RuntimeConfiguration = nil
 	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp, Items: []model.WorkerObservedTask{}}
 	empty := testutil.PutWorkerSnapshot(t, database, worker)
+	persisted = testutil.ReadWorkerSnapshot(t, database, worker.UserID, worker.WorkerID, worker.LastReportedAt)
+	if persisted.Telemetry.RuntimeConfiguration != nil {
+		t.Fatalf("omitted runtime configuration retained a stored selection: %#v", persisted.Telemetry.RuntimeConfiguration)
+	}
 	if empty.TaskSnapshot.State != model.WorkerTasksObserved || len(empty.TaskSnapshot.Items) != 0 || empty.TaskSnapshot.Items == nil || !reflect.DeepEqual(empty.Telemetry, worker.Telemetry) {
 		t.Fatalf("real empty inventory was not a complete observation: %#v", empty)
 	}

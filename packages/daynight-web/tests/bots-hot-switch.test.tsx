@@ -1,3 +1,4 @@
+vi.mock('../src/api/assistant-tasks', async original => ({ ...await original<typeof import('../src/api/assistant-tasks')>(), listAssistantTasks: async () => ({items:[],nextCursor:null,observedAt:'2026-11-13T00:00:00Z'}) }));
 import { useSyncExternalStore } from 'react';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -81,6 +82,11 @@ const actions = [
   { name: 'refreshControls', kind: 'refresh_controls', invoke: (client: TaskSessionClient) => client.refreshControls() },
 ];
 const stored = () => Object.fromEntries(Object.keys(sessionStorage).map(key => [key, sessionStorage.getItem(key)]));
+async function editableInput() {
+  const input = await screen.findByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
+  return input;
+}
 
 it('restores the original resident DOM and local state before the returning detail responds', async () => {
   localStorage.setItem(`daynight.web.session.display.v1:${JSON.stringify([BOT_USER, botId(101)])}`, '"standard"');
@@ -100,7 +106,7 @@ it('restores the original resident DOM and local state before the returning deta
       { kind: 'assistant_message', entryId: 'after', entrySeq: '3', revision: '1', content: [{ type: 'text', text: 'Later message' }] },
     ] });
   });
-  const a = await screen.findByRole('textbox', { name: 'Message' });
+  const a = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().historyReady).toBe(true));
   fireEvent.change(a, { target: { value: 'A local draft' } });
   const pane = f.resident().snapshot()[0]!, timeline = a.closest('.task-agent-session')!.querySelector<HTMLElement>('.session-timeline')!, reading = pane.reading.current;
@@ -125,7 +131,7 @@ it('restores the original resident DOM and local state before the returning deta
 });
 
 it.each(actions)('freezes $name before the navigation commit and rejects it until the returning detail is confirmed', async ({ invoke, kind }) => {
-  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = actionFixture(), input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
   fireEvent.change(input, { target: { value: 'Local draft' } });
   const a = f.resident().snapshot()[0]!, api = f.live[0]!.api, staleCall = () => invoke(a.client);
@@ -176,7 +182,7 @@ it.each(actions)('freezes $name before the navigation commit and rejects it unti
 });
 
 it('queries an original unknown operation while the returning detail is frozen without replaying or clearing a newer draft', async () => {
-  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = actionFixture(), input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
   const a = f.resident().snapshot()[0]!, api = f.live[0]!.api;
   fireEvent.change(input, { target: { value: 'Original submission' } });
@@ -251,7 +257,7 @@ it('keeps C selected when cancelled A and B detail reads resolve out of order', 
   f.choose(1); await waitFor(() => expect(f.reads.filter(id => id === f.bots[0]!.id)).toHaveLength(2));
   f.choose(3); await waitFor(() => expect(f.reads).toContain(f.bots[2]!.id));
   await act(async () => c.resolve(botResponse(f.bots[2]))); await screen.findByText(`Message ${f.bots[2]!.id}`);
-  const input = f.input(); fireEvent.change(input, { target: { value: 'C only' } });
+  const input = await editableInput(); fireEvent.change(input, { target: { value: 'C only' } });
   await act(async () => { b.resolve(botResponse(f.bots[1])); a.resolve(botResponse(f.bots[0])); });
   expect(f.input()).toBe(input); expect(input).toHaveValue('C only');
   expect(screen.getByRole('heading', { name: 'Assistant 3' })).toBeVisible();
@@ -259,7 +265,7 @@ it('keeps C selected when cancelled A and B detail reads resolve out of order', 
 });
 
 it('retains readable DOM but revokes new actions during read admission pause', async () => {
-  const f = fixture(); const input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = fixture(); const input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().actionAdmitted).toBe(true));
   const pane = f.resident().snapshot()[0]!; fireEvent.change(input, { target: { value: 'Kept across pause' } });
   f.enabled(false); expect(f.input()).toBe(input);
@@ -272,7 +278,7 @@ it('retains readable DOM but revokes new actions during read admission pause', a
 
 it('preserves action admission during an ordinary poll and keeps the resident readable through failure and retry', async () => {
   const timers = vi.spyOn(globalThis, 'setInterval');
-  const f = fixture(); const input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = fixture(); const input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().actionAdmitted).toBe(true));
   const pane = f.resident().snapshot()[0]!, timeline = input.closest('.task-agent-session')!.querySelector('.session-timeline');
   fireEvent.change(input, { target: { value: 'Readable through a transient failure' } });

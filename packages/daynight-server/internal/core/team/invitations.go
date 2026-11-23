@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -33,7 +34,10 @@ type TeamInvitationAcceptance struct {
 func invitationAvailable(i model.TeamInvitation, now time.Time) bool {
 	return i.ConsumedAt == nil && i.RevokedAt == nil && i.ExpiresAt.After(now)
 }
-func requireOrdinaryTeamAdmin(t model.Team) error {
+func requireOrdinaryTeamAdmin(ctx context.Context, p model.Principal, t model.Team) error {
+	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+		return err
+	}
 	if t.Membership.Role != model.ProjectAdmin {
 		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
@@ -64,7 +68,7 @@ func CreateInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	if err != nil {
 		return MintedTeamInvitation{}, err
 	}
-	if err = requireOrdinaryTeamAdmin(t); err != nil {
+	if err = requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return MintedTeamInvitation{}, err
 	}
 	now := clock().UTC()
@@ -81,7 +85,7 @@ func ListInvitations(ctx context.Context, dao store.TeamReader, p model.Principa
 	if err != nil {
 		return nil, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return nil, err
 	}
 	return dao.TeamInvitations(ctx, id, clock().UTC())
@@ -105,7 +109,7 @@ func ListInvitationPage(ctx context.Context, dao store.TeamReader, p model.Princ
 	if err != nil {
 		return InvitationPage{}, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return InvitationPage{}, err
 	}
 	result, err := dao.TeamInvitationPage(ctx, id, clock().UTC(), page)
@@ -129,7 +133,7 @@ func RevokeInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	if err != nil {
 		return false, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return false, err
 	}
 	return dao.RevokeInvitation(ctx, inviteID, clock().UTC())
@@ -167,6 +171,9 @@ func InspectInvitation(ctx context.Context, dao store.TeamReader, p model.Princi
 	if t.Kind != "ordinary" || t.Name == nil {
 		return TeamInvitationInspection{}, model.InvitationUnavailable(nil)
 	}
+	if err := checkScope(ctx, p, scopepolicy.TeamInvitationRead); err != nil {
+		return TeamInvitationInspection{}, err
+	}
 	result := TeamInvitationInspection{Team: t}
 	member, err := dao.InvitationTeamMember(ctx, i.TeamID, p.UserID)
 	if errors.Is(err, model.ErrNotFound) {
@@ -178,7 +185,27 @@ func InspectInvitation(ctx context.Context, dao store.TeamReader, p model.Princi
 	result.Membership = &member
 	return result, nil
 }
+
+// TeamInvitationReceipt contains only facts from the submitted operation.
+type TeamInvitationReceipt struct {
+	TeamID           string
+	Joined, Consumed bool
+}
+
 func AcceptInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, secret string, clock func() time.Time) (TeamInvitationAcceptance, error) {
+	return acceptInvitation(ctx, dao, p, secret, clock, true)
+}
+
+// AcceptInvitationReceipt omits the pre-existing Team and membership projection.
+func AcceptInvitationReceipt(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, secret string, clock func() time.Time) (TeamInvitationReceipt, error) {
+	result, err := acceptInvitation(ctx, dao, p, secret, clock, false)
+	if err != nil {
+		return TeamInvitationReceipt{}, err
+	}
+	return TeamInvitationReceipt{TeamID: result.Team.ID, Joined: result.Joined, Consumed: result.Consumed}, nil
+}
+
+func acceptInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, secret string, clock func() time.Time, full bool) (TeamInvitationAcceptance, error) {
 	i, err := dao.LockInvitation(ctx, secretutil.Hash(secret))
 	if errors.Is(err, model.ErrNotFound) {
 		return TeamInvitationAcceptance{}, model.InvitationUnavailable(nil)
@@ -197,13 +224,20 @@ func AcceptInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	if t.Kind != "ordinary" || t.Name == nil {
 		return TeamInvitationAcceptance{}, model.InvitationUnavailable(nil)
 	}
+	operations := []scopepolicy.Operation{scopepolicy.TeamInvitationAccept}
+	if full {
+		operations = append(operations, scopepolicy.TeamInvitationRead)
+	}
+	if err := checkScope(ctx, p, operations...); err != nil {
+		return TeamInvitationAcceptance{}, err
+	}
 	member, err := dao.InvitationMember(ctx, p.UserID)
 	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		return TeamInvitationAcceptance{}, err
 	}
 	result := TeamInvitationAcceptance{}
 	if errors.Is(err, model.ErrNotFound) {
-		member, err = dao.AddInvitedMember(ctx, p.UserID)
+		member, err = dao.AddMember(ctx, p.UserID, model.ProjectMemberRole)
 		if err != nil {
 			return TeamInvitationAcceptance{}, err
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func readStoreTeam(t *testing.T, s *Store, userID, teamID string) model.Team {
 }
 
 func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, _ := storeTeamFixture(t)
 	ctx := context.Background()
 	id := uuid.NewString()
@@ -62,10 +64,12 @@ func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
 }
 
 func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, commit := range []bool{false, true} {
-		t.Run(map[bool]string{false: "writer rollback", true: "writer commit"}[commit], func(t *testing.T) {
-			s, actor, team := storeTeamFixture(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if !t.Run(map[bool]string{false: "writer rollback", true: "writer commit"}[commit], func(t *testing.T) {
+			actor, team := testutil.TeamFixture(t, s)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			writer, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 			if err != nil {
@@ -88,7 +92,8 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 			}
 			occupied := errors.New("Team has projects")
 			done := make(chan error, 1)
-			go func() {
+			var waiter sync.WaitGroup
+			waiter.Go(func() {
 				done <- testWriteTeamRaw(s, ctx, team.ID, func(tx TeamWriteDAO, raw pgx.Tx) error {
 					var isolation string
 					if err := raw.QueryRow(ctx, "SHOW transaction_isolation").Scan(&isolation); err != nil {
@@ -106,8 +111,13 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 					}
 					return tx.Delete(ctx)
 				})
+			})
+			defer func() {
+				cancel()
+				_ = writer.Rollback(context.Background())
+				waiter.Wait()
 			}()
-			waitForQueryLock(t, s, "SELECT id::text FROM teams WHERE")
+			testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text FROM teams WHERE", writer.Conn().PgConn().PID())
 			if commit {
 				err = writer.Commit(ctx)
 			} else {
@@ -136,11 +146,14 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 					t.Fatalf("empty Team not deleted %d %v", count, err)
 				}
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 	for _, remove := range []bool{false, true} {
-		t.Run(map[bool]string{false: "actor demoted while locked", true: "actor removed while locked"}[remove], func(t *testing.T) {
-			s, actor, team := storeTeamFixture(t)
+		if !t.Run(map[bool]string{false: "actor demoted while locked", true: "actor removed while locked"}[remove], func(t *testing.T) {
+			actor, team := testutil.TeamFixture(t, s)
 			_, observer, _ := testAuthRecords(t, s)
 			_, target, _ := testAuthRecords(t, s)
 			mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($1,$3,'member')`, team.ID, observer.UserID, target.UserID)
@@ -157,7 +170,8 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 				t.Fatal(err)
 			}
 			done := make(chan error, 1)
-			go func() {
+			var waiter sync.WaitGroup
+			waiter.Go(func() {
 				_, err := s.WriteTeam(ctx, team.ID, func(scope TeamWriteScope) error {
 					current, err := scope.TeamDAO().Team(ctx, actor.UserID)
 					if remove {
@@ -174,6 +188,11 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 					return nil
 				})
 				done <- err
+			})
+			defer func() {
+				cancel()
+				_ = holder.Rollback(context.Background())
+				waiter.Wait()
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text FROM teams WHERE", holder.Conn().PgConn().PID())
 			dao := teamstore.NewWriter(holder, team.ID)
@@ -197,11 +216,15 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 			if after := readStoreTeam(t, s, target.UserID, team.ID).Membership; !reflect.DeepEqual(after, targetBefore) {
 				t.Fatalf("actor refresh changed target: before %#v after %#v", targetBefore, after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 }
 
 func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, rollback := range []bool{false, true} {
 		t.Run(map[bool]string{false: "delete commits", true: "delete rolls back"}[rollback], func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -259,6 +282,7 @@ func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
 }
 
 func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error { _, err := tx.Rename(ctx, actor.UserID, "Changed"); cancel(); return err })
@@ -294,6 +318,7 @@ func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
 }
 
 func TestTeamCommitResponseLossRetainsCommittedResult(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

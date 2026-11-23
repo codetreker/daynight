@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { canonicalImageJson, parseImageCaptureRequest, type ImageCaptureReceipt, type ImageCaptureRequest, type ImageError, type ImageLocator, type ImageOccurrence, type ValidatedImage } from "../../../session/image-values.js";
+import { canonicalImageJson, parseDirectCaptureSubmission, parseImageCaptureRequest, parseStoredDirectCaptureSubmission, parseStoredImageCaptureRequest, type DirectCaptureSubmission, type ImageCaptureReceipt, type ImageCaptureRequest, type ImageError, type ImageLocator, type ImageOccurrence, type ValidatedImage } from "../../../session/image-values.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
+import { nativeEntryId } from "../native-identity.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError, ImageCaptureRetrySettledError, ImageCaptureRetryUnknownError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import type { ExternalImagePolicyLease } from "./external-policy.js";
@@ -13,7 +15,8 @@ import { copyExternalImage, createExternalImagePolicy, ExternalImageSourceError,
 
 export type MarkdownSourceContext = {
   contextId: string; serverOrigin: string; ownerUserId: string; sessionId: string; executionId: string;
-  nativeSessionId: string | null; cwd: string; platform: NodeJS.Platform; entryId: string; partId: string; policyRevision: string;
+  nativeSessionId: string | null; cwd: string; platform: NodeJS.Platform; entryId: string; partId: string | null; policyRevision: string;
+  nativeCaptureId?: string;
   root: { dev: string; ino: string };
 };
 export type MarkdownCaptureRecord = {
@@ -22,8 +25,12 @@ export type MarkdownCaptureRecord = {
   started: boolean; awaitingRetry: boolean; queuedAt: number; receipt: ImageCaptureReceipt | null; error: ImageError | null; cooldownUntil: number;
   sourceAdmission?: { attemptId: string; policyRevision: string | null; sourceProofSha256: string | null; validated: ValidatedImage } | null;
   sourceCleanup?: { captureId: string; attemptId: string; pending: boolean; error: ImageError | null } | null;
+  submission?: DirectCaptureSubmission;
+  submissionRefusal?: ImageError;
+  dispatchPending?: boolean;
+  resumeReserved?: "source" | "submission";
 };
-type Hooks = Required<Pick<ProviderOptions, "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture">>;
+type Hooks = Required<Pick<ProviderOptions, "prepareImageCapture" | "queryImageCapture" | "submitImageCapture">> & Pick<ProviderOptions, "verifyImageCapture" | "freezeImageCapture">;
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
 const validationFailures = new Map<string, string>([["image_decode_failed", "decode_failed"], ["image_format_unsupported", "unsupported_media_type"], ["image_integrity_failed", "source_changed"], ["image_geometry_exceeded", "invalid_image"], ["image_too_large", "source_too_large"]]);
 const sourceError = (error: unknown): ImageError => {
@@ -35,13 +42,15 @@ const sourceError = (error: unknown): ImageError => {
 };
 const refuse = (code: string): never => { throw Object.assign(new Error(code), { code }); };
 
-/** Durable source intents precede register and IO. An interrupted writer is never restarted. */
+/** Durable source intents precede IO; frozen submissions retain their sealed content. */
 export const createMarkdownCaptureCoordinator = (options: {
+  beforeSpawn?(): void;
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore;
   bridge: Pick<ProviderOptions, keyof Hooks>; writable(): boolean; fence(): string | null;
   nativeReadPolicy?(): NativeReadPolicy | null;
   acquireExternalPolicy?(): Promise<ExternalImagePolicyLease>;
   onReceipt(request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void;
+  onNativeReceipt?(request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void;
   onFailure?(occurrence: ImageOccurrence, error: ImageError): void;
 }) => {
   const { ticket, journal } = options, store = journal.markdownStore, hooks = options.bridge as Hooks;
@@ -55,7 +64,8 @@ export const createMarkdownCaptureCoordinator = (options: {
   const saved = (value: MarkdownCaptureRecord): MarkdownCaptureRecord => { store.put("source", value.occurrence.imageId, value); return value; };
   const get = (imageId: string): MarkdownCaptureRecord | null => {
     const record = store.get<MarkdownCaptureRecord>("source", imageId);
-    if (record?.request) parseImageCaptureRequest(record.request);
+    if (record?.request) parseStoredImageCaptureRequest(record.request);
+    if (record?.submission) parseStoredDirectCaptureSubmission(record.submission);
     return record;
   };
   const needsCleanup = (record: MarkdownCaptureRecord): boolean => !!record.sourceCleanup?.pending || !record.sourceCleanup && record.started && !!record.request;
@@ -68,7 +78,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const cleanup = record.sourceCleanup;
     if (!cleanup?.pending) return;
     if (!record.request || cleanup.captureId !== record.request.captureId) throw new Error("Image source cleanup identity is corrupt.");
-    parseImageCaptureRequest({ ...record.request, attemptId: cleanup.attemptId });
+    parseStoredImageCaptureRequest({ ...record.request, attemptId: cleanup.attemptId });
     try {
       await journal.media().releaseCaptureSource(cleanup.captureId, cleanup.attemptId);
       const completed = { ...cleanup, pending: false };
@@ -99,7 +109,7 @@ export const createMarkdownCaptureCoordinator = (options: {
   const checkContext = (context: MarkdownSourceContext, local: boolean, originalFence?: string, expectedPolicy?: NativeReadPolicy): void => {
     if (stopped || !options.writable() || !options.fence() || originalFence !== undefined && options.fence() !== originalFence) refuse("policy_restricted");
     if (context.serverOrigin !== ticket.serverOrigin || context.ownerUserId !== (ticket.userId ?? ticket.ownerUserId) || context.sessionId !== ticket.sessionId || context.executionId !== ticket.executionId || !context.nativeSessionId || context.nativeSessionId !== journal.getSnapshot().nativeSessionId || context.cwd !== ticket.cwd || context.platform !== process.platform) refuse("context_unavailable");
-    const known = store.get<MarkdownSourceContext>("context", context.contextId);
+    const known = store.get<MarkdownSourceContext>("context", context.nativeCaptureId ? `native:${context.nativeCaptureId}` : context.contextId);
     if (!known || canonicalImageJson(known) !== canonicalImageJson(context)) refuse("context_unavailable");
     if (local) {
       const policy = options.nativeReadPolicy?.();
@@ -123,7 +133,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const verify = () => {
       checkContext(record.context, false, fence);
       const current = get(request.occurrence.imageId);
-      if (!current?.request || current.request.captureId !== request.captureId || current.request.attemptId !== request.attemptId || !hasAdmission(current, journal.media().captureStatus(request.captureId, request.attemptId))) refuse("policy_restricted");
+      if (!current?.request || canonicalImageJson(current.request) !== canonicalImageJson(request) || !hasAdmission(current, journal.media().captureStatus(request.captureId, request.attemptId))) refuse("policy_restricted");
     };
     verify(); return { verify, close() {} };
   };
@@ -152,28 +162,59 @@ export const createMarkdownCaptureCoordinator = (options: {
   };
   const observe = (record: MarkdownCaptureRecord, receipt: ImageCaptureReceipt): void => {
     if (!record.request) return;
+    delete record.submissionRefusal;
     if (receipt.attemptId !== record.request.attemptId) {
       // Only the original control request may start a service retry. Persist
       // that boundary with its identity before receipt projection can fail.
-      record.awaitingRetry = true; record.started = false; record.error = null; record.phase = "unknown";
+      record.awaitingRetry = true; record.started = false; record.error = null; delete record.submission; delete record.dispatchPending; delete record.resumeReserved; record.phase = "unknown";
     }
     record.request = { ...record.request, attemptId: receipt.attemptId };
     record.receipt = receipt;
     const terminal = receipt.state === "committed" || receipt.state === "failed";
-    if (terminal) { record.phase = "unknown"; record.error = receipt.error; }
+    if (terminal) { record.phase = "unknown"; record.error = receipt.error; delete record.resumeReserved; }
     saved(record);
     if (receipt.resource) {
-      if (record.request.locator.kind === "resource") journal.saveResource(receipt.resource);
-      else journal.media().adoptCaptureResource(receipt.captureId, receipt.attemptId, receipt.resource);
       store.put("context", `resource:daynight-resource:${receipt.resource.resourceId}`, receipt.resource.resourceId);
     }
-    options.onReceipt(record.request, receipt);
+    if (record.context.nativeCaptureId) { if (terminal) options.onNativeReceipt?.(record.request, receipt); }
+    else options.onReceipt(record.request, receipt);
     if (terminal) { record.phase = "settled"; saved(record); }
   };
-  const settleFailure = async (record: MarkdownCaptureRecord, error: ImageError): Promise<void> => {
-    record.error = error; record.phase = "unknown"; saved(record);
-    try { observe(record, await hooks.failImageCapture(record.request!.captureId, record.request!.attemptId, error)); }
-    catch { /* The original service identity remains query-only. */ }
+  const settleRefusal = (record: MarkdownCaptureRecord, error: unknown): boolean => {
+    if (!(error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) return false;
+    // The local projection records the refusal, not a fabricated service receipt.
+    record.error = { code: error.code, message: error.message }; record.receipt = null; record.phase = "settled"; delete record.submissionRefusal;
+    saved(record); options.onFailure?.(record.occurrence, record.error);
+    return true;
+  };
+  const freeze = (record: MarkdownCaptureRecord, outcome: DirectCaptureSubmission["outcome"]): void => {
+    if (record.submission) throw new Error("Image capture already has a frozen submission.");
+    record.submission = parseDirectCaptureSubmission({ request: journal.getImageCaptureRequest(record.request!.captureId), attemptId: record.request!.attemptId, outcome });
+    hooks.freezeImageCapture?.(record.submission);
+    record.dispatchPending = true; record.phase = "unknown"; saved(record);
+  };
+  const submit = async (record: MarkdownCaptureRecord): Promise<void> => {
+    const submission = record.submission!;
+    checkContext(record.context, false);
+    if (submission.outcome.kind === "validated") {
+      const sealed = journal.media().captureStatus(submission.request.captureId, submission.attemptId);
+      if (!hasAdmission(record, sealed) || canonicalImageJson(sealed) !== canonicalImageJson(submission.outcome.validated)) throw new Error("Image capture frozen source is unavailable.");
+    }
+    // Persist uncertainty before dispatch; only a definite admission refusal
+    // permits another send without first observing this capture.
+    record.dispatchPending = false; saved(record);
+    let receipt: ImageCaptureReceipt;
+    try { receipt = await hooks.submitImageCapture(submission); }
+    catch (cause) {
+      if (isRetryableCaptureRefusal(cause)) {
+        record.dispatchPending = true; record.cooldownUntil = Date.now() + 1000; saved(record);
+      } else if (cause instanceof ImageCaptureRequestError && ["capture_conflict", "resource_conflict"].includes(cause.code)) {
+        record.submissionRefusal = { code: cause.code, message: cause.message }; saved(record);
+      } else if (cause instanceof ImageCaptureRequestError || cause instanceof ImageCapturePrerequisiteError) settleRefusal(record, cause);
+      else throw cause;
+      return;
+    }
+    observe(record, receipt);
   };
   const decode = async <T>(action: () => Promise<T>): Promise<T> => {
     const previous = decodeTail; let release!: () => void;
@@ -184,7 +225,29 @@ export const createMarkdownCaptureCoordinator = (options: {
     const request = record.request!, fence = options.fence();
     if (!fence) return refuse("policy_restricted");
     checkContext(record.context, request.locator.kind === "local", fence); signal.throwIfAborted();
+    hooks.verifyImageCapture?.(request.captureId, request.attemptId);
     const sourcePolicy = request.locator.kind === "local" ? options.nativeReadPolicy!()! : null;
+    const waitForCapture = async (joined: AbortSignal, local: boolean): Promise<void> => {
+      for (;;) {
+        joined.throwIfAborted(); checkContext(record.context, local, fence, local ? sourcePolicy! : undefined);
+        try { hooks.verifyImageCapture?.(request.captureId, request.attemptId); return; }
+        catch (error) { if (!isRetryableCaptureRefusal(error)) throw error; }
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { joined.removeEventListener("abort", abort); resolve(); }, 50);
+          const abort = () => { clearTimeout(timer); joined.removeEventListener("abort", abort); reject(joined.reason); };
+          joined.addEventListener("abort", abort, { once: true }); if (joined.aborted) abort();
+        });
+      }
+    };
+    const withCapture = async <T>(joined: AbortSignal, local: boolean, action: () => T): Promise<T> => {
+      for (;;) {
+        await waitForCapture(joined, local);
+        joined.throwIfAborted(); checkContext(record.context, local, fence, local ? sourcePolicy! : undefined);
+        try { hooks.verifyImageCapture?.(request.captureId, request.attemptId); }
+        catch (error) { if (isRetryableCaptureRefusal(error)) continue; throw error; }
+        return action();
+      }
+    };
     let sourceProofSha256: string | null = null;
     const media = journal.media(); let lease: CaptureSourceLease | undefined, sourceFailed = false, sourceCause: unknown;
     // reserve can persist its private paths before it returns a lease.
@@ -194,14 +257,15 @@ export const createMarkdownCaptureCoordinator = (options: {
       lease = media.reserveCaptureSource(request.captureId, request.attemptId);
       const source = await lease.runWriter(async (outputPath, writerSignal) => {
         const joined = AbortSignal.any([signal, writerSignal]);
+        await waitForCapture(joined, request.locator.kind === "local");
         if (request.locator.kind === "local") {
-          const context = await createLocalImageContext({ cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
+          const context = await createLocalImageContext({ ...(options.beforeSpawn === undefined ? {} : { beforeSpawn: options.beforeSpawn }), cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
           try {
-            checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
-            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {
-              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
+            await waitForCapture(joined, true);
+            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, waitCapture: () => waitForCapture(joined, true), assertCapture: () => { joined.throwIfAborted(); checkContext(record.context, true, fence, sourcePolicy!); hooks.verifyImageCapture?.(request.captureId, request.attemptId); }, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {
+              await waitForCapture(joined, true);
               try { await sourcePolicy!.authorizeCheckpoint(checkpoint); } catch { refuse("policy_restricted"); }
-              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
+              await waitForCapture(joined, true);
               if (checkpoint.stage === "final") sourceProofSha256 = createHash("sha256").update(canonicalImageJson(checkpoint.proof)).digest("hex");
             } });
             return { ...result, byteLength: String(result.byteLength) };
@@ -211,22 +275,25 @@ export const createMarkdownCaptureCoordinator = (options: {
         if (!options.acquireExternalPolicy) return refuse("policy_restricted");
         const externalLease = await options.acquireExternalPolicy();
         try {
+          const sourceSignal = AbortSignal.any([joined, externalLease.signal]);
+          await waitForCapture(sourceSignal, false);
           const policy = createExternalImagePolicy({ ...externalLease,
-            assertEgressPolicy: async () => { checkContext(record.context, false, fence); await externalLease.assertEgressPolicy(); checkContext(record.context, false, fence); },
-            beforeRequest: ({ hostname }) => { checkContext(record.context, false, fence); if (!store.rate(hostname)) throw new ExternalImageSourceError("source_rate_limited", 30); },
+            waitCapture: signal => waitForCapture(AbortSignal.any([sourceSignal, signal]), false),
+            assertCapture: () => { sourceSignal.throwIfAborted(); checkContext(record.context, false, fence); hooks.verifyImageCapture?.(request.captureId, request.attemptId); },
+            assertEgressPolicy: async signal => { const scope = signal ? AbortSignal.any([sourceSignal, signal]) : sourceSignal; await waitForCapture(scope, false); await externalLease.assertEgressPolicy(); await waitForCapture(scope, false); },
+            beforeRequest: async ({ hostname }, signal) => { await waitForCapture(signal ? AbortSignal.any([sourceSignal, signal]) : sourceSignal, false); if (!store.rate(hostname)) throw new ExternalImageSourceError("source_rate_limited", 30); },
           });
           return await copyExternalImage({ url: request.locator.url, outputPath, signal: joined, policy });
         } finally { externalLease.release(); }
       });
-      signal.throwIfAborted(); checkContext(record.context, false, fence);
       const result = await decode(async () => {
-        signal.throwIfAborted(); checkContext(record.context, false, fence);
-        return media.stageCapture({ ...source, captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId });
+        return withCapture(signal, false, () => media.stageCapture({ ...source, captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId }));
       });
-      signal.throwIfAborted(); checkContext(record.context, false, fence);
       if (request.locator.kind === "local" && !sourceProofSha256) return refuse("policy_restricted");
-      record.sourceAdmission = { attemptId: request.attemptId, policyRevision: sourcePolicy?.revision ?? null, sourceProofSha256, validated: result };
-      record.phase = "validated"; saved(record); return result;
+      return await withCapture(signal, false, () => {
+        record.sourceAdmission = { attemptId: request.attemptId, policyRevision: sourcePolicy?.revision ?? null, sourceProofSha256, validated: result };
+        record.phase = "validated"; saved(record); return result;
+      });
     } catch (error) {
       sourceFailed = true; sourceCause = error;
       if (error instanceof ExternalImageSourceError && error.retryAfterSeconds !== undefined) record.cooldownUntil = Date.now() + error.retryAfterSeconds * 1000;
@@ -240,36 +307,59 @@ export const createMarkdownCaptureCoordinator = (options: {
     // Local ownership cleanup is independent of service reachability and current
     // source authority, and must precede receipt adoption or attempt replacement.
     await cleanupSource(record);
-    if (stopped || !options.writable() || !options.fence() || !record.request || record.phase === "settled" || !journal.imageOccurrenceAcknowledged(record.occurrence.imageId)) return;
-    let request = record.request;
-    let receipt: ImageCaptureReceipt;
-    if (record.phase === "waiting") {
-      journal.registerImageCaptureRequest(request);
-      record.phase = "unknown"; saved(record);
-      try { receipt = await hooks.registerImageCapture(request); } catch { return; }
-    } else {
-      try { receipt = await hooks.queryImageCapture(request.captureId); } catch { return; }
+    if (signal.aborted || stopped || !options.writable() || !options.fence() || !record.request || record.phase === "settled" || !journal.imageOccurrenceAcknowledged(record.occurrence.imageId)) return;
+    const request = record.request;
+    if (record.submission || record.awaitingRetry || record.resumeReserved) {
+      if (record.dispatchPending) { if (Date.now() >= record.cooldownUntil) await submit(record); return; }
+      let receipt: ImageCaptureReceipt;
+      try { receipt = await hooks.queryImageCapture(request.captureId); }
+      catch (error) {
+        if (isRetryableCaptureRefusal(error)) return;
+        if (error instanceof ImageCaptureRequestError) {
+          if (error.code === "capture_not_found") {
+            if (record.submissionRefusal) settleRefusal(record, new ImageCaptureRequestError(record.submissionRefusal));
+            else if (record.submission) { delete record.resumeReserved; saved(record); await submit(record); }
+          }
+          else settleRefusal(record, error);
+          return;
+        }
+        throw error;
+      }
+      const resume = record.resumeReserved;
+      observe(record, receipt);
+      if (!resume || receipt.state !== "reserved" || receipt.attemptId !== request.attemptId) return;
+      // Migration preserves the old control boundary. Only its original
+      // reservation can authorize continuation of that unfinished action.
+      delete record.resumeReserved; record.awaitingRetry = false;
+      if (resume === "submission") {
+        record.dispatchPending = true; saved(record); await submit(record); return;
+      }
+      record.phase = "registered"; saved(record);
     }
-    observe(record, receipt);
-    request = record.request!;
-    if (receipt.state === "committed" || receipt.state === "failed") return;
-    if (receipt.state === "copying") { record.phase = "unknown"; saved(record); return; }
-    if (record.awaitingRetry) return;
-    // An unknown failure response cannot turn its admitted stage into a commit.
-    if (record.error) { await settleFailure(record, record.error); return; }
+    if (Date.now() < record.cooldownUntil) return;
+    if (record.phase === "waiting") journal.registerImageCaptureRequest(request);
+    try { await hooks.prepareImageCapture(journal.getImageCaptureRequest(request.captureId), signal); }
+    catch (error) {
+      if (signal.aborted) return;
+      if (isRetryableCaptureRefusal(error)) { record.cooldownUntil = Date.now() + 1000; saved(record); return; }
+      else if (settleRefusal(record, error)) return;
+      else throw error;
+    }
+    if (signal.aborted) return;
+    if (request.locator.kind === "resource") { freeze(record, { kind: "resource" }); await submit(record); return; }
+    if (record.error) { freeze(record, { kind: "failed", error: record.error }); await submit(record); return; }
     let validated = journal.media().captureStatus(request.captureId, request.attemptId);
-    if (validated && !hasAdmission(record, validated)) { await settleFailure(record, failure("source_unavailable")); return; }
-    if (!validated && record.started) { await settleFailure(record, failure("source_unavailable")); return; }
+    if (validated && !hasAdmission(record, validated) || !validated && record.started) { record.error = failure("source_unavailable"); freeze(record, { kind: "failed", error: record.error }); await submit(record); return; }
     if (!validated) {
       try {
         if (Date.now() - record.queuedAt > 30_000) refuse("source_queue_timeout");
         validated = await copy(record, signal);
       } catch (error) {
-        await settleFailure(record, record.error ?? sourceError(error)); return;
+        if (isRetryableCaptureRefusal(error) && !record.started) { record.cooldownUntil = Date.now() + 1000; saved(record); return; }
+        record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record); return;
       }
     }
-    record.phase = "unknown"; saved(record);
-    try { observe(record, await hooks.commitImageCapture(request.captureId, request.attemptId, validated)); } catch { /* Query the original commit. */ }
+    freeze(record, { kind: "validated", validated }); await submit(record);
   };
   const track = <T>(id: string, run: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> => {
     if (active.has(id)) return active.get(id)!.work as Promise<T>;
@@ -287,6 +377,22 @@ export const createMarkdownCaptureCoordinator = (options: {
       cursor = id;
       const value = get(id)!;
       const cleanup = needsCleanup(value);
+      // The native projector owns submission and recovery for its original
+      // capture. This index only retains source authority and cleanup evidence.
+      if (value.context.nativeCaptureId) {
+        if (!active.has(id) && (cleanup || value.phase === "unknown" && options.writable() && options.fence())) work.push(track(id, async () => {
+          await cleanupSource(value);
+          if (!value.request || value.phase !== "unknown" || !options.writable() || !options.fence()) return;
+          if (value.dispatchPending && value.submission) { if (Date.now() >= value.cooldownUntil) await submit(value); return; }
+          try { observe(value, await hooks.queryImageCapture(value.request.captureId)); }
+          catch (error) {
+            if (isRetryableCaptureRefusal(error)) return;
+            if (error instanceof ImageCaptureRequestError && error.code === "capture_not_found") { if (value.submission) await submit(value); return; }
+            throw error;
+          }
+        }));
+        continue;
+      }
       if ((!options.writable() || !options.fence()) && !cleanup) continue;
       // Source intent commits before position registration. Reconcile that
       // interrupted boundary before waiting for its durable ACK.
@@ -304,29 +410,134 @@ export const createMarkdownCaptureCoordinator = (options: {
     await Promise.all(work);
   };
   const retry = async (request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage> => {
+    const current = journal.assertImageCaptureAttempt(request.captureId, request.attemptId, request.occurrence.imageId);
+    if (canonicalImageJson(current) !== canonicalImageJson(request)) return refuse("context_unavailable");
     const old = get(request.occurrence.imageId);
-    if (!old?.request || old.request.captureId !== request.captureId || canonicalImageJson(old.request.locator) !== canonicalImageJson(request.locator)) return refuse("context_unavailable");
+    if (!old?.request || canonicalImageJson({ ...old.request, attemptId: request.attemptId }) !== canonicalImageJson(request)) return refuse("context_unavailable");
     const running = active.get(request.occurrence.imageId); if (running) { await running.work; return retry(request, signal); }
     if (active.size >= 2) return refuse("rate_limited");
     return track(request.occurrence.imageId, async joined => {
       await cleanupSource(old);
       joined.throwIfAborted();
-      if (old.request!.attemptId === request.attemptId && old.error) return refuse(old.error.code);
-      const existing = journal.media().captureStatus(request.captureId, request.attemptId); if (existing) { if (!hasAdmission(old, existing)) return refuse("source_unavailable"); return existing; }
-      if (old.request!.attemptId === request.attemptId && old.started) return refuse("source_unavailable");
+      if (old.request!.attemptId === request.attemptId && old.error) {
+        if (journal.getOnlineMode() !== "relay") return refuse(old.error.code);
+        if (old.submission) {
+          await submit(old);
+          if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
+          throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        }
+      }
+      const existing = journal.media().captureStatus(request.captureId, request.attemptId);
+      if (old.request!.attemptId === request.attemptId && existing && hasAdmission(old, existing)) return existing;
+      if (old.request!.attemptId === request.attemptId && (old.started || old.error || existing)) {
+        if (journal.getOnlineMode() !== "relay") return refuse(old.error?.code ?? "source_unavailable");
+        // A reserved receipt proves this exact retry has not been submitted.
+        // An interrupted writer or unadmitted stage cannot be read again.
+        const receipt = await hooks.queryImageCapture(request.captureId);
+        if (receipt.attemptId !== request.attemptId || receipt.state !== "reserved") {
+          if (receipt.attemptId === request.attemptId && receipt.state === "failed" && receipt.error) throw new ImageCaptureRetrySettledError(receipt.error);
+          throw new ImageCaptureRetryUnknownError(new Error("Original retry reservation is unavailable."));
+        }
+        old.error ??= failure("source_unavailable");
+        freeze(old, { kind: "failed", error: old.error });
+        await submit(old);
+        if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
+        if (old.dispatchPending) throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        throw new ImageCaptureRetryUnknownError(new Error("Original retry failure remains unresolved."));
+      }
       const remaining = Math.max(0, old.cooldownUntil - Date.now()), until = performance.now() + remaining;
       while (performance.now() < until) {
         joined.throwIfAborted(); checkContext(old.context, request.locator.kind === "local");
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, until - performance.now())));
       }
-      const record = saved({ ...old, request, phase: "registered", started: false, awaitingRetry: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
+      const { submission: _previousSubmission, submissionRefusal: _previousRefusal, dispatchPending: _previousDispatch, resumeReserved: _previousResume, ...withoutRetry } = old;
+      const record = saved({ ...withoutRetry, request, phase: "registered", started: false, awaitingRetry: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
       try { const result = await copy(record, joined); record.phase = "unknown"; saved(record); return result; }
-      catch (error) { await settleFailure(record, record.error ?? sourceError(error)); throw error; }
+      catch (error) {
+        if (isRetryableCaptureRefusal(error) && !record.started) throw error;
+        record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record);
+        if (journal.getOnlineMode() !== "relay") throw error;
+        if (record.receipt?.state === "failed" && record.receipt.error) throw new ImageCaptureRetrySettledError(record.receipt.error);
+        if (record.dispatchPending) throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        throw error;
+      }
     }, signal);
+  };
+  const stageNative = async (request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage> => {
+    const original = journal.getImageCaptureRequest(request.captureId);
+    const attempt = journal.assertImageCaptureAttempt(request.captureId, request.attemptId, request.occurrence.imageId);
+    if (!request.nativeSource || request.occurrence.partId !== null || request.locator.kind !== "local" && request.locator.kind !== "external"
+      || request.nativeSource.provider !== ticket.provider || request.nativeSource.nativeSessionId !== journal.getSnapshot().nativeSessionId
+      || canonicalImageJson(attempt) !== canonicalImageJson(request)
+      || canonicalImageJson({ ...request, attemptId: original.attemptId }) !== canonicalImageJson(original)) return refuse("context_unavailable");
+    if (request.locator.kind === "local") {
+      const expected = request.nativeSource.provider === "codex" ? nativeEntryId(request.nativeSource.nativeSessionId, `source-context:${ticket.cwd}`)
+        : request.nativeSource.provider === "copilot" ? request.nativeSource.nativeSessionId : null;
+      if (!expected || request.locator.contextId !== expected) return refuse("context_unavailable");
+    }
+    const running = active.get(request.occurrence.imageId);
+    if (running) { await running.work.catch(() => {}); signal.throwIfAborted(); return stageNative(request, signal); }
+    const locator = request.locator;
+    const key = `native:${request.captureId}`;
+    let context = store.get<MarkdownSourceContext>("context", key);
+    if (!context) {
+      context = { contextId: request.locator.kind === "local" ? request.locator.contextId : request.captureId, nativeCaptureId: request.captureId,
+        serverOrigin: ticket.serverOrigin, ownerUserId: ticket.userId ?? ticket.ownerUserId, sessionId: ticket.sessionId, executionId: ticket.executionId,
+        nativeSessionId: request.nativeSource.nativeSessionId, cwd: ticket.cwd, platform: process.platform, entryId: request.occurrence.entryId,
+        partId: null, policyRevision: policyRevision(), root };
+      store.put("context", key, context);
+    }
+    if (context.nativeCaptureId !== request.captureId || context.entryId !== request.occurrence.entryId || context.partId !== null
+      || request.locator.kind === "local" && context.contextId !== request.locator.contextId) return refuse("context_unavailable");
+    const existing = get(request.occurrence.imageId);
+    if (existing) {
+      if (!existing.request || existing.context.nativeCaptureId !== request.captureId
+        || canonicalImageJson({ ...existing.request, attemptId: original.attemptId }) !== canonicalImageJson(original)) return refuse("context_unavailable");
+      const sealed = journal.media().captureStatus(request.captureId, request.attemptId);
+      if (existing.request.attemptId === request.attemptId && hasAdmission(existing, sealed)) {
+        return track(request.occurrence.imageId, async joined => {
+          await cleanupSource(existing);
+          joined.throwIfAborted();
+          const current = journal.assertImageCaptureAttempt(request.captureId, request.attemptId, request.occurrence.imageId);
+          if (canonicalImageJson(current) !== canonicalImageJson(request)) return refuse("context_unavailable");
+          checkContext(existing.context, false); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
+          return sealed!;
+        }, signal);
+      }
+      if (existing.request.attemptId === request.attemptId && existing.started) return refuse("source_unavailable");
+    }
+    if (active.size >= 2 && !active.has(request.occurrence.imageId)) throw new ImageCaptureNotDispatchedError("Image source capture capacity is temporarily unavailable.");
+    try { return await track(request.occurrence.imageId, async joined => {
+      if (existing) await cleanupSource(existing);
+      joined.throwIfAborted();
+      const record = saved({ occurrence: request.occurrence, destination: locator.kind === "local" ? locator.path : locator.url,
+        context, request, phase: "registered", started: false, awaitingRetry: false, queuedAt: Date.now(), receipt: null, error: null, cooldownUntil: 0 });
+      return copy(record, joined);
+    }, signal); } catch (error) {
+      const current = get(request.occurrence.imageId);
+      if (isRetryableCaptureRefusal(error) && current?.request?.attemptId === request.attemptId && current.started) return refuse("source_unavailable");
+      throw error;
+    }
+  };
+  const recoverNative = async (request: ImageCaptureRequest): Promise<ValidatedImage | null> => {
+    const current = journal.assertImageCaptureAttempt(request.captureId, request.attemptId, request.occurrence.imageId);
+    if (canonicalImageJson(current) !== canonicalImageJson(request)) return refuse("context_unavailable");
+    const record = get(request.occurrence.imageId);
+    if (!record?.context.nativeCaptureId || !record.request || canonicalImageJson(record.request) !== canonicalImageJson(request)) return null;
+    const running = active.get(request.occurrence.imageId);
+    if (running) { await running.work.catch(() => {}); return recoverNative(request); }
+    return track(request.occurrence.imageId, async () => {
+      await cleanupSource(record);
+      const current = journal.assertImageCaptureAttempt(request.captureId, request.attemptId, request.occurrence.imageId);
+      if (canonicalImageJson(current) !== canonicalImageJson(request)) return refuse("context_unavailable");
+      checkContext(record.context, false); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
+      const sealed = journal.media().captureStatus(request.captureId, request.attemptId);
+      return hasAdmission(record, sealed) ? sealed : null;
+    });
   };
   const localWork = () => [...active].filter(([id]) => get(id)?.request?.locator.kind === "local").map(([, work]) => work);
   const invalidateNativeReadPolicy = (): void => { for (const work of localWork()) work.controller.abort(new Error("Native source authority changed.")); };
-  return { contextFor, enqueue, get, tick, retry, acquireReadPolicy, invalidateNativeReadPolicy,
+  return { contextFor, enqueue, get, tick, retry, stageNative, recoverNative, acquireReadPolicy, invalidateNativeReadPolicy,
     async drainNativeReadPolicy(): Promise<void> { const work = localWork(); for (const item of work) item.controller.abort(new Error("Native source authority changed.")); await Promise.allSettled(work.map(item => item.work)); },
     contextKey: () => canonicalImageJson({ executionId: ticket.executionId, nativeSessionId: journal.getSnapshot().nativeSessionId, cwd: ticket.cwd, platform: process.platform, policyRevision: policyRevision() }),
     invalidate(): void { for (const work of active.values()) work.controller.abort(new Error("Image source authorization changed.")); },

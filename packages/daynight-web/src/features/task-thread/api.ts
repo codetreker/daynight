@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, request } from '../../api/client';
+import { ApiError, assertResponsePrincipal, request, responseSignal } from '../../api/client';
 import { parseServerError } from '../../api/parse';
 import { assertPostThreadInput, assertThreadQuery, assertThreadScope, parseThreadMessage, parseThreadPage, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadPosition, type ThreadQuery, type ThreadScope } from './contract';
 import { decodeThreadError, readThreadJsonSource, rejectThreadResponse, THREAD_ERROR_BYTES } from './json';
@@ -21,6 +21,7 @@ export class ThreadPostError extends Error {
 
 const serverError = async (response: Response, signal: AbortSignal, admission: ThreadAdmission): Promise<never> => {
   const source = await readThreadJsonSource(response, signal, THREAD_ERROR_BYTES);
+  responseSignal(response, signal).throwIfAborted();
   let error: ReturnType<typeof parseServerError>;
   try {
     error = parseServerError(decodeThreadError(source));
@@ -28,6 +29,7 @@ const serverError = async (response: Response, signal: AbortSignal, admission: T
     throw new ApiError('protocol', response.status, 'protocol', null, cause);
   }
   admission.assertCurrent();
+  responseSignal(response, signal).throwIfAborted();
   throw new ApiError('server', response.status, error.code, error.requestId);
 };
 const resource = (scope: ThreadScope): string => {
@@ -61,17 +63,22 @@ export const getThreadPage = async (scope: ThreadScope, query: ThreadQuery, sign
   if (query.fromBeginning === true) parameters.set('fromBeginning', 'true');
   const url = `${resource(scope)}?${parameters}`;
   const timer = requestTimer(signal, admission);
+  let response: Response | undefined;
   try {
-    const response = await request(url, timer.signal, { headers: { Accept: 'application/json' } }, timer.dispatch);
+    response = await request(url, timer.signal, { headers: { Accept: 'application/json' } }, timer.dispatch);
     assertPrincipal(response, scope, admission);
     if (!response.ok) return await serverError(response, timer.signal, admission);
-    if (response.status !== 200) return await rejectThreadResponse(response);
+    if (response.status !== 200) return await rejectThreadResponse(response, timer.signal);
     const source = await readThreadJsonSource(response, timer.signal);
+    responseSignal(response, timer.signal).throwIfAborted();
     const page = parseThreadPage(source, query, admission.boundary);
     admission.assertCurrent();
+    responseSignal(response, timer.signal).throwIfAborted();
     return page;
   } catch (error) {
+    if (response !== undefined) responseSignal(response, timer.signal).throwIfAborted();
     admission.assertCurrent();
+    if (response !== undefined) responseSignal(response, timer.signal).throwIfAborted();
     throw error;
   } finally { timer.clear(); }
 };
@@ -90,13 +97,15 @@ export const postThreadMessage = async (scope: ThreadScope, input: PostThreadInp
     }, timer.dispatch);
     assertPrincipal(response, scope, admission);
     if (!response.ok) return await serverError(response, timer.signal, admission);
-    if (response.status !== 201) return await rejectThreadResponse(response);
+    if (response.status !== 201) return await rejectThreadResponse(response, timer.signal);
     const source = await readThreadJsonSource(response, timer.signal);
+    responseSignal(response, timer.signal).throwIfAborted();
     const message = parseThreadMessage(source);
     if (message.author.userId !== scope.userId || message.author.Agent || message.body !== input.body || message.replyTo !== input.replyTo) throw new ApiError('protocol', response.status);
     timer.clear();
     confirmed = true;
     admission.onConfirmed?.(message);
+    responseSignal(response, timer.signal).throwIfAborted();
     return message;
   } catch (error) {
     if (confirmed) throw error;

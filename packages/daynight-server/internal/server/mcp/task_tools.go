@@ -6,12 +6,15 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,6 +32,7 @@ type taskResourceOperations interface {
 	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	Get(context.Context, model.Principal, string, string) (model.Task, error)
 	UpdatePartitionedDependencies(context.Context, model.Principal, string, string, taskcore.UpdateTask, *[]string, *[]string) (model.Task, error)
+	ReplaceTags(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetProperty(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error)
@@ -40,6 +44,7 @@ type taskArguments struct {
 	TaskID            string              `json:"taskId"`
 	Type              model.TaskType      `json:"type"`
 	ParentID          *string             `json:"parentId"`
+	ParentTaskID      *string             `json:"parentTaskId"`
 	Title             *string             `json:"title"`
 	Description       *string             `json:"description"`
 	AssignedTo        *string             `json:"assignedTo"`
@@ -47,11 +52,14 @@ type taskArguments struct {
 	AllowAgents       *bool               `json:"allowAgents"`
 	DependsOn         *[]string           `json:"dependsOn"`
 	ExternalDependsOn *[]string           `json:"externalDependsOn"`
+	TagIDs            *[]string           `json:"tagIds"`
 	IfVersion         *string             `json:"ifVersion"`
 	View              string              `json:"view"`
 	ReturnView        string              `json:"returnView"`
+	TaskParentView    string              `json:"taskParentView"`
 	Status            model.TaskStatus    `json:"status"`
 	ClaimID           *string             `json:"claimId"`
+	CancelDescendants bool                `json:"cancelDescendants"`
 	RemoveDepends     bool                `json:"removeDepends"`
 	Mode              string              `json:"mode"`
 	Name              string              `json:"name"`
@@ -62,6 +70,18 @@ type taskArguments struct {
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
 func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
+	return registerTaskResourceTools(e, tasks, observations, taskToolsAll)
+}
+
+type taskToolSelection uint8
+
+const (
+	taskToolsAll taskToolSelection = iota
+	taskToolsRead
+	taskToolsWrite
+)
+
+func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter, selection taskToolSelection) error {
 	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
@@ -71,6 +91,10 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		read := name == "task_show" || name == "task_properties"
+		if selection == taskToolsRead && !read || selection == taskToolsWrite && read {
+			continue
+		}
 		budget := func(raw json.RawMessage) BudgetClass {
 			if name == "task_properties" {
 				var input struct {
@@ -87,7 +111,7 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 				return ToolResult{}, err
 			}
 			var input taskArguments
-			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "parentTaskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "taskParentView", "status", "claimId", "cancelDescendants", "removeDepends", "mode", "name", "valueText")
 			if err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
 			}
@@ -107,6 +131,25 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 	return nil
 }
 
+// RegisterScopedTaskWriteTools enables only the classified Task mutations.
+// Read tools remain separately classified by their owning registration.
+func RegisterScopedTaskWriteTools(e *Entry, tasks *taskservice.Tasks, observations taskObservationGetter) error {
+	if e == nil || e.scopedAuth == nil || tasks == nil {
+		return fmt.Errorf("scoped Task write dependencies are required")
+	}
+	return registerScopedTaskWriteTools(e, tasks, observations)
+}
+
+func registerScopedTaskWriteTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
+	if err := registerTaskResourceTools(e, tasks, observations, taskToolsWrite); err != nil {
+		return err
+	}
+	for _, name := range []string{"task_create", "task_update", "task_set_status", "task_delete", "task_set_property", "task_remove_property"} {
+		e.scopedTools[name] = true
+	}
+	return nil
+}
+
 // The business payload limit matches the REST JSON limit independently of
 // routing identifiers and MCP presentation options.
 func taskBusinessLimit(name string, fields map[string]json.RawMessage, version int64, all, external *[]string) error {
@@ -114,7 +157,7 @@ func taskBusinessLimit(name string, fields map[string]json.RawMessage, version i
 		return nil
 	}
 	body := map[string]json.RawMessage{}
-	for _, key := range []string{"type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "status", "claimId", "removeDepends"} {
+	for _, key := range []string{"type", "parentId", "parentTaskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "status", "claimId", "cancelDescendants", "removeDepends"} {
 		if value, ok := fields[key]; ok {
 			body[key] = value
 		}
@@ -143,22 +186,37 @@ func compileTaskDependencies(ordinary, external *[]string) (*[]string, *[]string
 	return taskservice.PartitionDependencies(ordinary, external)
 }
 
-func taskView(task model.Task, view string) any {
-	if view == "full" {
-		return MapTaskFull(task)
+func taskView(task model.Task, view string, relations ...bool) any {
+	if view == "receipt" {
+		return taskprotocol.MCPTaskReceipt(task)
 	}
-	return MapTaskSummary(task)
+	if view == "full" {
+		return MapTaskFull(task, relations...)
+	}
+	return MapTaskSummary(task, relations...)
 }
-func taskResult(task model.Task, view string, previous int64) ToolResult {
+func taskResult(task model.Task, view string, previous int64, relations ...bool) ToolResult {
 	outcome := "changed"
 	if task.Version == previous {
 		outcome = "unchanged"
 	}
-	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+	return ToolResult{Data: taskView(task, view, relations...), Outcome: outcome, WriteOutcome: "confirmed", SuccessMetadata: view == "receipt", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+}
+
+func taskWriteError(err error) (ToolResult, error) {
+	if fault, ok := operation.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && len(fault.TaskIDs) > 0 {
+		return ToolResult{Refs: map[string]any{"taskIds": fault.TaskIDs}}, err
+	}
+	return ToolResult{}, err
 }
 func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOperations, input taskArguments) (int64, error) {
 	if input.IfVersion != nil {
 		return ParseVersion(*input.IfVersion)
+	}
+	if actor.Authorization != nil {
+		if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TaskRead); err != nil {
+			return 0, err
+		}
 	}
 	task, err := tasks.Get(ctx, actor.Principal, input.ProjectID, input.TaskID)
 	if err != nil {
@@ -167,11 +225,35 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOper
 	return task.Version, nil
 }
 func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, observations taskObservationGetter, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+	relations, err := taskParentView(in.TaskParentView)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	ctx = taskservice.WithTaskParentView(ctx, relations)
+	if actor.Authorization != nil && name != "task_show" && name != "task_properties" {
+		auth := *actor.Authorization
+		if auth.Principal != actor.Principal {
+			return ToolResult{}, fmt.Errorf("Task authorization identity mismatch")
+		}
+		readErr := scopeadmission.Require(auth, scopepolicy.TaskRead)
+		if in.ReturnView == "" && readErr != nil {
+			// Only a valid but restricted policy may select the narrower response.
+			if err := auth.Validate(); err != nil {
+				return ToolResult{}, err
+			}
+			in.ReturnView = "receipt"
+		}
+		ctx = taskservice.WithTaskWriteAuthorization(ctx, auth, name != "task_delete" && in.ReturnView != "receipt")
+	}
 	if name != "task_show" && name != "task_properties" && name != "task_delete" {
 		if actor.rpcResponseID == nil {
 			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task response could not be bounded."}
 		}
-		ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch, in.ReturnView == "full")
+		if in.ReturnView == "receipt" {
+			ctx = taskservice.WithMCPTaskReceiptResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch)
+		} else {
+			ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch, in.ReturnView == "full")
+		}
 	}
 	switch name {
 	case "task_create":
@@ -188,7 +270,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if !assignedPresent && in.Type != model.TaskTypeGoal {
 			assigned = &actor.Principal.UserID
 		}
-		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent}
+		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, ParentTaskID: in.ParentTaskID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, DefaultAssignedTo: &actor.Principal.UserID, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
 		if _, exists := fields["status"]; exists {
 			input.Status = &in.Status
 		}
@@ -200,9 +282,9 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		}
 		task, err := tasks.Create(ctx, actor.Principal, in.ProjectID, input)
 		if err != nil {
-			return ToolResult{}, err
+			return taskWriteError(err)
 		}
-		return taskResult(task, in.ReturnView, 0), nil
+		return taskResult(task, in.ReturnView, 0, relations), nil
 	case "task_show":
 		observed, err := observations.ObserveGet(ctx, actor.Principal, in.ProjectID, in.TaskID)
 		if err != nil {
@@ -213,12 +295,12 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 			data = struct {
 				TaskFull
 				Session sp.TaskSessionObservation `json:"session"`
-			}{MapTaskFull(observed.Task), observed.Session}
+			}{MapTaskFull(observed.Task, relations), observed.Session}
 		} else {
 			data = struct {
 				TaskSummary
 				Session sp.TaskSessionObservation `json:"session"`
-			}{MapTaskSummary(observed.Task), observed.Session}
+			}{MapTaskSummary(observed.Task, relations), observed.Session}
 		}
 		stamp := time.Time{}
 		if observed.Session.ObservedAt != nil {
@@ -227,13 +309,18 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: stamp, Partial: observed.Session.Observation != "observed"}, Refs: map[string]any{"projectId": in.ProjectID, "taskId": in.TaskID}}, nil
 	case "task_properties":
 		if in.Mode == "schema" {
-			return ToolResult{Data: map[string]any{"properties": taskproperty.Definitions()}}, nil
+			if actor.Authorization != nil {
+				if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TaskRead); err != nil {
+					return ToolResult{}, err
+				}
+			}
+			return ToolResult{Data: map[string]any{"properties": taskprotocol.PropertyDefinitions()}}, nil
 		}
 		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
 		if err != nil {
 			return ToolResult{}, err
 		}
-		return ToolResult{Data: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version), "properties": task.Properties}}, nil
+		return ToolResult{Data: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version), "properties": taskprotocol.Properties(task.Properties)}}, nil
 	}
 	var all, external *[]string
 	if name == "task_update" {
@@ -252,7 +339,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 	var task model.Task
 	switch name {
 	case "task_update":
-		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents}
+		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents, TagIDs: in.TagIDs}
 		if _, ok := fields["parentId"]; ok {
 			input.ParentID = &in.ParentID
 		}
@@ -262,13 +349,18 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if _, ok := fields["requiredPlatform"]; ok {
 			input.RequiredPlatform = &in.RequiredPlatform
 		}
-		task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
+		if in.TagIDs != nil && in.Title == nil && in.Description == nil && in.AllowAgents == nil && input.ParentID == nil && input.AssignedTo == nil && input.RequiredPlatform == nil && in.DependsOn == nil && in.ExternalDependsOn == nil {
+			task, err = tasks.ReplaceTags(ctx, actor.Principal, in.ProjectID, in.TaskID, version, in.TagIDs)
+		} else {
+			task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
+		}
 	case "task_set_status":
-		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID})
+		_, cancelDescendantsPresent := fields["cancelDescendants"]
+		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID, CancelDescendants: in.CancelDescendants, CancelDescendantsPresent: cancelDescendantsPresent})
 	case "task_delete":
 		err = tasks.Delete(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.DeleteTask{Version: version, RemoveDepends: in.RemoveDepends})
 		if err != nil {
-			return ToolResult{}, err
+			return taskWriteError(err)
 		}
 		projectID, _ := model.CanonicalID(in.ProjectID)
 		taskID, _ := model.CanonicalID(in.TaskID)
@@ -282,7 +374,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Unknown task operation."}
 	}
 	if err != nil {
-		return ToolResult{}, err
+		return taskWriteError(err)
 	}
-	return taskResult(task, in.ReturnView, version), nil
+	return taskResult(task, in.ReturnView, version, relations), nil
 }

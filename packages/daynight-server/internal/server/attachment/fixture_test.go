@@ -52,7 +52,21 @@ func newAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Wri
 	return newAttachmentFixtureWithTimeout(t, files, output, attachmenthttp.DefaultBodyReadTimeout())
 }
 
+func newMainAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Writer) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutes(mux, attachments, auth, logger, "https://preview.daynight.example")
+	})
+}
+
 func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, output io.Writer, timeout time.Duration) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutesWithBodyReadTimeout(mux, attachments, auth, logger, timeout)
+	})
+}
+
+func newAttachmentFixtureWithRoutes(t *testing.T, files filestorage.Storage, output io.Writer, register func(*http.ServeMux, *attachmentservice.Attachments, *authhttp.Authentication, *slog.Logger)) *attachmentFixture {
 	t.Helper()
 	f := &attachmentFixture{t: t, mux: http.NewServeMux(), want: map[string]int{}, seen: map[string]int{}}
 	f.project = api.Project{ID: uuid.NewString(), Name: "Attachment project"}
@@ -69,7 +83,7 @@ func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, ou
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachmenthttp.RegisterRoutesWithBodyReadTimeout(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger, timeout)
+	register(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger)
 	f.handler.Handler = httpx.RequestLogging(logger, attachmenthttp.PathGuard(f.mux, logger))
 	t.Cleanup(f.verify)
 	return f
@@ -428,6 +442,14 @@ type attachmentSnapshot struct {
 func (s *attachmentSnapshot) ProjectDAO() store.ProjectReader       { return s.project }
 func (s *attachmentSnapshot) TaskDAO() store.TaskReader             { return s.task }
 func (s *attachmentSnapshot) AttachmentDAO() store.AttachmentReader { return s.attachmentFn() }
+func (s *attachmentSnapshot) UserCandidateDAO() store.UserCandidateReader {
+	s.reject("UserCandidateDAO")
+	return nil
+}
+func (s *attachmentSnapshot) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *attachmentSnapshot) CredentialDAO() store.CredentialReader {
 	s.reject("CredentialDAO")
 	return nil
@@ -498,6 +520,10 @@ func (s *authenticationMock) WriteIdentity(ctx context.Context, fn func(store.Id
 func (s *authenticationMock) IdentityDAO() store.IdentityDAO {
 	return &authenticationDAO{unexpectedIdentityDAO: unexpectedIdentityDAO{s.unexpectedDAO}, principal: s.principal, hash: s.hash}
 }
+func (s *authenticationMock) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	s.reject("CredentialFamilyDAO")
+	panic("unreachable")
+}
 func (s *authenticationMock) PersonalTeamDAO() store.PersonalTeamDAO {
 	s.reject("PersonalTeamDAO")
 	return nil
@@ -517,6 +543,11 @@ func (s *authenticationDAO) Authenticate(_ context.Context, kind model.Credentia
 }
 
 type unexpectedProjectReader struct{ unexpectedDAO }
+
+func (mock *unexpectedProjectReader) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.reject("FindVisibleRepositoryForCreation")
+	panic("unreachable")
+}
 
 func (s *unexpectedProjectReader) Project(context.Context, string) (model.Project, error) {
 	s.reject("Project")
@@ -597,22 +628,6 @@ func (s *unexpectedTaskReader) TaskHeader(context.Context, string, string) (mode
 	s.reject("TaskHeader")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	s.reject("TaskStep")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	s.reject("TaskSteps")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	s.reject("TaskStepPage")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	s.reject("TaskStepSummary")
-	panic("unreachable")
-}
 func (s *unexpectedTaskReader) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	s.reject("ThreadMessage")
 	panic("unreachable")
@@ -646,6 +661,16 @@ func (s *unexpectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time
 	panic("unreachable")
 }
 
+func (s *unexpectedTaskReader) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	s.reject("TaskSyncGoalDependsOn")
+	panic("unreachable")
+}
+
+func (s *unexpectedTaskReader) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+	s.reject("TaskSyncActiveTasks")
+	panic("unreachable")
+}
+
 type unexpectedIdentityDAO struct{ unexpectedDAO }
 
 func (s *unexpectedIdentityDAO) CleanupCredentials(context.Context, time.Time) error {
@@ -670,6 +695,18 @@ func (s *unexpectedIdentityDAO) ConsumeLogin(context.Context, []byte, []byte, ti
 }
 func (s *unexpectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
 	s.reject("UpsertUser")
+	panic("unreachable")
+}
+func (s *unexpectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	s.reject("LockProfileCredential")
+	panic("unreachable")
+}
+func (s *unexpectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	s.reject("EnsureUser")
+	panic("unreachable")
+}
+func (s *unexpectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	s.reject("PatchUser")
 	panic("unreachable")
 }
 func (s *unexpectedIdentityDAO) InsertSession(context.Context, model.Session) error {
@@ -757,7 +794,7 @@ func (s *unexpectedTaskReader) TaskWorkGroups(context.Context, string, store.Tas
 	s.reject("TaskWorkGroups")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	s.reject("TaskWorkTargets")
 	panic("unreachable")
 }
@@ -766,3 +803,7 @@ func (s *unexpectedTaskReader) TaskSyncDependencyStates(context.Context, string,
 	s.reject("TaskSyncDependencyStates")
 	panic("unreachable")
 }
+
+func (s *attachmentSnapshot) TagDAO() store.TagReader { s.reject("TagDAO"); return nil }
+
+func (s *attachmentSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

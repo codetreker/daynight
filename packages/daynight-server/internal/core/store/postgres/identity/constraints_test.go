@@ -32,7 +32,7 @@ func TestIdentityStorageConstraintsAndCleanup(t *testing.T) {
 		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode('00','hex'),decode(repeat('00',32),'hex'),'github','/',now(),decode(repeat('00',32),'hex'))`,
 		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),'other','/',now(),decode(repeat('00',32),'hex'))`,
 		`INSERT INTO sessions VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('00',32),'hex'),now(),now())`,
-		`INSERT INTO personal_access_tokens VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('00',32),'hex'),' ',now(),now()+interval '1 day')`,
+		`INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,'00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('00',32),'hex'),' ',now(),now()+interval '1 day')`,
 	} {
 		_, err := s.Pool.Exec(ctx, sql)
 		var failure *pgconn.PgError
@@ -43,11 +43,11 @@ func TestIdentityStorageConstraintsAndCleanup(t *testing.T) {
 	for _, table := range []string{"sessions", "personal_access_tokens"} {
 		name := ""
 		if table == "personal_access_tokens" {
-			name = ",name"
+			name = ",name,business_scopes,scope_version"
 		}
 		value := ""
 		if name != "" {
-			value = ",'expired'"
+			value = ",'expired',ARRAY['task:read'],1"
 		}
 		_, err := s.Pool.Exec(ctx, `INSERT INTO `+table+` (id,user_id,token_hash,created_at,expires_at`+name+`) SELECT md5('id'||n)::uuid,md5('user')::uuid,sha256(n::text::bytea),$1::timestamptz-interval '2 hours',$1::timestamptz-interval '1 hour'`+value+` FROM generate_series(1,120) n`, now)
 		if err != nil {

@@ -23,8 +23,10 @@ while partial content remains for inspection.
 
 The coordinator excludes Projects outside the effective selection from
 automatic advancement and checks it again after acquisition. Project removal
-cancels and joins execution jobs, then serializes direct Herdr or Web stops for
-the original resources. It retains claims, worktrees and session history. Stop
+cancels and joins execution jobs, then serializes stops for the original Web
+resources. Herdr resources remain the user's responsibility under the
+[Web-only coordination decision](../simplification/2026-11-17-web-only-worker-coordination.md).
+It retains claims, worktrees and session history. Stop
 failure retains capacity and is retried and reported by configuration; a
 confirmed stopped execution does not permanently occupy a slot merely because
 its worktree remains. Re-selection waits for an already-started removal. The

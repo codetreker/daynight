@@ -1,3 +1,4 @@
+import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { listProjectPeople } from "../../api/auth";
 import type { ProjectPeople, ProjectPerson, ProjectPersonVersion } from "../../api/auth-types";
@@ -140,12 +141,13 @@ export class TaskAssignees {
     while (!this.disposed && !this.scope.isInvalidated && !signal.aborted) {
       try {
         await this.scope.ready(signal);
+        if (this.scope.hasIdentityMismatch) throw new TaskCacheLifecycleChanged(false);
         if (authRequestsPaused()) continue;
         if (this.disposed || this.scope.isInvalidated || signal.aborted) return null;
         return work();
       } catch (error) {
         if (this.disposed || this.scope.isInvalidated || signal.aborted) return null;
-        if (authRequestsPaused()) continue;
+        if (authRequestsPaused() && !(error instanceof TaskCacheLifecycleChanged && !error.retryable)) continue;
         throw error;
       }
     }
@@ -164,11 +166,12 @@ export class TaskAssignees {
       current?.cacheGeneration === ticket.cacheGeneration && current.userFence === ticket.userFence;
   }
   private async request(ticket: SyncTicket, userIds: readonly string[], signal: AbortSignal): Promise<ProjectPeople> {
+    const projectReadRevision = this.scope.getProjectReadRevision(ticket.projectId);
     try {
       return await listProjectPeople(ticket.projectId, { kind: "resolve", userIds }, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
     } catch (error) {
       // Parent-project denial survives presentation changes; the scope fences its captured history.
-      if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" && this.scope.canRevokeProject(ticket)) {
+      if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" && this.scope.canRevokeProjectRead(ticket, projectReadRevision)) {
         await this.scope.revokeProject(ticket, this.scope.signal, true, error);
       }
       throw error;
@@ -178,6 +181,7 @@ export class TaskAssignees {
     if (!this.matches(state, ticket)) return;
     const current = this.scope.getAuthorizedProject(ticket.projectId)!;
     if (current.assigneeVersions === null) return;
+    this.scope.markProjectReadable(ticket.projectId);
     this.reconcile(state, current.assigneeVersions);
     for (const person of response.items) {
       const expected = requested.get(person.userId), live = state.versions.get(person.userId);

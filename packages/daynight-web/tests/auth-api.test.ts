@@ -1,8 +1,8 @@
 import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
-import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
+import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole, updateTokenExpiry } from "../src/api/auth";
+import { ApiError, cancelAuthNetworkRequests, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const userId = "20000000-0000-0000-0000-00000000000b";
@@ -11,7 +11,7 @@ const inviteId = "40000000-0000-0000-0000-00000000000d";
 const otherId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-22T12:34:56.123456789Z";
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
-const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time };
+const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time, lastUsedAt: null };
 const member = { projectId, userId, email: null, name: "Member", avatarUrl: null, role: "admin", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
 const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant } = member;
 const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
@@ -136,6 +136,156 @@ describe("identity revalidation request pause", () => {
   });
 });
 
+describe("ordinary network cancellation", () => {
+  it("cancels dispatched fetches with the shared reason and installs the next lifetime before abort callbacks", async () => {
+    let firstSignal: AbortSignal | undefined;
+    let replacement: Promise<Response> | undefined;
+    const fetcher = vi.fn((url: string, init: RequestInit) => {
+      const current = init.signal as AbortSignal;
+      if (url === "/old") {
+        firstSignal = current;
+        return new Promise<Response>((_resolve, reject) => current.addEventListener("abort", () => {
+          replacement = request("/replacement", signal());
+          reject(current.reason);
+        }, { once: true }));
+      }
+      expect(current.aborted).toBe(false);
+      return Promise.resolve(response(user));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const old = request("/old", signal());
+    const cancelled = old.catch((error: unknown) => error);
+    cancelAuthNetworkRequests();
+    expect(firstSignal?.aborted).toBe(true);
+    expect(await cancelled).toBe(firstSignal?.reason);
+    expect(firstSignal?.reason).toMatchObject({ name: "AbortError" });
+    expect(replacement).toBeDefined();
+    await expect(replacement).resolves.toBeInstanceOf(Response);
+    await expect(request("/later", signal())).resolves.toBeInstanceOf(Response);
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/old", "/replacement", "/later"]);
+  });
+
+  it("preserves a caller cancellation independently of the shared lifetime", async () => {
+    let dispatched: AbortSignal | undefined;
+    const fetcher = vi.fn((_url: string, init: RequestInit) => {
+      dispatched = init.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => dispatched!.addEventListener("abort", () => reject(dispatched!.reason), { once: true }));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const caller = new AbortController();
+    const pending = request("/caller", caller.signal).catch((error: unknown) => error);
+    const reason = new Error("caller cancelled");
+    caller.abort(reason);
+    expect(await pending).toBe(reason);
+    expect(dispatched?.reason).toBe(reason);
+    fetcher.mockImplementationOnce(async () => response(user));
+    await expect(request("/next", signal())).resolves.toBeInstanceOf(Response);
+  });
+
+  it.each(["resolve", "reject"])("keeps shared cancellation when an aborted fetch later %ss", async (outcome) => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const unauthorized = vi.fn();
+    const unsubscribe = subscribeUnauthorized(unauthorized);
+    const pending = request("/late", signal()).catch((error: unknown) => error);
+    cancelAuthNetworkRequests();
+    if (outcome === "resolve") fetchGate.resolve(refusal(401, "unauthenticated")); else fetchGate.reject(new TypeError("transport failed"));
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(unauthorized).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("leaves paused requests queued until resume and gives them the new lifetime", async () => {
+    let runningSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((_url: string, init: RequestInit) => {
+      runningSignal = init.signal as AbortSignal;
+      return Promise.resolve(response(user));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const resume = pauseAuthRequests();
+    const pending = request("/queued", signal());
+    expect(fetcher).not.toHaveBeenCalled();
+    cancelAuthNetworkRequests();
+    expect(fetcher).not.toHaveBeenCalled();
+    resume();
+    await expect(pending).resolves.toBeInstanceOf(Response);
+    expect(runningSignal?.aborted).toBe(false);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not cancel an in-flight request merely because the identity gate pauses", async () => {
+    const responseGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return responseGate.promise; }));
+    const pending = request("/running", signal());
+    const resume = pauseAuthRequests();
+    expect(runningSignal?.aborted).toBe(false);
+    responseGate.resolve(response(user));
+    await expect(pending).resolves.toBeInstanceOf(Response);
+    resume();
+  });
+
+  it("keeps /me and logout on their independent caller signals", async () => {
+    const pendingMe = Promise.withResolvers<Response>();
+    const pendingLogout = Promise.withResolvers<Response>();
+    const meController = new AbortController(), logoutController = new AbortController();
+    const fetcher = vi.fn((url: string, _init: RequestInit) => url === "/api/v1/me" ? pendingMe.promise : pendingLogout.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const userRead = me(meController.signal);
+    const logoutWrite = logout(logoutController.signal);
+    cancelAuthNetworkRequests();
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ signal: meController.signal });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ signal: logoutController.signal });
+    expect(meController.signal.aborted).toBe(false);
+    expect(logoutController.signal.aborted).toBe(false);
+    pendingMe.resolve(response(user)); pendingLogout.resolve(new Response(null, { status: 204 }));
+    await expect(userRead).resolves.toEqual(user);
+    await expect(logoutWrite).resolves.toBeUndefined();
+  });
+
+  it("does not publish an attachment body that completes after shared cancellation", async () => {
+    const body = new Response("old text");
+    const readStarted = Promise.withResolvers<void>();
+    const textGate = Promise.withResolvers<string>();
+    vi.spyOn(body, "text").mockImplementation(() => { readStarted.resolve(); return textGate.promise; });
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return Promise.resolve(body); }));
+    const pending = readAttachmentText(projectId, tokenId, "guide.md", signal()).catch((error: unknown) => error);
+    await readStarted.promise;
+    cancelAuthNetworkRequests();
+    textGate.resolve("old text");
+    expect(await pending).toBe(runningSignal?.reason);
+  });
+
+  it("does not confirm a 204 response after cancellation between fetch and response consumption", async () => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const confirmed = vi.fn(), mismatch = vi.fn();
+    const pending = deleteTask(projectId, tokenId, 1n, undefined, signal(), { userId, onPrincipalMismatch: mismatch, onWriteConfirmed: confirmed }).catch((error: unknown) => error);
+    fetchGate.resolve(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    queueMicrotask(cancelAuthNetworkRequests);
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(runningSignal?.aborted).toBe(true);
+    expect(confirmed).not.toHaveBeenCalled();
+    expect(mismatch).not.toHaveBeenCalled();
+  });
+
+  it("does not report a principal mismatch after cancellation between fetch and response consumption", async () => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const mismatch = vi.fn();
+    const pending = getTask(projectId, tokenId, signal(), { userId, onPrincipalMismatch: mismatch }).catch((error: unknown) => error);
+    fetchGate.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    queueMicrotask(cancelAuthNetworkRequests);
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(runningSignal?.aborted).toBe(true);
+    expect(mismatch).not.toHaveBeenCalled();
+  });
+});
+
 describe("session and personal credentials API", () => {
   it("loads the current nullable profile and the configured provider list from relative endpoints", async () => {
     const fetcher = mock(response(user));
@@ -152,24 +302,41 @@ describe("session and personal credentials API", () => {
   });
 
   it("lists only credential metadata and returns the created secret only from the create response", async () => {
-    const fetcher = mock(response({ items: [{ ...pat, token: "unexpected-list-secret" }] }));
-    expect(await listTokens(signal(), userId, vi.fn())).toEqual([pat]);
-    fetcher.mockResolvedValue(response({ ...pat, token: "opaque-created-token" }, 201));
-    expect(await createToken({ name: pat.name, expiresAt: time }, signal())).toEqual({ ...pat, token: "opaque-created-token" });
-    expect(fetcher.mock.calls[1]).toEqual(["/api/v1/me/tokens", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ name: pat.name, expiresAt: time }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    const fetcher = mock(response({ items: [{ ...pat, description: null, token: "unexpected-list-secret" }] }));
+    expect(await listTokens(signal(), userId, vi.fn())).toEqual([{ ...pat, description: null }]);
+    fetcher.mockResolvedValue(response({ ...pat, description: null, token: "opaque-created-token" }, 201));
+    expect(await createToken({ name: pat.name, expiresAt: time, expectedUserId: userId }, signal(), vi.fn())).toEqual({ ...pat, description: null, token: "opaque-created-token" });
+    expect(fetcher.mock.calls[1]).toEqual(["/api/v2/me/tokens", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ expectedUserId: userId, name: pat.name, expiresAt: time }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     })]);
-    fetcher.mockResolvedValue(response({ ...pat, token: "default-lifetime-token" }, 201));
-    await createToken({ name: "Default lifetime", expiresAt: null }, signal());
-    expect(fetcher.mock.calls[2]?.[1].body).toBe('{"name":"Default lifetime","expiresAt":null}');
+    fetcher.mockResolvedValue(response({ ...pat, description: null, token: "default-lifetime-token" }, 201));
+    await createToken({ name: "Default lifetime", expiresAt: null, expectedUserId: userId }, signal(), vi.fn());
+    expect(fetcher.mock.calls[2]?.[1].body).toBe(JSON.stringify({ expectedUserId: userId, name: 'Default lifetime', expiresAt: null }));
+  });
+
+  it("requires valid nullable usage metadata in list, create and expiry receipts", async () => {
+    const fetcher = mock(response({ items: [{ ...pat, description: null, lastUsedAt: time }] }));
+    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([{ ...pat, description: null, lastUsedAt: time }]);
+    fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: time }));
+    const input = { expiresAt: time, expectedExpiresAt: time, expectedUserId: userId };
+    await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).resolves.toEqual({ ...pat, lastUsedAt: time });
+    expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify(input));
+    for (const bad of [undefined, "2026-02-30T00:00:00Z", 3]) {
+      fetcher.mockResolvedValue(response({ items: [{ ...pat, lastUsedAt: bad }] }));
+      await expect(listTokens(signal(), userId, vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+      fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad, token: "secret" }, 201));
+      await expect(createToken({ name: pat.name, expiresAt: null, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+      fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad }));
+      await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    }
   });
 
   it("accepts names using the server's Unicode code point and control-character rules", async () => {
-    const fetcher = mock(response({ ...pat, token: "created-token" }, 201));
-    fetcher.mockImplementation(() => Promise.resolve(response({ ...pat, token: "created-token" }, 201)));
+    const fetcher = mock(response({ ...pat, description: null, token: "created-token" }, 201));
+    fetcher.mockImplementation(() => Promise.resolve(response({ ...pat, description: null, token: "created-token" }, 201)));
     for (const name of ["😀".repeat(100), "line\nname", "tab\tname"]) {
-      await createToken({ name, expiresAt: null }, signal());
-      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ name, expiresAt: null }));
+      await createToken({ name, expiresAt: null, expectedUserId: userId }, signal(), vi.fn());
+      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ expectedUserId: userId, name, expiresAt: null }));
     }
   });
 
@@ -179,7 +346,7 @@ describe("session and personal credentials API", () => {
   ])("rejects invalid credential input before network I/O %#", (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => createToken(input, signal())).toThrow(input.expiresAt === null ? ApiError : /^The server returned an invalid response\.$/);
+    expect(() => createToken({ ...input, expectedUserId: userId }, signal(), vi.fn())).toThrow(input.expiresAt === null ? ApiError : /^The server returned an invalid response\.$/);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -404,13 +571,13 @@ describe("auth API failures", () => {
 
   it("discards malformed secret-bearing success responses and network diagnostics", async () => {
     const secret = "sensitive-token-must-not-escape";
-    const fetcher = mock(response({ ...pat, token: `${secret}\n` }, 201));
-    const failure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
+    const fetcher = mock(response({ ...pat, description: null, token: `${secret}\n` }, 201));
+    const failure = await createToken({ name: "name", expiresAt: null, expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(failure).toMatchObject({ kind: "protocol", status: 201 });
     expect(String(failure)).not.toContain(secret);
     expect(failure).not.toHaveProperty("cause");
     fetcher.mockRejectedValue(new Error(secret));
-    const networkFailure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
+    const networkFailure = await createToken({ name: "name", expiresAt: null, expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(networkFailure).toMatchObject({ kind: "network", status: null });
     expect(networkFailure).not.toHaveProperty("cause");
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -421,21 +588,18 @@ describe("auth API failures", () => {
     const controller = new AbortController();
     const fetcher = mock(new Response());
     fetcher.mockImplementation(async () => { controller.abort(reason); throw new TypeError("transport detail"); });
-    await expect(createToken({ name: "name", expiresAt: null }, controller.signal)).rejects.toBe(reason);
+    await expect(createToken({ name: "name", expiresAt: null, expectedUserId: userId }, controller.signal, vi.fn())).rejects.toBe(reason);
   });
 });
 
 describe("shared unauthorized notifications", () => {
-  it("notifies on an actual 401 even when its JSON body is malformed, including attachment HEAD", async () => {
+  it("notifies on an actual 401 even when its JSON body is malformed, for malformed responses", async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeUnauthorized(listener);
     try {
-      const fetcher = mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
+      mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
       await expect(me(signal())).rejects.toMatchObject({ kind: "protocol", status: 401 });
       expect(listener).toHaveBeenCalledTimes(1);
-      fetcher.mockResolvedValue(new Response(null, { status: 401, headers: { "X-Request-ID": "head-1" } }));
-      await expect(checkAttachmentPreview(projectId, userId, "index.html", signal())).rejects.toMatchObject({ kind: "server", status: 401, code: "unauthenticated", requestId: "head-1" });
-      expect(listener).toHaveBeenCalledTimes(2);
     } finally { unsubscribe(); }
   });
 

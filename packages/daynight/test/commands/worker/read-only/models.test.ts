@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import * as filesystem from "node:fs/promises";
 import path from "node:path";
 import type { WorkerCloudNative } from "../../../../src/api/worker-configuration.js";
 import type { WorkerRuntimeNative } from "../../../../src/api/types.js";
@@ -7,6 +8,7 @@ import type { Operation } from "../../../../src/api/operation.js";
 import type { NativeModelObservation } from "../../../../src/commands/controller/providers/native-selection.js";
 import { BotCliProbeCleanupError } from "../../../../src/commands/worker/bots/cli-probe.js";
 import { createWorkerModelDiscovery, parseWorkerModelInput } from "../../../../src/commands/worker/read-only/models.js";
+vi.mock("node:fs/promises", { spy: true });
 
 const roots: string[] = [];
 afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -19,18 +21,68 @@ const observation = (): NativeModelObservation => ({ model: "a", models: [
   { id: "hidden", label: "Hidden", hidden: true, efforts: null },
   { id: "b", label: "Model B", efforts: ["high"] },
 ] });
-const setup = async (overrides: { inspect?: (native: WorkerCloudNative, operation: Operation) => Promise<NativeModelObservation>; configuration?: () => ReturnType<typeof base> } = {}) => {
+const setup = async (overrides: { prepare?: Parameters<typeof createWorkerModelDiscovery>[0]["prepare"]; inspect?: (native: WorkerCloudNative, operation: Operation) => Promise<NativeModelObservation>; configuration?: () => ReturnType<typeof base> } = {}) => {
   const temporary = path.resolve("../../.tmp");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "worker-models-")); roots.push(root);
   const calls: WorkerCloudNative[] = [];
-  const service = createWorkerModelDiscovery({ defaultCwd: root, environment: {}, configuration: overrides.configuration ?? base,
+  const service = createWorkerModelDiscovery({ ...(overrides.prepare === undefined ? {} : { prepare: overrides.prepare }), defaultCwd: root, environment: {}, configuration: overrides.configuration ?? base,
     verifier: { discover: async (options, operation) => { operation.check(); calls.push(options.native); return overrides.inspect?.(options.native, operation) ?? observation(); } },
   });
   return { service, root: await realpath(root), calls, signal: new AbortController().signal };
 };
 
 describe("Worker model discovery", () => {
+  it("does not start directory work when preparation finishes after close", async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const { service, signal, calls } = await setup({ prepare: async () => { entered(); await gate; } });
+    vi.mocked(filesystem.realpath).mockClear();
+    const discovery = service.discover({ provider: "codex" }, signal);
+    const cancelled = expect(discovery).rejects.toMatchObject({ code: "cancelled" });
+    try { await started; service.close(); release(); await cancelled; }
+    finally { release(); await service.join(); }
+    expect(filesystem.realpath).not.toHaveBeenCalled(); expect(calls).toEqual([]);
+  });
+
+  it("joins the original filesystem work after close cancels its response waiter", async () => {
+    const { service, signal, root, calls } = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const original = filesystem.realpath;
+    // Keep the real filesystem result behind a barrier: cancellation can stop
+    // waiting for it, but cannot claim that the underlying work has joined.
+    const read = original(root);
+    vi.mocked(filesystem.realpath).mockImplementationOnce(async () => { entered(); const resolved = await read; await gate; return resolved; });
+    const discovery = service.discover({ provider: "codex" }, signal);
+    const cancelled = expect(discovery).rejects.toMatchObject({ code: "cancelled" });
+    let joined = false;
+    try {
+      await started;
+      service.close(); await cancelled;
+      const joining = service.join().then(() => { joined = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(joined).toBe(false); expect(calls).toEqual([]);
+      release(); await joining;
+      expect(joined).toBe(true);
+      await expect(service.discover({ provider: "codex" }, signal)).rejects.toMatchObject({ code: "cancelled" });
+    } finally { release(); await service.join(); }
+  });
+
+  it("captures the prepared recipe identity before pagination and rejects pages after a tool change", async () => {
+    let selected: string | null = null;
+    const prepare = vi.fn(async () => { selected = "A"; });
+    const { service, signal } = await setup({ prepare, configuration: () => ({ ...base(), toolSelection: selected }) });
+    const first = await service.discover({ provider: "codex", limit: 1 }, signal);
+    expect(first.nextCursor).not.toBeNull(); expect(prepare).toHaveBeenCalledOnce();
+    await service.discover({ provider: "codex", limit: 1, cursor: first.nextCursor! }, signal);
+    expect(prepare).toHaveBeenCalledOnce(); selected = "B";
+    await expect(service.discover({ provider: "codex", limit: 1, cursor: first.nextCursor! }, signal)).rejects.toMatchObject({ code: "stale_configuration" });
+  });
+
   it("reads native per-model capabilities, hides optional entries and retains native defaults", async () => {
     const { service, root, calls, signal } = await setup();
     const result = await service.discover({ provider: "codex" }, signal);

@@ -4,6 +4,7 @@ import { sessionBinding, type SessionCommand } from '../../daynight/src/session/
 import type { SessionOperation, SessionSnapshot } from '../src/api/types';
 import { BotSessionHost } from '../src/features/bots/BotSessionHost';
 import { BotSessionCache } from '../src/features/bots/session-cache';
+import { SessionDraftStore } from '../src/features/task-agent-session/drafts/draft-store';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
@@ -34,6 +35,7 @@ function fixture({ empty = false, working = false, steer = true, configure }: { 
       view.rerender(<BotSessionHost cache={cache} displayBinding={bots[index]!.binding} actionBinding={bots[index]!.binding} />);
       const input = await screen.findByRole('textbox', { name: 'Message' });
       await waitFor(() => expect(input).toBeEnabled());
+      await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
       return input;
     },
     pause: (value: boolean) => act(() => { paused = value; cache.syncAvailability(); }),
@@ -71,6 +73,30 @@ it('fills and focuses each localized assistant suggestion without sending or rep
     expect(input).toHaveValue(chinesePrompts[index]);
   }
   expect(f.bots[0]!.api.command).not.toHaveBeenCalled();
+});
+
+it('waits for draft restoration before offering a conversation suggestion', async () => {
+  const pending = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(), read = SessionDraftStore.prototype.reconcileAuthorizedOwner;
+  const heldRead = vi.spyOn(SessionDraftStore.prototype, 'reconcileAuthorizedOwner').mockImplementationOnce(async function (this: SessionDraftStore, ...args) {
+    entered.resolve(); await pending.promise;
+    return read.apply(this, args);
+  });
+  const f = fixture({ empty: true });
+  try {
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(f.cache.snapshot()[0]!.client.snapshot().historyReady).toBe(true));
+    await act(async () => entered.promise);
+    expect(heldRead).toHaveBeenCalledWith(expect.anything(), expect.any(Function));
+    expect(input).toHaveAttribute('readonly');
+    expect(screen.queryByRole('button', { name: 'See which tasks are running' })).toBeNull();
+    await act(async () => pending.resolve());
+    fireEvent.click(await screen.findByRole('button', { name: 'See which tasks are running' }));
+    expect(input).toHaveValue('Show me which tasks are running right now');
+    expect(f.bots[0]!.api.command).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => pending.resolve());
+    heldRead.mockRestore();
+  }
 });
 
 it('retains a suggestion draft through A/B/A selection and eviction without issuing input', async () => {
@@ -139,6 +165,8 @@ it('checks an unknown assistant submission by its original operation and preserv
   fireEvent.change(input, { target: { value: 'Deliver once' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   const check = await screen.findByRole('button', { name: 'Check original operation' });
+  // The recovery row can appear before the composer finishes the rejected send.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled());
   const command = vi.mocked(bot.api.command).mock.calls[0]![1];
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();

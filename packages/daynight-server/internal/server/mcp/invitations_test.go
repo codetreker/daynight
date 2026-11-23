@@ -441,9 +441,9 @@ func mcpOrgAcceptTeam(t *testing.T, tx *httpTestStore, actor model.Principal, te
 	}}
 	if !existing {
 		add, consume := mcpOrgCount(t, 1), mcpOrgCount(t, 1)
-		dao.AddInvitedMemberCall = func(ctx context.Context, user string) (model.TeamMember, error) {
+		dao.AddMemberCall = func(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
 			add()
-			projectHTTPCheck(t, user, actor.UserID)
+			projectHTTPCheck(t, []string{user, string(role)}, []string{actor.UserID, string(model.ProjectMemberRole)})
 			return result, nil
 		}
 		dao.ConsumeInvitationCall = mcpOrgConsumeInvitation(t, consume, v.ID, actor.UserID, v.CreatedAt, "Team invitation consumption timestamp")
@@ -512,7 +512,7 @@ func mcpOrgAcceptProject(t *testing.T, tx *httpTestStore, actor model.Principal,
 		}
 		dao.ConsumeInvitationCall = mcpOrgConsumeInvitation(t, consume, v.ID, actor.UserID, v.CreatedAt, "Project invitation consumption time")
 	}
-	mcpOrgWriteProject(t, tx, project.ID, dao, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: project.ID, UserID: actor.UserID}))
+	mcpOrgWriteProject(t, tx, project.ID, dao, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: project.ID, UserID: actor.UserID}), nil)
 }
 
 func (d mcpOrgTeamReader) TeamAccess(ctx context.Context, user, id string) error {

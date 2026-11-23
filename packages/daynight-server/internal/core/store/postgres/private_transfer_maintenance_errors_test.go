@@ -13,6 +13,7 @@ import (
 )
 
 func TestPrivateTransferDueReportsCancellationAndScanFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -58,6 +59,7 @@ func TestPrivateTransferDueReportsCancellationAndScanFailure(t *testing.T) {
 }
 
 func TestPrivateTransferPrunePropagatesDeleteFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)

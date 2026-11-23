@@ -1,3 +1,4 @@
+import { summariesForIndex } from "../helpers/taskSync";
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,11 @@ import { renderWithLocale } from '../helpers/renderWithLocale';
 import { progressiveGraph } from '../helpers/graphData';
 import { installGraphMeasurements } from '../graph-measurements';
 
+// These graph fixtures use descriptive IDs; route validation has separate coverage.
+vi.mock('../../src/app/router', async original => ({
+  ...await original<typeof import('../../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 const time = '2026-10-20T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
@@ -62,15 +68,15 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
-      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
-    const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} summaries={summariesForIndex(waitingIndex)} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+      openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
+    const selected = await screen.findByRole('button', { name: '最终验收, To do, not ready' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
-    expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
     expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
     view.setLocale('zh-CN');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪' })).toBe(selected);
     expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);
   });
@@ -78,8 +84,8 @@ describe('localized task graph presentation', () => {
   it('retranslates mounted memoized rows, nodes, dependencies and controls while retaining layout, selection and viewport', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
-      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+      openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     await ready(view.baseElement);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
@@ -88,7 +94,7 @@ describe('localized task graph presentation', () => {
     const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
     fireEvent.click(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收, To do, blocked, outside the selected dependency path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, successor of the selected task' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, prerequisite of the selected task' })).toBeTruthy();
     const initialTransform = viewport(view.baseElement).style.transform;
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
@@ -100,6 +106,8 @@ describe('localized task graph presentation', () => {
     const routes = paths.map((path) => path.getAttribute('d'));
     const rootToggle = view.baseElement.querySelector('#task-root-A');
     const relation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task A → subsequent task C, selected dependency path' });
+    const successorRelation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task C → subsequent task D, successor dependency path' });
+    expect(screen.getByText('Successors', { selector: '.graph-foot *' })).toBeVisible();
     const canvas = view.baseElement.querySelector('.task-graph-canvas');
     expect(within(screen.getByRole('dialog')).queryByRole('combobox')).toBeNull();
     view.setLocale('zh-CN');
@@ -108,8 +116,10 @@ describe('localized task graph presentation', () => {
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
     expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪，所选任务的后继' })).toBeTruthy();
     expect(screen.getByRole('img', { name: '普通依赖：前置任务 A → 后续任务 C，所选依赖路径' })).toBe(relation);
+    expect(screen.getByRole('img', { name: '普通依赖：前置任务 C → 后续任务 D，所选任务的后继依赖路径' })).toBe(successorRelation);
+    expect(screen.getByText('后继', { selector: '.graph-foot *' })).toBeVisible();
     expect(screen.getByRole('group', { name: '任务依赖关系' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '放大' })).toHaveAttribute('title', '放大'));
     expect(screen.getByRole('button', { name: '缩小' })).toBeTruthy();
@@ -139,7 +149,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const view = renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId={rootId} onOpenTask={open} /></>, { locale: 'en', taskCache: true });
     await waitFor(() => { expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50); });
-    const body = screen.getByRole('button', { name: '合流任务 · 40 个外部前置, To do, blocked' });
+    const body = screen.getByRole('button', { name: '合流任务 · 40 个外部前置, To do, not ready' });
     fireEvent.click(body);
     expect(view.container.querySelector('.graph-hidden-prerequisites')).toHaveTextContent('40 additional upstream tasks are hidden');
     const expand = screen.getByRole('button', { name: 'Expand 20 prerequisite tasks and 20 dependencies, 20 prerequisites still hidden' });
@@ -155,7 +165,7 @@ describe('localized task graph presentation', () => {
     expect(screen.getByRole('button', { name: 'Reset overview' })).toBeTruthy();
     expect(screen.getByText('Chain 61 · External 40 · Tasks 70/101 · Dependencies 69/100')).toBeTruthy();
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
-    expect(screen.getByRole('button', { name: '合流任务 · 40 个外部前置，待处理，被阻塞，已选中' })).toBe(body);
+    expect(screen.getByRole('button', { name: '合流任务 · 40 个外部前置，待处理，未就绪，已选中' })).toBe(body);
     expect(body.closest('.task-node')).toHaveClass('task-node-selected');
     expect(view.container.querySelector('.graph-hidden-prerequisites')).toHaveTextContent('另有20个上游未展开');
     expect(screen.getByRole('button', { name: '展开前置 20 个任务、20 条依赖' })).toBeTruthy();
@@ -182,7 +192,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });
@@ -232,13 +242,13 @@ describe('localized task graph presentation', () => {
   });
 
   it('renders empty and filtered chain states in the chosen language', () => {
-    const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
+    const props = { index, allRepresentativeIds: [], representativeIds: [], openGraphTarget: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop };
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<ChainList summaries={summariesForIndex(props.index)} workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { proposed: 0, total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} summaries={summariesForIndex(completeIndex)} allRepresentativeIds={representativeIds} />);
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
   });
 
@@ -248,6 +258,7 @@ describe('localized task graph presentation', () => {
     const formatted = new Intl.NumberFormat('en').format(value);
     expect(en.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`Chain ${formatted} · External ${formatted} · Tasks ${formatted}/1,000 · Dependencies ${formatted}/1,000`);
     expect(zh.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`链内 ${formatted} · 外部 ${formatted} · 任务 ${formatted}/1,000 · 依赖 ${formatted}/1,000`);
-    expect(en.progress({ done: value, cancelled: 0, total: 1000 })).toBe(`${formatted}/1,000 completed`);
+    expect(en.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 completed`);
+    expect(zh.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 已完成`);
   });
 });

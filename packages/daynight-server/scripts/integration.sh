@@ -45,6 +45,7 @@ if [[ -z "${DAYNIGHT_TEST_DATABASE_URL:-}" ]]; then
   node scripts/integration-runtime.mts postgres-planned "$run_root"
   database_id="$(timeout --signal=TERM --kill-after=5s 1m docker run --detach --pull=never --name "$database_container" \
     --label "daynight.api-integration=$(basename "$run_root")" \
+    --label "daynight.api-integration-role=postgres" \
     --cpus=1 --memory=1g --memory-swap=1g \
     -e POSTGRES_USER=daynight -e POSTGRES_PASSWORD=daynight -e POSTGRES_DB=daynight \
     -p 127.0.0.1::5432 postgres:18.6-bookworm)"
@@ -64,8 +65,66 @@ if [[ -z "${DAYNIGHT_TEST_DATABASE_URL:-}" ]]; then
   export DAYNIGHT_TEST_DATABASE_URL="postgres://daynight:daynight@127.0.0.1:$database_port/daynight?sslmode=disable"
 fi
 
+redis_container="daynight-api-redis-$(basename "$run_root")"
+node scripts/integration-runtime.mts redis-planned "$run_root"
+redis_id="$(timeout --signal=TERM --kill-after=5s 1m docker run --detach --pull=missing --name "$redis_container" \
+  --label "daynight.api-integration=$(basename "$run_root")" \
+  --label "daynight.api-integration-role=redis" \
+  --cpus=1 --memory=128m --memory-swap=128m \
+  -p 127.0.0.1::6379 redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53 \
+  redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy noeviction)"
+node scripts/integration-runtime.mts redis "$run_root" "$redis_id" "$redis_container"
+ready=false
+ready_deadline=$((SECONDS + 20))
+while (( SECONDS < ready_deadline )); do
+  if timeout --signal=TERM --kill-after=2s 2s docker exec "$redis_id" redis-cli ping 2>/dev/null | grep -qx PONG; then ready=true; break; fi
+  sleep 0.1
+done
+if [[ "$ready" != true ]]; then
+  timeout --signal=TERM --kill-after=2s 5s docker logs "$redis_id" >&2 || true
+  printf '%s\n' 'Integration Redis did not become ready' >&2
+  exit 1
+fi
+redis_port="$(timeout --signal=TERM --kill-after=2s 5s docker inspect --format '{{(index (index .NetworkSettings.Ports "6379/tcp") 0).HostPort}}' "$redis_id")"
+if [[ ! "$redis_port" =~ ^[0-9]+$ ]] || (( redis_port < 1 || redis_port > 65535 )); then
+  printf '%s\n' 'Integration Redis port is invalid' >&2
+  exit 1
+fi
+export DAYNIGHT_TEST_REDIS_URL="redis://127.0.0.1:$redis_port/0"
+
 race=true
 if [[ -n "${CI:-}" ]] && [[ "${GITHUB_EVENT_NAME:-}" != push || "${GITHUB_REF:-}" != refs/heads/main ]]; then race=false; fi
+
+decoder_source_fingerprint() {
+  DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+const root = process.env.DAYNIGHT_INTEGRATION_REPOSITORY;
+const names = execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]).toString().split("\0").filter(Boolean).sort();
+const hash = createHash("sha256");
+for (const name of names) {
+  hash.update(name).update("\0");
+  try { hash.update(readFileSync(join(root, name))); }
+  catch (error) { if (error.code !== "ENOENT") throw error; hash.update("<deleted>"); }
+  hash.update("\0");
+}
+process.stdout.write(hash.digest("hex"));
+JS
+}
+node scripts/integration-runtime.mts phase "$run_root" build
+decoder_source_before="$(decoder_source_fingerprint)"
+decoder_head="$(git rev-parse HEAD)"
+timeout --signal=TERM --kill-after=5s 3m pnpm --dir "$repository_root" --filter @codetreker/daynight build
+timeout --signal=TERM --kill-after=5s 1m node "$repository_root/packages/daynight/scripts/package-image-validation.ts" "$run_root/image-validator"
+if [[ "$decoder_source_before" != "$(decoder_source_fingerprint)" || "$decoder_head" != "$(git rev-parse HEAD)" ]]; then
+  printf '%s\n' 'Image decoder sources changed during its build' >&2
+  exit 1
+fi
+export DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR="$run_root/image-validator"
+export DAYNIGHT_INTEGRATION_NODE_PATH="$(node -p 'process.execPath')"
+export DAYNIGHT_INTEGRATION_CLI_PATH="$repository_root/packages/daynight/dist/main.js"
 
 fingerprint() {
   DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'
@@ -74,7 +133,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execFileSync } from "node:child_process";
 const root = process.env.DAYNIGHT_INTEGRATION_REPOSITORY;
-const names = new Set(execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight-server", "packages/daynight-web"]).toString().split("\0").filter(Boolean));
+const names = new Set(execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight-server", "packages/daynight-web", "packages/daynight", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]).toString().split("\0").filter(Boolean));
 const assets = join(root, "packages/daynight-server/internal/service/webui/dist");
 for (const entry of readdirSync(assets, { recursive: true, withFileTypes: true })) {
   if (entry.isFile()) names.add(relative(root, join(entry.parentPath, entry.name)));
@@ -86,6 +145,11 @@ for (const name of [...names].sort()) {
   catch (error) { if (error.code !== "ENOENT") throw error; hash.update("<deleted>"); }
   hash.update("\0");
 }
+const decoder = process.env.DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR;
+for (const entry of readdirSync(decoder, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile()).sort((a, b) => join(a.parentPath, a.name).localeCompare(join(b.parentPath, b.name)))) {
+  const file = join(entry.parentPath, entry.name);
+  hash.update(relative(decoder, file)).update("\0").update(readFileSync(file)).update("\0");
+}
 process.stdout.write(hash.digest("hex"));
 JS
 }
@@ -96,7 +160,7 @@ before="$(fingerprint)"
 GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go build -race="$race" -p=2 -trimpath -o "$run_root/server" ./cmd/daynight-server
 GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go build -race="$race" -p=2 -trimpath -tags=integration -o "$run_root/cleanup" ./cmd/integration_tests
 after="$(fingerprint)"
-if [[ "$before" != "$after" || "$source_sha" != "$(git rev-parse HEAD)" ]]; then
+if [[ "$before" != "$after" || "$source_sha" != "$(git rev-parse HEAD)" || "$decoder_head" != "$source_sha" || "$decoder_source_before" != "$(decoder_source_fingerprint)" ]]; then
   printf '%s\n' 'Product sources changed while the integration binaries were built' >&2
   exit 1
 fi
@@ -112,4 +176,4 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 node scripts/integration-runtime.mts auth "$run_root" "$DAYNIGHT_TEST_UNIAUTH_FIXTURE"
 export DAYNIGHT_INTEGRATION_SERVER_BINARY="$run_root/server"
 node scripts/integration-runtime.mts phase "$run_root" test
-GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow)$' -v ./cmd/integration_tests
+GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow|TestServerAPICredentialUsageNormalFlow|TestServerAPIGitHubSyncNormalFlow|TestServerAPIUsageNormalFlow)$' -v ./cmd/integration_tests

@@ -70,7 +70,7 @@ func TestThreadHTTPResourcesAndExactBudgets(t *testing.T) {
 		if !bytes.Equal(response.Body.Bytes(), document.JSON) || got.ID != message.ID || got.Body != body || got.Author.UserID != testUserID || got.Author.Agent || got.Author.Execution != nil || got.ReplyTo != nil || len(got.CreatedAt) != 24 || got.CreatedAt[23] != 'Z' || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("Thread bytes/headers: %d %s", response.Code, response.Body)
 		}
-		if strings.Contains(logs.String(), body) || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) || !strings.Contains(logs.String(), `"component":"task_thread"`) || h.Tasks.TotalCalls() != 0 || h.Steps.TotalCalls() != 0 {
+		if strings.Contains(logs.String(), body) || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) || !strings.Contains(logs.String(), `"component":"task_thread"`) || h.Tasks.TotalCalls() != 0 {
 			t.Fatalf("Thread operation leaked content or crossed service boundaries: %s", &logs)
 		}
 	})
@@ -304,6 +304,7 @@ func TestThreadHTTPStrictInputsAndRefusals(t *testing.T) {
 
 type taskHTTPThreadScopeMock struct {
 	taskHTTPMockBase
+	BotBarrierDAOFn func() store.BotBarrierDAO
 	CaptureDAOFn    func() store.WebhookCaptureDAO
 	TaskDAOFn       func() store.ThreadTaskDAO
 	CredentialDAOFn func() store.ThreadCredentialDAO
@@ -687,14 +688,9 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 	if observed.Version != current.Version || observed.UpdatedAt != current.UpdatedAt {
 		t.Fatal("Thread Task observation changed metadata")
 	}
-	releasedClaim := claim
-	releasedClaim.State = model.WorkerReleased
-	releasedWorker, err := taskproperty.EncodeWorker(&releasedClaim)
-	if err != nil {
-		t.Fatal(err)
-	}
 	released := current
-	released.Properties = model.TaskProperties{"worker": releasedWorker}
+	released.Status = model.TaskTodo
+	released.Properties = model.TaskProperties{}
 	f.expectPost(released, model.ThreadMessage{}, nil)
 	f.request(member, http.MethodPost, path, body, bearer, 409, "claim_conflict", taskCredentialCalls("write", "presence", "credential", "access", "author", "source"))
 	f.expectThreadRead(released, messages, nil)
@@ -712,4 +708,9 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 			t.Fatal("Thread leaked credentials or discussion to logs")
 		}
 	}
+}
+
+func (mock *taskHTTPThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

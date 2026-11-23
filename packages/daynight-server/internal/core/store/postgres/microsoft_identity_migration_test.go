@@ -40,6 +40,15 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("migration changed account credentials or ownership")
 	}
+	var tokenDescriptionNull bool
+	if err := pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=$1`, queryID(31)).Scan(&tokenDescriptionNull); err != nil || !tokenDescriptionNull {
+		t.Fatalf("historical token description is not null: %v", err)
+	}
+	var repositoryVersion int64
+	if err := pool.QueryRow(ctx, `SELECT repository_version FROM projects WHERE id=$1`, queryID(20)).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
+		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
+	}
+	assertMicrosoftSessionLegacyFieldsUnset(t, pool)
 	var identities []string
 	if err := pool.QueryRow(ctx, `SELECT array_agg(uniauth_id ORDER BY id) FROM users`).Scan(&identities); err != nil {
 		t.Fatal(err)
@@ -72,6 +81,7 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("subsequent login changed account credentials or ownership")
 	}
+	assertMicrosoftSessionLegacyFieldsUnset(t, pool)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
 		token := "retained-session"
 		if kind == model.PATCredential {
@@ -89,9 +99,28 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityRows(t, pool, false); after != beforeRepeat {
 		t.Fatal("repeated migration changed accounts")
 	}
+	assertMicrosoftSessionLegacyFieldsUnset(t, pool)
 }
 
 func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *testing.T) {
+	pool := emptyPool(t)
+	if err := migrate(t.Context(), pool, schemaMigrations[:63]); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{Pool: pool}
+	for index, identity := range []string{"microsoft:tenant:object", "microsoft:tenant:another"} {
+		mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(index+1), identity)
+	}
+	readLedger := func(t *testing.T) string {
+		t.Helper()
+		var result string
+		if err := pool.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	initialAccounts, ledger := microsoftIdentityRows(t, pool, false), readLedger(t)
+
 	for _, test := range []struct {
 		name, invalid, code string
 	}{
@@ -101,16 +130,9 @@ func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *te
 		{"ambiguous standard component", "msft:object@tenant@extra", "P1064"},
 		{"existing account", "msft:object@tenant", "23505"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		if !t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
-			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:63]); err != nil {
-				t.Fatal(err)
-			}
-			s := &Store{Pool: pool}
-			for index, identity := range []string{"microsoft:tenant:object", "microsoft:tenant:another", test.invalid} {
-				mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(index+1), identity)
-			}
+			mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(3), test.invalid)
 			before := microsoftIdentityRows(t, pool, false)
 			err := migrate(ctx, pool, schemaMigrations)
 			var cause *pgconn.PgError
@@ -120,11 +142,16 @@ func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *te
 			if after := microsoftIdentityRows(t, pool, false); after != before {
 				t.Fatalf("failed migration partially changed accounts: before=%s after=%s", before, after)
 			}
-			var version int64
-			if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 63 {
-				t.Fatalf("failed migration advanced ledger: version=%d error=%v", version, err)
+			if after := readLedger(t); after != ledger {
+				t.Fatalf("failed migration changed the historical ledger: %s", after)
 			}
-		})
+			mustQueryExec(t, s, `DELETE FROM users WHERE id=$1`, queryID(3))
+			if after := microsoftIdentityRows(t, pool, false); after != initialAccounts {
+				t.Fatalf("account fixture was not restored: %s", after)
+			}
+		}) {
+			return
+		}
 	}
 }
 
@@ -143,12 +170,21 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
 	if err := pool.QueryRow(t.Context(), `SELECT jsonb_build_object(
  'teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),
  'members',(SELECT jsonb_agg(to_jsonb(t) ORDER BY team_id,user_id) FROM team_members t),
- 'projects',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM projects t),
+ 'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id) FROM projects t),
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
- 'sessions',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM sessions t),
- 'tokens',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
+ 'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash'-'last_used_at'-'browser'-'os' ORDER BY id) FROM sessions t),
+ 'tokens',(SELECT jsonb_agg(to_jsonb(t)-'last_used_at'-'description'-'business_scopes'-'scope_version' ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func assertMicrosoftSessionLegacyFieldsUnset(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var count int
+	var previewUnset, browserUnset, osUnset bool
+	if err := pool.QueryRow(t.Context(), `SELECT count(*),coalesce(bool_and(preview_token_hash IS NULL),false),coalesce(bool_and(browser IS NULL),false),coalesce(bool_and(os IS NULL),false) FROM sessions`).Scan(&count, &previewUnset, &browserUnset, &osUnset); err != nil || count != 1 || !previewUnset || !browserUnset || !osUnset {
+		t.Fatalf("migrated session fields: count=%d previewUnset=%v browserUnset=%v osUnset=%v error=%v", count, previewUnset, browserUnset, osUnset, err)
+	}
 }

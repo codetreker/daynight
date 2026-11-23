@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { dialogFocusables } from '../task-detail/focus';
@@ -56,7 +57,7 @@ const MessageDetails = ({ message, messages, owner, fallbackFocus, onClose, onOp
     ...(message.author.execution === undefined ? [] : [[messages.claimId, message.author.execution.claimId], [messages.workerId, message.author.execution.workerId]] as [string, string][]),
   ];
   return createPortal(<dialog className="thread-metadata-dialog" ref={dialog} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target !== event.currentTarget) return; const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); }}>
-    <header className="thread-metadata-header"><h2 id={titleId}>{messages.messageDetails}</h2><button className="thread-icon-button" ref={close} type="button" aria-label={messages.closeDetails} onClick={onClose}><ThreadIcon name="close" size={14} /></button></header>
+    <header className="thread-metadata-header"><h2 id={titleId}>{messages.messageDetails}</h2><AccountRefreshNotice /><button className="thread-icon-button" ref={close} type="button" aria-label={messages.closeDetails} onClick={onClose}><ThreadIcon name="close" size={14} /></button></header>
     <div className="thread-metadata-body"><dl>{fields.map(([label, value]) => <div className="thread-metadata-field" key={label}><dt>{label}</dt><dd><code>{value}</code></dd></div>)}</dl><div className="thread-metadata-message" aria-label={messages.body}>{message.body}</div></div>
   </dialog>, document.body);
 };

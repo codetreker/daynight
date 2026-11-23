@@ -1,8 +1,10 @@
 import * as fake from "fake-indexeddb";
 import { openDB, unwrap } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { detailFixture } from "./helpers/taskDetail";
+import { detailFixture, graphFixture } from "./helpers/taskDetail";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, TaskCacheDatabase, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { createTaskCacheScope } from "../src/features/task-cache/project-cache";
+import { taskSyncFromGraph, TEST_VIEWER_ID } from "./helpers/taskSync";
 
 const databases: TaskCacheDatabase[] = [];
 const cache = (onFailure = vi.fn(), version = TASK_CACHE_SCHEMA) => { const database = new TaskCacheDatabase(onFailure, version); databases.push(database); return database; };
@@ -42,7 +44,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(10);
+  expect(TASK_CACHE_SCHEMA).toBe(14);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,7 +112,7 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(10);
+  expect(TASK_CACHE_SCHEMA).toBe(14);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
@@ -134,7 +136,7 @@ it("adds profiles and rebuilds schema 5 Task data while preserving identity fenc
     epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
   const { ready: _ready, blockedBy: _blockedBy, ...intrinsicDetail } = detail;
   const { projectId: _owner, title, description: _body, ...summaryFields } = intrinsicDetail;
-  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false }, dependencyState: null };
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, title, titlePreview: title, titleTruncated: false }, dependencyState: null };
   const detailRecord = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: intrinsicDetail, byteSize: 100, lastUsedAt: 1 };
   await old.put("userScopes", { userId, userFence });
   await old.put("projects", manifest); await old.put("summaries", summary); await old.put("details", detailRecord);
@@ -192,7 +194,7 @@ it("discards schema 7 history and rebuilds Task data while preserving profiles",
   const manifest: TaskCacheSchema["projects"]["value"] = { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
     epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
   const { projectId: _owner, title, description: _description, ready: _ready, blockedBy: _blockedBy, ...summaryFields } = detail;
-  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false }, dependencyState: null };
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, title, titlePreview: title, titleTruncated: false }, dependencyState: null };
   const detailRow = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 10, lastUsedAt: 1 };
   const profileRow = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: null, avatarUrl: null } };
   await old.put("userScopes", { userId, userFence }); await old.put("projects", manifest); await old.put("summaries", summary);
@@ -244,4 +246,149 @@ it("rebuilds schema 9 project and task stores while preserving identity, profile
   expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
   expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
   expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);
+});
+
+
+it("clears schema 10 mixed Worker projections before strict parsing while retaining identity and profiles", async () => {
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001";
+  const taskIds = [1, 2, 3, 4].map(n => `40000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
+  const failure = vi.fn(), old = cache(failure, 10), connection = await old.open();
+  const profile = { userId, projectId, profileUserId: taskIds[0]!, userFence, profile: { userId: taskIds[0]!, version: "a".repeat(64), name: "Member", avatarUrl: null } };
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId: taskIds[2]!, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null, epoch: userFence, project: null, maxUpdatedAt: null, taskCount: 4, edgeCount: 0 });
+  for (const [index, taskId] of taskIds.entries()) {
+    const state = ["active", "completed", "released", "released"][index]!;
+    const worker = { claimId: taskId, state, userId, workerId: projectId, machine: { id: projectId, name: `Worker ${index}` }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: userFence, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-24T00:00:00Z" };
+    const detail = detailFixture(projectId, taskId, { status: index === 0 ? "in_progress" : index === 3 ? "cancelled" : "todo", cancelledAt: index === 3 ? "2026-10-24T00:00:00Z" : null, properties: { worker } });
+    const summary = { type: detail.type, parentId: detail.parentId, id: taskId, assignedTo: detail.assignedTo, title: detail.title, titlePreview: detail.title, titleTruncated: false, properties: detail.properties, tags: detail.tags, status: detail.status, version: detail.version, dependsOn: detail.dependsOn, externalDependsOn: detail.externalDependsOn, allowAgents: detail.allowAgents, requiredPlatform: detail.requiredPlatform, startedAt: detail.startedAt, completedAt: detail.completedAt, cancelledAt: detail.cancelledAt, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+    await connection.put("summaries", { userId, projectId, taskId, summary, dependencyState: { taskVersion: detail.version, blockedBy: [], ready: detail.status === "todo" } });
+    await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
+  }
+  await connection.put("profiles", profile); await connection.put("sessionHistory", history);
+  const current = await cache().open();
+  expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
+  for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("profiles", [userId, projectId, taskIds[0]!])).toEqual(profile);
+  expect(await current.get("sessionHistory", [userId, projectId, taskIds[2]!])).toEqual(history);
+  const fresh = detailFixture(projectId, taskIds[2]!);
+  await current.put("details", { userId, projectId, taskId: fresh.id, userFence, cacheGeneration: crypto.randomUUID(), detail: fresh, byteSize: 100, lastUsedAt: 1 });
+  expect((await current.get("details", [userId, projectId, fresh.id]))?.detail).toEqual(fresh);
+});
+
+it("rebuilds schema 11 task data before reading required tags and preserves unrelated stores", async () => {
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const old = cache(vi.fn(), 11), connection = await old.open();
+  const detail = detailFixture(projectId, taskId);
+  const { tags: _tags, ready: _ready, blockedBy: _blockedBy, ...legacyDetail } = detail;
+  const { projectId: _owner, title, description: _description, ...summaryFields } = legacyDetail;
+  const profile = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: "Member", avatarUrl: null } };
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null, epoch: userFence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+  await connection.put("summaries", { userId, projectId, taskId, summary: { ...summaryFields, title, titlePreview: title, titleTruncated: false }, dependencyState: null } as unknown as TaskCacheSchema["summaries"]["value"]);
+  await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: legacyDetail, byteSize: 100, lastUsedAt: 1 } as unknown as TaskCacheSchema["details"]["value"]);
+  await connection.put("profiles", profile); await connection.put("sessionHistory", history);
+
+  const current = await cache().open();
+  for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
+  expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);
+  await current.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
+  expect((await current.get("details", [userId, projectId, taskId]))?.detail.tags).toEqual([]);
+});
+
+it('rebuilds schema 12 task data for both users while preserving fences and Session history', async () => {
+  const old = cache(vi.fn(), 12), connection = await old.open();
+  const projectId = '30000000-0000-4000-8000-000000000001', taskId = '40000000-0000-4000-8000-000000000001';
+  const users = ['10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000002'];
+  const fence = '20000000-0000-4000-8000-000000000001';
+  const detail = detailFixture(projectId, taskId);
+  for (const userId of users) {
+    await connection.put('userScopes', { userId, userFence: fence });
+    await connection.put('projects', { userId, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: fence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+    await connection.put('summaries', { userId, projectId, taskId, summary: { titlePreview: detail.title } } as unknown as TaskCacheSchema['summaries']['value']);
+    await connection.put('details', { userId, projectId, taskId, userFence: fence, cacheGeneration: fence, detail, byteSize: 1, lastUsedAt: 1 });
+    await connection.put('sessionHistory', { userId, projectId, taskId, userFence: fence, cacheGeneration: fence, requestToken: fence, clearedToken: null, leaseExpiresAt: null, settled: 'saved', paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 });
+  }
+  const upgraded = await cache().open();
+  for (const store of ['projects', 'summaries', 'details'] as const) expect(await upgraded.getAll(store)).toEqual([]);
+  for (const userId of users) {
+    expect(await upgraded.get('userScopes', userId)).toEqual({ userId, userFence: fence });
+    expect(await upgraded.get('sessionHistory', [userId, projectId, taskId])).toBeDefined();
+  }
+});
+
+it('rebuilds schema 13 Goal summaries once before a full sync and preserves unrelated stores', async () => {
+  const projectId = '30000000-0000-4000-8000-000000000001', taskId = '40000000-0000-4000-8000-000000000001';
+  const prerequisiteId = '40000000-0000-4000-8000-000000000002', fence = '20000000-0000-4000-8000-000000000001';
+  const detail = detailFixture(projectId, taskId, { type: 'goal', ready: false });
+  const predecessor = detailFixture(projectId, prerequisiteId, { type: 'goal', ready: false });
+  const sync = taskSyncFromGraph(graphFixture([detail, predecessor]), { versionForTask: () => detail.version, propertiesForTask: () => detail.properties });
+  const old = cache(vi.fn(), 13), connection = await old.open();
+  const userId = TEST_VIEWER_ID;
+  const profile = { userId, projectId, profileUserId: taskId, userFence: fence, profile: { userId: taskId, version: 'a'.repeat(64), name: 'Member', avatarUrl: null } };
+  const history: TaskCacheSchema['sessionHistory']['value'] = { userId, projectId, taskId, userFence: fence, cacheGeneration: fence, requestToken: fence, clearedToken: null, leaseExpiresAt: null, settled: 'saved', paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put('userScopes', { userId, userFence: fence });
+  await connection.put('projects', { userId, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: sync.epoch, project: sync.project, maxUpdatedAt: detail.updatedAt, taskCount: 2, edgeCount: 0 });
+  for (const summary of sync.tasks) await connection.put('summaries', { userId, projectId, taskId: summary.id, summary, dependencyState: null });
+  const { ready: _ready, blockedBy: _blockedBy, ...intrinsicDetail } = detail;
+  await connection.put('details', { userId, projectId, taskId, userFence: fence, cacheGeneration: fence, detail: intrinsicDetail, byteSize: 100, lastUsedAt: 1 });
+  await connection.put('profiles', profile); await connection.put('sessionHistory', history);
+
+  const upgraded = await cache().open();
+  expect(upgraded.version).toBe(14);
+  for (const store of ['projects', 'summaries', 'details'] as const) expect(await upgraded.getAll(store)).toEqual([]);
+  expect(await upgraded.get('userScopes', userId)).toEqual({ userId, userFence: fence });
+  expect(await upgraded.get('profiles', [userId, projectId, taskId])).toEqual(profile);
+  expect(await upgraded.get('sessionHistory', [userId, projectId, taskId])).toEqual(history);
+
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const signal = new AbortController().signal;
+  let rebuiltGeneration: string;
+  try {
+    const ticket = await scope.beginSync(projectId, signal);
+    expect(ticket.epoch).toBeNull();
+    expect(ticket.maxUpdatedAt).toBeNull();
+    const tasks = sync.tasks.map((summary) => summary.id === taskId ? { ...summary, dependsOn: [prerequisiteId] } : summary);
+    await scope.applySync(ticket, { ...sync, tasks }, signal);
+    rebuiltGeneration = (await scope.beginSync(projectId, signal)).cacheGeneration;
+    expect((await scope.readProject(projectId, signal))?.summaries.get(taskId)).toMatchObject({ version: detail.version, dependsOn: [prerequisiteId] });
+  } finally { scope.dispose(); }
+
+  const reopened = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  try {
+    const ticket = await reopened.beginSync(projectId, signal);
+    expect(ticket).toMatchObject({ epoch: sync.epoch, maxUpdatedAt: detail.updatedAt, cacheGeneration: rebuiltGeneration });
+    expect((await reopened.readProject(projectId, signal))?.summaries.get(taskId)?.dependsOn).toEqual([prerequisiteId]);
+  } finally { reopened.dispose(); }
+});
+
+it.each([
+  { oldVersion: 12, failedStore: 'summaries' },
+  ...['projects', 'summaries', 'details'].map((failedStore) => ({ oldVersion: 13, failedStore })),
+])('rolls back the schema $oldVersion rebuild when $failedStore clear fails', async ({ oldVersion, failedStore }) => {
+  const old = cache(vi.fn(), oldVersion), connection = await old.open();
+  const userId = '10000000-0000-4000-8000-000000000001', projectId = '30000000-0000-4000-8000-000000000001', taskId = '40000000-0000-4000-8000-000000000001';
+  const fence = '20000000-0000-4000-8000-000000000001';
+  await connection.put('projects', { userId, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: fence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+  await connection.put('summaries', { userId, projectId, taskId, summary: { titlePreview: 'old' } } as unknown as TaskCacheSchema['summaries']['value']);
+  await connection.put('details', { userId, projectId, taskId, userFence: fence, cacheGeneration: fence, detail: detailFixture(projectId, taskId), byteSize: 1, lastUsedAt: 1 });
+  const originalClear = fake.IDBObjectStore.prototype.clear;
+  const clear = vi.spyOn(fake.IDBObjectStore.prototype, 'clear');
+  clear.mockImplementation(function (this: IDBObjectStore) {
+    if (this.name === failedStore) throw new Error('injected upgrade failure');
+    return originalClear.call(this);
+  });
+  try { await expect(cache().open()).rejects.toMatchObject({ category: 'storage' }); }
+  finally { clear.mockRestore(); }
+  const retained = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, oldVersion);
+  expect(await retained.get('projects', [userId, projectId])).toBeDefined();
+  expect(await retained.get('summaries', [userId, projectId, taskId])).toBeDefined();
+  expect(await retained.get('details', [userId, projectId, taskId])).toBeDefined();
+  retained.close();
 });

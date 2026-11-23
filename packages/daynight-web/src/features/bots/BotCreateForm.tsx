@@ -1,8 +1,12 @@
+import { useWorkerNames } from '../worker-names/useWorkerNames';
+import { NativeSelect, isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { BotCreationUnknown, createBot, getBot, getBotDefaults, type Bot, type BotConfiguration, type BotDefaults, type CreateBotInput } from '../../api/bots';
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from '../../api/client';
 import type { WorkerAgent } from '../../api/types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
 import { useBotMessages } from './messages';
 import { BotDirectoryBrowser } from './BotDirectoryBrowser';
 import { useBotCreationModels } from './useBotCreationModels';
@@ -48,7 +52,8 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
       try {
         while (!signal.aborted && !scope.isInvalidated) {
           try { await scope.ready(signal); }
-          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause)) continue; throw cause; }
+          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause) && !(cause instanceof TaskCacheLifecycleChanged && !cause.retryable)) continue; throw cause; }
+          if (scope.hasIdentityMismatch) return;
           if (authRequestsPaused()) continue;
           if (!signal.aborted && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
           return;
@@ -60,7 +65,9 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const unknown = unresolvedRequest !== null && confirmedRequestId === null;
   const controlsEnabled = enabled && !scope.isInvalidated && !authRequestsPaused();
   const admitted = useRef(controlsEnabled); admitted.current = controlsEnabled;
+  const names = useWorkerNames([...(defaults?.workers ?? []).map(item => ({ userId: scope.userId, workerId: item.workerId })), { userId: scope.userId, workerId: browsing?.workerId }]);
   const selected = defaults?.workers.find(item => item.workerId === (workerId ?? defaults.workerId));
+  const selectedName = selected ? names.name(scope.userId, selected.workerId, selected.machine.name, true) : '';
   const configuration = defaults?.workerId === (workerId ?? defaults?.workerId) ? defaults?.configuration : selected?.configuration;
   // A rejected combination still needs its previous target to offer a repair.
   const targetConfiguration = configuration ?? (selected ? lastConfigurations.current.get(selected.workerId) ?? selected.configuration : null);
@@ -212,33 +219,33 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const modelSummary = sourceValue(effectiveModel, modelSource);
   const effortSummary = sourceValue(effort ?? configuration?.reasoningEffort ?? observedEffort?.value, effortSource);
   const sources = [...new Set([modelSource ?? 'unknown', effortSource ?? 'unknown'] as const)].map(source => c.sources[source]).join(' / ');
-  const effectiveDescription = `${selected?.machine.name ?? ''} · ${agentName(selectedProvider)} · ${workerId === null && Object.keys(choices).length === 0 ? c.defaultConfiguration : c.customConfiguration} · ${sources}`;
+  const effectiveDescription = `${selectedName} · ${agentName(selectedProvider)} · ${workerId === null && Object.keys(choices).length === 0 ? c.defaultConfiguration : c.customConfiguration} · ${sources}`;
   const configurationError = defaultsError instanceof ApiError && defaultsError.serverMessage ? defaultsError.serverMessage : m.defaultsError;
   const capabilityError = models.error instanceof WorkerReadonlyError ? `${c.modelError} (${models.error.code})` : models.error ? c.modelError : null;
-  if (browsing !== null) return <BotDirectoryBrowser workerId={browsing.workerId} workerName={browsing.workerName} initialPath={browsing.path} defaultPath={browsing.defaultPath} enabled={controlsEnabled}
+  if (browsing !== null) return <BotDirectoryBrowser workerId={browsing.workerId} workerName={names.name(scope.userId, browsing.workerId, browsing.workerName, true)} initialPath={browsing.path} defaultPath={browsing.defaultPath} enabled={controlsEnabled}
     onCancel={returnFromBrowse} onSelect={path => { if (!controlsEnabled || selected?.workerId !== browsing.workerId) return; setWorkerId(browsing.workerId); changeCwd(path); returnFromBrowse(); }} />;
   return <form className="bot-create-form" aria-labelledby="bot-create-title" onSubmit={submit} onKeyDown={event => {
     if (event.key === 'Enter' && (event.nativeEvent.isComposing || composing.current || event.nativeEvent.keyCode === 229)) { event.preventDefault(); return; }
-    if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return;
-    // Native select popups own their first Escape; closing the form would discard the draft.
-    if (event.target instanceof HTMLSelectElement && event.target.matches(':open')) return;
+    if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing || composing.current || event.nativeEvent.keyCode === 229) return;
+    // Leave the native cancellation intact while protecting the outer dialog.
+    if (isNativeSelectPopupOpen(event.target)) { event.stopPropagation(); return; }
     event.preventDefault(); event.stopPropagation();
     if (!busy) close();
   }}>
-      <header className="bot-create-header"><h2 id="bot-create-title">{m.createTitle}</h2><button className="close-button" type="button" aria-label={m.closeCreate} disabled={busy} onClick={close}>×</button></header>
+      <header className="bot-create-header"><h2 id="bot-create-title">{m.createTitle}</h2><AccountRefreshNotice /><button className="close-button" type="button" aria-label={m.closeCreate} disabled={busy} onClick={close}>×</button></header>
       <div className="bot-create-body">
         {!unknown ? <>
-          <div className="field"><label htmlFor="bot-name">{m.name}</label><input id="bot-name" ref={nameInput} value={name} onChange={event => { revision.current++; setName(event.target.value); setValidation(null); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} required autoComplete="off" disabled={busy} aria-invalid={validation === 'name'} /></div>
+          <div className="field"><label htmlFor="bot-name">{m.name}</label><input data-touch-text="responsive" id="bot-name" ref={nameInput} value={name} onChange={event => { revision.current++; setName(event.target.value); setValidation(null); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} required autoComplete="off" disabled={busy} aria-invalid={validation === 'name'} /></div>
           <details className="bot-create-summary-details"><summary className="bot-create-summary" aria-label={c.configurationDetails}><span>{selected ? effectiveDescription : '\u00a0'}</span></summary>
-            {selected && <div className="bot-create-effective"><p>{selected.machine.name}</p><p>{directory}</p><p>{agentName(selectedProvider)}</p><p>{c.model}: {modelSummary}</p><p>{c.effort}: {effortSummary}</p></div>}
+            {selected && <div className="bot-create-effective"><p><bdi>{selectedName}</bdi></p><p>{directory}</p><p>{agentName(selectedProvider)}</p><p>{c.model}: {modelSummary}</p><p>{c.effort}: {effortSummary}</p></div>}
           </details>
           <details className="bot-create-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}><summary onClick={event => { event.preventDefault(); setAdvanced(value => !value); }}>{m.advanced}</summary>
-            <div className="field"><label htmlFor="bot-worker">{m.worker}</label><select id="bot-worker" value={workerId ?? ''} disabled={busy || defaults === null} onChange={event => changeWorker(event.target.value)}><option value="">{m.automatic}{selected ? ` · ${selected.machine.name}` : ''}</option>{defaults?.workers.map(item => <option key={item.workerId} value={item.workerId}>{item.machine.name}{item.state === 'available' ? '' : ` · ${m.reason(item.state)}`}</option>)}</select></div>
-            <div className="field"><label htmlFor="bot-cwd">{m.cwd}</label><div className="bot-create-directory"><input id="bot-cwd" value={directory} disabled={busy || selected?.state !== 'available'} onChange={event => changeCwd(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={validation === 'cwd' || !validDirectory} /><button ref={browseButton} className="button" type="button" disabled={busy || !controlsEnabled || loading || selected?.state !== 'available' || !directory || !validDirectory} onClick={() => { if (!selected || !controlsEnabled) return; setBrowsing({ workerId: selected.workerId, workerName: selected.machine.name, path: directory, defaultPath: defaultDirectories.current.get(selected.workerId) ?? selected.configuration?.cwd ?? directory }); }}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 7V5h6l2 3h10v11H3Z" /></svg>{c.browse}</button></div><button className="bot-create-default-action" type="button" disabled={busy || !cwd} onClick={() => changeCwd(null)}>{c.defaultDirectory}</button></div>
-            <div className="field"><label htmlFor="bot-agent">{m.agent}</label><select id="bot-agent" value={provider ?? ''} disabled={busy || selected?.state !== 'available'} onChange={event => changeProvider(event.target.value)}><option value="">{c.defaultValue} · {agentName(configuration?.provider)}</option>{selected?.providers.map(item => <option key={item.provider} value={item.provider} disabled={!item.available}>{agentName(item.provider)}{item.available ? '' : ` · ${item.reason}`}</option>)}</select></div>
+            <div className="field"><label htmlFor="bot-worker">{m.worker}</label><NativeSelect density="form" layout="fill" touchMode="responsive" id="bot-worker" value={workerId ?? ''} disabled={busy || defaults === null} onChange={event => changeWorker(event.target.value)}><option value="">{m.automatic}{selected ? ` · ${selectedName}` : ''}</option>{defaults?.workers.map(item => <option key={item.workerId} value={item.workerId}>{names.name(scope.userId, item.workerId, item.machine.name, true)}{item.state === 'available' ? '' : ` · ${m.reason(item.state)}`}</option>)}</NativeSelect></div>
+            <div className="field"><label htmlFor="bot-cwd">{m.cwd}</label><div className="bot-create-directory"><input data-touch-text="responsive" id="bot-cwd" value={directory} disabled={busy || selected?.state !== 'available'} onChange={event => changeCwd(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={validation === 'cwd' || !validDirectory} /><button ref={browseButton} className="button" type="button" disabled={busy || !controlsEnabled || loading || selected?.state !== 'available' || !directory || !validDirectory} onClick={() => { if (!selected || !controlsEnabled) return; setBrowsing({ workerId: selected.workerId, workerName: selected.machine.name, path: directory, defaultPath: defaultDirectories.current.get(selected.workerId) ?? selected.configuration?.cwd ?? directory }); }}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 7V5h6l2 3h10v11H3Z" /></svg>{c.browse}</button></div><button className="bot-create-default-action" type="button" disabled={busy || !cwd} onClick={() => changeCwd(null)}>{c.defaultDirectory}</button></div>
+            <div className="field"><label htmlFor="bot-agent">{m.agent}</label><NativeSelect density="form" layout="fill" touchMode="responsive" id="bot-agent" value={provider ?? ''} disabled={busy || selected?.state !== 'available'} onChange={event => changeProvider(event.target.value)}><option value="">{c.defaultValue} · {agentName(configuration?.provider)}</option>{selected?.providers.map(item => <option key={item.provider} value={item.provider} disabled={!item.available}>{agentName(item.provider)}{item.available ? '' : ` · ${item.reason}`}</option>)}</NativeSelect></div>
             <div className="bot-create-model-row">
-              <div className="field"><label htmlFor="bot-model">{c.model}</label><select id="bot-model" value={model ?? ''} disabled={busy || models.value === null && model === null} onChange={event => changeModel(event.target.value)}><option value="">{c.defaultValue} · {modelSummary}</option>{model !== null && !visibleModels?.some(option => option.id === model) && <option value={model}>{model}</option>}{visibleModels?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
-              <div className="field"><label htmlFor="bot-effort">{c.effort}</label><select id="bot-effort" value={effort ?? ''} disabled={busy || !efforts?.length && effort === null} onChange={event => changeEffort(event.target.value)}><option value="">{c.defaultValue} · {effortSummary}</option>{effort !== null && !efforts?.includes(effort) && <option value={effort}>{effort}</option>}{efforts?.map(value => <option key={value} value={value}>{value}</option>)}</select></div>
+              <div className="field"><label htmlFor="bot-model">{c.model}</label><NativeSelect density="form" layout="fill" touchMode="responsive" id="bot-model" value={model ?? ''} disabled={busy || models.value === null && model === null} onChange={event => changeModel(event.target.value)}><option value="">{c.defaultValue} · {modelSummary}</option>{model !== null && !visibleModels?.some(option => option.id === model) && <option value={model}>{model}</option>}{visibleModels?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</NativeSelect></div>
+              <div className="field"><label htmlFor="bot-effort">{c.effort}</label><NativeSelect density="form" layout="fill" touchMode="responsive" id="bot-effort" value={effort ?? ''} disabled={busy || !efforts?.length && effort === null} onChange={event => changeEffort(event.target.value)}><option value="">{c.defaultValue} · {effortSummary}</option>{effort !== null && !efforts?.includes(effort) && <option value={effort}>{effort}</option>}{efforts?.map(value => <option key={value} value={value}>{value}</option>)}</NativeSelect></div>
             </div>
             <div className="bot-create-capabilities">
               {models.value !== null && !models.busy && !efforts?.length && <p className="bot-create-field-hint">{modelOption ? c.noEfforts : c.unknownEfforts}</p>}

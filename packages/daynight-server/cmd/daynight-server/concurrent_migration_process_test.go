@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -107,6 +109,7 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		t.Fatal("could not select distinct service addresses")
 	}
 	secondValues["DAYNIGHT_PUBLIC_ORIGIN"] = "http://" + secondValues["DAYNIGHT_LISTEN_ADDR"]
+	secondValues["DAYNIGHT_PREVIEW_ORIGIN"] = testauth.PreviewOrigin(secondValues["DAYNIGHT_PUBLIC_ORIGIN"])
 	secondValues["DAYNIGHT_UNIAUTH_CALLBACK_URL"] = secondValues["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/auth/callback"
 	adminURL := firstValues["DAYNIGHT_DATABASE_URL"]
 	applications := []string{"migration_first_" + strings.ToLower(rand.Text()), "migration_second_" + strings.ToLower(rand.Text())}
@@ -196,28 +199,28 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		+ (SELECT count(*) FROM oauth_authorization_cleanup_cursor WHERE singleton)`).Scan(&seedRows); err != nil || seedRows != 3 {
 		t.Fatalf("concurrent initialization lost system records: count=%d error=%v", seedRows, err)
 	}
-	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres")
+	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations")
 	var wantVersions []int64
-	for _, directory := range []string{filepath.Join(migrationRoot, "migrations"), filepath.Join(migrationRoot, "internal", "migration026", "migrations")} {
-		entries, err := os.ReadDir(directory)
+	if err := filepath.WalkDir(migrationRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-				continue
-			}
-			prefix, _, found := strings.Cut(entry.Name(), "_")
-			version, err := strconv.ParseInt(prefix, 10, 64)
-			if !found || err != nil || version < 1 {
-				t.Fatalf("invalid migration filename %q", entry.Name())
-			}
-			wantVersions = append(wantVersions, version)
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			return nil
 		}
+		prefix, _, found := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if !found || err != nil || version < 1 {
+			return fmt.Errorf("invalid migration filename %q", path)
+		}
+		wantVersions = append(wantVersions, version)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	slices.Sort(wantVersions)
 	if !slices.Equal(versions, wantVersions) {
-		t.Fatalf("concurrent processes did not share the complete migration ledger: %v", versions)
+		t.Fatalf("concurrent processes did not share the complete migration ledger: got=%v want=%v", versions, wantVersions)
 	}
 	if len(versions) < 39 || versions[37] != 38 || versions[38] != 39 {
 		t.Fatalf("OAuth migrations missing from ledger: %v", versions)
@@ -270,10 +273,11 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	empty1 := processPersistenceDecode[api.TaskSync](t, response, body, http.StatusOK)
 	response, body = request(origin2, http.MethodGet, path+"/task-sync", nil)
 	empty2 := processPersistenceDecode[api.TaskSync](t, response, body, http.StatusOK)
-	if empty1.Epoch == "" || empty1.Epoch != empty2.Epoch || empty1.Mode != "snapshot" || empty2.Mode != "snapshot" || empty1.Project != project || empty2.Project != project || empty1.Tasks == nil || empty2.Tasks == nil || len(empty1.Tasks) != 0 || len(empty2.Tasks) != 0 || empty1.ObservedAt.IsZero() || empty2.ObservedAt.IsZero() {
+	if empty1.Epoch == "" || empty1.Epoch != empty2.Epoch || empty1.Mode != "snapshot" || empty2.Mode != "snapshot" || empty1.Project != project || empty2.Project != project || empty1.Tasks == nil || empty2.Tasks == nil || len(empty1.Tasks) != 0 || len(empty2.Tasks) != 0 || empty1.ObservedAt.IsZero() || empty2.ObservedAt.IsZero() || empty1.ResponseTaskAt.IsZero() || empty2.ResponseTaskAt.IsZero() || empty1.ResponseSessionAt.IsZero() || empty2.ResponseSessionAt.IsZero() {
 		t.Fatalf("empty project did not share an initialized snapshot: %#v %#v", empty1, empty2)
 	}
 	empty2.ObservedAt = empty1.ObservedAt
+	empty2.ResponseTaskAt, empty2.ResponseSessionAt = empty1.ResponseTaskAt, empty1.ResponseSessionAt
 	if !reflect.DeepEqual(empty1, empty2) {
 		t.Fatalf("empty project snapshots differ: %#v %#v", empty1, empty2)
 	}
@@ -291,10 +295,11 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	}
 	project1, task1, sync1 := read(origin1)
 	project2, task2, sync2 := read(origin2)
-	if project1 != project || project2 != project || sync1.Project != project || !reflect.DeepEqual(task1, task) || !reflect.DeepEqual(task2, task) || sync1.Epoch != empty1.Epoch || sync1.Epoch != sync2.Epoch || sync1.Mode != "snapshot" || len(sync1.Tasks) != 1 || sync1.Tasks[0].ID != task.ID || sync1.Tasks[0].TitlePreview != task.Title || sync1.Tasks[0].Status != task.Status || sync1.Tasks[0].Version != strconv.FormatInt(task.Version, 10) || !reflect.DeepEqual(sync1.Tasks[0].DependsOn, task.DependsOn) || !reflect.DeepEqual(sync1.Tasks[0].ExternalDependsOn, task.ExternalDependsOn) || sync1.ObservedAt.IsZero() || sync2.ObservedAt.IsZero() {
+	if project1 != project || project2 != project || sync1.Project != project || !reflect.DeepEqual(task1, task) || !reflect.DeepEqual(task2, task) || sync1.Epoch != empty1.Epoch || sync1.Epoch != sync2.Epoch || sync1.Mode != "snapshot" || len(sync1.Tasks) != 1 || sync1.Tasks[0].ID != task.ID || sync1.Tasks[0].TitlePreview != task.Title || sync1.Tasks[0].Status != task.Status || sync1.Tasks[0].Version != strconv.FormatInt(task.Version, 10) || !reflect.DeepEqual(sync1.Tasks[0].DependsOn, task.DependsOn) || !reflect.DeepEqual(sync1.Tasks[0].ExternalDependsOn, task.ExternalDependsOn) || sync1.ObservedAt.IsZero() || sync2.ObservedAt.IsZero() || sync1.ResponseTaskAt.IsZero() || sync2.ResponseTaskAt.IsZero() || sync1.ResponseSessionAt.IsZero() || sync2.ResponseSessionAt.IsZero() {
 		t.Fatalf("services did not share project, task and sync state: %#v %#v", sync1, sync2)
 	}
 	sync2.ObservedAt = sync1.ObservedAt
+	sync2.ResponseTaskAt, sync2.ResponseSessionAt = sync1.ResponseTaskAt, sync1.ResponseSessionAt
 	if !reflect.DeepEqual(sync1, sync2) {
 		t.Fatalf("services returned different task sync projections: %#v %#v", sync1, sync2)
 	}

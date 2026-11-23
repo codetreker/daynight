@@ -4,15 +4,19 @@ import type { Project } from '../src/api/types';
 import type { WorkerConfigurationKey, WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
+import { useWorkerReviewParticipation } from '../src/features/workers/configuration/useWorkerReviewParticipation';
 import { ConfigurationProjectsDialog } from '../src/features/workers/configuration/ConfigurationDialogs';
 import { browserNavigation } from '../src/app/navigation';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheError } from '../src/features/task-cache/database';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerResponse } from './helpers/workers';
+import { automaticToolPaths, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
+
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
 
 const flush = () => act(async () => { for (let n = 0; n < 60; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
 const advance = async () => { await act(async () => { vi.advanceTimersByTime(5_000); for (let n = 0; n < 60; n++) await Promise.resolve(); }); };
@@ -26,10 +30,11 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
   const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : handler(url, init));
   vi.stubGlobal('fetch', fetch); return fetch;
 };
-type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
+type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'review' | 'confirming' | 'visible'>;
 const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
-  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled });
-  return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
+  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled, ...(props.platform === undefined ? {} : { platform: props.platform }) });
+  const review = useWorkerReviewParticipation(props.workerId, false);
+  return <WorkerConfigurationPanel {...props} visible state={state} review={review} confirming={false} />;
 };
 const mount = (props: Partial<ConfigurationFixtureProps> = {}) => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} {...props} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const input = (name = 'Concurrent task limit') => screen.getByRole('textbox', { name }) as HTMLInputElement;
@@ -40,6 +45,262 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it.each([
+    ['Concurrent task limit', '65', '64', '1–64'],
+    ['Task polling interval', '100000', '1000', '1,000–60,000 ms'],
+    ['Automatic recovery limit', '11', '10', '0–10'],
+  ] as const)('retains invalid %s, displays its range and saves one corrected value', async (name, invalid, valid, range) => {
+    let resource = configurationResource();
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') resource = configurationResource('2', JSON.parse(String(init.body)).value);
+      return configurationResponse(resource);
+    });
+    mount(); await flush(); change(name, invalid);
+    const field = input(name), errorId = field.getAttribute('aria-describedby')!.split(' ').find(id => id.endsWith('-error'))!;
+    expect(field).toHaveValue(invalid); expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(document.getElementById(errorId)).toHaveTextContent(range);
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Configuration' })); await flush();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    change(name, valid); expect(field).toHaveAttribute('aria-invalid', 'false'); expect(document.getElementById(errorId)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+    save(); await flush();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    expect(field).toHaveValue(valid);
+  });
+  it('loads historical out-of-range numbers without automatic correction or saving', async () => {
+    const value = { ...configurationValue(), maxConcurrent: 65, pollIntervalMs: 100_000, recoveryLimit: 11 };
+    let resource = observed('1', value, globals(value));
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') resource = configurationResource('2', JSON.parse(String(init.body)).value);
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    expect(input()).toHaveValue('65'); expect(input('Task polling interval')).toHaveValue('100000'); expect(input('Automatic recovery limit')).toHaveValue('11');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    await advance(); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    change('Concurrent task limit', '64'); change('Task polling interval', '60000'); change('Automatic recovery limit', '10');
+    save(); await flush();
+    const writes = fetch.mock.calls.filter(([, init]) => init?.method === 'PUT');
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(String(writes[0]![1]!.body)).value).toMatchObject({ maxConcurrent: 64, pollIntervalMs: 60000, recoveryLimit: 10 });
+  });
+  it.each([[400, 'invalid_input', true], [400, 'invalid_request', false], [403, 'invalid_input', false]] as const)('shows server validation text only for a 400 invalid_input save refusal (%s %s)', async (status, code, visible) => {
+    const message = 'pollIntervalMs: <img src=x onerror=alert(1)> must be between 1000 and 60000. ' + 'LongValidationDetail'.repeat(30);
+    const fetch = install((_url, init) => init.method === 'PUT' ? configurationResponse({ error: { code, message, requestId: 'validation-request' } }, status) : configurationResponse(configurationResource()));
+    mount(); await flush(); change('Task polling interval', '50000'); save(); await flush();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Configuration could not be saved.'); expect(alert).toHaveTextContent('validation-request');
+    if (visible) { expect(alert).toHaveTextContent(message); expect(alert).toHaveTextContent('Your draft has been kept.'); }
+    else expect(alert).not.toHaveTextContent(message);
+    expect(alert.querySelector('img')).toBeNull(); expect(input('Task polling interval')).toHaveValue('50000');
+    expect(input('Task polling interval')).toHaveAttribute('aria-invalid', 'false');
+    await advance();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('distinguishes applied tools from an unconfirmed editable setting', async () => {
+    const value = { ...configurationValue(), enableSudoCleanup: false, toolPaths: automaticToolPaths() };
+    install(() => configurationResponse(observed('1', value, globals(value))));
+    mount({ platform: 'linux', toolPaths: toolPathTelemetry() }); await flush();
+    const summary = document.querySelector<HTMLElement>('.configuration-summary')!;
+    expect(summary).toHaveTextContent('Tool paths · Codex / Copilot');
+    expect(summary).toHaveTextContent('Applied');
+    expect(summary.querySelector('.status-chip')).toHaveTextContent('Awaiting application');
+  });
+  it.each(['known', 'future'] as const)('rejects same-revision partial projections when common %s values disagree', async mismatch => {
+    const raw = (maximum: number, future: string) => {
+      const value = { ...configurationValue(), maxConcurrent: maximum, future: 'FUTURE', toolPaths: automaticToolPaths() };
+      const body = JSON.stringify(configurationResource('1', value)).replace('"FUTURE"', future);
+      return new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
+    };
+    const first = raw(2, '900719925474099312345');
+    const second = raw(mismatch === 'known' ? 3 : 2, mismatch === 'future' ? '900719925474099312346' : '900719925474099312345');
+    const responses = [first, second]; install(() => responses.shift()!);
+    mount({ toolPaths: toolPathTelemetry() }); await flush(); change('Concurrent task limit', '4'); await advance();
+    expect(input()).toHaveValue('4'); expect(screen.getByRole('alert')).toHaveTextContent('invalid configuration response');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('rejects a same-revision change to an unknown tool choice member', async () => {
+    const raw = (future: string) => {
+      const value = { ...configurationValue(), toolPaths: { ...automaticToolPaths(), codex: { kind: 'auto' as const, future: 'FUTURE' } } };
+      const body = JSON.stringify(configurationResource('1', value)).replace('"FUTURE"', future);
+      return new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
+    };
+    const responses = [raw('900719925474099312345'), raw('900719925474099312346')];
+    install(() => responses.shift()!);
+    mount({ toolPaths: toolPathTelemetry() }); await flush(); change('Concurrent task limit', '4'); await advance();
+    expect(input()).toHaveValue('4');
+    expect(screen.getByRole('alert')).toHaveTextContent('invalid configuration response');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('saves sudo cleanup without an application report, preserves unknown source, and discards edits', async () => {
+    const value = { ...configurationValue(), enableSudoCleanup: false, future: { number: 'unchanged' } };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount({ platform: 'linux', online: false }); await flush();
+    const toggle = screen.getByRole('checkbox', { name: 'Enable sudo cleanup' });
+    expect(toggle).not.toBeChecked(); expect(toggle).toBeEnabled();
+    expect(document.getElementById('feedback-enableSudoCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); save(); await flush();
+    expect(JSON.parse(writes[0]!).value).toMatchObject({ enableSudoCleanup: true, future: { number: 'unchanged' } });
+    expect(document.getElementById('feedback-enableSudoCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(toggle).toBeChecked();
+  });
+  it.each([['windows', 'Sudo cleanup is not supported on Windows.'], [undefined, 'Waiting to identify the Worker platform.']] as const)('disables sudo cleanup on %s while other settings remain editable', async (platform, message) => {
+    install(() => configurationResponse(configurationResource('1', { ...configurationValue(), enableSudoCleanup: false })));
+    mount(platform === undefined ? {} : { platform }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    change('Concurrent task limit', '3'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('preserves a sudo draft when the platform becomes unavailable and saves only other edits', async () => {
+    let resource = configurationResource('1', { ...configurationValue(), enableSudoCleanup: false });
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value); resource = configurationResource('2', body.value);
+      }
+      return configurationResponse(resource);
+    });
+    const view = mount({ platform: 'linux' }); await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' }));
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="windows" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, enableSudoCleanup: false });
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="linux" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('does not add the absent sudo field when saving other settings', async () => {
+    let body = '';
+    install((_url, init) => { if (init.method === 'PUT') body = String(init.body); return configurationResponse(configurationResource(init.method === 'PUT' ? '2' : '1', { ...configurationValue(), maxConcurrent: init.method === 'PUT' ? 3 : 2 })); });
+    mount({ platform: 'macos' }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByText('The service does not yet provide this setting.')).toBeInTheDocument();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(JSON.parse(body).value).not.toHaveProperty('enableSudoCleanup');
+  });
+  it('saves Windows process cleanup on a Windows Worker and discards an edit on request', async () => {
+    const value = { ...configurationValue(), enableWindowsProcessCleanup: false, future: { number: 'unchanged' } };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount({ platform: 'windows', online: false }); await flush();
+    const toggle = screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' });
+    expect(toggle).not.toBeChecked(); expect(toggle).toBeEnabled();
+    expect(document.getElementById('feedback-enableWindowsProcessCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); save(); await flush();
+    expect(JSON.parse(writes[0]!).value).toMatchObject({ enableWindowsProcessCleanup: true, future: { number: 'unchanged' } });
+    fireEvent.click(toggle); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(toggle).toBeChecked();
+  });
+  it.each([
+    ['linux', 'Windows process cleanup applies only to Windows Workers.'],
+    ['macos', 'Windows process cleanup applies only to Windows Workers.'],
+    [undefined, 'Waiting to identify the Worker platform before offering Windows process cleanup.'],
+  ] as const)('disables Windows process cleanup on %s while other settings remain editable', async (platform, message) => {
+    install(() => configurationResponse(configurationResource('1', { ...configurationValue(), enableWindowsProcessCleanup: false })));
+    mount(platform === undefined ? {} : { platform }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    change('Concurrent task limit', '3'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('preserves a Windows process cleanup draft when the platform becomes unavailable and saves only other edits', async () => {
+    let resource = configurationResource('1', { ...configurationValue(), enableWindowsProcessCleanup: false });
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value); resource = configurationResource('2', body.value);
+      }
+      return configurationResponse(resource);
+    });
+    const view = mount({ platform: 'windows' }); await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' }));
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="linux" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    change('Concurrent task limit', '3'); save(); await flush();
+    // The edit made on Windows is not carried into a save made elsewhere.
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, enableWindowsProcessCleanup: false });
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="windows" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('does not add the absent Windows process cleanup field when saving other settings', async () => {
+    let body = '';
+    install((_url, init) => { if (init.method === 'PUT') body = String(init.body); return configurationResponse(configurationResource(init.method === 'PUT' ? '2' : '1', { ...configurationValue(), maxConcurrent: init.method === 'PUT' ? 3 : 2 })); });
+    mount({ platform: 'windows' }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByText('The service does not yet provide Windows process cleanup.')).toBeInTheDocument();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(JSON.parse(body).value).not.toHaveProperty('enableWindowsProcessCleanup');
+  });
+  it('edits the archive target and reports the observed value independently', async () => {
+    const value = { ...configurationValue(), archiveSessions: true };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'archiveSessions' }, true)]);
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value);
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      const response = configurationResponse(resource); response.headers.set('Daynight-Worker-Archive-Sessions', '1'); return response;
+    });
+    mount(); await flush();
+    const archive = screen.getByRole('checkbox', { name: 'Archive Sessions' });
+    expect(archive).toBeChecked(); expect(archive).toBeEnabled();
+    expect(archive).toHaveAttribute('aria-describedby', expect.stringContaining('archive-sessions-detail'));
+    fireEvent.click(archive); expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Unsaved');
+    save(); await flush();
+    expect(writes[0]?.archiveSessions).toBe(false);
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Awaiting application');
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Actual: On');
+    resource = observed('2', resource.desired!.value, [...globals(resource.desired!.value, '2'), item({ kind: 'archiveSessions' }, false, '2')], '2'); await advance();
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Applied');
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Actual: Off');
+    fireEvent.click(archive); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(archive).not.toBeChecked();
+  });
+  it('shows unavailable service and disables an unsupported Worker without inventing a value', async () => {
+    let supported = false;
+    const value = { ...configurationValue(), archiveSessions: false };
+    let resource = observed('1', value, globals(value));
+    install(() => {
+      const response = configurationResponse(supported ? resource : configurationResource());
+      if (supported) response.headers.set('Daynight-Worker-Archive-Sessions', '1');
+      return response;
+    });
+    mount(); await flush();
+    expect(screen.queryByRole('checkbox', { name: 'Archive Sessions' })).toBeNull();
+    expect(screen.getByText('Upgrade the service to configure Session archiving.')).toBeInTheDocument();
+    supported = true; await advance();
+    const archive = screen.getByRole('checkbox', { name: 'Archive Sessions' });
+    expect(archive).not.toBeChecked(); expect(archive).toBeDisabled();
+    expect(screen.getByText(/has not reported support for Session archiving/)).toBeInTheDocument();
+    resource = observed('1', value, [...globals(value), item({ kind: 'archiveSessions' }, false)] , '2'); await advance();
+    expect(archive).toBeEnabled(); expect(archive).not.toBeChecked();
+  });
   it('saves the platform preference independently and reports actual false until the Worker applies it', async () => {
     const value = configurationValue();
     let resource = observed('1', value, globals(value));
@@ -53,26 +314,225 @@ describe('Worker configuration form', () => {
       return configurationResponse(resource);
     });
     mount(); await flush();
-    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
+    const preference = screen.getByRole('combobox', { name: 'Task claim rule' });
     const feedback = document.getElementById('feedback-preferPlatformSpecificTasks')!;
-    expect(preference).not.toBeChecked(); expect(feedback).toHaveTextContent('Actual: Off');
-    fireEvent.click(preference);
-    expect(preference).toBeChecked(); expect(feedback).toHaveTextContent('Unsaved');
+    expect(preference).toHaveValue('all'); expect(feedback).toHaveTextContent('Actual: Claim all compatible tasks');
+    fireEvent.change(preference, { target: { value: 'prefer' } });
+    expect(preference).toHaveValue('prefer'); expect(feedback).toHaveTextContent('Unsaved');
     save(); await flush();
     expect(writes).toEqual([{ revision: '1', value: { ...value, preferPlatformSpecificTasks: true } }]);
-    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Off');
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Claim all compatible tasks');
     const applied = resource.desired!.value;
     resource = observed('2', applied, globals(applied, '2'), '2'); await advance();
-    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: On');
+    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: Prefer current platform tasks');
     expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('preserves an unsupported strict draft when saving other fields and resumes after a supported report', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let mode: 'all' | 'only' = 'all', maximum = 2, revision = '1', observationRevision = 1, supported = true;
+    const writes: Record<string, unknown>[] = [];
+    const response = () => {
+      const value = { ...base, maxConcurrent: maximum, platformTaskMode: mode };
+      const items = [item({ kind: 'maxConcurrent' }, maximum, revision), item({ kind: 'pollIntervalMs' }, 60000, revision), item({ kind: 'recoveryLimit' }, 3, revision), item({ kind: 'native' }, value.native, revision), ...(supported ? [item({ kind: 'platformTaskMode' }, mode, revision)] : [])];
+      const resource = { desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: String(observationRevision), observation: { baseRevision: String(observationRevision - 1), desiredRevision: revision, items, reportedAt: WORKER_TIME } };
+      const result = configurationResponse(resource); result.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return result;
+    };
+    install((_url, init) => { if (init.method === 'PUT') { const body = JSON.parse(String(init.body)); writes.push(body.value); maximum = body.value.maxConcurrent; mode = body.value.platformTaskMode; revision = String(Number(revision) + 1); } return response(); });
+    mount({ platform: 'linux' }); await flush();
+    const rule = screen.getByRole('combobox', { name: 'Task claim rule' });
+    fireEvent.change(rule, { target: { value: 'only' } }); change('Concurrent task limit', '3');
+    supported = false; observationRevision++; await advance();
+    expect(rule).toHaveValue('only'); expect(input()).toHaveValue('3');
+    save(); await flush();
+    expect(writes).toHaveLength(1); expect(writes[0]).toMatchObject({ maxConcurrent: 3, platformTaskMode: 'all' }); expect(writes[0]).not.toHaveProperty('preferPlatformSpecificTasks');
+    expect(rule).toHaveValue('only'); expect(input()).toHaveValue('3');
+    supported = true; observationRevision++; await advance();
+    save(); await flush(); expect(writes).toHaveLength(2); expect(writes[1]).toMatchObject({ platformTaskMode: 'only', maxConcurrent: 3 });
+  });
+  it('does not enable saving a newly strict rule after Worker support disappears', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let supported = true, observationRevision = 1;
+    install(() => {
+      const value = { ...base, platformTaskMode: 'all' };
+      const resource = { desired: { revision: '1', updatedAt: WORKER_TIME, value }, observationRevision: String(observationRevision), observation: { baseRevision: String(observationRevision - 1), desiredRevision: '1', items: supported ? [item({ kind: 'platformTaskMode' }, 'all')] : [], reportedAt: WORKER_TIME } };
+      const response = configurationResponse(resource); response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); const rule = screen.getByRole('combobox', { name: 'Task claim rule' });
+    fireEvent.change(rule, { target: { value: 'only' } }); supported = false; observationRevision++; await advance();
+    expect(rule).toHaveValue('only'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    supported = true; observationRevision++; await advance(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('settles a legacy save after service mode capability is withdrawn', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let modern = true, revision = '1', preference = true;
+    const writes: Record<string, unknown>[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') { const body = JSON.parse(String(init.body)); writes.push(body.value); preference = body.value.preferPlatformSpecificTasks; revision = '2'; }
+      const value = modern ? { ...base, platformTaskMode: preference ? 'prefer' : 'all' } : { ...base, preferPlatformSpecificTasks: preference };
+      const response = configurationResponse({ desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); const rule = screen.getByRole('combobox', { name: 'Task claim rule' }); expect(rule).toHaveValue('prefer');
+    modern = false; await advance(); fireEvent.change(rule, { target: { value: 'all' } }); save(); await flush();
+    expect(writes).toHaveLength(1); expect(writes[0]).toMatchObject({ preferPlatformSpecificTasks: false }); expect(writes[0]).not.toHaveProperty('platformTaskMode');
+    expect(rule).toHaveValue('all'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    expect(document.getElementById('feedback-preferPlatformSpecificTasks')).not.toHaveTextContent('Unsaved');
+  });
+  it('reconciles an uncertain legacy save against a newer enum projection', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let modern = false;
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { modern = true; return configurationError(500, 'internal_error'); }
+      const value = modern ? { ...base, platformTaskMode: 'prefer' } : { ...base, preferPlatformSpecificTasks: false };
+      const response = configurationResponse({ desired: { revision: modern ? '2' : '1', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); fireEvent.change(screen.getByRole('combobox', { name: 'Task claim rule' }), { target: { value: 'prefer' } }); save(); await flush();
+    expect(screen.getByText('The cloud confirms the submitted configuration.')).toBeInTheDocument();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('does not mistake a concurrent strict target for an uncertain legacy preference save', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = false;
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { modern = true; return configurationError(500, 'internal_error'); }
+      const value = modern ? { ...base, platformTaskMode: 'only' } : { ...base, preferPlatformSpecificTasks: false };
+      const response = configurationResponse({ desired: { revision: modern ? '2' : '1', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); fireEvent.change(screen.getByRole('combobox', { name: 'Task claim rule' }), { target: { value: 'prefer' } }); save(); await flush();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.queryByText('The cloud confirms the submitted configuration.')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('prefer');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    await advance(); await advance();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('prefer');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' })); await flush();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+    expect(screen.queryByText('The cloud configuration changed in another page.')).toBeNull();
+  });
+  it('recognizes other conflicting fields even when a legacy true baseline could mean strict', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = false;
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { modern = true; return configurationError(500, 'internal_error'); }
+      const value = modern ? { ...base, maxConcurrent: 4, platformTaskMode: 'only' } : { ...base, preferPlatformSpecificTasks: true };
+      const response = configurationResponse({ desired: { revision: modern ? '2' : '1', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    await advance(); expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' })); await flush(); expect(input()).toHaveValue('4');
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+  });
+  it('retains uncertainty when a legacy true baseline leaves a strict target indistinguishable', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let phase: 'legacy' | 'ambiguous' | 'confirmed' = 'legacy';
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { phase = 'ambiguous'; return configurationError(500, 'internal_error'); }
+      const value = phase === 'legacy' ? { ...base, preferPlatformSpecificTasks: true } : { ...base, maxConcurrent: 3, platformTaskMode: phase === 'ambiguous' ? 'only' : 'prefer' };
+      const response = configurationResponse({ desired: { revision: phase === 'legacy' ? '1' : phase === 'ambiguous' ? '2' : '3', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (phase !== 'legacy') response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    await advance(); await advance();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    phase = 'confirmed'; fireEvent.click(screen.getByRole('button', { name: 'Check save result' })); await flush();
+    expect(screen.getByText('The cloud confirms the submitted configuration.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('adopts the current strict target after abandoning an ambiguous save without replaying it', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let phase: 'legacy' | 'ambiguous' | 'exited' = 'legacy';
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') {
+        if (phase === 'legacy') { phase = 'ambiguous'; return configurationError(500, 'internal_error'); }
+        expect(JSON.parse(String(init.body)).value.platformTaskMode).toBe('all'); phase = 'exited';
+      }
+      const value = phase === 'legacy' ? { ...base, preferPlatformSpecificTasks: true } : { ...base, maxConcurrent: 3, platformTaskMode: phase === 'ambiguous' ? 'only' : 'all' };
+      const response = configurationResponse({ desired: { revision: phase === 'legacy' ? '1' : phase === 'ambiguous' ? '2' : '3', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (phase !== 'legacy') response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    const Fixture = () => {
+      const state = useWorkerConfiguration(workerId(1), { readEnabled: true });
+      const review = useWorkerReviewParticipation(workerId(1), false);
+      return <><button onClick={state.abandon}>Abandon draft</button><WorkerConfigurationPanel workerId={workerId(1)} readEnabled online tasks={[]} visible state={state} review={review} confirming={false} /></>;
+    };
+    renderWithLocale(<Fixture />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Abandon draft' })); await advance();
+    expect(screen.getByText('The previous save result is unknown. The current cloud target is shown.')).toBeInTheDocument();
+    expect(screen.queryByText('The cloud confirms the submitted configuration.')).toBeNull();
+    expect(screen.queryByText('The cloud does not contain the submitted configuration. Review the latest values before saving again.')).toBeNull();
+    const rule = screen.getByRole('combobox', { name: 'Task claim rule' }); expect(rule).toHaveValue('only'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.change(rule, { target: { value: 'all' } }); expect(screen.getByText('The previous save result is unknown. The current cloud target is shown.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled(); save(); await flush();
+    expect(rule).toHaveValue('all'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(2);
+  });
+  it('keeps strict application unconfirmed when an external revision arrives through a legacy view', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = true;
+    install(() => {
+      const revision = modern ? '1' : '2', value = modern ? { ...base, platformTaskMode: 'only' } : { ...base, maxConcurrent: 3, preferPlatformSpecificTasks: true };
+      const response = configurationResponse({ desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: modern ? '1' : '2', observation: { baseRevision: modern ? '0' : '1', desiredRevision: revision, items: modern ? [item({ kind: 'platformTaskMode' }, 'only', revision)] : [item({ kind: 'preferPlatformSpecificTasks' }, true, revision)], reportedAt: WORKER_TIME } });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); modern = false; await advance();
+    const rule = screen.getByRole('combobox', { name: 'Task claim rule' }), feedback = document.getElementById('feedback-preferPlatformSpecificTasks')!;
+    expect(rule).toHaveValue('only'); expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Not confirmed');
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' })); await flush();
+    expect(rule).toHaveValue('prefer'); expect(feedback).toHaveTextContent('Actual: Prefer current platform tasks');
+  });
+  it('does not claim strict application from a legacy report after an unrelated legacy save', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = true, revision = '1', maximum = 2;
+    install((_url, init) => {
+      if (init.method === 'PUT') { maximum = JSON.parse(String(init.body)).value.maxConcurrent; revision = '2'; }
+      const value = modern ? { ...base, maxConcurrent: maximum, platformTaskMode: 'only' } : { ...base, maxConcurrent: maximum, preferPlatformSpecificTasks: true };
+      const key = modern ? 'platformTaskMode' : 'preferPlatformSpecificTasks';
+      const response = configurationResponse({ desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: '1', observation: { baseRevision: '0', desiredRevision: revision, items: [item({ kind: key }, modern ? 'only' : true, revision)], reportedAt: WORKER_TIME } });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); modern = false; await advance(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+    const feedback = document.getElementById('feedback-preferPlatformSpecificTasks')!;
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Not confirmed');
+  });
+  it('does not reconcile a strict save from a lossy legacy observation', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let phase: 'initial' | 'legacy' | 'confirmed' = 'initial';
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { phase = 'legacy'; return configurationError(500, 'internal_error'); }
+      const mode = phase === 'initial' ? 'all' : 'only', modern = phase !== 'legacy';
+      const value = modern ? { ...base, platformTaskMode: mode } : { ...base, preferPlatformSpecificTasks: true };
+      const revision = phase === 'initial' ? '1' : '2';
+      const resource = { desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: '1', observation: { baseRevision: '0', desiredRevision: revision, items: modern ? [item({ kind: 'platformTaskMode' }, mode, revision)] : [item({ kind: 'preferPlatformSpecificTasks' }, true, revision)], reportedAt: WORKER_TIME } };
+      const response = configurationResponse(resource); if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); fireEvent.change(screen.getByRole('combobox', { name: 'Task claim rule' }), { target: { value: 'only' } }); save(); await flush();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+    phase = 'confirmed'; fireEvent.click(screen.getByRole('button', { name: 'Check save result' })); await flush();
+    expect(screen.getByText('The cloud confirms the submitted configuration.')).toBeInTheDocument();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('offers an exit from a saved strict target without an application report', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    let resource: unknown = { desired: { revision: '1', updatedAt: WORKER_TIME, value: { ...base, platformTaskMode: 'only' } }, observationRevision: '0', observation: null };
+    const writes: Record<string, unknown>[] = [];
+    install((_url, init) => { if (init.method === 'PUT') { const body = JSON.parse(String(init.body)); writes.push(body.value); resource = { desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value }, observationRevision: '0', observation: null }; } const response = configurationResponse(resource); response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response; });
+    mount(); await flush();
+    const rule = screen.getByRole('combobox', { name: 'Task claim rule' }); expect(rule).toHaveValue('only');
+    expect(document.getElementById('feedback-preferPlatformSpecificTasks')).toHaveTextContent('Actual: Not confirmed');
+    fireEvent.change(rule, { target: { value: 'all' } }); save(); await flush(); expect(writes).toHaveLength(1); expect(writes[0]).toMatchObject({ platformTaskMode: 'all' });
   });
   it('discards the platform preference draft without saving it', async () => {
     const fetch = install(() => configurationResponse(configurationResource()));
     mount(); await flush();
-    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
-    fireEvent.click(preference); expect(preference).toBeChecked();
+    const preference = screen.getByRole('combobox', { name: 'Task claim rule' });
+    fireEvent.change(preference, { target: { value: 'prefer' } }); expect(preference).toHaveValue('prefer');
     fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
-    expect(preference).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    expect(preference).toHaveValue('all'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
   });
   it('keeps healthy choices editable and reports a failed refresh after withdrawal', () => {
@@ -193,7 +653,7 @@ describe('Worker configuration form', () => {
     expect(input()).toHaveValue('-'); expect(screen.getByText('Enter a JSON array of nonempty strings without control characters.')).toBeInTheDocument();
   });
   it('shows preparation errors, removed Project stop results and recovered last failures together', async () => {
-    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
     const preparation = { code: 'permission_denied' as const, category: 'repository' as const, phase: 'prepare' as const, occurredAt: WORKER_TIME };
     const stopping = { code: 'command_failed' as const, category: 'runtime' as const, phase: 'stop' as const, occurredAt: WORKER_TIME };
     let resource = observed('2', value, [...globals(value, '2'),
@@ -201,7 +661,7 @@ describe('Worker configuration form', () => {
       item({ kind: 'projectNative', projectId: workerId(3) }, value.native, '2'),
       { ...item({ kind: 'projectRemoval', projectId: workerId(9) }, null, '1'), state: 'error', error: stopping, lastFailure: stopping, nextAttemptAt: WORKER_TIME },
     ], '2');
-    install(() => configurationResponse(resource), [project(3), project(9)]); mount(); await flush();
+    install(() => configurationResponse(resource), [project(3), project(9)]); mount({ toolPaths: toolPathTelemetry([toolPathObservation('codex', 'web', { targetRevision: '2' }), toolPathObservation('copilot', 'web', { targetRevision: '2' })]) }); await flush();
     expect(screen.getByText('Partially applied')).toBeInTheDocument();
     const removed = screen.getByRole('heading', { name: 'Project 9' }).closest('article')!;
     expect(within(removed).getByText('Stop project execution')).toBeInTheDocument(); expect(within(removed).getByText(/Stopping · Command failed/)).toBeInTheDocument();
@@ -213,7 +673,59 @@ describe('Worker configuration form', () => {
     ], '3'); await advance();
     expect(screen.getByText(/Last failure: Preparation · Permission denied/)).toBeInTheDocument(); expect(screen.getByText(/Last failure: Stopping · Command failed/)).toBeInTheDocument();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
-    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
+  });
+  it.each(['target', 'native', 'project', 'override', 'observation', 'observationKey', 'observationValue', 'observationField'] as const)('does not claim full application for unknown %s data', async kind => {
+    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId: workerId(3) }, true), item({ kind: 'projectNative', projectId: workerId(3) }, value.native)]);
+    const future = { setting: [9007199254740991, null] };
+    const raw = {
+      ...resource,
+      desired: { ...resource.desired!, value: {
+        ...value,
+        ...(kind === 'target' ? { future } : {}),
+        native: { ...value.native, ...(kind === 'native' ? { future } : {}) },
+        projects: value.projects.map(project => ({ ...project, ...(kind === 'project' ? { future } : {}), nativeOverrides: { ...project.nativeOverrides, ...(kind === 'override' ? { future } : {}) } })),
+      } },
+      observation: { ...resource.observation!, items: [...resource.observation!.items.map(entry => entry.key.kind === 'native' ? {
+        ...entry,
+        key: { ...entry.key, ...(kind === 'observationKey' ? { future } : {}) },
+        appliedValue: { ...value.native, ...(kind === 'observationValue' ? { future } : {}) },
+        ...(kind === 'observationField' ? { future } : {}),
+      } : entry), ...(kind === 'observation' ? [{ key: { kind: 'future' }, targetRevision: '1', state: 'pending', appliedValue: null }] : [])] },
+    };
+    install(() => configurationResponse(raw), [project(3)]); mount(); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(summary).queryByText('Applied')).toBeNull();
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Applied')).toBeInTheDocument();
+  });
+  it('does not let unknown tools or choice members imply full application', async () => {
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() };
+    const resource = observed('1', value, globals(value));
+    const raw = { ...resource, desired: { ...resource.desired!, value: { ...value, toolPaths: { ...value.toolPaths, codex: { kind: 'auto', futureChoice: 1 }, futureTool: { kind: 'future' } } } } };
+    install(() => { const response = configurationResponse(raw); response.headers.set('Daynight-Worker-Control-Mode', '1'); response.headers.set('Daynight-Worker-Tool-Paths', '2'); return response; });
+    mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(summary).queryByText('Applied', { selector: '.status-chip' })).toBeNull();
+  });
+  it('does not treat unknown response metadata as an unapplied target', async () => {
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() }, resource = observed('1', value, globals(value));
+    install(() => configurationResponse({ ...resource, futureMetadata: { valid: true } })); mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
+  });
+  it('treats a known Project ID case change as the same observation', async () => {
+    const projectId = workerId(10), value = { ...configurationValue(), toolPaths: automaticToolPaths(), projects: [{ projectId, nativeOverrides: {} }] };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId }, true), item({ kind: 'projectNative', projectId }, value.native)]);
+    const raw = { ...resource,
+      desired: { ...resource.desired!, value: { ...value, projects: [{ projectId: projectId.toUpperCase(), nativeOverrides: {} }] } },
+      observation: { ...resource.observation!, items: resource.observation!.items.map(entry => 'projectId' in entry.key ? { ...entry, key: { ...entry.key, projectId: projectId.toUpperCase() } } : entry) },
+    };
+    install(() => configurationResponse(raw), [project(10)]); mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
   });
   it('keeps new Project targets pending and shows an unfinished removal after that Project is reselected', async () => {
     const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
@@ -251,6 +763,49 @@ describe('Worker configuration form', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
     expect(input('Model')).toHaveValue(''); expect(input('Startup arguments')).toHaveValue('[]');
     save(); await flush(); expect(submitted).toEqual({ ...value, native: { agent: 'claude', model: null, args: [] } });
+  });
+  it('shows the saved and conflicting raw target without changing it while editing', async () => {
+    const source = (maximum: number, number: string) => JSON.stringify({ ...configurationValue(), maxConcurrent: maximum, future: { nested: ['RAW_NUMBER', 'kept'] } }).replace('"RAW_NUMBER"', number);
+    const oldSource = source(2, '900719925474099312345'), latestSource = source(9, '1.2300e+45');
+    const rawResponse = (revision: string, value: string) => new Response(`{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${value}},"observationRevision":"0","observation":null}`, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
+    let reads = 0;
+    const fetch = install((_url, init) => init.method === 'PUT' ? configurationError(409, 'version_conflict') : rawResponse(++reads === 1 ? '1' : '2', reads === 1 ? oldSource : latestSource));
+    mount(); await flush();
+    const saved = screen.getByText('View saved configuration response').closest('details')!;
+    fireEvent.click(within(saved).getByText('View saved configuration response'));
+    expect(saved.querySelector('pre')).toHaveTextContent(oldSource);
+    change('Concurrent task limit', '3'); expect(saved.querySelector('pre')).toHaveTextContent(oldSource);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    save(); await flush();
+    const latest = screen.getByText('View latest cloud configuration response').closest('details')!;
+    fireEvent.click(within(latest).getByText('View latest cloud configuration response'));
+    expect(latest.querySelector('pre')).toHaveTextContent(latestSource); expect(saved.querySelector('pre')).toHaveTextContent(latestSource);
+    expect(input()).toHaveValue('3');
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' }));
+    expect(input()).toHaveValue('9'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('identifies a capability-projected save response and does not invent omitted fields', async () => {
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() };
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') return configurationResponse(configurationResource('2', { ...value, maxConcurrent: 3 }));
+      const response = configurationResponse(configurationResource('1', value));
+      response.headers.set('Daynight-Worker-Tool-Paths', '2'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    const details = screen.getByText('View saved configuration response').closest('details')!;
+    fireEvent.click(within(details).getByText('View saved configuration response'));
+    expect(within(details).getByText('This response may omit fields due to capability negotiation.')).toBeInTheDocument();
+    expect(details.querySelector('pre')).toHaveTextContent('toolPaths');
+    expect(details.querySelector('pre')).toHaveTextContent('"maxConcurrent":3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('does not present a stale response as latest when conflict rereading fails', async () => {
+    let reads = 0;
+    install((_url, init) => init.method === 'PUT' ? configurationError(409, 'version_conflict') : ++reads === 1 ? configurationResponse(configurationResource()) : configurationError(500, 'internal_error'));
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.queryByText('View latest cloud configuration response')).toBeNull();
+    expect(input()).toHaveValue('3');
   });
   it('retains the input on conflict and loads the new target only after an explicit action', async () => {
     let reads = 0;
@@ -345,9 +900,9 @@ describe('Worker detail configuration integration', () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
     const view = renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
-    expect(screen.getByRole('checkbox', { name: `Prefer ${name} tasks` })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: `Prefer ${name} tasks` })).toBeInTheDocument();
     view.setLocale('zh-CN');
-    expect(screen.getByRole('checkbox', { name: `优先领取 ${name} 的任务` })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: `优先领取 ${name} 的任务` })).toBeInTheDocument();
   });
   it('updates the label when switching Workers and does not retain the old platform while loading', async () => {
     const second = deferred<Response>();
@@ -356,23 +911,25 @@ describe('Worker detail configuration integration', () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : url.endsWith(workerId(2)) ? second.promise : workerResponse(first));
     const view = renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
-    expect(screen.getByRole('checkbox', { name: 'Prefer macOS tasks' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Prefer macOS tasks' })).toBeInTheDocument();
     act(() => browserNavigation().navigate(`/workers/${workerId(2)}`));
     view.rerender(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(2)} readEnabled />);
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
-    expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toBeInTheDocument();
     second.resolve(workerResponse(next)); await flush();
-    expect(screen.getByRole('checkbox', { name: 'Prefer Windows tasks' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Prefer Windows tasks' })).toBeInTheDocument();
   });
   it('keeps configuration available after telemetry404 and preserves its mounted draft across keyboard tabs', async () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerError(404));
     renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
-    expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    expect(within(screen.getByRole('tabpanel', { name: 'Runtime monitoring' })).getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
-    expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toBeInTheDocument();
     const args = input('Startup arguments'); change('Startup arguments', '[unfinished');
     const overview = screen.getByRole('tab', { name: 'Runtime monitoring' }); fireEvent.click(overview); expect(args).not.toBeVisible();
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();
+    const system = screen.getByRole('tab', { name: 'System monitoring' }); expect(system).toHaveFocus(); expect(args).not.toBeVisible();
+    fireEvent.keyDown(system, { key: 'ArrowRight' }); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveFocus(); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[unfinished'); expect(args).toBeVisible();
   });
   it('keeps an open selection and its focus across background reads, and closes it on a real tab change', async () => {
@@ -422,108 +979,117 @@ describe('Worker detail configuration integration', () => {
   });
 });
 
-
-describe('Worker control mode form', () => {
-  it('saves a mode change, retains the actual old mode and includes mode in overall application', async () => {
-    const value = { ...configurationValue(), agentControlMode: 'herdr' as const };
-    let resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'herdr')]);
-    const writes: unknown[] = [];
+describe('task tag filter presentation', () => {
+  it('distinguishes unconfirmed, matching and stale application while preserving the saved source on unrelated edits', async () => {
+    const digest = 'd6b8862fae28deb5524520e92b0c2252f54a3d6607ea333c47c6ba91b99816f2';
+    const filter = { names: ['backend', 'urgent'], match: 'any' as const, future: { exact: 'preserved' } };
+    const value = { ...configurationValue(), taskTagFilter: filter };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    const hash = Promise.withResolvers<ArrayBuffer>();
+    vi.stubGlobal('crypto', { subtle: { digest: (_algorithm: string, bytes: Uint8Array) => new TextDecoder().decode(bytes).includes('frontend') ? Promise.resolve(new Uint8Array(32).fill(2).buffer) : hash.promise } });
     install((_url, init) => {
       if (init.method === 'PUT') {
-        const body = JSON.parse(String(init.body)) as { revision: string; value: WorkerConfigurationValue };
-        writes.push(body);
-        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
-      }
-      return controlModeResponse(resource);
-    });
-    mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' });
-    expect(within(mode).getAllByRole('option').map(option => option.textContent)).toEqual(['herdr', 'web']);
-    const feedback = document.getElementById('feedback-agentControlMode')!;
-    expect(mode).toHaveValue('herdr'); expect(feedback).toHaveTextContent('Actual: herdr');
-    fireEvent.change(mode, { target: { value: 'web' } }); expect(feedback).toHaveTextContent('Unsaved');
-    save(); await flush();
-    expect(writes).toEqual([{ revision: '1', value: { ...value, agentControlMode: 'web' } }]);
-    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: herdr');
-    const target = resource.desired!.value;
-    resource = observed('2', target, globals(target, '2'), '2'); await advance();
-    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Awaiting application');
-    expect(feedback).toHaveTextContent('Actual: Not confirmed');
-    const error = { code: 'invalid_configuration' as const, category: 'agent' as const, phase: 'validate' as const, occurredAt: WORKER_TIME };
-    resource = observed('2', target, [...globals(target, '2'), { ...item({ kind: 'agentControlMode' }, 'herdr', '2'), state: 'error', error }], '3'); await advance();
-    expect(feedback).toHaveTextContent('Failed'); expect(feedback).toHaveTextContent('Actual: herdr'); expect(feedback).toHaveTextContent('Validation · Invalid configuration');
-    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Partially applied');
-    resource = observed('2', target, [...globals(target, '2'), item({ kind: 'agentControlMode' }, 'web', '2')], '4'); await advance();
-    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: web');
-    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-  });
-  it('leaves unadopted mode unselected and protects an explicit choice from late adoption', async () => {
-    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: null });
-    const fetch = install(() => controlModeResponse(resource));
-    mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' }) as HTMLSelectElement;
-    expect(mode.selectedIndex).toBe(-1); expect(mode.options).toHaveLength(2);
-    expect(document.getElementById('feedback-agentControlMode')).toHaveTextContent('Actual: Not confirmed');
-    fireEvent.change(mode, { target: { value: 'herdr' } }); mode.focus();
-    resource = configurationResource('2', { ...configurationValue(), agentControlMode: 'web' }); await advance();
-    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBe(mode);
-    expect(mode).toHaveValue('herdr'); expect(mode).toHaveFocus();
-    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' }));
-    expect(mode).toHaveValue('web');
-    fireEvent.change(mode, { target: { value: 'herdr' } });
-    fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
-    expect(mode).toHaveValue('web');
-    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
-  });
-  it('disables only mode on an old service while saving other fields', async () => {
-    let resource = configurationResource();
-    const writes: Record<string, unknown>[] = [];
-    install((_url, init) => {
-      if (init.method === 'PUT') {
-        const body = JSON.parse(String(init.body)); writes.push(body.value);
-        resource = configurationResource('2', body.value);
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = observed('2', body.value, [...globals(body.value, '2'), item({ kind: 'taskTagFilter' }, digest, '2')], '2');
       }
       return configurationResponse(resource);
     });
     mount(); await flush();
-    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBeDisabled();
-    expect(screen.getByText('Upgrade the service to configure control mode.')).toBeInTheDocument();
-    change('Automatic recovery limit', '8'); save(); await flush();
-    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode');
-    expect(writes[0]!.recoveryLimit).toBe(8); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    const field = document.querySelector<HTMLElement>('.task-tag-filter')!;
+    expect(field).toHaveTextContent('Any: backendurgent');
+    expect(field).toHaveTextContent('Worker support is not confirmed');
+    expect(field).toHaveTextContent('Checking');
+    expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
+    const editor = input(); fireEvent.change(editor, { target: { value: '4' } }); editor.focus();
+    save(); await flush();
+    expect(JSON.parse(writes[0]!).value.taskTagFilter).toEqual(filter);
+    expect(editor).toHaveValue('4');
+    await act(async () => hash.resolve(Uint8Array.from(digest.match(/../g)!, part => parseInt(part, 16)).buffer));
+    await flush();
+    expect(field).toHaveTextContent('Actual: Any: backendurgent');
+    expect(field).not.toHaveTextContent(digest);
+    expect(editor).toHaveFocus();
+    resource = observed('3', { ...value, taskTagFilter: { names: ['frontend'], match: 'all' } }, [...globals(value, '3'), item({ kind: 'taskTagFilter' }, digest, '3')], '3');
+    await advance(); await flush();
+    expect(field).toHaveTextContent('Applied value differs from the current target');
+    expect(field).not.toHaveTextContent(digest);
+    expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
   });
 });
 
-describe('control mode capability downgrade', () => {
-  it.each(['saved', 'unknown'] as const)('keeps unsent mode edits while other settings are %s through the legacy contract', async result => {
-    let supported = true;
-    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: 'herdr' as const });
+describe('task tag filter editing', () => {
+  it('adds complete names, deduplicates, and includes the pending name on save', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))]);
     const writes: WorkerConfigurationValue[] = [];
     install((_url, init) => {
       if (init.method === 'PUT') {
         const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
         writes.push(body.value);
-        resource = configurationResource(String(BigInt(resource.desired!.revision) + 1n), { ...resource.desired!.value, ...body.value });
-        if (result === 'unknown' && !supported) return Promise.reject(new TypeError('response lost'));
+        resource = observed('2', body.value, [...globals(body.value, '2'), item({ kind: 'taskTagFilter' }, 'a'.repeat(64), '2')], '2');
       }
-      if (supported) return controlModeResponse(resource);
-      const { agentControlMode: _mode, ...legacy } = resource.desired!.value;
-      return configurationResponse(configurationResource(resource.desired!.revision, legacy));
+      return configurationResponse(resource);
     });
     mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' });
-    fireEvent.change(mode, { target: { value: 'web' } }); supported = false; await advance();
-    expect(mode).toBeDisabled(); expect(mode).toHaveValue('web');
-    const saveButton = screen.getByRole('button', { name: 'Save configuration' });
-    expect(saveButton).toBeDisabled();
-    change('Automatic recovery limit', '8'); expect(saveButton).toBeEnabled(); save(); await flush();
-    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode'); expect(writes[0]!.recoveryLimit).toBe(8);
-    expect(mode).toHaveValue('web'); expect(document.querySelector('.draft-summary')).toHaveTextContent('Unsaved changes');
-    expect(saveButton).toBeDisabled();
-    supported = true; await advance(); expect(mode).toBeEnabled(); expect(mode).toHaveValue('web'); expect(saveButton).toBeEnabled();
-    save(); await flush(); expect(writes).toHaveLength(2); expect(writes[1]!.agentControlMode).toBe('web');
-    expect(saveButton).toBeDisabled(); expect(document.querySelector('.draft-summary')).toHaveTextContent('No changes');
+    const editor = input('Task tag filter');
+    fireEvent.change(editor, { target: { value: ' Backend,urgent ' } }); fireEvent.keyDown(editor, { key: 'Enter' });
+    expect(document.querySelector('.task-tag-filter .application-feedback .status-chip')).toHaveTextContent('Unsaved');
+    expect(document.querySelector('.task-tag-target')).toHaveTextContent('Saved target: No tag restriction');
+    expect(screen.getByRole('button', { name: 'Remove tag Backend,urgent' })).toBeInTheDocument();
+    fireEvent.change(editor, { target: { value: 'backend,urgent' } }); fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getAllByRole('button', { name: 'Remove tag Backend,urgent' })).toHaveLength(1);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag matching' }), { target: { value: 'all' } });
+    fireEvent.change(editor, { target: { value: 'review' } }); save(); await flush();
+    expect(writes[0]!.taskTagFilter).toEqual({ names: ['Backend,urgent', 'review'], match: 'all' });
+    expect(editor).toHaveValue('');
+  });
+  it('focuses and retains invalid input on save and rejects empty Add', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    const fetch = install(() => configurationResponse(observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))])));
+    mount(); await flush();
+    const editor = input('Task tag filter');
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(editor).toHaveFocus(); expect(editor).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(editor, { target: { value: 'x'.repeat(65) } }); save();
+    expect(editor).toHaveFocus(); expect(editor).toHaveValue('x'.repeat(65)); expect(editor).toHaveAttribute('aria-invalid', 'true');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
+  it('retains an invalid tag draft after support disappears while saving another field', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))]);
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }; writes.push(body.value);
+        resource = observed('2', body.value, globals(body.value, '2'), '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const editor = input('Task tag filter');
+    fireEvent.change(editor, { target: { value: 'x'.repeat(65) } });
+    resource = observed('1', value, globals(value), '2'); await advance(); await flush();
+    expect(editor).toBeDisabled(); expect(editor).toHaveValue('x'.repeat(65));
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, taskTagFilter: { names: [], match: 'any' } });
+    expect(editor).toHaveValue('x'.repeat(65));
+  });
+  it('permits clearing an unconfirmed Worker filter and editing other settings', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: ['backend'], match: 'all' as const } };
+    let resource = observed('1', value, globals(value));
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }; writes.push(body.value);
+        resource = observed('2', body.value, globals(body.value, '2'), '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    expect(input('Task tag filter')).toBeDisabled(); expect(screen.getByRole('button', { name: 'Remove tag backend' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear restriction' })); change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, taskTagFilter: { names: [], match: 'any' } });
   });
 });

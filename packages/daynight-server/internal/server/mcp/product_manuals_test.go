@@ -49,16 +49,19 @@ func TestProductManualsCompleteAndUnmodified(t *testing.T) {
 	wantURIs := []string{
 		"daynight://manuals/concepts.md",
 		"daynight://manuals/tasks.md",
+		"daynight://manuals/task-writes.md",
 		"daynight://manuals/dependencies.md",
+		"daynight://manuals/dependency-writes.md",
 		"daynight://manuals/write-safety.md",
 		"daynight://manuals/materials.md",
-		"daynight://manuals/steps.md",
 		"daynight://manuals/threads.md",
 		"daynight://manuals/attachment-reads.md",
 		"daynight://manuals/attachment-writes.md",
 		"daynight://manuals/session-reads.md",
+		"daynight://manuals/session-history.md",
 		"daynight://manuals/session-messages.md",
 		"daynight://manuals/worker-operations.md",
+		"daynight://manuals/overview.md",
 	}
 	var gotURIs []string
 	for _, document := range manuals.Documents {

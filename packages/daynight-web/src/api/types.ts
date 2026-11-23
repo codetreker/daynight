@@ -29,6 +29,7 @@ export type GraphTask = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
   readonly status: TaskStatus;
@@ -69,10 +70,11 @@ export type PullRequestProperty = {
   readonly title: string;
 };
 
-export type WorkerState = "active" | "released" | "completed";
+export type WorkerState = "active" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
 export type WorkerAgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
+export type WorkerMachine = Pick<WorkerClaim, 'state' | 'machine'> & Partial<Pick<WorkerClaim, 'userId' | 'workerId'>>;
 export type WorkerClaim = {
   readonly claimId: string;
   readonly state: WorkerState;
@@ -93,14 +95,18 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 export type TaskProperties = Readonly<Record<string, JsonValue>>;
 export type WritableTaskProperties = TaskProperties;
 
+export type TaskTag = { readonly id: string; readonly name: string };
+
 export type TaskDetail = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
   readonly properties: TaskProperties;
+  readonly tags: readonly TaskTag[];
   readonly status: TaskStatus;
   readonly version: bigint;
   readonly dependsOn: readonly string[];
@@ -131,11 +137,22 @@ export type AttachmentPage = {
 };
 
 export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
+  readonly title: string;
   readonly version: bigint;
   readonly properties: TaskProperties;
+  readonly tags: readonly TaskTag[];
 };
 
 export type TaskListSessionState = "working" | "notice" | "warning" | "pending";
+
+export type TaskSyncObservation = {
+  readonly taskVersion: bigint;
+  readonly state: "no_session" | "not_registered" | "pending" | "working" | "notice" | "warning" | "unavailable";
+  readonly observedAt: string | null;
+  readonly freshUntil: string | null;
+  readonly needsAttention: boolean | null;
+  readonly canOpen: boolean;
+};
 
 export type TaskDependencyState = {
   readonly taskVersion: bigint;
@@ -150,6 +167,10 @@ export type TaskSync = {
   readonly epoch: string;
   readonly project: Project;
   readonly observedAt: string;
+  readonly responseTaskAt: string;
+  readonly responseSessionAt: string;
+  readonly sessionPartial: boolean;
+  readonly taskObservations: Readonly<Record<string, TaskSyncObservation>>;
   readonly tasks: readonly TaskSummary[];
   readonly dependencyStates: Readonly<Record<string, TaskDependencyState>>;
   readonly sessions: Readonly<Record<string, TaskListSessionState>>;

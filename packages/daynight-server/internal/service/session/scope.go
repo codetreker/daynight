@@ -58,6 +58,33 @@ func loadSession(ctx context.Context, op sessionAccessOperation, scope store.Ses
 	return op.Load(ctx, scope, id, bot)
 }
 
+// loadTaskSession loads a Session addressed through a Task route that already
+// holds its Task lock. It rejects a Bot-bound Session before acquiring the Bot:
+// a Task, Step or Thread write that declares a Bot holds that Bot's deletion
+// barrier before it locks its Task, so taking the Bot after the Task here would
+// invert that order and let the two transactions deadlock. Every Task binding
+// rejects such a Session anyway because Bot-bound Sessions are always
+// independent Test Sessions.
+func loadTaskSession(ctx context.Context, op sessionAccessOperation, scope store.SessionScope, id string, purpose sessioncore.BrowserPurpose) (*sessioncore.Access, error) {
+	botID, err := scope.SessionDAO().SessionBotID(ctx, id)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			op.MissingSession(id)
+		}
+		return nil, err
+	}
+	if botID != nil {
+		return nil, sessioncore.TaskBotSessionRefusal(purpose)
+	}
+	return op.Load(ctx, scope, id, nil)
+}
+
+// loadTaskReadSession is loadTaskSession for Task routes that only read or
+// archive a Session.
+func loadTaskReadSession(ctx context.Context, op sessionAccessOperation, scope store.SessionScope, id string) (*sessioncore.Access, error) {
+	return loadTaskSession(ctx, op, scope, id, sessioncore.BrowserAccess)
+}
+
 func authorizeTest(ctx context.Context, op browserOperation, scope store.SessionScope, p model.Principal, access *sessioncore.Access) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
 		return err
@@ -82,6 +109,13 @@ func (s *Service) browser(ctx context.Context, principal model.Principal, projec
 }
 
 func (s *Service) browserFor(ctx context.Context, principal model.Principal, project, taskID, id string, purpose sessioncore.BrowserPurpose, work func(*sessioncore.Access) error) error {
+	return s.browserForReadCheck(ctx, principal, project, taskID, id, purpose, nil, work)
+}
+
+// browserForReadCheck acquires current credential policy in the same scope as
+// the existing Session admission. The returned check runs only after resource
+// visibility is established and before the result is delivered.
+func (s *Service) browserForReadCheck(ctx context.Context, principal model.Principal, project, taskID, id string, purpose sessioncore.BrowserPurpose, current func(store.SessionScope) (func() error, error), work func(*sessioncore.Access) error) error {
 	op, err := s.beginBrowser()
 	if err != nil {
 		return err
@@ -96,15 +130,50 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 			if err = op.CheckTestScope(access); err != nil {
 				return err
 			}
+			var check func() error
+			if current != nil {
+				check, err = current(scope)
+			} else {
+				check, err = readCheck(ctx, scope, principal)
+			}
+			if err != nil {
+				return err
+			}
 			if err = authorizeTest(ctx, op, scope, principal, access); err != nil {
 				return err
+			}
+			if purpose == sessioncore.ProducerAccess {
+				if err = s.requireProducer(ctx, scope, principal); err != nil {
+					return err
+				}
+				authority := access.Authority()
+				if authority.ParentCredentialID != "" && authority.ParentCredentialID != principal.CredentialID {
+					parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
+					if err = s.requireProducer(ctx, scope, parent); err != nil {
+						return err
+					}
+				}
 			}
 			if err = op.BindTestBrowser(ctx, access); err != nil {
 				return err
 			}
+			if check != nil {
+				if err = check(); err != nil {
+					return err
+				}
+			}
 			return work(access)
 		}
 		task, err := op.LockTask(ctx, scope, project, taskID)
+		if err != nil {
+			return err
+		}
+		var check func() error
+		if current != nil {
+			check, err = current(scope)
+		} else {
+			check, err = readCheck(ctx, scope, principal)
+		}
 		if err != nil {
 			return err
 		}
@@ -118,13 +187,28 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 		if purpose == sessioncore.TaskReceiptAccess {
 			access, err = op.LoadTaskReceipt(ctx, scope, project, taskID, id)
 		} else {
-			access, err = loadSession(ctx, op, scope, id)
+			access, err = loadTaskSession(ctx, op, scope, id, purpose)
 		}
 		if err != nil {
 			return err
 		}
 		if err = op.BindTaskPurpose(ctx, access, task, principal, project, taskID, purpose); err != nil {
 			return err
+		}
+		if purpose == sessioncore.ProducerAccess {
+			if err = s.requireProducer(ctx, scope, principal); err != nil {
+				return err
+			}
+		}
+		if purpose != sessioncore.TaskReceiptAccess {
+			if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+				return err
+			}
+		}
+		if check != nil {
+			if err = check(); err != nil {
+				return err
+			}
 		}
 		return work(access)
 	})
@@ -168,7 +252,19 @@ func (s *Service) controller(ctx context.Context, fence sp.ControllerFence, work
 				return err
 			}
 		}
+		if err = s.requireProducer(ctx, scope, owner); err != nil {
+			return err
+		}
+		if authority.Test && authority.ParentCredentialID != "" && authority.ParentCredentialID != owner.CredentialID {
+			parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
+			if err = s.requireProducer(ctx, scope, parent); err != nil {
+				return err
+			}
+		}
 		if err = op.BindController(access, task, fence); err != nil {
+			return err
+		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), fence.SessionID); err != nil {
 			return err
 		}
 		return work(access)

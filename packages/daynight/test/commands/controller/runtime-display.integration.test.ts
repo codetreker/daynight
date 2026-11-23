@@ -50,7 +50,7 @@ vi.mock("../../../src/commands/controller/providers/claude-transcript-helper.js"
 import { runController } from "../../../src/commands/controller/runtime.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { CodexProjection } from "../../../src/commands/controller/providers/projection.js";
 import { CopilotProjection } from "../../../src/commands/controller/providers/copilot-projection.js";
@@ -146,11 +146,13 @@ for (const provider of ["codex", "claude", "copilot"] as const) {
       expect((await requestController(v.ticket, { kind: "observe" })).snapshot.error).toBeNull();
       expect(f.close).not.toHaveBeenCalled();
     } finally { await v.stop(); }
-    // Reopening the actual pending archive source reparses bytes from disk.
+    // Reopening current SQL history validates the persisted normalized bytes.
     const db = new Database(v.journalFile, { readonly: true });
     try {
-      const reopened = openPendingContent(v.journalFile, v.ticket.sessionId, db);
-      expect([...reopened.entries.values()].sort((a, b) => Number(a.entrySeq) - Number(b.entrySeq))).toEqual(saved!);
+      const reopened = openSessionContent(v.journalFile, v.ticket.sessionId, db, { read: action => db.transaction(action).deferred(), assertWrite: () => { throw new Error("Read-only assertion cannot publish history."); } });
+      const entries: TimelineEntry[] = [];
+      db.transaction(() => reopened.timeline.iterate(entry => entries.push(entry))).deferred();
+      expect(entries).toEqual(saved!);
     } finally { db.close(); }
   });
 }
@@ -175,7 +177,7 @@ test("runtime waits for trusted completion and retains withdrawn Markdown image 
   } finally { await v.stop(); }
   const db = new Database(v.journalFile, { readonly: true });
   try {
-    const recovered = openPendingContent(v.journalFile, v.ticket.sessionId, db).entries.get(entryId);
+    const recovered = openSessionContent(v.journalFile, v.ticket.sessionId, db, { read: action => db.transaction(action).deferred(), assertWrite: () => { throw new Error("Read-only assertion cannot publish history."); } }).timeline.get(entryId);
     expect(recovered).toMatchObject({ content: [{ type: "markdown", text: "Image was withdrawn.", bindings: [], retainedImages: [expect.objectContaining({ imageId: expect.any(String) })] }] });
   } finally { db.close(); }
 }, 10_000);

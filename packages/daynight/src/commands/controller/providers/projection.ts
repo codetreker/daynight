@@ -47,10 +47,10 @@ export class CodexProjection {
     const entry = { ...old, output: [{ type: "text" as const, text: limited(output) }], truncated: old.truncated || output.length > 200_000 };
     this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, false, "plain"));
   }
-  item(value: unknown, completed: boolean, turnId = ""): void {
+  item(value: unknown, completed: boolean, turnId = "", userEntryId?: string): void {
     const item = record(value), id = string(item.id), type = string(item.type); if (!id) return;
     if (this.images?.item(item, completed, turnId)) return;
-    const base = this.base(id);
+    const base = type === "userMessage" && userEntryId ? { entryId: userEntryId, revision: "1" } : this.base(id);
     if (type === "agentMessage") { const text = string(item.text); this.content.set(id, text); this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(text) }] }, markdownTimelineMetadata(text, completed)); }
     else if (type === "userMessage") {
       const content = (Array.isArray(item.content) ? item.content : []).map(record);

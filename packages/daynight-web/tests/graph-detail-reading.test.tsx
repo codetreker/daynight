@@ -22,7 +22,7 @@ const rootId = graph.tasks.find((task) => task.titlePreview === '外部上下文
 const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前置 · 菱形合流')!.id;
 const detailNode = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!;
 const detail: TaskDetail = {
-  ...detailNode, version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
+  ...detailNode, tags: [], version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
   description: '# Delivery notes\n\n[Read acceptance guide](docs/guide.md)', properties: { pullRequests: [] },
 };
 const attachment: Attachment = {
@@ -82,8 +82,10 @@ describe('graph inspection and detail reading integration', () => {
     expect(state.hiddenUpstream).toBe('3');
     expect(state.nodes.filter((node) => node.inspection === 'selected').map((node) => node.id)).toEqual([selectedId]);
     expect(state.nodes.filter((node) => node.inspection === 'prerequisite').map((node) => node.id)).toEqual([]);
-    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId, detailNode.id]);
+    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId]);
+    expect(state.nodes.filter((node) => node.inspection === 'successor').map((node) => node.id)).toEqual([detailNode.id]);
     expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(0);
+    expect(state.edges.filter((edge) => edge.inspection === 'successor')).toHaveLength(1);
     const trigger = within(document.body.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
     const dialog = await screen.findByRole('dialog', { name: detail.title });
