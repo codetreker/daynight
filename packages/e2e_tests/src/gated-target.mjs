@@ -11,6 +11,9 @@ process.stdin.on("data", chunk => {
   starting = true;
   if (closing) return;
   child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], env: process.env, cwd: process.cwd() });
-  child.once("error", () => { process.exitCode = 1; process.stdin.destroy(); });
-  child.once("exit", code => { process.exitCode = code ?? 1; process.stdin.destroy(); });
+  child.once("error", () => { process.exitCode = 1; process.stdin.destroy(); if (process.connected) process.disconnect(); });
+  child.once("exit", (code, signal) => {
+    process.exitCode = code ?? 1; process.stdin.destroy();
+    if (process.connected) process.send({ kind: "target-exit", code, signal }, () => process.disconnect());
+  });
 });

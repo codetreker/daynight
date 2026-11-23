@@ -242,7 +242,10 @@ stages for Console bootstrap. It freezes unresolved requests before browser
 shutdown, so shutdown aborts do not replace the original failure boundary.
 `logs/provider-diagnostics.json` records bounded CONNECT, TLS and provider HTTP
 stages; a live snapshot survives an unconfirmed runtime shutdown, while a
-completed snapshot marks a confirmed provider close. IDs are local to each
+completed snapshot marks a confirmed provider close. `logs/worker-patrol-*.json`
+records each patrol Worker's target and gate exit observations, group-stop
+confirmation, bounded output and errors; output truncation is explicit. A missing
+target report remains unknown and prevents a successful stop. IDs are local to each
 stream and do not associate browser requests with provider connections. Both
 streams report truncation and retain only allowlisted origins and paths, methods,
 status and restricted error codes, without query strings or credentials.

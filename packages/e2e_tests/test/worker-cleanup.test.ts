@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { startCommand } from "../src/command.ts";
 import { DatabaseSync } from "node:sqlite";
-import { FixtureWorkerStopError, finalizeFixtureRoot, loadFixtureStopProofs, readFixtureBot, readFixtureExecutions, stopFixtureWorker, stopRecordedFixtureBot, stopRecordedFixtureExecutions, type FixtureStopProofs } from "../src/worker-cleanup.ts";
+import { FixtureWorkerStopError, finalizeFixtureRoot, loadFixtureStopProofs, readFixtureBot, readFixtureExecutions, stopAndRecordFixtureWorker, stopFixtureWorker, stopRecordedFixtureBot, stopRecordedFixtureExecutions, type FixtureStopProofs } from "../src/worker-cleanup.ts";
 
 const base = path.resolve(import.meta.dirname, "../../../.tmp/e2e-worker-cleanup-test");
 const scratch = async () => { await mkdir(base, { recursive: true }); return mkdtemp(path.join(base, "case-")); };
@@ -20,7 +20,7 @@ for (const code of [0, 3]) test(`Worker SIGINT exit ${code} ${code === 0 ? "conf
       { cwd: root, timeoutMs: 5_000, onOutput: (_channel, chunk) => { if (chunk.includes("READY")) ready(); } });
     await started;
     if (code === 0) await stopFixtureWorker(worker, false);
-    else await assert.rejects(stopFixtureWorker(worker, false), error => error instanceof FixtureWorkerStopError && error.groupStopped);
+    else await assert.rejects(stopFixtureWorker(worker, false), error => error instanceof FixtureWorkerStopError && error.groupStopped && /code: 3/.test(error.message));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -29,7 +29,79 @@ test("timeout confirms only the Worker process group, not clean shutdown", async
   try {
     const worker = startCommand(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: root, timeoutMs: 200, onOutput: () => {} });
     await assert.rejects(worker.finished, /timed out/);
-    await assert.rejects(stopFixtureWorker(worker, true), error => error instanceof FixtureWorkerStopError && error.groupStopped);
+    await assert.rejects(stopFixtureWorker(worker, true), error => error instanceof FixtureWorkerStopError && error.groupStopped && /timed out/.test(error.message));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a failed group observation retains its original rejection and observed exit", async () => {
+  const root = await scratch();
+  const failure = new Error("controlled group observation failure");
+  try {
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const worker = startCommand(process.execPath, ["-e", "process.on('SIGINT',()=>process.exit(0));process.stdout.write('READY');process.stderr.write('worker evidence');setInterval(()=>{},1000)"], {
+      cwd: root, timeoutMs: 5_000, onOutput: (_channel, chunk) => { if (chunk.includes("READY")) ready(); },
+      stopOwnedGroup: async () => { throw failure; },
+    });
+    await started;
+    await assert.rejects(stopFixtureWorker(worker, false), error => {
+      assert.ok(error instanceof FixtureWorkerStopError);
+      assert.equal(error.groupStopped, false);
+      assert.match(error.message, /controlled group observation failure/);
+      assert.match(error.message, /worker evidence/);
+      assert.match(error.message, /code: 0/);
+      assert.ok(error.cause instanceof AggregateError);
+      assert.equal(error.cause.errors.length, 1);
+      assert.equal(error.cause.errors[0].cause, failure);
+      return true;
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an unconfirmed group stop surfaces even when the Worker is still alive", async () => {
+  const root = await scratch();
+  let pid: number | undefined;
+  try {
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const worker = startCommand(process.execPath, ["-e", "process.on('SIGINT',()=>{});process.stdout.write('READY');setInterval(()=>{},1000)"], {
+      cwd: root, timeoutMs: 200, onOutput: (_channel, chunk) => { if (chunk.includes("READY")) ready(); },
+      stopOwnedGroup: async () => { throw new Error("controlled live group failure"); },
+    });
+    pid = worker.pid; await started;
+    await assert.rejects(stopFixtureWorker(worker, false), error => {
+      assert.ok(error instanceof FixtureWorkerStopError);
+      assert.equal(error.groupStopped, false);
+      assert.equal(error.diagnostics.exit, null);
+      assert.match(error.message, /controlled live group failure/);
+      assert.match(error.message, /timed out/);
+      return true;
+    });
+  } finally {
+    if (pid !== undefined) { try { process.kill(pid, "SIGKILL"); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; } }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("each Worker stop records readable exit and output evidence before ownership can be marked", async () => {
+  const root = await scratch();
+  try {
+    await mkdir(path.join(root, "logs"));
+    for (const code of [0, 3]) {
+      let ready!: () => void;
+      const started = new Promise<void>(resolve => { ready = resolve; });
+      const worker = startCommand(process.execPath, ["-e", `process.on('SIGINT',()=>process.exit(${code}));process.stdout.write('READY');process.stderr.write('evidence-${code}');setInterval(()=>{},1000)`], {
+        cwd: root, timeoutMs: 5_000, onOutput: (_channel, chunk) => { if (chunk.includes("READY")) ready(); },
+      });
+      await started;
+      const stop = stopAndRecordFixtureWorker({ worker, exited: false, runDirectory: root, workerId: id, launchNumber: code + 1 });
+      if (code === 0) await stop; else await assert.rejects(stop, FixtureWorkerStopError);
+      const receipt = JSON.parse(await readFile(path.join(root, "logs", `worker-patrol-${code + 1}.json`), "utf8"));
+      assert.equal(receipt.workerId, id); assert.equal(receipt.groupStopped, true);
+      assert.deepEqual(receipt.diagnostics.exit, { code, signal: null });
+      assert.match(receipt.diagnostics.stderr, new RegExp(`evidence-${code}`));
+      assert.equal(receipt.failure === null, code === 0);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

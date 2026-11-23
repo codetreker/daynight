@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { inspect } from "node:util";
+import { aggregateFailures } from "./failures.ts";
 import type { ManagedCommand } from "./command.ts";
 
 export type FixtureProcessProof = { pid: number; parentPid: number; processGroupId: number | null; startedAt: string; commandHash: string };
@@ -48,17 +50,54 @@ export const loadFixtureStopProofs = async (load: (name: string) => Promise<Reco
 // A zero exit from worker run includes its normal shutdown proof; other outcomes do not.
 export class FixtureWorkerStopError extends Error {
   readonly groupStopped: boolean;
-  constructor(groupStopped: boolean) { super("Fixture Worker shutdown was not confirmed successful."); this.groupStopped = groupStopped; }
+  readonly diagnostics: ReturnType<ManagedCommand["diagnostics"]>;
+  constructor(groupStopped: boolean, diagnostics: ReturnType<ManagedCommand["diagnostics"]>, failures: unknown[]) {
+    const detail = inspect({ groupStopped, diagnostics, failures }, { depth: 8, maxStringLength: 1024 * 1024, maxArrayLength: 50 });
+    super(`Fixture Worker shutdown was not confirmed successful.\n${detail}`, { cause: new AggregateError(failures, "Fixture Worker stop failures") });
+    this.name = "FixtureWorkerStopError";
+    this.groupStopped = groupStopped;
+    this.diagnostics = diagnostics;
+  }
 }
-export const stopFixtureWorker = async (worker: ManagedCommand, exited: boolean): Promise<void> => {
-  let exitCode: number | undefined;
-  try {
-    if (!exited) process.kill(worker.pid, "SIGINT");
-    exitCode = (await worker.finished).exitCode;
-  } catch { /* The process-group observation below decides whether fallback is safe. */ }
+export const stopFixtureWorker = async (worker: ManagedCommand, exited: boolean): Promise<ReturnType<ManagedCommand["diagnostics"]>> => {
+  const failures: unknown[] = [];
+  let exitCode: number | undefined, signalFailure = false;
+  if (!exited) {
+    try { process.kill(worker.pid, "SIGINT"); }
+    catch (error) { failures.push(error); signalFailure = true; }
+  }
+  if (!signalFailure) {
+    try { exitCode = (await worker.finished).exitCode; }
+    catch (error) { failures.push(error); }
+  }
   let groupStopped = false;
-  try { await worker.stopProcesses(); groupStopped = true; } catch { /* Retain the original evidence. */ }
-  if (!groupStopped || exitCode !== 0) throw new FixtureWorkerStopError(groupStopped);
+  try { await worker.stopProcesses(); groupStopped = true; }
+  catch (error) { if (!failures.includes(error)) failures.push(error); }
+  if (signalFailure && groupStopped) {
+    try { exitCode = (await worker.finished).exitCode; }
+    catch (error) { if (!failures.includes(error)) failures.push(error); }
+  }
+  const diagnostics = worker.diagnostics();
+  const targetFailed = "targetExit" in diagnostics && (diagnostics.targetExit?.code !== 0 || diagnostics.targetExit.signal !== null);
+  if (!groupStopped || exitCode !== 0 || targetFailed || failures.length > 0) throw new FixtureWorkerStopError(groupStopped, diagnostics, failures);
+  return diagnostics;
+};
+
+export const stopAndRecordFixtureWorker = async (input: { worker: ManagedCommand; exited: boolean; runDirectory: string; workerId: string; launchNumber: number }): Promise<void> => {
+  let failure: unknown, diagnostics;
+  try { diagnostics = await stopFixtureWorker(input.worker, input.exited); }
+  catch (error) { failure = error; diagnostics = error instanceof FixtureWorkerStopError ? error.diagnostics : input.worker.diagnostics(); }
+  try {
+    await writeFile(path.join(input.runDirectory, "logs", `worker-patrol-${input.launchNumber}.json`), JSON.stringify({
+      workerId: input.workerId, launchNumber: input.launchNumber,
+      groupStopped: failure instanceof FixtureWorkerStopError ? failure.groupStopped : failure === undefined,
+      diagnostics, failure: failure === undefined ? null : inspect(failure, { depth: 8, maxStringLength: 1024 * 1024 }),
+    }, null, 2));
+  } catch (recordFailure) {
+    if (failure !== undefined) throw aggregateFailures("Fixture Worker stop and diagnostic recording failed.", [failure, recordFailure]);
+    throw recordFailure;
+  }
+  if (failure !== undefined) throw failure;
 };
 
 export type FixtureExecutionIdentity = { projectId: string; taskId: string; workerId: string; userId: string; serverOrigin: string; repository: string; claimId?: string; botId?: string };

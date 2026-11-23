@@ -10,12 +10,15 @@ export type CommandOptions = {
   onOutput?: (channel: 'stdout' | 'stderr', chunk: string) => void;
   stdin?: 'pipe';
   stopOwnedGroup?: (pid: number) => Promise<void>;
+  onMessage?: (message: unknown) => void;
 };
 
 export type CommandResult = { stdout: string; stderr: string; exitCode: number };
+export type CommandDiagnostics = { exit: { code: number | null; signal: NodeJS.Signals | null } | null; stdout: string; stderr: string; truncated: { stdout: boolean; stderr: boolean }; targetExit?: { code: number | null; signal: NodeJS.Signals | null } | null };
 export type ManagedCommand = {
   readonly pid: number;
   finished: Promise<CommandResult>;
+  diagnostics: () => CommandDiagnostics;
   stopProcesses: () => Promise<void>;
   writeInput: (data: string) => Promise<void>;
   endInput: () => void;
@@ -92,16 +95,20 @@ export const startCommand = (command: string, args: readonly string[], options: 
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error('Command timeoutMs must be a positive finite number.');
   options.signal?.throwIfAborted();
 
-  const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, stdio: [options.stdin === 'pipe' ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, stdio: [options.stdin === 'pipe' ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(options.onMessage ? ['ipc' as const] : [])] });
   activeCommands++;
   const output = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   const failures: unknown[] = [];
+  const truncated = { stdout: false, stderr: false };
   let settled = false;
+  let observedExit: CommandDiagnostics['exit'] = null;
   let teardown: Promise<void> | undefined;
   let resolveClosed: () => void = () => {};
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   let resolveExit: (result: { code: number | null; signal: NodeJS.Signals | null }) => void = () => {};
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => { resolveExit = resolve; });
+  let resolveStopFailure: (failure: unknown) => void = () => {};
+  const stopFailed = new Promise<unknown>((resolve) => { resolveStopFailure = resolve; });
 
   const stopGroup = (): Promise<void> => {
     if (teardown !== undefined) return teardown;
@@ -122,7 +129,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
       await waitForClose(closed);
     })().catch((cause) => { unconfirmedCommand = true; throw new CommandStopUnconfirmedError(cause); });
     // Keep cleanup failures in the completion result while callers await output.
-    void teardown.catch((error) => { failures.push(error); });
+    void teardown.catch((error) => { failures.push(error); resolveStopFailure(error); });
     return teardown;
   };
 
@@ -135,6 +142,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
 
   const collect = (channel: 'stdout' | 'stderr', data: Buffer): void => {
     const previous = output[channel];
+    truncated[channel] ||= previous.length + data.length > outputLimit;
     output[channel] = data.length >= outputLimit
       ? Buffer.from(data.subarray(data.length - outputLimit))
       : Buffer.concat([previous.subarray(Math.max(0, previous.length + data.length - outputLimit)), data]);
@@ -149,11 +157,14 @@ export const startCommand = (command: string, args: readonly string[], options: 
   child.stdout!.once('error', fail);
   child.stderr!.once('error', fail);
   child.once('error', fail);
+  if (options.onMessage) child.on('message', options.onMessage);
   child.once('exit', (code, signal) => {
+    observedExit = { code, signal };
     resolveExit({ code, signal });
     void stopGroup();
   });
   child.once('close', (code, signal) => {
+    observedExit ??= { code, signal };
     resolveExit({ code, signal });
     resolveClosed();
   });
@@ -167,9 +178,15 @@ export const startCommand = (command: string, args: readonly string[], options: 
   const timer = setTimeout(() => { unconfirmedCommand = true; fail(new CommandTimeoutError(options.timeoutMs, command)); }, options.timeoutMs);
 
   const finished = (async (): Promise<CommandResult> => {
-    const result = await exited;
+    const observation = await Promise.race([exited.then(result => ({ result })), stopFailed.then(failure => ({ failure }))]);
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', abort);
+    if ('failure' in observation) {
+      settled = true;
+      if (failures.length === 1) throw failures[0];
+      throw new AggregateError(failures, `Command execution or cleanup failed: ${command}`, { cause: failures[0] });
+    }
+    const result = observation.result;
     try { await stopGroup(); }
     catch (error) { if (!failures.includes(error)) failures.push(error); }
     settled = true;
@@ -191,6 +208,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
       return child.pid;
     },
     finished,
+    diagnostics: () => ({ exit: observedExit, stdout: output.stdout.toString('utf8'), stderr: output.stderr.toString('utf8'), truncated: { ...truncated } }),
     stopProcesses: stopGroup,
     endInput: () => { child.stdin?.end(); },
     writeInput: async (data: string): Promise<void> => {
