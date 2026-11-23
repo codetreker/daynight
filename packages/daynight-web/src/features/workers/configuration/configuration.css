@@ -159,3 +159,18 @@
 .task-tag-clear:disabled { color: #687486; cursor: default; }
 .task-tag-clear:focus-visible, .task-tag-chip button:focus-visible { outline: 2px solid #344054; outline-offset: 2px; }
 @media (max-width: 420px) { .task-tag-heading, .task-tag-actions { align-items: flex-start; flex-wrap: wrap; } }
+.worker-review-panel { margin: 16px 0 20px; }
+.worker-review-panel .panel-heading { padding: 19px 22px; }
+.worker-review-panel .panel-heading h2 { font-size: var(--text-lg); font-weight: 600; }
+.worker-review-panel .panel-body { padding: 22px; }
+.worker-review-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.worker-review-row p { margin: 5px 0 0; color: #556176; }
+.worker-review-control { display: flex; align-items: center; flex: none; gap: 10px; }
+.worker-review-control[hidden] { display: none; }
+.worker-review-switch { display: inline-flex; align-items: center; flex: none; width: 44px; height: 26px; border: 0; border-radius: 20px; background: #777f8d; padding: 3px; cursor: pointer; }
+.worker-review-switch[aria-checked="true"] { background: #6b6bdf; }
+.worker-review-switch span { display: block; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.worker-review-switch[aria-checked="true"] span { transform: translateX(18px); }
+.worker-review-switch[aria-disabled="true"] { opacity: .6; cursor: default; }
+.worker-review-switch:focus-visible { outline: 3px solid #344054; outline-offset: 3px; }
+@media (max-width: 600px) { .worker-review-panel .panel-heading, .worker-review-panel .panel-body { padding: 17px; } }
