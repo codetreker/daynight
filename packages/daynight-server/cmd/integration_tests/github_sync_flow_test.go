@@ -425,7 +425,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode; ALTER TABLE sessions DROP COLUMN last_used_at`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
 			t.Fatal(err)
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
@@ -466,7 +466,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("upgraded Session history policy: column=%t migration count=%d error=%v", historyPolicyColumn, migrationCount, err)
 	}
 	var archiveUploadColumns int
-	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name IN ('upload_version','prefix_proof','successor_file_id','terminal_error')`).Scan(&archiveUploadColumns); err != nil || archiveUploadColumns != 4 {
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name IN ('upload_version','successor_file_id','terminal_error')`).Scan(&archiveUploadColumns); err != nil || archiveUploadColumns != 3 {
 		t.Fatalf("upgraded archive upload columns: count=%d error=%v", archiveUploadColumns, err)
 	}
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=116`).Scan(&migrationCount); err != nil || migrationCount != 1 {

@@ -81,7 +81,33 @@ func readStorageObject(ctx context.Context, files backupStorageReader, object st
 
 // VerifyStorageBackup checks only the restored original bytes. Missing objects
 // and corrupt known-available resources remain failures, never partial success.
+type ArchiveRecoveryOffset struct {
+	SessionID, FileID string
+	Offset            int64
+}
+
 func VerifyStorageBackup(ctx context.Context, files backupStorageReader, inventory store.StorageInventory) error {
+	return VerifyStorageBackupWithReport(ctx, files, inventory, nil)
+}
+
+// VerifyStorageBackupWithReport reports staging observations only after the
+// owning Session's complete inventory and published closure have verified.
+func VerifyStorageBackupWithReport(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, report func(ArchiveRecoveryOffset) error) error {
+	var offsets []ArchiveRecoveryOffset
+	if err := verifyStorageBackup(ctx, files, inventory, &offsets); err != nil {
+		return err
+	}
+	if report != nil {
+		for _, offset := range offsets {
+			if err := report(offset); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func verifyStorageBackup(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, offsets *[]ArchiveRecoveryOffset) error {
 	namespace, err := archiveNamespace(inventory.ProjectID, inventory.OwnerID, inventory.SessionID)
 	if err != nil {
 		return err
@@ -122,7 +148,7 @@ func VerifyStorageBackup(ctx context.Context, files backupStorageReader, invento
 			return err
 		}
 	}
-	if err = verifyArchiveV2Files(ctx, files, inventory, namespace); err != nil {
+	if err = verifyArchiveV2Files(ctx, files, inventory, namespace, offsets); err != nil {
 		return err
 	}
 	if inventory.Migration != nil {

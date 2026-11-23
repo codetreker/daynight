@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -71,7 +72,7 @@ func TestBackupReaderOrchestrationPreservesInputsCleanupAndCauses(t *testing.T) 
 					}
 					return files, nil
 				},
-				verify: func(got context.Context, volume backupVolumeReader, inventory store.StorageInventory) error {
+				verify: func(got context.Context, volume backupVolumeReader, inventory store.StorageInventory, report func(sessioncore.ArchiveRecoveryOffset) error) error {
 					f.calls = append(f.calls, "verify")
 					if got != ctx || volume != files || !reflect.DeepEqual(inventory, f.inventory) {
 						t.Fatal("core operation input changed")
@@ -82,7 +83,7 @@ func TestBackupReaderOrchestrationPreservesInputsCleanupAndCauses(t *testing.T) 
 					return nil
 				},
 			}
-			e := verifyStorageBackup(ctx, "restored-database", "restored-volume", readers)
+			e := verifyStorageBackup(ctx, "restored-database", "restored-volume", readers, nil)
 			want := []string{"database-open", "files-open", "inventory", "verify", "files-close", "database-close"}
 			if kind == "database-open" {
 				want = []string{"database-open"}

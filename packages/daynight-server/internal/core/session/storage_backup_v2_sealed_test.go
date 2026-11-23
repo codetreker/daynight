@@ -2,9 +2,9 @@ package session
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -66,8 +66,7 @@ func TestBackupV2SealedBundleBeforeManifest(t *testing.T) {
 				refs = nil
 			}
 			bundle := store.ArchiveBundle{SessionID: sessionID, Phase: "sealed", Revision: 1, HistoryID: historyID, Ledger: encode(ledger), Resources: encode(refs)}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
-			history := store.StorageArchiveFileV2{UploadVersion: 2, FileID: historyID, Purpose: "history", State: "complete", SHA256: archiveDigest([]byte("h")), ByteLength: 1, AcceptedOffset: 1, TimelineRevision: 1, Path: n.Directory() + "/files/" + historyID, PrefixProof: proof[:]}
+			history := store.StorageArchiveFileV2{UploadVersion: 2, FileID: historyID, Purpose: "history", State: "complete", SHA256: archiveDigest([]byte("h")), ByteLength: 1, AcceptedOffset: 1, TimelineRevision: 1, Path: n.Directory() + "/files/" + historyID}
 			inventory := store.StorageInventory{SessionID: sessionID, OwnerID: owner, ArchiveBundle: &bundle, ArchiveFilesV2: []store.StorageArchiveFileV2{history}, Resources: []store.SessionResourceRecord{{SessionID: sessionID, Resource: resource, BlobID: blobID, BlobPath: blobPath}}}
 			if tc.damage == "descriptor" {
 				inventory.Resources = nil
@@ -83,7 +82,14 @@ func TestBackupV2SealedBundleBeforeManifest(t *testing.T) {
 				tline := &store.StorageArchiveTimeline{FileID: timelineID, Path: path, SHA256: archiveDigest(body), ByteLength: int64(len(body)), TimelineRevision: 1}
 				if tc.timeline == "receiving" {
 					tline.UploadVersion, tline.State = 2, "receiving"
-					f := store.StorageArchiveFileV2{UploadVersion: 2, FileID: timelineID, Purpose: "timeline", State: "receiving", SHA256: tline.SHA256, ByteLength: tline.ByteLength, TimelineRevision: 1, Path: path, PrefixProof: proof[:]}
+					stage, err := filestorage.ArchiveStagingPath(n, timelineID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = files.Put(t.Context(), archiveBucket, stage, bytes.NewReader(nil)); err != nil {
+						t.Fatal(err)
+					}
+					f := store.StorageArchiveFileV2{UploadVersion: 2, FileID: timelineID, Purpose: "timeline", State: "receiving", SHA256: tline.SHA256, ByteLength: tline.ByteLength, TimelineRevision: 1, Path: path}
 					inventory.ArchiveFilesV2 = append(inventory.ArchiveFilesV2, f)
 				} else {
 					tline.UploadVersion, tline.State, tline.AcceptedOffset = 1, "complete", int64(len(body))

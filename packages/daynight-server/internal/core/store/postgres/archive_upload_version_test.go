@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -22,7 +21,7 @@ func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, owner, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	oldID, newID, retiredID, prepare := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	oldID := uuid.NewString()
 	if _, err := pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, session, owner, execution); err != nil {
 		t.Fatal(err)
 	}
@@ -40,39 +39,51 @@ func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT upload_version,prefix_proof,successor_file_id::text,terminal_error FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, session, oldID).Scan(&version, &proof, &successor, &terminal); err != nil || version != 1 || proof != nil || successor != nil || terminal != nil {
 		t.Fatalf("legacy row changed: version=%d proof=%x successor=%v terminal=%s err=%v", version, proof, successor, terminal, err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_bundles(session_id,prepare_id,phase,revision,identity,ledger,history_id) VALUES($1,$2,'settling',7,'{}','{"historyId":"current"}',$3)`, session, prepare, newID); err != nil {
+	// The historical migration retains the legacy identity without changing bytes.
+}
+
+func TestArchiveSingleStagingMigrationRejectsOldV2AndPreservesV1(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 120 })
+	if index < 1 {
+		t.Fatal("single staging migration missing")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
 	}
-	proof = bytes.Repeat([]byte{7}, 32)
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,upload_version,prefix_proof) VALUES($1,$2,'history',$3,9,0,'receiving','new','{"source":"fixed"}',7,2,$4)`, session, newID, hash, proof); err != nil {
+	session, owner, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if _, err := pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, session, owner, execution); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,upload_version,prefix_proof,successor_file_id,terminal_error) VALUES($1,$2,'timeline',$3,9,9,'failed','retired',2,$4,$5,'{"code":"staging_corrupt"}')`, session, retiredID, hash, proof, newID); err != nil {
+	oldID, newID := uuid.NewString(), uuid.NewString()
+	hash := strings.Repeat("a", 64)
+	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,upload_version,prefix_proof) VALUES($1,$2,'history',$4,8,4,'receiving','legacy',1,NULL),($1,$3,'timeline',$4,8,8,'complete','numbered',2,decode(repeat('01',32),'hex'))`, session, oldID, newID, hash); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_chunks(session_id,file_id,chunk_offset,byte_length,sha256,object_path) VALUES($1,$2,0,8,$3,'legacy/chunk'),($1,$4,0,9,$3,'must-not-require')`, session, oldID, hash, retiredID); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations); err == nil {
+		t.Fatal("migration accepted historical v2")
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("failed migration altered schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, session, newID); err != nil {
 		t.Fatal(err)
 	}
-	database := &Store{Pool: pool}
-	if err := database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
-		if v.ArchiveBundle == nil || v.ArchiveBundle.HistoryID != newID || v.ArchiveBundle.Phase != "settling" || v.ArchiveBundle.Revision != 7 || len(v.ArchiveFilesV2) != 2 || len(v.Objects) != 1 || v.Objects[0].Path != "legacy/chunk" {
-			t.Fatalf("inventory omitted or mixed versions: %+v", v)
-		}
-		for _, f := range v.ArchiveFilesV2 {
-			if f.UploadVersion != 2 || !bytes.Equal(f.PrefixProof, proof) {
-				t.Fatalf("incorrect v2 row: %+v", f)
-			}
-			if f.FileID == retiredID && (f.SuccessorFileID != newID || string(f.TerminalError) == "") {
-				t.Fatalf("terminal receipt omitted: %+v", f)
-			}
-			if f.FileID == newID && (f.AcceptedOffset != 0 || f.TimelineRevision != 7 || string(f.Resource) == "") {
-				t.Fatalf("receiving identity omitted: %+v", f)
-			}
-		}
-		return nil
-	}); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
+	var version int
+	var offset int64
+	var state, path string
+	if err := pool.QueryRow(ctx, `SELECT upload_version,accepted_offset,state,object_path FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, session, oldID).Scan(&version, &offset, &state, &path); err != nil || version != 1 || offset != 4 || state != "receiving" || path != "legacy" {
+		t.Fatalf("legacy row changed: version=%d offset=%d state=%s path=%s error=%v", version, offset, state, path, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&exists); err != nil || exists {
+		t.Fatalf("old proof retained: %v", err)
+	}
+
 }
 
 func TestBackupInventoryRejectsInvalidBundleFilePointers(t *testing.T) {
@@ -129,7 +140,7 @@ func TestBackupInventoryCurrentTimelineIdentityAcrossVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	historyHash, timelineHash := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,timeline_revision,upload_version,prefix_proof) VALUES($1,$2,'history',$4,10,10,'complete','history',2,2,decode(repeat('00',32),'hex')),($1,$3,'timeline',$5,12,12,'complete','timeline/current',2,1,NULL)`, session, history, timeline, historyHash, timelineHash); err != nil {
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,timeline_revision,upload_version) VALUES($1,$2,'history',$4,10,10,'complete','history',2,2),($1,$3,'timeline',$5,12,12,'complete','timeline/current',2,1)`, session, history, timeline, historyHash, timelineHash); err != nil {
 		t.Fatal(err)
 	}
 	for _, version := range []int{1, 2} {
