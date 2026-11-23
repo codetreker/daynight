@@ -375,6 +375,7 @@ export const createMarkdownCaptureCoordinator = (options: {
       await cleanupSource(old);
       joined.throwIfAborted();
       if (old.request!.attemptId === request.attemptId && old.error) {
+        if (journal.getOnlineMode() !== "relay") return refuse(old.error.code);
         if (old.submission) {
           await submit(old);
           if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
@@ -394,6 +395,7 @@ export const createMarkdownCaptureCoordinator = (options: {
       try { const result = await copy(record, joined); record.phase = "unknown"; saved(record); return result; }
       catch (error) {
         record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record);
+        if (journal.getOnlineMode() !== "relay") throw error;
         if (record.receipt?.state === "failed" && record.receipt.error) throw new ImageCaptureRetrySettledError(record.receipt.error);
         if (record.dispatchPending) throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
         throw error;

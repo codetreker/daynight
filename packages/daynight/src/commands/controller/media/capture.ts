@@ -159,6 +159,7 @@ export const createControllerCaptureBridge = (options: {
       if (!options.retrySource && !provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
       if (!options.writable()) throw new Error("Image source retry target_changed.");
       signal.throwIfAborted();
+      const relayRetry = options.relayMode?.() === true || journal.getOnlineMode() === "relay";
       const key = `${captureId}:${attemptId}`, pending = retries.get(key); if (pending) return pending;
       const work = (async () => {
         const previousAttempt = journal.getImageCaptureAttempt(captureId);
@@ -216,6 +217,7 @@ export const createControllerCaptureBridge = (options: {
         } finally { source.release?.(); }
       })();
       const observed = work.catch(error => {
+        if (!relayRetry) throw error;
         if (error instanceof ImageCaptureRetrySettledError || error instanceof ImageCaptureRetryUnknownError || error instanceof ImageCaptureNotDispatchedError || error !== null && typeof error === "object" && "code" in error && error.code === "rate_limited") throw error;
         throw new ImageCaptureRetryUnknownError(error);
       });
