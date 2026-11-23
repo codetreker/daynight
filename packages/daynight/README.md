@@ -2991,7 +2991,10 @@ failures do not change application or receipt outcomes.
 
 The first failure, changed reason or target, and genuine recovery are emitted
 immediately. Continuing failures produce at most one summary per five minutes
-through existing cycles. `occurrences` counts actual failures in this run;
+through existing cycles. Routine configuration-stage starts and successes remain
+in JSONL but are omitted from foreground output; discarded stages, failures,
+summaries, recoveries, alignment and application events remain visible.
+`occurrences` counts actual failures in this run;
 `backoffStep` describes the separately capped retry delay. Dynamic request IDs and
 timestamps do not split the same cause into new groups. The
 [configuration diagnostics design](../../docs/design/daynight-worker-reporting.md#失败与可观察性)
