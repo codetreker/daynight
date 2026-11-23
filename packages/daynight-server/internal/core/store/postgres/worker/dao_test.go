@@ -243,6 +243,9 @@ func TestWorkerDAOReportedTaskSourcesAndStoredCorruption(t *testing.T) {
 	if err != nil || len(items) != 0 {
 		t.Fatalf("private sources: %+v %v", items, err)
 	}
+	// Transaction rollback restores the index after this fault injection, so
+	// the raw-property reader can still be tested against malformed storage.
+	execute(t, tx, `DROP INDEX task_properties_worker_active_claim_idx`)
 	execute(t, tx, `UPDATE task_properties SET value='invalid JSON' WHERE task_id=$1 AND name='worker'`, task)
 	items, err = writer.ReportTaskSnapshots(ctx, user, inventory)
 	if err != nil || len(items) != 1 || string(items[0].Task.Properties["worker"]) != "invalid JSON" {

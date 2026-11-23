@@ -7,15 +7,19 @@ import (
 	"time"
 )
 
-func TestBrowserActivityMigrationPreservesMainlineHistoryPolicyAndOldSession(t *testing.T) {
+func TestBrowserActivityMigrationPreservesPublishedMigrationsAndOldSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 115 })
-	if index < 1 || schemaMigrations[index-1].version != 114 || schemaMigrations[index-1].sql != sessionHistoryPolicySQL {
-		t.Fatal("browser activity must follow the published history policy migration")
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 116 })
+	if index < 2 || schemaMigrations[index-2].version != 114 || schemaMigrations[index-2].sql != sessionHistoryPolicySQL || schemaMigrations[index-1].version != 115 || schemaMigrations[index-1].transformSource == "" {
+		t.Fatal("browser activity must follow the published history policy and frozen worker index migrations")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+	var indexBefore, checksumBefore string
+	if err := pool.QueryRow(ctx, `SELECT pg_get_indexdef('task_properties_worker_active_claim_idx'::regclass),checksum FROM schema_migrations WHERE version=115`).Scan(&indexBefore, &checksumBefore); err != nil {
 		t.Fatal(err)
 	}
 	user, session := queryID(941), queryID(942)
@@ -39,6 +43,13 @@ func TestBrowserActivityMigrationPreservesMainlineHistoryPolicyAndOldSession(t *
 	}
 	if after != before || !unknownActivity || !historyPolicy {
 		t.Fatal("browser activity migration changed old session facts or removed history policy")
+	}
+	var indexAfter, checksumAfter string
+	if err := pool.QueryRow(ctx, `SELECT pg_get_indexdef('task_properties_worker_active_claim_idx'::regclass),checksum FROM schema_migrations WHERE version=115`).Scan(&indexAfter, &checksumAfter); err != nil {
+		t.Fatal(err)
+	}
+	if indexAfter != indexBefore || checksumAfter != checksumBefore || checksumAfter != schemaMigrations[index-1].checksum() {
+		t.Fatal("browser activity migration changed the published worker index or frozen checksum")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatalf("reopening the complete migration ledger: %v", err)

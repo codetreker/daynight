@@ -2,12 +2,22 @@ package postgres
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func releaseWorkerMigrationIndex(t *testing.T) int {
+	t.Helper()
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 65 })
+	if index < 1 {
+		t.Fatal("released worker ownership migration is missing")
+	}
+	return index
+}
 
 func releaseMigrationState(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
@@ -29,7 +39,9 @@ func releaseMigrationState(t *testing.T, pool *pgxpool.Pool) string {
 func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:64]); err != nil {
+	index := releaseWorkerMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(ctx, pool, migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -64,11 +76,11 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var beforeHistory string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)-'history_content_policy') FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&beforeHistory); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)) FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&beforeHistory); err != nil {
 		t.Fatal(err)
 	}
 	beforeTime := time.Now().UTC().Add(-time.Second)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	var afterFacts, afterOther, afterEpoch, afterOtherEpoch, afterHistory string
@@ -84,12 +96,8 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, other.ID).Scan(&afterOtherEpoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)-'history_content_policy') FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&afterHistory); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)) FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&afterHistory); err != nil {
 		t.Fatal(err)
-	}
-	var boundPolicies int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE history_content_policy IS NOT NULL`).Scan(&boundPolicies); err != nil || boundPolicies != 0 {
-		t.Fatalf("historical sessions acquired a policy: count=%d err=%v", boundPolicies, err)
 	}
 	if beforeFacts != afterFacts || beforeOther != afterOther || beforeHistory != afterHistory || epoch == afterEpoch || otherEpoch != afterOtherEpoch {
 		t.Fatal("migration changed unrelated task facts, history or project epochs")
@@ -110,14 +118,14 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 		}
 	}
 	state := releaseMigrationState(t, pool)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	if after := releaseMigrationState(t, pool); after != state {
 		t.Fatal("repeated migration changed data or ledger")
 	}
-	changed := append([]migration(nil), schemaMigrations...)
-	changed[64].sql += "\n-- changed checksum"
+	changed := append([]migration(nil), migrations...)
+	changed[index].sql += "\n-- changed checksum"
 	if err := migrate(ctx, pool, changed); err == nil {
 		t.Fatal("changed migration checksum was accepted")
 	}
@@ -135,7 +143,9 @@ func boolCount(value bool) int {
 
 func TestReleaseWorkerMigrationFailsAtomically(t *testing.T) {
 	pool := emptyPool(t)
-	if err := migrate(t.Context(), pool, schemaMigrations[:64]); err != nil {
+	index := releaseWorkerMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(t.Context(), pool, migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -171,7 +181,7 @@ func TestReleaseWorkerMigrationFailsAtomically(t *testing.T) {
 		if !t.Run(tc.name, func(t *testing.T) {
 			mustQueryExec(t, db, tc.setup)
 			before := releaseMigrationState(t, pool)
-			err := migrate(t.Context(), pool, schemaMigrations)
+			err := migrate(t.Context(), pool, migrations)
 			var cause *pgconn.PgError
 			if !errors.As(err, &cause) || cause.Code != tc.code {
 				t.Fatalf("error=%v want SQLSTATE %s", err, tc.code)

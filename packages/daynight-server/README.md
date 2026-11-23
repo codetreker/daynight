@@ -484,7 +484,7 @@ consumed grants cannot issue the secret again. The account token page can revoke
 `Daynight CLI (<hostname>)` credentials and edit the expiration of an active token without
 changing its secret or requiring another CLI login. `null` means never expires;
 a future UTC timestamp sets an expiration. Existing finite expirations retain
-their original values. Browser sessions keep their fixed seven-day lifetime.
+their original values. Browser sessions use their shared 168-hour idle deadline.
 There is no refresh token.
 
 The persistent polling schedule returns `authorization_pending` while waiting,
@@ -578,6 +578,48 @@ writers. Start the matching application after migration; old binaries do not
 understand the renamed grants or inherited authority. After a committed migration,
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
+
+### Worker active claim index upgrade
+
+Migration 115 validates every stored Worker property under a SHARE table lock,
+including historical Herdr and completed claims. Frozen Go decoding must match
+PostgreSQL extraction of state, userId and workerId before the nonunique active
+claim index and ledger commit together. The checksum includes the lock SQL,
+complete frozen source and index DDL. It preserves raw properties, Task versions,
+timestamps and Sync epochs. CASE guards keep opaque non-Worker values out of
+JSONB conversion; C-collated text preserves exact identifier case.
+
+Rehearse lock waiting, validation, index construction, ongoing write maintenance
+and listener startup on representative data against DAYNIGHT_STARTUP_TIMEOUT
+(default 10 seconds). If the deployment needs a maintenance window or another
+startup budget, select and verify it before rolling out.
+
+After startup cancellation, lost commit acknowledgment or listener failure,
+inspect migration 115's exact checksum and the index definition, predicate and
+validity through a fresh connection. Both absent permits a new attempt after
+diagnosis; both matching means the migration committed and requires a build
+that understands that same ledger. Mixed or mismatched state requires
+investigation. Do not delete ledger rows or assume rollback. Repair a committed
+index through a subsequent migration.
+
+This build keeps the original inventory reader and can restart against the new
+ledger. Retain its exact SHA as the query-switch rollback build; a pre-migration
+binary cannot restart after commit. The
+[index design](../../docs/design/worker-active-claim-index.md) owns the expressions,
+validation and recovery contract.
+
+### Browser session activity upgrade
+
+Migration 116 follows the published history policy and frozen Worker index
+migrations without changing their SQL, transform source or checksums. It adds
+nullable `sessions.last_used_at` without backfilling activity or changing existing
+expiry. Current authentication writers require this column. Drain older writers
+before switching the main site and previews to their shared database-clock
+renewal contract; routine responses retain the original credentials and Cookies.
+An initialized database follows the complete ordered ledger, while an empty
+namespace receives the equivalent version-116 snapshot and checksums atomically.
+The [authentication design](../../docs/design/daynight-auth.md#数据与并发) owns
+session validity, concurrent renewal and recovery requirements.
 
 ### Dependency type upgrade
 

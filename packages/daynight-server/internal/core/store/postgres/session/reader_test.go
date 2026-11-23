@@ -145,7 +145,11 @@ func testSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T, db *
 	}
 }
 
-func testSessionReaderPropagatesWorkerDecodeErrors(t *testing.T, db *postgres.Store) {
+func testSessionReaderPropagatesWorkerDecodeErrors(t *testing.T, _ *postgres.Store) {
+	db := isolatedStore(t)
+	// The index rejects malformed JSON during writes. A private schema keeps
+	// this reader fault injection out of the shared fixture.
+	mustQueryExec(t, db, `DROP INDEX task_properties_worker_active_claim_idx`)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
 	_, valid := readerWorker(t, queryID(100))

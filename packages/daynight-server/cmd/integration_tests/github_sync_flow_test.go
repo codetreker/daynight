@@ -419,12 +419,15 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP INDEX webhook_endpoints_live_client_key_idx; ALTER TABLE webhook_endpoints DROP COLUMN client_key`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `DROP INDEX task_properties_worker_active_claim_idx`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy; ALTER TABLE sessions DROP COLUMN last_used_at`); err != nil {
 			t.Fatal(err)
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115)`); err != nil || result.RowsAffected() != 37 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116)`); err != nil || result.RowsAffected() != 38 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -449,7 +452,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("upgraded repository version: version=%d migration count=%d error=%v", repositoryVersion, migrationCount, err)
 	}
 	var activityColumn bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at'), (SELECT count(*) FROM schema_migrations WHERE version=115)`).Scan(&activityColumn, &migrationCount); err != nil || !activityColumn || migrationCount != 1 {
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at'), (SELECT count(*) FROM schema_migrations WHERE version=116)`).Scan(&activityColumn, &migrationCount); err != nil || !activityColumn || migrationCount != 1 {
 		t.Fatalf("upgraded browser session activity: column=%t migration count=%d error=%v", activityColumn, migrationCount, err)
 	}
 	var historyPolicyColumn bool

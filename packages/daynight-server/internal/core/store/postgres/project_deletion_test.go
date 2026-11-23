@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -10,7 +11,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
@@ -106,7 +109,9 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 
 func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	s, _, _, project := membershipFixture(t)
+	// Pre-index storage permits corrupt bytes needed to exercise reader failures.
+	s := &Store{Pool: workerIndexOldPool(t)}
+	project := testutil.QueryProject(t, s.Pool, s, 10)
 	ctx := context.Background()
 	for _, raw := range []string{"{", `{"claimId":1}`} {
 		id := uuid.NewString()
@@ -117,6 +122,17 @@ func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatalf("accepted corrupt worker %q", raw)
+		}
+		if raw == "{" {
+			var cause *pgconn.PgError
+			if !errors.As(err, &cause) || cause.Code != "22P02" {
+				t.Fatalf("lost PostgreSQL JSON conversion cause: %v", err)
+			}
+		} else {
+			var cause *json.UnmarshalTypeError
+			if !errors.As(err, &cause) {
+				t.Fatalf("lost Worker field decoding cause: %v", err)
+			}
 		}
 		mustQueryExec(t, s, `DELETE FROM task_properties WHERE task_id=$1`, id)
 		mustQueryExec(t, s, `DELETE FROM tasks WHERE id=$1`, id)
