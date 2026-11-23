@@ -2518,15 +2518,16 @@ not applied to it. A running disconnected Worker retains successful values;
 restart checks the cloud before normal scheduling. Task inventory or backend
 preparation failures do not disable configuration exchange.
 
-`preferPlatformSpecificTasks` defaults to false. Enable it separately for selected
-Workers in My Workers; local YAML supplies it only for the first cloud import.
-When enabled, new acquisition first scans all selected, eligible Projects for
-tasks explicitly requiring the actual host platform, then considers unrestricted
-tasks. Each category retains its own Project rotation and creation-time/ID order
-within a Project, across every candidate page. Preferred scans and claims do not
-advance the unrestricted category's rotation. Applied changes affect later acquisition;
-existing claims and pending startup retain their current lifecycle. A confirmed
-false application value means disabled; null means no confirmed application.
+Each Worker applies its cloud `platformTaskMode` to new acquisition. `all` scans
+compatible tasks in their existing order; `prefer` scans all eligible Projects
+for tasks explicitly requiring the host platform before unrestricted tasks;
+`only` scans platform-specific tasks and keeps polling when none are available.
+Each category retains its own Project rotation and creation-time/ID order across
+candidate pages. Changes affect later acquisition; existing claims retain their
+lifecycle. The local YAML boolean `preferPlatformSpecificTasks` supplies only
+the first cloud import (`false` maps to `all`, `true` to `prefer`). Older services
+retain those two modes. A saved target is not evidence of application; the
+Worker reports its actual persisted application result.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker

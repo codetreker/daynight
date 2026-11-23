@@ -154,7 +154,7 @@ it.each(["patrol", "shutdown"] as const)("cleans the real retired Web boundary a
     const webBackend = createWebExecutionBackend({ homeDirectory: home, store: webStore, git, jobLeases: leases, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform, buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: requests });
     const events: WorkerEvent[] = [], verifyWebUnregistered = vi.fn(async () => { throw new Error("Session registration must not gate retired cleanup."); });
     coordinator = createWorkerCoordinator({ store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId, platform, machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }],
-      globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false, verifyWebUnregistered, emit: event => events.push(event) });
+      globalConfiguration: configuration, maxConcurrent: 2, platformTaskMode: "all" as const, verifyWebUnregistered, emit: event => events.push(event) });
     if (mode === "shutdown") expect(await coordinator.shutdown({ deadline: Date.now() + 30_000 })).toBe(true);
     else { await coordinator.tick(); await expect.poll(() => store.getTask(owner)?.status, { timeout: 30_000 }).toBe("done"); }
     expect(await inspectProcessProof(original.leader)).toBe("stopped"); expect(await inspectProcessProof(original.provider)).toBe("stopped"); await original.closed;

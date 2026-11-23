@@ -4,7 +4,7 @@ import type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/t
 export type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/tool-path-choice.js";
 export type WorkerCloudToolPaths = Readonly<Record<"codex" | "copilot", ToolPathChoice | null>>;
 export type WorkerToolPathsBootstrap = Readonly<Record<"codex" | "copilot", ToolPathChoice>>;
-export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean; readonly archiveSessions?: boolean };
+export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean; readonly archiveSessions?: boolean; readonly platformTaskMode?: boolean };
 export type WorkerConfigurationCapabilityInput = WorkerConfigurationCapabilities | boolean;
 export const workerConfigurationCapabilities = (value: WorkerConfigurationCapabilityInput = false): WorkerConfigurationCapabilities =>
   typeof value === "boolean" ? { controlMode: value, toolPaths: false, archiveSessions: false } : value;

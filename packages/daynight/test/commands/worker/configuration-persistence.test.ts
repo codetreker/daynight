@@ -158,7 +158,7 @@ describe("Worker configuration persistence", () => {
     await advance(5_000); const store = entry.store = await loading;
     expect(encodings).toHaveLength(2); expect(encodings[0]).toBe(encodings[1]);
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(store.current());
-    expect(store.current().schemaVersion).toBe(12);
+    expect(store.current().schemaVersion).toBe(13);
   });
 
   it("retains the original schema 5 file and error when its atomic migration cannot be saved", async () => {

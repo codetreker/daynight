@@ -24,7 +24,7 @@ export type TrackedConfigurationItem = {
   readonly blockedByRemovalId: string | null;
 };
 export type WorkerConfigurationCache = {
-  readonly schemaVersion: 12;
+  readonly schemaVersion: 13;
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string; readonly pendingApplication: boolean };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
@@ -51,7 +51,7 @@ export type WorkerConfigurationSnapshot = {
     readonly maxConcurrent: number | null;
     readonly pollIntervalMs: number | null;
     readonly recoveryLimit: number | null;
-    readonly preferPlatformSpecificTasks: boolean | null;
+    readonly platformTaskMode: import("../../api/worker-configuration.js").PlatformTaskMode | null;
     readonly archiveSessions: boolean | null;
     readonly taskTagFilter: WorkerTaskTagFilter | null | undefined;
     readonly taskTagFilterKey: string | null | undefined;

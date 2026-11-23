@@ -153,7 +153,7 @@ const fixture = async (maxConcurrent = 1) => {
   const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
   const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
   const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
-  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, platformTaskMode: "all" as const, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => { stores.splice(stores.indexOf(store), 1); store.close(); store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store; return store; };
   return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, worktrees, manifests, git, remote, events, options, clock: (value: number) => { clock = value; }, bind };
 };

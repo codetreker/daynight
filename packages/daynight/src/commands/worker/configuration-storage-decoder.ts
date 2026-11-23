@@ -244,7 +244,7 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   // the binary that wrote this cache could not have applied it. Keeping the
   // field opaque leaves it to the next received document, where a ledger entry
   // accompanies it, rather than adopting a target with no application result.
-  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") }, true, false, false);
+  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") }, true, false, false, false);
   const desired = networkReceived?.known ?? legacyReceived?.known ?? currentReceived?.known ?? null;
   const rawRevision = legacyReceived?.known.revision ?? currentReceived?.revision ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
@@ -312,8 +312,8 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
 
 export const decodeConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): (DecodedCache | { readonly cache: CurrentConfigurationCache; readonly migration: null }) & { readonly migrated: boolean } => {
   if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
-  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 12;
-  if (version === 11 || version === 12) return { cache: decodeCurrentConfigurationCache(data, identity), migration: null, migrated };
+  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 13;
+  if (version === 11 || version === 12 || version === 13) return { cache: decodeCurrentConfigurationCache(data, identity), migration: null, migrated };
   if (version === 6 || version === 7 || version === 8 || version === 9 || version === 10) return { ...parseCurrent(data, identity, version === 6 || version === 7, version === 9 || version === 10), migrated };
   return { cache: upgradeSchema5(parseSchema5(version === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity, undefined, true)), migration: null, migrated };
 };
