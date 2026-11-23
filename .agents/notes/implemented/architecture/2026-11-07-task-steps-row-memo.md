@@ -12,6 +12,8 @@ their existing ownership.
 
 ## Decision
 
+The [Web Steps retirement](../simplification/2026-11-23-retire-web-task-steps.md) supersedes this Web-specific decision. The following records the former implementation and its rationale.
+
 The panel renders a memoized row keyed by Step ID. Each row receives the current
 Step snapshot, global position, version, expansion, permissions, request pause,
 pending state, renderer and action callbacks. Its editing form is passed only to

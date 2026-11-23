@@ -58,6 +58,22 @@ test('Goal attachment image recovers from a network failure without rereading th
   expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
 });
 
+async function makeDirtyTaskTags(page: Page, surface: Locator) {
+  const tagId = '00000000-0000-4000-8000-000000000099';
+  await page.route(`**/api/v1/projects/${projectId}/tags**`, route => {
+    const path = new URL(route.request().url()).pathname;
+    const tag = { id: tagId, name: 'Draft label' };
+    const body = path.endsWith('/colors/resolve') ? { catalogEpoch: taskSyncEpoch(projectId), items: [{ id: tagId, state: 'found', version: 1, color: '#9AA3B2' }] }
+      : path.endsWith('/tags/resolve') ? { items: [tag] }
+      : { items: [{ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null };
+    return route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await surface.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const checkbox = surface.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await checkbox.check();
+  return checkbox;
+}
+
 async function restoreGoalGraph(page: Page, surface: Locator, representativeId = firstId) {
   await expect(surface.locator('.goal-information-counts').first()).toBeAttached();
   await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined);
@@ -236,7 +252,6 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path.endsWith('/attachments')) return send({ items: [{ path: 'notes.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path.endsWith('/attachments/files/notes.txt')) return route.fulfill({ body: 'notes', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/preview/image.png`) return route.fulfill({ body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aN8AAAAASUVORK5CYII=', 'base64'), headers: { 'Content-Type': 'image/png', 'Daynight-User-ID': TEST_VIEWER_ID } });
-    if (path.endsWith('/steps')) { const taskId = path.split('/').at(-2)!; return send({ projectId, taskId, version: details.find(item => item.id === taskId)!.version, steps: [] }); }
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
@@ -824,10 +839,10 @@ for (const width of [1440, 390, 320]) test(`Task parent Goal is a read-only over
   expect(writes).toEqual([]);
 });
 
-test('Task parent Goal link preserves native modified clicks and protects unsaved drafts', async ({ page, context }) => {
+test('Task parent Goal link preserves native modified clicks and protects tag drafts', async ({ page, context }) => {
   await install(page);
   const writes: string[] = [];
-  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method()) && !request.url().includes('/tags/resolve') && !request.url().includes('/tags/colors/resolve')) writes.push(request.method()); });
   await page.goto(`/projects/${projectId}/tasks/${firstId}`);
   const task = page.locator('.task-detail-page');
   const link = task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
@@ -837,18 +852,14 @@ test('Task parent Goal link preserves native modified clicks and protects unsave
   await expect(popup).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await popup.close();
   await expect(page).toHaveURL(new RegExp(`/tasks/${firstId}$`));
-  await task.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await task.getByRole('button', { name: 'Add step', exact: true }).click();
-  await task.locator('.step-add-form').getByRole('textbox', { name: 'Title' }).fill('Unsaved draft');
-  await task.getByRole('tab', { name: 'Overview', exact: true }).click();
+  const draft = await makeDirtyTaskTags(page, task);
   await link.click();
   const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(page).toHaveURL(new RegExp(`/tasks/${firstId}$`));
+  await expect(draft).toBeChecked();
   await link.click();
   await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
-  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
   expect(writes).toEqual([]);
 });
@@ -866,18 +877,7 @@ for (const attachmentBacked of [false, true]) test(`nested Task follows its pare
   await task.getByRole('button', { name: 'Enter fullscreen' }).click();
   const link = aside.getByRole('link', { name: 'Goal reading' });
   await expect(link).toBeVisible();
-  await task.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await task.getByRole('button', { name: 'Add step', exact: true }).click();
-  await task.locator('.step-add-form').getByRole('textbox', { name: 'Title' }).fill('Nested draft');
-  await task.getByRole('tab', { name: 'Overview', exact: true }).click();
   await link.click();
-  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(task).toBeVisible();
-  if (attachmentBacked) await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=description$`));
-  await link.click();
-  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(task).toHaveCount(0);
   await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
   await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
@@ -1462,7 +1462,7 @@ test('a changing chain keeps its open task draft, focus and modal isolation', as
   await expect(goalDialog).toBeVisible();
 });
 
-test('a nested task and goal draft share one topmost leave confirmation', async ({ page }) => {
+test('a nested task leaves its Goal draft behind one confirmation', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 800 });
   const fixture = await install(page); fixture.addCrossGoal();
   await page.goto(`/projects/${projectId}`);
@@ -1477,9 +1477,8 @@ test('a nested task and goal draft share one topmost leave confirmation', async 
   const graphDialog = page.getByRole('dialog', { name: 'First task' });
   const openTask = graphDialog.getByRole('button', { name: 'Second task, Details' }); await expectHit(openTask); await openTask.click();
   const taskDialog = page.getByRole('dialog', { name: 'Second task' });
-  const stepsTab = taskDialog.getByRole('tab', { name: 'Steps' }); await expectHit(stepsTab); await stepsTab.click();
-  await taskDialog.getByRole('button', { name: 'Add step', exact: true }).click();
-  await taskDialog.getByLabel('Title', { exact: true }).fill('Task draft');
+  const discussionTab = taskDialog.getByRole('tab', { name: 'Discussion' }); await expectHit(discussionTab); await discussionTab.click();
+  await taskDialog.locator('.thread-composer textarea').fill('Task draft');
   await taskDialog.getByRole('tab', { name: 'Overview' }).click();
   const other = taskDialog.getByRole('button', { name: /Other task, ordinary dependency/i });
   await other.click();
@@ -1540,7 +1539,7 @@ for (const width of [1440, 320]) test(`Project reading traverses graph and neste
   expect(writes).toEqual([]);
 });
 
-test('Project nested child retains its draft and closing replaces the parent selection', async ({ page }) => {
+test('Project nested child protects its tag draft and restores focus on close', async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
@@ -1549,27 +1548,18 @@ test('Project nested child retains its draft and closing replaces the parent sel
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task', exact: true });
-  await graphDialog.getByRole('button', { name: 'First task, Details' }).click();
+  const trigger = graphDialog.getByRole('button', { name: 'First task, Details' });
+  await trigger.click();
   const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'First task' }) });
-  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await child.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
-  await draft.fill('Project child draft');
-  const original = await child.elementHandle();
-  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
-  await child.getByRole('button', { name: /^notes\.txt/ }).click();
-  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
-  await page.goBack(); await expect(draft).toHaveValue('Project child draft');
-  expect(await child.evaluate((element, previous) => element === previous, original)).toBe(true);
-  await page.goBack(); await page.goBack();
+  const draft = await makeDirtyTaskTags(page, child);
+  await child.getByRole('button', { name: 'Close task details' }).click();
   const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(child).toBeVisible();
+  await expect(draft).toBeChecked();
   await child.getByRole('button', { name: 'Close task details' }).click();
-  await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
-  await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible();
+  await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible(); await expect(trigger).toBeFocused();
   await page.goBack(); await expect(graphDialog).toBeVisible();
   await page.goForward(); await expect(graphDialog).toBeVisible(); await expect(child).toHaveCount(0);
   await graphDialog.getByRole('button', { name: 'Close dependency graph' }).click();
@@ -1634,35 +1624,31 @@ test('closing a standalone Goal child replaces the current entry with its graph 
   await page.goForward(); await expect(graphDialog).toHaveCount(0);
 });
 
-test('standalone Goal child keeps its draft across tab and file history and protects departure', async ({ page }) => {
+test('standalone Goal child protects tag draft through tab and file history', async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const goalPage = page.locator('.goal-detail-surface');
   await restoreGoalChild(page, singleId);
   const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Standalone task' }) });
-  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await child.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
-  await draft.fill('Retained child draft');
+  const draft = await makeDirtyTaskTags(page, child);
   const original = await child.elementHandle();
   await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await child.getByRole('button', { name: /^notes\.txt/ }).click();
   await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
   await page.goBack();
-  await expect(draft).toHaveValue('Retained child draft');
+  await expect(draft).toBeChecked();
   expect(await child.evaluate((element, previous) => element === previous, original)).toBe(true);
-  await page.goBack();
-  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goBack();
   const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(child).toBeVisible();
-  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await expect(draft).toHaveValue('Retained child draft');
+  await expect(draft).toBeChecked();
+  await page.goBack();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0);
 });
 
-test('a new child draft is protected from a retired same-child history entry', async ({ page }) => {
+test('a retired same-child history entry does not restore a child', async ({ page }) => {
   const fixture = await install(page);
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const goalPage = page.locator('.goal-detail-surface');
@@ -1673,23 +1659,13 @@ test('a new child draft is protected from a retired same-child history entry', a
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(child).toHaveCount(0);
   await restoreGoalChild(page, singleId);
-  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await child.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await child.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = child.locator('.thread-composer textarea');
   await draft.fill('New draft after recovery');
   await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await page.goBack();
   await expect(draft).toHaveValue('New draft after recovery');
-  const entry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
   await page.evaluate(() => history.go(-3));
-  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(entry);
-  await expect(draft).toHaveValue('New draft after recovery');
-  await page.evaluate(() => history.go(-3));
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(child).toHaveCount(0);
 });
 
@@ -1720,7 +1696,7 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
 });
 
-for (const attachmentBacked of [false, true]) test(`a moved external Goal child follows its latest parent and protects both drafts with attachment path ${attachmentBacked}`, async ({ page }) => {
+for (const attachmentBacked of [false, true]) test(`a moved external Goal child follows its latest parent and protects the Goal draft with attachment path ${attachmentBacked}`, async ({ page }) => {
   const fixture = await install(page); fixture.addCrossGoal();
   const writes: string[] = [];
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
@@ -1737,9 +1713,8 @@ for (const attachmentBacked of [false, true]) test(`a moved external Goal child 
   await external.getByRole('tab', { name: 'Description' }).click();
   await restoreGoalChild(page, otherTaskId, otherGoalId);
   const child = page.getByRole('dialog', { name: 'Other task', exact: true });
-  await child.getByRole('tab', { name: 'Steps' }).click();
-  await child.getByRole('button', { name: 'Add step', exact: true }).click();
-  const taskDraft = child.locator('.step-add-form input');
+  await child.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const taskDraft = child.locator('.thread-composer textarea');
   await taskDraft.fill('Child Task draft');
   await child.getByRole('tab', { name: 'Overview' }).click();
   fixture.moveOtherTaskToGoal();
@@ -2823,7 +2798,24 @@ test('Goal empty and filtered states retain their padding and restore members', 
   await expect(card.locator('.goal-list-empty')).toHaveCount(0);
 });
 
-test('flat Goal member preserves history, draft protection, and its source focus', async ({ page }) => {
+test('Goal child history and attachment navigation make no Steps requests', async ({ page }) => {
+  const stepsRequests: string[] = [];
+  page.on('request', request => { if (/\/tasks\/[^/]+\/steps(?:\/|$)/.test(new URL(request.url()).pathname)) stepsRequests.push(`${request.method()} ${request.url()}`); });
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await restoreGoalChild(page, singleId);
+  const child = page.getByRole('dialog', { name: 'Standalone task' });
+  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(child.getByRole('tab', { name: 'Steps', exact: true })).toHaveCount(0);
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await child.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goForward(); await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+  expect(stepsRequests).toEqual([]);
+});
+
+test('flat Goal member preserves history and its source focus', async ({ page }) => {
   const fixture = await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
@@ -2849,17 +2841,10 @@ test('flat Goal member preserves history, draft protection, and its source focus
   await expect(entry).toBeFocused();
   await page.goForward(); await expect(child).toBeVisible();
   await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await child.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await child.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = child.locator('.thread-composer textarea');
   await draft.fill('Flat member draft');
   await child.getByRole('button', { name: 'Close task details' }).click();
-  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirm).toBeVisible();
-  await confirm.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(draft).toHaveValue('Flat member draft');
-  await child.getByRole('button', { name: 'Close task details' }).click();
-  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(child).toHaveCount(0);
   await expect(entry).toBeFocused();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -2917,17 +2902,10 @@ test('Goal list graph navigation and history retain the source and scroll', asyn
   await detail.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await page.goBack();
   await expect(detail.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await detail.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await detail.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea');
   await draft.fill('Goal graph Task draft');
   await page.keyboard.press('Escape');
-  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirm).toBeVisible();
-  await confirm.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(draft).toHaveValue('Goal graph Task draft');
-  await detail.getByRole('button', { name: 'Close task details' }).click();
-  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(detail).toHaveCount(0); await expect(task).toBeFocused();
   await expect(inspect).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');

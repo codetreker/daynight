@@ -30,19 +30,15 @@ const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概�
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
-  it('shares Task-root Markdown and the existing attachment controller with Steps', async () => {
+  it('opens Task-root Markdown attachments through the existing attachment controller', async () => {
     const api = fixture([file('docs/result.md')]);
-    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md)"
-      overview={(content) => content} steps={(_active, markdown) => markdown('[Step result](docs/result.md) ![Step image](images/chart.png)')} />);
-    expect(screen.getByRole('link', { name: 'Overview result' }).closest('.description-card')).not.toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: '步骤' }));
-    expect(screen.getByRole('img', { name: 'Step image' })).toHaveAttribute('src', `${root}images/chart.png`);
-    const link = screen.getByRole('link', { name: 'Step result' });
-    expect(link.closest('.description-card')).toBeNull();
+    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md) ![Overview image](images/chart.png)" overview={(content) => content} />);
+    expect(screen.getByRole('img', { name: 'Overview image' })).toHaveAttribute('src', `${root}images/chart.png`);
+    const link = screen.getByRole('link', { name: 'Overview result' });
+    expect(link.closest('.description-card')).not.toBeNull();
     expect(link).toHaveAttribute('href', `${root}docs/result.md`);
     fireEvent.click(link);
     await screen.findByRole('heading', { name: 'Preview docs/result.md' });
-    expect(screen.getByRole('heading', { name: 'Preview docs/result.md' }).closest('.description-card')).toBeNull();
     expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
     expect(api.list).toHaveBeenCalledTimes(1);
     expect(api.readText).toHaveBeenCalledTimes(1);
