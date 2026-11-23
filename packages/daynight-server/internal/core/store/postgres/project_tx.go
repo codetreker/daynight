@@ -40,7 +40,7 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 }
 
 func (s *Store) WriteProjectTransfer(ctx context.Context, projectID string, operation func(ProjectWriteScope) error) (Completion, error) {
-	return s.writeGoalProjectLifecycle(ctx, projectID, "project transfer", func(tx pgx.Tx) error {
+	return s.writeGoalProjectLifecycle(ctx, projectID, "project transfer", false, func(tx pgx.Tx) error {
 		return operation(&ProjectTx{tx: tx, projectID: projectID})
 	})
 }

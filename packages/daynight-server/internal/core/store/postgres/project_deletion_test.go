@@ -159,7 +159,7 @@ func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
 		_, err := s.WriteProjectDeletion(ctx, project.ID, func(store.ProjectDeletionScope) error { return nil })
 		done <- err
 	}()
-	waitTransferTeamLock(t, ctx, s, "SELECT id FROM tasks WHERE project_id=", tx.Conn().PgConn().PID())
+	waitTransferTeamLock(t, ctx, s, "WITH goals AS (SELECT id FROM tasks WHERE project_id=", tx.Conn().PgConn().PID())
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}

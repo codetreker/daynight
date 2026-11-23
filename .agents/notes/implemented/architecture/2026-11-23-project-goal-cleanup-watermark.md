@@ -8,7 +8,7 @@ Transferring or deleting a Project removes incident Goal acceptance edges, inclu
 
 ## Decision
 
-The shared Project cleanup DAO advances the independent relationship revision for each distinct actual downstream of a removed edge. Under the [complete Project lock set](2026-11-23-project-goal-cleanup-lock-set.md), it also advances the Task version and update time once for each surviving downstream Goal, using the database clock after acquiring the locks. A deleted Goal or Goal in a deleted Project is not touched. On source Project deletion, its Goals will no longer be visible and are excluded; source Goals remain eligible on transfer. No actual edge removal changes no watermark. Exhaustion or any failure rolls back the entire cleanup and lifecycle transaction. The [server design](../../../../docs/design/daynight-server.md#项目生命周期中的-goal-边清理) owns the mechanism.
+The shared Project cleanup DAO advances the independent relationship revision for each distinct actual downstream of a removed edge. Under the [complete Project lock set](2026-11-23-project-goal-cleanup-lock-set.md), it also advances the Task version and update time once for each surviving downstream Goal, using the database clock after acquiring the locks. The transaction locks affected Goal rows before ownership, preserving the Thread Task-to-ownership lock order. A deleted Goal or Goal in a deleted Project is not touched. On source Project deletion, its Goals will no longer be visible and are excluded; source Goals remain eligible on transfer. No actual edge removal changes no watermark. Exhaustion or any failure rolls back the entire cleanup and lifecycle transaction. The [server design](../../../../docs/design/daynight-server.md#项目生命周期中的-goal-边清理) owns the mechanism.
 
 ## Alternatives
 
