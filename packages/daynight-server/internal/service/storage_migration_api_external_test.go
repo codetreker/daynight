@@ -259,10 +259,11 @@ func migrationRegisterPartial(t *testing.T, s *sessionservice.Service, owner mod
 	}
 }
 
-func migrationImageController(t *testing.T, s *sessionservice.Service, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte) {
+func migrationImageController(t *testing.T, s *sessionservice.Service, snapshot sp.Snapshot, spec sp.ImageUploadSpec, original []byte) {
 	t.Helper()
+	fence := snapshot.ControllerFence
 	provider := sp.ProviderImageCapabilities{Revision: "1", Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png"}, MaxImageBytes: "1000000", MaxMessageImageBytes: "1000000", MaxImagesPerMessage: 1, Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 10, MaxHeight: 10, MaxPixels: 100, MaxFrames: 1}}
-	state := sp.State{Synchronized: true, Activity: "initializing", ProviderImages: &provider}
+	state := sp.State{NativeSessionID: snapshot.Identity.NativeSessionID, InitialInputState: snapshot.InitialInputState, Synchronized: true, Activity: "initializing", ProviderImages: &provider}
 	if _, err := s.Handle(t.Context(), sp.ControllerMessage{Type: "sync_state", ControllerFence: fence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +657,7 @@ func TestStorageMigrationPairedHTTPRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	migrationImageController(t, targetService, reconnected.ControllerFence, newImage, imageBytes)
+	migrationImageController(t, targetService, reconnected, newImage, imageBytes)
 	targetHTTP.request(http.MethodPut, imageBase+"/image-uploads/"+newImage.UploadID, migrationWire(t, newImage), nil, http.StatusCreated)
 	targetHTTP.request(http.MethodPut, imageBase+"/image-uploads/"+newImage.UploadID+"/chunks?offset=0", imageBytes, map[string]string{"Content-Type": "application/octet-stream", "Daynight-Chunk-SHA256": migrationDigest(imageBytes)}, http.StatusOK)
 	var completedImage sp.ImageUploadReceipt
