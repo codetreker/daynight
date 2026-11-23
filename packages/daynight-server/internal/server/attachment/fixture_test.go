@@ -52,7 +52,21 @@ func newAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Wri
 	return newAttachmentFixtureWithTimeout(t, files, output, attachmenthttp.DefaultBodyReadTimeout())
 }
 
+func newMainAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Writer) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutes(mux, attachments, auth, logger, "https://preview.daynight.example")
+	})
+}
+
 func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, output io.Writer, timeout time.Duration) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutesWithBodyReadTimeout(mux, attachments, auth, logger, timeout)
+	})
+}
+
+func newAttachmentFixtureWithRoutes(t *testing.T, files filestorage.Storage, output io.Writer, register func(*http.ServeMux, *attachmentservice.Attachments, *authhttp.Authentication, *slog.Logger)) *attachmentFixture {
 	t.Helper()
 	f := &attachmentFixture{t: t, mux: http.NewServeMux(), want: map[string]int{}, seen: map[string]int{}}
 	f.project = api.Project{ID: uuid.NewString(), Name: "Attachment project"}
@@ -69,7 +83,7 @@ func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, ou
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachmenthttp.RegisterRoutesWithBodyReadTimeout(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger, timeout)
+	register(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger)
 	f.handler.Handler = httpx.RequestLogging(logger, attachmenthttp.PathGuard(f.mux, logger))
 	t.Cleanup(f.verify)
 	return f
