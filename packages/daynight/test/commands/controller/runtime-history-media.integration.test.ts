@@ -67,6 +67,9 @@ test("media prepare deadline releases blocks while the real history round retrie
   const ws = new WebSocketServer({ server: http });
   ws.on("headers", headers => headers.push("Daynight-Task-Body-History-Version: 1"));
   let running: Promise<void> | undefined;
+  const deadlines: { handle: NodeJS.Timeout; fire: () => void; delay: number }[] = [];
+  const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;
+  let restoreTimers = () => {};
   try {
   http.listen(0, "127.0.0.1"); await once(http, "listening");
   const address = http.address(); if (!address || typeof address === "string") throw new Error("Missing test address");
@@ -94,14 +97,39 @@ test("media prepare deadline releases blocks while the real history round retrie
     const journal = fixture.journal!; expect(journal).not.toBeNull();
     const media = journal.media(), prepare = vi.spyOn(media, "prepare");
     const ids = [randomUUID(), randomUUID()];
-    const started = Date.now();
+    // Keep socket, retry and polling timers real. Only hold the named history
+    // deadline callback; the two registrations follow WebSocket request order.
+    // Fix the clock briefly so each registered delay proves the full deadline.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+      const handle = realSetTimeout(callback, delay, ...args);
+      if (String(callback).includes("Image capture history checkpoint was not ready before the deadline.")) {
+        deadlines.push({ handle, delay: delay!, fire: () => callback(...args) });
+      }
+      return handle;
+    }) as typeof setTimeout);
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    restoreTimers = () => { nowSpy.mockRestore(); timerSpy.mockRestore(); clearSpy.mockRestore(); deadlines.forEach(deadline => realClearTimeout(deadline.handle)); restoreTimers = () => {}; };
     for (const requestId of ids) {
       const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
       socket!.send(JSON.stringify({ ...fence, type: "image_request", requestId, action: "prepare", body: spec }));
     }
     await vi.waitFor(() => { const lease = media.tryAcquireMediaBlock(); lease?.close(); expect(lease).toBeNull(); });
-    await vi.waitFor(() => expect(frames.filter(frame => frame.type === "image_response").length).toBe(2), { timeout: 18_000, interval: 50 });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(9_900);
+    await vi.waitFor(() => expect(deadlines).toHaveLength(2));
+    expect(deadlines.map(deadline => deadline.delay)).toEqual([10_000, 10_000]);
+    expect(new Set(deadlines.map(deadline => deadline.handle)).size).toBe(2);
+    expect(deadlines.every(deadline => !clearSpy.mock.calls.some(([handle]) => handle === deadline.handle))).toBe(true);
+    expect(frames.filter(frame => frame.type === "image_response")).toHaveLength(0);
+    expect(prepare).not.toHaveBeenCalled();
+    realClearTimeout(deadlines[0]!.handle); deadlines[0]!.fire();
+    await vi.waitFor(() => expect(frames.filter(frame => frame.type === "image_response")).toHaveLength(1));
+    expect(frames.filter(frame => frame.type === "image_response")[0]).toMatchObject({ requestId: ids[0], error: { code: "image_unavailable" } });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(clearSpy.mock.calls.some(([handle]) => handle === deadlines[1]!.handle)).toBe(false);
+    realClearTimeout(deadlines[1]!.handle); deadlines[1]!.fire();
+    await vi.waitFor(() => expect(frames.filter(frame => frame.type === "image_response").length).toBe(2));
+    expect(deadlines.every(deadline => clearSpy.mock.calls.some(([handle]) => handle === deadline.handle))).toBe(true);
+    restoreTimers();
     const responses = frames.filter(frame => frame.type === "image_response");
     expect(new Set(responses.map(frame => frame.requestId))).toEqual(new Set(ids));
     expect(responses.every(frame => frame.error?.code === "image_unavailable")).toBe(true);
@@ -113,10 +141,11 @@ test("media prepare deadline releases blocks while the real history round retrie
     await vi.waitFor(() => expect(journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())).toBe(true), { timeout: 5000 });
     expect(requests.map(request => request.method)).toEqual(["GET", "GET", "PUT"]);
     expect(new Set(requests.map(request => request.id)).size).toBe(1);
-    expect(requests.every(request => JSON.parse(request.fence!).connectionEpoch === "1")).toBe(true);
+    expect(requests.map(request => JSON.parse(request.fence!))).toEqual(Array(3).fill({ sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: "1", connectionEpoch: "1" }));
     expect(requests.at(-1)!.hash).toBe(row!.sha256);
     expect(prepare).not.toHaveBeenCalled(); expect(frames.filter(frame => frame.type === "image_response")).toHaveLength(2); expect(errors).toEqual([]);
   } finally {
+    restoreTimers();
     release.resolve(); if (running) { process.emit("SIGTERM", "SIGTERM"); await running.catch(() => {}); }
     for (const client of ws.clients) client.terminate();
     await new Promise<void>(resolve => ws.close(() => resolve()));
