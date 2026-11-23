@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,29 +31,22 @@ func TestCredentialScopeActivationProcessStartup(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// The first process initializes an empty schema through the snapshot path.
-	initial := startPersistenceProcess(t, values)
-	if err := initial.stop(); err != nil {
-		t.Fatalf("stop empty-schema process: %v", err)
+	if err := postgres.ReplaySchema107ForTest(ctx, pool); err != nil {
+		t.Fatalf("replay historical schema: %v", err)
 	}
-	// These additive migrations can be removed to reconstruct the 107 schema.
-	if _, err := pool.Exec(ctx, `ALTER TABLE personal_access_tokens DROP COLUMN business_scopes, DROP COLUMN scope_version;
-ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes;
-ALTER TABLE oauth_grants DROP COLUMN business_scopes, DROP COLUMN scope_version;
-ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes;
-DROP TABLE worker_lifecycle_observations, worker_lifecycle_operations, worker_lifecycle;
-ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_version;
-DROP INDEX webhook_endpoints_live_client_key_idx;
-ALTER TABLE webhook_endpoints DROP COLUMN client_key;
-DROP INDEX task_properties_worker_active_claim_idx;
-ALTER TABLE task_sessions DROP COLUMN history_content_policy;
-ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
-DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112,113,114,115,116)`); err != nil {
-		t.Fatal(err)
+	var historical bool
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*)=105 AND min(version)=1 AND max(version)=107 FROM schema_migrations) AND
+		to_regclass('task_steps') IS NOT NULL AND
+		to_regclass('project_pr_review_assignments_worker_cursor') IS NOT NULL AND
+		to_regclass('worker_lifecycle') IS NULL AND
+		NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND
+		 ((table_name IN ('personal_access_tokens','oauth_grants') AND column_name IN ('business_scopes','scope_version')) OR
+		  (table_name IN ('device_authorizations','oauth_authorizations') AND column_name='approved_business_scopes')))`).Scan(&historical); err != nil || !historical {
+		t.Fatalf("historical schema and ledger: valid=%v err=%v", historical, err)
 	}
-	var latest int64
-	if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 107 {
-		t.Fatalf("historical ledger: version=%d err=%v", latest, err)
+	if err := postgres.ReplaySchema107ForTest(ctx, pool); err == nil {
+		t.Fatal("historical fixture accepted a nonempty schema")
 	}
 	user, team, tokenID, deviceID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	grantID, accessID, authorizationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
