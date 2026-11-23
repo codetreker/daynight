@@ -677,6 +677,11 @@ func (s *unexpectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time
 	panic("unreachable")
 }
 
+func (s *unexpectedTaskReader) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	s.reject("TaskSyncGoalDependsOn")
+	panic("unreachable")
+}
+
 func (s *unexpectedTaskReader) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
 	s.reject("TaskSyncActiveTasks")
 	panic("unreachable")
