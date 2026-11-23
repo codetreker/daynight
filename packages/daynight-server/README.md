@@ -1372,11 +1372,36 @@ package consumes this optional URL. With the override configured, a fixture test
 checks the actual root database and the shared database identities. Local runs
 can set the override to a second isolated database on the same instance to
 reproduce CI's migration-lock isolation.
-The independent
-startup/shutdown check runs the command tests with `-tags=startupshutdown` and
-the controlled Webhook Runner abrupt-recovery witness with its dedicated test
-transport build. Production builds use the real Web assets described under
-[Build and run](#build-and-run).
+The independent startup/shutdown check runs the command tests with
+`-tags=startupshutdown` and the controlled Webhook Runner abrupt-recovery witness
+with its dedicated test transport build. Production builds use the real Web
+assets described under [Build and run](#build-and-run).
+
+The Azure ordinary-object contract uses a separate Azurite instance. For local
+verification, start the same pinned image as CI with an isolated account and
+data directory, then use its reported Blob port in the test connection string:
+
+```bash
+docker run --detach --name daynight-azurite-tests \
+  --env AZURITE_ACCOUNTS='daynight:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=' \
+  --publish 127.0.0.1::10000 \
+  mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
+azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
+export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:$azurite_port/daynight;"
+DAYNIGHT_TEST_AZURITE_PRESERVE=1 go test -count=1 -timeout=5m -run '^TestAzurite$' ./internal/core/filestorage/azure
+go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
+docker restart daynight-azurite-tests
+azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
+export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:$azurite_port/daynight;"
+DAYNIGHT_TEST_AZURITE_REOPEN=1 go test -count=1 -timeout=5m -run '^TestAzuriteReopen$' ./internal/core/filestorage/azure
+docker rm --force --volumes daynight-azurite-tests
+```
+
+The account and key above are disposable test credentials. The first test
+preserves its container for the restart check; the last test removes it. The
+business tests also require `DAYNIGHT_TEST_DATABASE_URL` set to an isolated
+PostgreSQL database. CI runs the object and business tests against its own
+Azurite service.
 
 ### Startup and shutdown tests
 

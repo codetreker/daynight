@@ -5,6 +5,7 @@ go 1.27.2
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.2
 	github.com/coder/websocket v1.8.14
 	github.com/codetreker/uniauth/sdk/go v0.0.0-20261022095215-0978963813fc
 	github.com/google/uuid v1.6.0

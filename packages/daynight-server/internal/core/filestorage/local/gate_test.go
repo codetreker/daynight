@@ -12,7 +12,81 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/google/uuid"
 )
+
+func TestStandaloneGatesShareIdentityAndIsolateNamespaces(t *testing.T) {
+	identity := uuid.NewString()
+	first, err := NewStandaloneGates(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewStandaloneGates(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewStandaloneGates(uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStandaloneGates(""); err == nil {
+		t.Fatal("empty identity accepted")
+	}
+
+	permit, err := first.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = permit.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if p, err := second.AcquireGate(ctx, filestorage.TargetGate, "attachment"); !errors.Is(err, context.DeadlineExceeded) {
+		if p != nil {
+			_ = p.Close()
+		}
+		t.Fatalf("shared target gate: %v", err)
+	}
+	isolated, err := other.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := isolated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := permit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := second.AcquireGate(t.Context(), filestorage.TargetGate, "attachment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	owner, session := uuid.NewString(), uuid.NewString()
+	archive, err := first.TryAcquireArchive(t.Context(), owner, session, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = archive.Close() })
+	if p, err := second.TryAcquireArchive(t.Context(), owner, "", 1, true); !errors.Is(err, filestorage.ErrGateBusy) {
+		if p != nil {
+			_ = p.Close()
+		}
+		t.Fatalf("archive cleanup must exclude a shared session: %v", err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := second.TryAcquireArchive(t.Context(), owner, "", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestGateClosedStorageFails(t *testing.T) {
 	storage, err := New(t.TempDir())

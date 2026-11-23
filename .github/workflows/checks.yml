@@ -306,6 +306,12 @@ jobs:
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
       DAYNIGHT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
     services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
+        env:
+          AZURITE_ACCOUNTS: daynight:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        ports:
+          - 10000:10000
       redis:
         image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
         ports:
@@ -356,6 +362,12 @@ jobs:
         env:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
         run: bash scripts/check.sh --coverage
+      - name: Validate Azure ordinary object storage
+        env:
+          DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
+        run: |
+          go test -count=1 -timeout=5m -run '^TestAzurite$' ./internal/core/filestorage/azure
+          go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
       - name: Upload Go coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

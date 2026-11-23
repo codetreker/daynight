@@ -62,6 +62,18 @@ type standaloneGates struct {
 	root string
 }
 
+// NewStandaloneGates returns process-local gates shared by handles with the
+// same identity. The identity identifies one storage namespace and must not
+// contain credentials. These gates do not coordinate across processes.
+func NewStandaloneGates(identity string) (filestorage.Gates, error) {
+	if identity == "" {
+		return nil, errors.New("storage gate identity is required")
+	}
+	// A filesystem root cannot contain NUL, so this namespace is disjoint from
+	// the resolved roots used by local storage handles.
+	return standaloneGates{root: "\x00" + identity}, nil
+}
+
 type standaloneKey struct {
 	root      string
 	domain    filestorage.GateDomain
