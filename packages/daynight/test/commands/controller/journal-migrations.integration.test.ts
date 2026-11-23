@@ -1,5 +1,7 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
+import { upgradeControllerJournal } from "../../../src/commands/controller/storage-preparation.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -132,6 +134,26 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(proof.stopped).not.toHaveBeenCalled();
 });
 
+test("reads a shipped v17 stop receipt without mutation and preserves it when upgrading to v18", async () => {
+  const f = await windowsStopFixture();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  const old = new Database(f.file); restoreControllerJournalVersion(old, 17); old.close();
+  const original = await readFile(f.file);
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  expect(await readFile(f.file)).toEqual(original);
+  const permit = acquireControllerStoragePermit(f.file);
+  try {
+    upgradeControllerJournal(f.file, permit, { onMigration: () => {} });
+  } finally { permit.release(); }
+  const upgraded = new Database(f.file, { readonly: true });
+  try {
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(18);
+    expect(upgraded.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: "legacy" });
+    expect(upgraded.prepare("SELECT ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual({ ticket_hash: controllerPayloadHash(f.ticket) });
+  } finally { upgraded.close(); }
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+});
+
 test.each([false, true])("preserves exact historical Windows stop evidence across recovery (upgrade v16: %s)", async upgrade => {
   const f = await windowsStopFixture(), nativeSessionId = randomUUID();
   const journal = new Database(f.file), row = journal.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
@@ -140,7 +162,7 @@ test.each([false, true])("preserves exact historical Windows stop evidence acros
   expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
   if (upgrade) {
     const old = new Database(f.file);
-    old.exec("DROP TABLE stopped_generations"); old.pragma("user_version=16"); old.close();
+    restoreControllerJournalVersion(old, 16); old.close();
   }
   const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
   const current = openControllerLifecycleStore(f.file, next, { onMigration: () => {} }); current.close();

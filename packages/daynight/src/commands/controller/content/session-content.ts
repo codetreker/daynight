@@ -122,6 +122,7 @@ export const retireStoppedOnlineContent = (journal: string, sessionId: string, d
       db.prepare("DELETE FROM image_runtime_state WHERE key LIKE 'markdown:context:%' AND json_extract(value,'$.entryId') IS NOT NULL AND json_extract(value,'$.entryId') NOT IN (SELECT id FROM timeline_entries)").run();
       db.prepare("DELETE FROM image_occurrences WHERE json_extract(occurrence,'$.entryId') NOT IN (SELECT id FROM timeline_entries)").run();
       db.prepare("DELETE FROM online_entries").run();
+      db.prepare("DELETE FROM timeline_source_revisions WHERE entry_id NOT IN (SELECT id FROM timeline_entries)").run();
       db.prepare("UPDATE online_totals SET entry_count=0,byte_length=0 WHERE id=1").run();
     }).immediate();
   } finally { db.pragma(`secure_delete = ${secureDelete === 0 ? "OFF" : secureDelete === 2 ? "FAST" : "ON"}`); }

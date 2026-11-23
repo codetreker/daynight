@@ -458,5 +458,7 @@ REST 不注册 Steps 集合、单项及两个 PUT 子资源或其 scope 操作�
 未知 API 处理。MCP 不注册 Steps 工具，旧名称返回既有未知工具错误。内部 scoped
 Steps 服务仍保留原检查：读取要求 `step:read`，返回完整集合的写操作同时要求
 `step:read` 与 `step:write`，检查在项目和父资源准入后、读内容或修改前执行。
-该内部能力没有公开 REST/MCP 消费者。凭据的 Steps scopes 及其目录继续按现有规则
-保存；入口退役不改写 grant 或授予新的权限，混合凭据继续使用其他原有授权。
+该内部能力没有公开 REST/MCP 消费者。生产 PAT 和 MCP 目录排除 Steps scopes，
+目录 revision 随之变化；规范化仍接受已存 ID，以保留历史凭据和已批准授权码。
+编辑可保留或移除已有旧值，但不能重新添加；混合凭据继续使用其他原有授权，
+旧值不授予新的 Task 权限。

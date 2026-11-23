@@ -36,7 +36,7 @@ const inventorySnapshot = (file: string, ticket: ControllerLaunchTicket): Contro
   if (failed) throw failure;
   // Inventory must not migrate unrelated live writers. Earlier formats retain
   // the existing permit-owned migration path for their stopped journals.
-  if (source!.kind === "current" || source!.kind === "outdated" && source!.version === 16)
+  if (source!.kind === "current" || source!.kind === "outdated" && (source!.version === 16 || source!.version === 17))
     return readCurrentControllerInventorySnapshot(file, [ticket], Date.now() + 5000)?.snapshot ?? null;
   return readControllerSnapshot(file);
 };

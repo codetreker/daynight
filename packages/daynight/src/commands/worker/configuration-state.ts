@@ -50,7 +50,7 @@ export const configurationTarget = (cache: WorkerConfigurationCache, key: Worker
   if (key.kind === "archiveSessions") return desired.value.archiveSessions ?? null;
   if (key.kind === "enableSudoCleanup") return desired.value.enableSudoCleanup ?? null;
   if (key.kind === "enableWindowsProcessCleanup") return desired.value.enableWindowsProcessCleanup ?? null;
-  if (key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "native") return desired.value[key.kind];
+  if (key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "platformTaskMode" || key.kind === "native") return desired.value[key.kind] ?? null;
   if (!("projectId" in key)) throw new TypeError("Worker configuration project key is invalid.");
   const projectId = key.projectId;
   const project = desired.value.projects.find(project => project.projectId === projectId);
@@ -156,7 +156,8 @@ export const transitionConfigurationDesired = (
       backoffStep: 0, failureId: null, started: false,
       actualSource: reset ? null : previous?.actualSource ?? null, blockedByRemovalId: blocker?.recordId ?? null });
   };
-  for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
+  for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "native"] as const) add({ kind });
+  add({ kind: desired.value.platformTaskMode === undefined ? "preferPlatformSpecificTasks" : "platformTaskMode" });
   if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
   if (desired.value.enableSudoCleanup !== undefined) add({ kind: "enableSudoCleanup" });
   if (desired.value.enableWindowsProcessCleanup !== undefined) add({ kind: "enableWindowsProcessCleanup" });
@@ -201,7 +202,7 @@ export const configurationSnapshot = (
     const item = current.get(configurationKey(key)), value = item?.value.appliedValue;
     return synchronized && desired !== null && typeof value === "object" && value !== null && item !== undefined && sameConfigurationValue(proofFor(cache, value), validatedNative.get(item.recordId)) ? value : null;
   };
-  const preference = applied({ kind: "preferPlatformSpecificTasks" });
+  const preference = applied({ kind: desired?.value.platformTaskMode === undefined ? "preferPlatformSpecificTasks" : "platformTaskMode" });
   const archive = applied({ kind: "archiveSessions" }) ?? configurationInheritanceSources(cache).get(configurationKey({ kind: "archiveSessions" }))?.value.appliedValue;
   const retainedArchiveSessions = typeof archive === "boolean" ? archive
     : desired !== null && desired.value.archiveSessions === undefined && cache.authority.applicationRevision !== null && cache.hiddenCapabilitySources?.archiveSessions === undefined ? true : null;
@@ -217,7 +218,7 @@ export const configurationSnapshot = (
   return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, desiredRevision: configurationDesiredRevision(cache), selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: synchronized ? configurationToolTargets(cache, localTools) : null, effective: {
       agentControlMode: synchronized && desired !== null ? "web" : null,
-      maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
+      maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), platformTaskMode: synchronized && desired !== null ? preference === "all" || preference === "prefer" || preference === "only" ? preference : typeof preference === "boolean" ? preference ? "prefer" : "all" : null : null,
       archiveSessions: synchronized && desired !== null ? retainedArchiveSessions : null,
       taskTagFilter: filterAvailable ? filter : filterUnsupported ? undefined : null,
       taskTagFilterKey: filterAvailable ? filterKey : filterUnsupported ? undefined : null,

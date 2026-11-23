@@ -57,6 +57,12 @@ export const isAbortError = (error: unknown): boolean =>
 let authGeneration = 0;
 let authPauseRevision = 0;
 let authNetwork = new AbortController();
+// Recent authenticated reads suppress redundant activity reports while a live
+// session is already generating normal traffic. Reset with the account scope.
+const recentAuthReads = new Map<string, number>();
+export const recentAuthenticatedRead = (userId: string): number | undefined => recentAuthReads.get(userId);
+let activeAuthReads = 0;
+export const hasActiveAuthenticatedRead = (): boolean => activeAuthReads > 0;
 const responseSignals = new WeakMap<Response, AbortSignal>();
 export const cancelAuthNetworkRequests = (): void => {
   const previous = authNetwork;
@@ -77,7 +83,7 @@ const releaseAuthRequests = (): void => {
   if (pause !== null) for (const resume of pause.waiters) resume();
 };
 
-export const invalidateAuthRequests = (): void => { authGeneration += 1; releaseAuthRequests(); };
+export const invalidateAuthRequests = (): void => { authGeneration += 1; recentAuthReads.clear(); activeAuthReads = 0; releaseAuthRequests(); };
 export const pauseAuthRequests = (): (() => void) => {
   authPauseRevision += 1;
   const owner = Symbol();
@@ -148,6 +154,11 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   onDispatch?.();
   const networkSignal = ordinary ? AbortSignal.any([signal, authNetwork.signal]) : signal;
   networkSignal.throwIfAborted();
+  const normalRead = ordinary && (init.method === undefined || init.method === "GET" || init.method === "HEAD") && url.startsWith("/api/");
+  if (normalRead) activeAuthReads++;
+  let counted = normalRead;
+  const stopCounting = () => { if (counted && generation === authGeneration) activeAuthReads--; counted = false; };
+  if (normalRead) networkSignal.addEventListener("abort", stopCounting, { once: true });
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
@@ -156,9 +167,16 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
     networkSignal.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("network", null, "network", null, error);
+  } finally {
+    networkSignal.removeEventListener("abort", stopCounting);
+    stopCounting();
   }
   networkSignal.throwIfAborted();
   responseSignals.set(response, networkSignal);
+  if (generation === authGeneration && (init.method === undefined || init.method === "GET" || init.method === "HEAD") && url.startsWith("/api/") && url !== "/api/v1/me" && (response.ok || response.status === 304)) {
+    const principal = response.headers.get("Daynight-User-ID");
+    if (principal !== null && canonicalId(principal) === principal) recentAuthReads.set(principal, Date.now());
+  }
   if (response.status === 401 && generation === authGeneration && !options.deferUnauthorized) {
     for (const listener of unauthorizedListeners) listener();
     // A newer account marker turns this response into a retained pause; its

@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -109,13 +110,13 @@ it.each(["missing", "operation", "kind", "hash", "payload", "current", "future",
   } finally { f.db.close(); f.journal.close(); }
 });
 
-it("reconciles an inherited initial receipt from a live read-compatible journal without acquiring migration ownership", async () => {
+it.each([16, 17] as const)("reconciles an inherited initial receipt from a live v%s journal without acquiring migration ownership", async version => {
   const f = await inheritedFixture("unknown", true);
   try {
     const pending = f.journal.getSnapshot();
     f.journal.close();
     f.db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
-    f.db.exec("DROP TABLE stopped_generations; PRAGMA user_version=16");
+    restoreControllerJournalVersion(f.db, version);
     f.source.request.mockImplementation(async (_ticket, action) => {
       if (action.kind !== "observe") throw new Error("Unexpected input while observing inherited receipt");
       return { requestId: randomUUID(), ok: true, snapshot: lifecycle.readCompatibleControllerSnapshot(f.file, f.ticket), workerInputProtocol: 1 };
@@ -125,7 +126,7 @@ it("reconciles an inherited initial receipt from a live read-compatible journal 
     f.changeOperation({ state: "confirmed" });
     f.db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...pending, initialInputState: "confirmed" }));
     expect(await backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).toMatchObject({ kind: "observed" });
-    expect(f.db.pragma("user_version", { simple: true })).toBe(16);
+    expect(f.db.pragma("user_version", { simple: true })).toBe(version);
     expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "observe"]);
   } finally { f.db.close(); f.journal.close(); }
 });

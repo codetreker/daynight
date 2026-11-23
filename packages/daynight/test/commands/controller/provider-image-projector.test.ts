@@ -49,6 +49,27 @@ const migrateLegacyProjection = (states: Map<string, unknown>, old: unknown): Na
   } finally { db.close(); }
 };
 
+test("a delayed copying receipt cannot replace a settled projection of the same retry attempt", async () => {
+  const f = fixture(); f.acknowledge();
+  const query = Promise.withResolvers<ImageCaptureReceipt>();
+  let request!: ImageCaptureRequest;
+  f.options.submitImageCapture = vi.fn(async (submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt> => { request = submission.request; return { captureId: request.captureId, attemptId: submission.attemptId, revision: "1", occurrence: request.occurrence, state: "copying", resourceId: f.resourceId, resource: null, error: null }; });
+  f.options.queryImageCapture = vi.fn(() => query.promise);
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged();
+    await vi.waitFor(() => expect(f.options.queryImageCapture).toHaveBeenCalledOnce());
+    const [key, state] = [...f.states.entries()][0]!, saved = state as NativeImageProjectionState;
+    const committed = { ...saved, phase: "settled" as const, part: { type: "image" as const, imageId: request.occurrence.imageId, resourceId: f.resourceId, label: f.slot.label } };
+    f.states.set(key, structuredClone(committed));
+    query.resolve({ captureId: request.captureId, attemptId: saved.attemptId, revision: "1", occurrence: request.occurrence, state: "copying", resourceId: f.resourceId, resource: null, error: null });
+    await projector.settled();
+    expect(f.states.get(key)).toEqual(committed);
+    expect(f.entries).toHaveLength(1);
+  } finally { await projector.close(); }
+});
+
 test("text history is not retained and fallback bodies live only with active captures", async () => {
   const f = fixture(), projector = new ProviderImageProjector(f.options);
   try {
@@ -210,6 +231,41 @@ test("an injected safe source resolver preserves the original locator and is ski
   projector = new ProviderImageProjector(f.options);
   try { projector.publish(f.entry, [slot]); await projector.settled(); expect(resolve).toHaveBeenCalledOnce(); }
   finally { await projector.close(); }
+});
+
+test("native source owner stages the original request and submits its admitted bytes", async () => {
+  const f = fixture(); f.acknowledge();
+  const validated = { mediaType: "image/png" as const, byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 };
+  const stage = vi.fn(async () => validated); f.options.stageNativeImageCapture = stage;
+  const projector = new ProviderImageProjector(f.options);
+  const slot = { ...f.slot, payload: { kind: "source" as const, locator: { kind: "local" as const, path: "image.png", contextId: "native-cwd" } } };
+  try {
+    projector.publish(f.entry, [slot]); await projector.settled();
+    expect(stage).toHaveBeenCalledOnce();
+    expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(f.options.submitImageCapture).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({ locator: slot.payload.locator }), outcome: { kind: "validated", validated } }));
+  } finally { await projector.close(); }
+});
+
+test("recovery submits a durably admitted native stage without reopening its source", async () => {
+  const f = fixture(); let projector = new ProviderImageProjector(f.options);
+  const slot = { ...f.slot, payload: { kind: "source" as const, locator: { kind: "local" as const, path: "image.png", contextId: "native-cwd" } } };
+  projector.publish(f.entry, [slot]); await projector.settled(); await projector.close();
+  const [key, state] = [...f.states.entries()][0]!, saved = state as NativeImageProjectionState;
+  saved.phase = "preparing"; f.states.set(key, saved); f.acknowledge();
+  const validated = { mediaType: "image/png" as const, byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 };
+  const recovery = Promise.withResolvers<typeof validated | null>();
+  f.options.stageNativeImageCapture = vi.fn(); f.options.recoverNativeImageCapture = vi.fn(() => recovery.promise);
+  projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [slot]);
+    await vi.waitFor(() => expect(f.options.recoverNativeImageCapture).toHaveBeenCalledOnce());
+    expect(f.options.submitImageCapture).not.toHaveBeenCalled();
+    recovery.resolve(validated); await projector.settled();
+    expect(f.options.recoverNativeImageCapture).toHaveBeenCalledWith(saved.request);
+    expect(f.options.stageNativeImageCapture).not.toHaveBeenCalled();
+    expect(f.options.submitImageCapture).toHaveBeenCalledWith(expect.objectContaining({ outcome: { kind: "validated", validated } }));
+  } finally { recovery.resolve(null); await projector.close(); }
 });
 
 test("closing projection aborts and joins an active deferred source before releasing its bytes", async () => {
