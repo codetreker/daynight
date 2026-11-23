@@ -175,9 +175,8 @@ export class TaskDetailSessions {
           if (event.error !== undefined) this.publish(entry, { ...entry.state, status: "error", error: event.error });
           continue;
         }
-        if (event.historyChanged && entry.state.status === "deleted" && entry.state.mutation.operation?.action === "delete" && (entry.state.mutation.phase === "confirmed" || entry.state.mutation.phase === "reconciled")) continue;
+        if (event.historyChanged && entry.state.status === "deleted") continue;
         if (entry.source === "direct" && (event.historyChanged || event.accessRevoked)) {
-          if (event.historyChanged && event.historyHint && entry.state.status === "deleted" && entry.operationTaskEpoch !== null && entry.state.mutation.phase === "reconciled") continue;
           const canRetry = event.historyChanged === true && (event.historyHint ? !entry.historyHintRetry : !entry.historyRetry) && entry.listeners.size > 0;
           this.retireMutation(entry);
           if (event.historyHint) entry.historyHintRetry = true;
@@ -1232,12 +1231,15 @@ export class TaskDetailSessions {
           }
         };
         let deletionReceiptPublished = false;
+        let deletionHistoryPublished = false;
         const publishDeletionReceipt = () => {
-          if (this.scope.hasIdentityMismatch || deletionReceiptPublished || operation.action !== "delete") return;
-          if (!this.mutationIsCurrent(projectId, entry, operation, requestTicket)) return;
-          deletionReceiptPublished = true;
-          const generation = this.entryGeneration(entry);
-          if (generation !== null && entry.state.mutation.operation === operation) this.markDeleted(projectId, taskId, generation, null);
+          if (this.scope.hasIdentityMismatch || authRequestsPaused() || signal.aborted || deletionHistoryPublished || operation.action !== "delete") return;
+          deletionHistoryPublished = true;
+          if (this.mutationIsCurrent(projectId, entry, operation, requestTicket)) {
+            deletionReceiptPublished = true;
+            const generation = this.entryGeneration(entry);
+            if (generation !== null) this.markDeleted(projectId, taskId, generation, null);
+          }
           const reviewedEpoch = "historyGeneration" in requestTicket ? review.receipt?.epoch : requestTicket.epoch;
           this.scope.retireTaskHistory(projectId, reviewedEpoch ?? null);
         };

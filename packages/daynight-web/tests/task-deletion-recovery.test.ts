@@ -68,6 +68,11 @@ describe('task deletion across authoritative history replacement', () => {
     }
     reads.mockResolvedValue(restored);
     if (response === '204') { writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve(); } else pending.reject(gone());
+    if (response === '204') {
+      await waitFor(() => expect(world.scope.getAuthorizedProject(project)).toBeNull());
+      await replace(sessions, [restored, surviving]);
+      sessions.observe(project, task, world.node(project, task), true); sessions.reconcile(project, task);
+    }
     await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
     expect(sessions.snapshot(project, task).status).toBe('ready'); expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true);
     expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(task)).toBe(true); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
@@ -136,8 +141,11 @@ describe('task deletion across authoritative history replacement', () => {
     sessions.deleteTask(project, task, initial.version, true); sessions.setStatus(project, task, 'done', initial.version); sessions.load(project, task, 3, 'open');
     expect(writes).toHaveBeenCalledOnce(); expect(setTaskStatus).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
     const revoke = vi.spyOn(world.scope, 'revokeProject'); reads.mockRejectedValueOnce(gone()); writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve();
+    await waitFor(() => expect(world.scope.getAuthorizedProject(project)).toBeNull());
+    await replace(sessions, [initial]);
+    sessions.observe(project, task, world.node(project, task), true); sessions.reconcile(project, task);
     await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
-    expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(reads).toHaveBeenCalledTimes(2); expect(writes).toHaveBeenCalledOnce(); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull();
+    expect(reads).toHaveBeenCalledTimes(2); expect(writes).toHaveBeenCalledOnce(); expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)).toBeNull();
   });
   it('retains the unknown deletion lock through a sibling deletion epoch until a deliberate GET410', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const probe = deferred<TaskDetail>();
@@ -152,7 +160,7 @@ describe('task deletion across authoritative history replacement', () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true);
     await waitFor(() => expect(writes).toHaveBeenCalledOnce()); sessions.dispose(); const restored = { ...initial, version: 3n }; await replace(sessions, [restored]);
     if (response === '204') pending.resolve(); else pending.reject(gone()); await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(worlds.get(sessions)!.scope.getSummaryVersion(project, task)).toBe(3n); expect(reads).toHaveBeenCalledOnce();
+    expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(worlds.get(sessions)!.scope.getSummaryVersion(project, task)).toBe(response === '204' ? null : 3n); expect(reads).toHaveBeenCalledOnce();
   });
   it.each(['204', '410'] as const)('does not publish a DELETE%s after identity retirement', async (response) => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true);

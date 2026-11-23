@@ -33,6 +33,16 @@ and reaches independent projection listeners and peer tabs. Captured per-project
 read revisions reject delayed personal-inventory pages, preserving other projects.
 New evidence must pass current admission before the affected project returns.
 
+A trusted same-account `204` also fences project presentation when it arrives
+after the reviewed Task history has been replaced. Marking that Task deleted
+still requires the original operation and read ticket to be current. The receipt
+proves a committed deletion, but cannot identify the replacement history's safe
+rows; the existing epoch fence therefore withdraws its unproven presentation and
+requires new reads. Authentication pauses retain the receipt for admission after
+the gate resumes; identity retirement rejects publication. Deleted detail state
+survives its own retirement notification until a new authorized opening or summary
+establishes that the Task is present.
+
 This replaces the cross-history display retention in the
 [stable Goal reconciliation decision](../bug-fix/2026-11-16-goal-graph-stable-reconciliation.md).
 Ordinary refresh failure within a still-admitted history continues to preserve

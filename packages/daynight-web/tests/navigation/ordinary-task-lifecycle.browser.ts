@@ -2,6 +2,7 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { expectTextContrast } from './color-roles';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const parentId = '00000000-0000-4000-8000-000000000041';
@@ -81,8 +82,10 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) {
     expect(writes).toHaveLength(1);
     const blocker = page.getByRole('link', { name: childId, exact: true });
     await expect(blocker).toHaveAttribute('href', `/projects/${projectId}/tasks/${childId}`);
+    await expectTextContrast(blocker);
     await page.getByRole('button', { name: /^(Cancel with subtasks|一并取消)$/ }).click();
     await expect(page.getByRole('alertdialog')).toContainText(locale === 'en' ? 'Cancel this task and its subtasks?' : '取消父任务和子任务？');
+    await expectTextContrast(page.getByRole('alertdialog').getByRole('button', { name: /^(Confirm cancellation|确认取消)$/ }));
     await info.attach('recursive-confirmation', { body: await page.screenshot(), contentType: 'image/png' });
     await page.getByRole('alertdialog').getByRole('button', { name: /^(Cancel|取消)$/ }).click();
     expect(writes).toHaveLength(1);
@@ -119,6 +122,7 @@ test('ordinary parent deletion withdraws peer graph and child attachments while 
   await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await child.getByRole('button', { name: /^evidence\.txt/ }).click();
   await expect(child.getByText('Private repair evidence.', { exact: true })).toBeVisible();
+  await info.attach('admitted-child-material', { body: await child.screenshot(), contentType: 'image/png' });
   await page.goto(`/projects/${projectId}/tasks/${parentId}`);
   await page.getByRole('button', { name: 'More task actions' }).click();
   await page.getByRole('menuitem', { name: 'Delete task' }).click();
