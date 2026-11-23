@@ -54,7 +54,7 @@ CREATE TABLE task_properties (
 
 task ID 已是全局 UUID 主键，属性行不重复 project_id。授权先定位父项目和任务，再以准入后的任务 ID 读取值。属性行没有独立版本、时间或删除标记；父任务软删除保留其属性，业务读取只从可见父任务派生 ID 集合。不增加 foreign key。
 
-value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；存储和读取都不对既有 opaque 字符串做 SQL JSON 转换。
+value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；普通属性的存储和读取不对既有 opaque 字符串做 SQL JSON 转换。Worker 活跃认领索引只对受 `CASE` 保护的 Worker 值做 JSONB 提取，冻结迁移先验证存量形状及 Go/PostgreSQL 字符语义一致；[索引设计](worker-active-claim-index.md)拥有表达式、锁与恢复规则。
 
 完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，查询、扫描或正常编码失败使整个读取失败。一次任务页使用一次属性批量查询，查询次数不随该页任务或属性数量线性增长。
 
@@ -102,6 +102,8 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 blocked 迁移直接改名属性行，验证旧布尔值并让主键冲突或坏行回滚迁移及 ledger，包含软删除任务，不触碰任务版本、业务时间、项目 epoch、claim 和事件。排空旧服务端及后台写入方后运行迁移，再启动包含兼容 Web 的新制品，验证服务端后才分发新版客户端。提交后优先前滚；旧服务端回退须恢复匹配其 ledger 的备份，并按原操作流程处理备份后的写入。
 
+迁移 114 在 SHARE 锁内验证全部 Worker 属性、建立非唯一部分索引并写账本，保留属性原文、任务版本、时间和 Sync epoch。空库 snapshot 包含同一索引；当前清单读路径继续可用，了解相同账本的索引构建可用于查询切换后的重启回退。启动预算、未知提交核对和前滚修复由[索引设计](worker-active-claim-index.md)拥有。
+
 后续变更按[组件交付与启用规则](../development.md#component-delivery-and-activation)分别评估 PR 边界和受支持的运行时版本组合。
 
 ## 客户端与现有入口
@@ -126,7 +128,7 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 ## 备选与验证
 
-每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
+每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义；Worker 索引限定在受保护的认领对象，其他属性没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
 验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，Go race 采用[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
 

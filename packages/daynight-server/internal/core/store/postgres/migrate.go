@@ -9,6 +9,7 @@ import (
 
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	migration114 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/114"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -471,6 +472,7 @@ var schemaMigrations = []migration{
 	{version: 111, sql: credentialScopeActivationSQL},
 	{version: 112, sql: workerWindowsProcessCleanupSQL},
 	{version: 113, sql: webhookEndpointClientKeySQL},
+	{version: 114, sql: migration114.SQL(), transform: migration114.Apply, transformSource: migration114.TransformSource()},
 }
 
 const migrationLock int64 = 0x4441594e49474854

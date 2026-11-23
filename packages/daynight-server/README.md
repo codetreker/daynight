@@ -571,6 +571,35 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+### Worker active claim index upgrade
+
+Migration 114 validates every stored Worker property under a SHARE table lock,
+including historical Herdr and completed claims. Frozen Go decoding must match
+PostgreSQL extraction of state, userId and workerId before the nonunique active
+claim index and ledger commit together. The checksum includes the lock SQL,
+complete frozen source and index DDL. It preserves raw properties, Task versions,
+timestamps and Sync epochs. CASE guards keep opaque non-Worker values out of
+JSONB conversion; C-collated text preserves exact identifier case.
+
+Rehearse lock waiting, validation, index construction, ongoing write maintenance
+and listener startup on representative data against DAYNIGHT_STARTUP_TIMEOUT
+(default 10 seconds). If the deployment needs a maintenance window or another
+startup budget, select and verify it before rolling out.
+
+After startup cancellation, lost commit acknowledgment or listener failure,
+inspect migration 114's exact checksum and the index definition, predicate and
+validity through a fresh connection. Both absent permits a new attempt after
+diagnosis; both matching means the migration committed and requires a build
+that understands that same ledger. Mixed or mismatched state requires
+investigation. Do not delete ledger rows or assume rollback. Repair a committed
+index through a subsequent migration.
+
+This build keeps the original inventory reader and can restart against the new
+ledger. Retain its exact SHA as the query-switch rollback build; a pre-migration
+binary cannot restart after commit. The
+[index design](../../docs/design/worker-active-claim-index.md) owns the expressions,
+validation and recovery contract.
+
 ### Dependency type upgrade
 
 Migrations 090 and 091 add a default `task` type, nullable Goal edge identity,

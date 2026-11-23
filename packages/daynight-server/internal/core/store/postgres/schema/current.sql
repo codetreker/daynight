@@ -1,4 +1,4 @@
--- Schema snapshot version: 113
+-- Schema snapshot version: 114
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -2322,6 +2322,20 @@ CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 CREATE UNIQUE INDEX "sessions_preview_token_hash" ON "sessions" USING "btree" ("preview_token_hash") WHERE ("preview_token_hash" IS NOT NULL);
 
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
+
+CREATE INDEX "task_properties_worker_active_claim_idx" ON "task_properties" USING "btree" (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'userId'::"text")) COLLATE "C", ((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'workerId'::"text")) COLLATE "C", "task_id") WHERE (("name" = 'worker'::"text") AND (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'state'::"text") COLLATE "C") = 'active'::"text"));
 
 CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_id", "task_id", "created_at" DESC, "id" DESC) WHERE ("scope" = 'task'::"text");
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	migration114 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/114"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -35,6 +36,10 @@ func OpenWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger
 		var identity *githubRepositoryIdentityMigrationError
 		if errors.As(err, &identity) {
 			return nil, databaseFailure(identity.Error(), err)
+		}
+		var worker *migration114.WorkerPropertyError
+		if errors.As(err, &worker) {
+			return nil, databaseFailure(worker.Error(), err)
 		}
 		var cause *pgconn.PgError
 		if errors.As(err, &cause) && cause.Code == "P1047" {

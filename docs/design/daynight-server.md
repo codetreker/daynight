@@ -112,7 +112,8 @@ packages/daynight-server/
                 └── schema/
                     └── migrations/
                         ├── 026/
-                        └── 083/
+                        ├── 083/
+                        └── 114/
 ```
 
 `cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
@@ -648,6 +649,8 @@ checksum。Worker 标签筛选继续使用其已发布的迁移 082，版本及�
 不含地址或凭据。活跃 NULL 中同 Team 重复原文同样使迁移失败。冲突报告 Team 与 Project ID，
 并连同字段、回填和 ledger 整体回滚。空库初始化使用包含该列的当前 schema snapshot；
 恢复操作由[服务指南](../../packages/daynight-server/README.md#team-repository-uniqueness-upgrade)拥有。
+
+迁移 114 在 `task_properties` 的 SHARE 锁内冻结校验全部 Worker 行，逐值比较 Go 与 PostgreSQL 的认领键提取，再建立非唯一 active 部分索引并写账本。冻结源码和 DDL 纳入校验和；属性原文、Task 版本、时间及 Sync 围栏保持不变。空库 snapshot 含同一索引，当前清单继续运行原读路径。部署预算与账本/索引核对、同账本重启由[Worker 索引设计](worker-active-claim-index.md)拥有。
 
 服务启动期间只支持当前迁移序列中已有的版本，不在业务读取时判断或修补旧格式。
 所有迁移成功且数据库可用之后才开始接受 HTTP 请求；启动失败释放已创建的 pool
