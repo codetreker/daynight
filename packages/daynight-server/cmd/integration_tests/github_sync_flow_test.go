@@ -430,7 +430,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121)`); err != nil || result.RowsAffected() != 43 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 44 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -466,6 +466,9 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=120)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
 		t.Fatalf("upgraded browser session management: columns=%d index=%t migration count=%d error=%v", managementColumns, managementIndex, migrationCount, err)
 	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=121`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("upgraded Worker platform task mode: migration count=%d error=%v", migrationCount, err)
+	}
 	var historyPolicyColumn bool
 	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {
 		t.Fatalf("upgraded Session history policy: column=%t migration count=%d error=%v", historyPolicyColumn, migrationCount, err)
@@ -478,7 +481,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("archive upload migration ledger: count=%d error=%v", migrationCount, err)
 	}
 	var stagingMigration bool
-	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121) AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&stagingMigration); err != nil || !stagingMigration {
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=122) AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`).Scan(&stagingMigration); err != nil || !stagingMigration {
 		t.Fatalf("single staging migration: applied=%t error=%v", stagingMigration, err)
 	}
 	var onlineModeColumn bool

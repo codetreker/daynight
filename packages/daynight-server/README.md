@@ -3491,6 +3491,23 @@ observation item. The target is stored in the `archive_sessions` column so an
 older service's JSON replacement cannot erase it. A saved target is not evidence
 that a Worker has applied it or released recording files.
 
+`Daynight-Worker-Platform-Task-Mode: 1` independently selects the
+`platformTaskMode` target (`all`, `prefer`, `only`) and its real application item.
+Unnegotiated clients keep the boolean `preferPlatformSpecificTasks` projection;
+`only` projects as true. A legacy unrelated edit preserves `only`, while changing
+that projection requires an upgraded client. Entering `only` requires an enum
+application item in the latest accepted report. Saves and legacy reports cannot
+establish strict application or support. Bootstrap always retains the legacy
+boolean input. The [platform mode contract](../../docs/spec/daynight-worker-configuration.md#平台任务规则能力)
+owns exact refusals and capability echo on configuration, report and detail.
+
+Drain old configuration writers before migrating the stored booleans to enums.
+The migration advances initialized targets' revisions and timestamps while
+preserving other JSON members, observations and uninitialized Workers; revision
+overflow rolls back data and ledger together. Deploy the compatible server before
+adopting enum clients. This is a client selection policy and does not add a
+server-side strict acquisition gate.
+
 Configuration reads do not use the snapshot recent window or renew liveness.
 The authenticated account owns admission; active task claims are not a
 configuration prerequisite. No task fields, acquisition constraints or recovery

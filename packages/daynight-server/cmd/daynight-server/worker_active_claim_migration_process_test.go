@@ -42,7 +42,7 @@ ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 DROP INDEX sessions_user_created_id;
 ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120, 121)`); err != nil {
+DELETE FROM schema_migrations WHERE version >= 115`); err != nil {
 				t.Fatal(err)
 			}
 			var latestVersion int
@@ -146,7 +146,11 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != wantFacts {
 				t.Fatalf("session management migration after worker validation: facts=%d want=%d error=%v", managementFactsCount, wantFacts, err)
 			}
-			const stagingFacts = `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='upload_version') AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`
+			var platformModeApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121)`).Scan(&platformModeApplied); err != nil || platformModeApplied != wantCommitted {
+				t.Fatalf("platform task mode migration after worker validation: applied=%t want=%t error=%v", platformModeApplied, wantCommitted, err)
+			}
+			const stagingFacts = `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=122) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='upload_version') AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`
 			var stagingApplied bool
 			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || stagingApplied != wantCommitted {
 				t.Fatalf("single staging migration after worker validation: applied=%t want=%t error=%v", stagingApplied, wantCommitted, err)
@@ -184,6 +188,9 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			}
 			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != 4 {
 				t.Fatalf("session management migration recovery: facts=%d error=%v", managementFactsCount, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121)`).Scan(&platformModeApplied); err != nil || !platformModeApplied {
+				t.Fatalf("platform task mode migration recovery: applied=%t error=%v", platformModeApplied, err)
 			}
 			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || !stagingApplied {
 				t.Fatalf("single staging migration recovery: applied=%t error=%v", stagingApplied, err)

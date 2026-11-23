@@ -249,7 +249,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	if err := json.Unmarshal(encoded, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	delete(legacy, "preferPlatformSpecificTasks")
+	delete(legacy, "platformTaskMode")
 	encoded, err = json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 		if err != nil {
 			return err
 		}
-		if resource.Desired == nil || resource.Desired.Value.PreferPlatformSpecificTasks || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
+		if resource.Desired == nil || !resource.Desired.ValueValid || resource.Desired.Value.PlatformTaskMode != "" || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
 			t.Fatalf("migrated resource differs: %+v", resource)
 		}
 		uninitialized, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, uninitializedID)
