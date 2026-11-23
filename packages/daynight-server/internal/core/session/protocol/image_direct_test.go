@@ -97,3 +97,26 @@ func TestDirectCaptureSubmissionStrictVariantsAndFrames(t *testing.T) {
 		t.Fatal("submit accepted as unrelated media response")
 	}
 }
+
+func TestDirectCaptureSourceProofIsOptionalAndPaired(t *testing.T) {
+	request := ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "content", SourceKey: "original"}, Locator: ImageLocator{Kind: "external", URL: "https://images.example/image.png"}}
+	base := map[string]any{"request": request, "attemptId": request.AttemptID, "outcome": map[string]any{"kind": "failed", "error": ImageError{Code: "source_timeout", Message: "Timed out."}}}
+	if _, err := DecodeDirectCaptureSubmission(mustMediaJSON(t, base)); err != nil {
+		t.Fatal("legacy submission rejected", err)
+	}
+	base["sourceEpoch"], base["sourceSeq"] = uuid.NewString(), "1"
+	got, err := DecodeDirectCaptureSubmission(mustMediaJSON(t, base))
+	if err != nil || got.SourceEpoch != base["sourceEpoch"] || got.SourceSeq != "1" {
+		t.Fatal("valid source proof rejected", got, err)
+	}
+	for _, v := range []any{"0", "-1", "9223372036854775808", nil} {
+		base["sourceSeq"] = v
+		if _, err := DecodeDirectCaptureSubmission(mustMediaJSON(t, base)); err == nil {
+			t.Fatal("invalid source sequence accepted", v)
+		}
+	}
+	delete(base, "sourceSeq")
+	if _, err := DecodeDirectCaptureSubmission(mustMediaJSON(t, base)); err == nil {
+		t.Fatal("partial proof accepted")
+	}
+}

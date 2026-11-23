@@ -339,3 +339,195 @@ func TestImageCapabilityObservationHasIndependentRateAndStableRevisions(t *testi
 		t.Fatal("old controller advertised images")
 	}
 }
+
+func TestRelayRetryCreatesOneAttemptWithoutLedger(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	f.r.OnlineMode = "relay"
+	epoch := uuid.NewString()
+	f.r.SourceEpoch, f.r.SourceSeq = &epoch, 1
+	request := directCaptureFixture(t, f)
+	f.d.bundle = store.ArchiveBundle{}
+	input := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &sp.ImageError{Code: "source_timeout", Message: "Timed out."}}}
+	if _, err := directCaptureCall(t, f, input); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	browser := f.s.browserRun
+	calls := 0
+	f.s.browserRun = func(ctx context.Context, p model.Principal, project, task, id string, purpose BrowserPurpose, work func(*Access) error) error {
+		calls++
+		err := browser(ctx, p, project, task, id, purpose, work)
+		if calls == 1 && err == nil {
+			cancel()
+		}
+		return err
+	}
+	out, err := f.s.RetryImageOccurrence(ctx, f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+	if !errors.Is(err, context.Canceled) || out.Capture.State != "reserved" || out.Capture.AttemptID == request.AttemptID {
+		t.Fatal(out, err)
+	}
+	row := f.d.media[mediaIdentity(out.Capture.AttemptID, "retry_capture")]
+	if row.Action != "retry_capture" || row.Fence != f.r.Snapshot.ControllerFence || len(f.d.media) != 1 {
+		t.Fatal("retry intent missing", row)
+	}
+	f.s.browserRun = browser
+	status, err := f.s.GetImageOccurrence(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+	if err != nil || status.State != "pending" || len(f.d.media) != 1 {
+		t.Fatal(status, err)
+	}
+}
+
+func TestRelayRetryRequiresDirectSubmissionForNewAttempt(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	f.r.OnlineMode = "relay"
+	epoch := uuid.NewString()
+	f.r.SourceEpoch, f.r.SourceSeq = &epoch, 2
+	request := directCaptureFixture(t, f)
+	failure := sp.ImageError{Code: "source_timeout", Message: "Timed out."}
+	original := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &failure}}
+	if _, err := directCaptureCall(t, f, original); err != nil {
+		t.Fatal(err)
+	}
+	validated := sp.ValidatedImage{MediaType: "image/png", ByteLength: "8", SHA256: imageBytesHash([]byte("original")), Width: 2, Height: 3, FrameCount: 1}
+	f.d.respond = func(row store.SessionMediaRequest) store.SessionMediaRequest {
+		row.Complete, row.Result = true, encode(validated)
+		return row
+	}
+	out, err := f.s.RetryImageOccurrence(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+	if err != nil || out.Capture.State != "reserved" || out.Capture.AttemptID == request.AttemptID {
+		t.Fatal(out, err)
+	}
+	status, err := f.s.GetImageOccurrence(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+	if err != nil || status.State != "pending" || f.d.captures[request.CaptureID].Receipt.State != "reserved" {
+		t.Fatal("retry response bypassed direct admission", status, err)
+	}
+	for _, action := range []string{"commit", "failed"} {
+		_, err = f.s.captureMessage(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{Action: action, MediaBody: []byte(`{}`)})
+		var refusal *CaptureRequestError
+		if !errors.As(err, &refusal) || refusal.Code != "component_unsupported" || f.d.captures[request.CaptureID].Receipt.State != "reserved" {
+			t.Fatal("legacy capture action changed relay attempt", action, err)
+		}
+	}
+	newEpoch := uuid.NewString()
+	f.r.SourceEpoch = &newEpoch
+	submission := sp.DirectCaptureSubmission{Request: request, AttemptID: out.Capture.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "validated", Validated: &validated}}
+	for _, proof := range []struct{ epoch, seq string }{{"", ""}, {epoch, "1"}, {newEpoch, "3"}} {
+		submission.SourceEpoch, submission.SourceSeq = proof.epoch, proof.seq
+		if _, err = directCaptureCall(t, f, submission); err == nil || f.d.captures[request.CaptureID].Receipt.State != "reserved" {
+			t.Fatal("invalid retry source proof accepted", proof, err)
+		}
+	}
+	submission.SourceEpoch, submission.SourceSeq = newEpoch, "2"
+	changed := validated
+	changed.SHA256 = imageBytesHash([]byte("different"))
+	submission.Outcome.Validated = &changed
+	if _, err = directCaptureCall(t, f, submission); err == nil {
+		t.Fatal("direct submit replaced the retry result")
+	}
+	submission.Outcome.Validated = &validated
+	accepted, err := directCaptureCall(t, f, submission)
+	if err != nil || accepted.State != "copying" {
+		t.Fatal(accepted, err)
+	}
+	submission.SourceEpoch, submission.SourceSeq = epoch, "1"
+	replay, err := directCaptureCall(t, f, submission)
+	if err != nil || !reflect.DeepEqual(replay, accepted) {
+		t.Fatal("accepted attempt did not reconcile", replay, err)
+	}
+}
+
+func TestRelayRetryDirectSubmissionPrecedesMediaResult(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	f.r.OnlineMode = "relay"
+	epoch := uuid.NewString()
+	f.r.SourceEpoch, f.r.SourceSeq = &epoch, 1
+	request := directCaptureFixture(t, f)
+	failure := sp.ImageError{Code: "source_timeout", Message: "Timed out."}
+	initial := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &failure}}
+	if _, err := directCaptureCall(t, f, initial); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	browser := f.s.browserRun
+	f.s.browserRun = func(ctx context.Context, p model.Principal, project, task, id string, purpose BrowserPurpose, work func(*Access) error) error {
+		err := browser(ctx, p, project, task, id, purpose, work)
+		if err == nil {
+			cancel()
+		}
+		return err
+	}
+	out, err := f.s.RetryImageOccurrence(ctx, f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal(out, err)
+	}
+	validated := sp.ValidatedImage{MediaType: "image/png", ByteLength: "8", SHA256: imageBytesHash([]byte("original")), Width: 2, Height: 3, FrameCount: 1}
+	submission := sp.DirectCaptureSubmission{Request: request, AttemptID: out.Capture.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "validated", Validated: &validated}}
+	if _, err = directCaptureCall(t, f, submission); err != nil {
+		t.Fatal(err)
+	}
+	id := mediaIdentity(out.Capture.AttemptID, "retry_capture")
+	message := sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture"}
+	changed := validated
+	changed.SHA256 = imageBytesHash([]byte("different"))
+	message.MediaResult = encode(changed)
+	if _, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, message); err == nil || f.d.media[id].Complete {
+		t.Fatal("changed retry response accepted", err)
+	}
+	message.MediaResult = encode(validated)
+	if _, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, message); err != nil || !f.d.media[id].Complete {
+		t.Fatal("matching retry response refused", err)
+	}
+}
+
+func TestRelayRetryFailureSettlesOriginalAttempt(t *testing.T) {
+	for _, result := range []string{"direct", "media"} {
+		t.Run(result, func(t *testing.T) {
+			f := newImageRuleFixture(t, []byte("original"))
+			f.r.OnlineMode = "relay"
+			epoch := uuid.NewString()
+			f.r.SourceEpoch, f.r.SourceSeq = &epoch, 1
+			request := directCaptureFixture(t, f)
+			initial := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, SourceEpoch: epoch, SourceSeq: "1", Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &sp.ImageError{Code: "source_timeout", Message: "Timed out."}}}
+			if _, err := directCaptureCall(t, f, initial); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			browser := f.s.browserRun
+			f.s.browserRun = func(ctx context.Context, p model.Principal, project, task, id string, purpose BrowserPurpose, work func(*Access) error) error {
+				err := browser(ctx, p, project, task, id, purpose, work)
+				if err == nil {
+					cancel()
+				}
+				return err
+			}
+			out, err := f.s.RetryImageOccurrence(ctx, f.p, "", "", f.r.Snapshot.SessionID, request.Occurrence.ImageID)
+			if !errors.Is(err, context.Canceled) || out.Capture.State != "reserved" {
+				t.Fatal(out, err)
+			}
+			f.s.browserRun = browser
+			failure := sp.ImageError{Code: "source_unavailable", Message: "Original occurrence is no longer available."}
+			if result == "direct" {
+				input := sp.DirectCaptureSubmission{Request: request, AttemptID: out.Capture.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &failure}}
+				if _, err = directCaptureCall(t, f, input); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				id := mediaIdentity(out.Capture.AttemptID, "retry_capture")
+				_, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture", MediaError: &failure})
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := f.d.captures[request.CaptureID].Receipt
+				_, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture", MediaError: &failure})
+				if err != nil || !reflect.DeepEqual(before, f.d.captures[request.CaptureID].Receipt) {
+					t.Fatal("original failure replay changed receipt", err)
+				}
+			}
+			capture := f.d.captures[request.CaptureID]
+			if capture.Receipt.AttemptID != out.Capture.AttemptID || capture.Receipt.State != "failed" || capture.Receipt.Error == nil || *capture.Receipt.Error != failure {
+				t.Fatal("original attempt did not settle", capture.Receipt)
+			}
+		})
+	}
+}

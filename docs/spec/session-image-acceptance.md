@@ -20,7 +20,7 @@
 | --- | --- |
 | 单条输入 | 最多 8 张，每图 10,485,760 bytes，全部图片合计 20,971,520 bytes；任一图片失败整条拒绝，无截断、剩余子集或仅文字发送。 |
 | 输入与显示格式 | 输入 PNG/JPEG/WebP；显示保留 PNG/JPEG/GIF/WebP/AVIF。SVG、HTML、空、伪装、截断和损坏内容明确拒绝；Daynight 不转码替换原件。原生接口之后的正常转换不改变保存与交付原件的要求。 |
-| Session 实际内容 | 正文、完整索引、不同已提交 resourceId 的原件、已提交 descriptor 与已发布 manifest 合计不超过 134,217,728 bytes；同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同分别计量。临时副本、数据库内部空间和无内容控制记录不计入；旧大记录保持可读，已确认重放不重复计量。 |
+| Session 实际内容 | 旧在线模式及最终归档的正文、完整索引、不同已提交 resourceId 的原件、已提交 descriptor 与已发布 manifest 合计不超过 134,217,728 bytes；relay 在线模式的 available 原件不超过 1 GiB、1000 项。同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同分别计量。临时副本、数据库内部空间和无内容控制记录不计入；旧大记录保持可读，已确认重放不重复计量。 |
 | 完整历史 | schema3 timeline 的完整 UTF-8 编码最多 134,217,728 bytes、100,000 entries；全部文字、reasoning、工具、失败图片、bindings、retained 和撤回容器计入 Session 总量。旧 schema1/2 保持 67,108,864 bytes 边界。 |
 | 归档 | manifest 最多 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。schema3 完整同步 envelope 最多 134,234,112 bytes，其 timeline 和整个 Session 仍须满足实际内容总量。显示分页截短不能代替完整历史。 |
 | 服务存储准入 | 不为未来原件、正文、索引、归档或暂存预留额度，也不按卷空闲水位拒绝旧容量申请。实际存储不足或写入失败必须明确返回，保留原身份和清理责任，不删除历史原件腾空间。 |

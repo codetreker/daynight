@@ -356,6 +356,9 @@ var webhookEndpointClientKeySQL string
 //go:embed schema/migrations/114_session_history_policy.sql
 var sessionHistoryPolicySQL string
 
+//go:embed schema/migrations/116_session_online_mode.sql
+var sessionOnlineModeSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -477,6 +480,7 @@ var schemaMigrations = []migration{
 	{version: 113, sql: webhookEndpointClientKeySQL},
 	{version: 114, sql: sessionHistoryPolicySQL},
 	{version: 115, sql: migration115.SQL(), transform: migration115.Apply, transformSource: migration115.TransformSource()},
+	{version: 116, sql: sessionOnlineModeSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
