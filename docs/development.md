@@ -663,6 +663,12 @@ The [cleanup fixture decision](../.agents/notes/implemented/testing/2026-11-18-w
 owns the shared fixture. The
 [native sudo fixture decision](../.agents/notes/implemented/testing/2026-11-23-native-sudo-worktree-setup.md)
 covers the permission and pointer cases that start from existing registration.
+The terminal synthetic busy-root case captures only the promise backoff following
+its selected root's EBUSY, checks the five production durations, and advances each
+wait asynchronously. Real root identity reads, Git registration, the final error
+and retry ownership checks remain observed; native holders and sudo cases retain
+real timers. The [busy backoff clock decision](../.agents/notes/implemented/testing/2026-11-24-worktree-busy-backoff-clock.md)
+owns this timing boundary.
 The concurrent
 fetched-commit case keeps both real preparations within its fetch barriers and
 uses a case-local 30-second watchdog for native Git execution. Its commit,

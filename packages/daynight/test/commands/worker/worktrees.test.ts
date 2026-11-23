@@ -1,5 +1,6 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { cpSync, realpathSync, renameSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
@@ -25,6 +26,11 @@ import { skipWithoutSymbolicLinks } from "../../helpers/symlink-support.js";
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir), lstat: vi.fn(actual.lstat) };
+});
+
+vi.mock("node:timers/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
 });
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
@@ -70,6 +76,7 @@ let seedRoot: string | undefined;
 const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const actualTimers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
 const busyError = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
 // Each cleanup member carries its own committed revision; a fixture names the
 // one it exercises and leaves the other member unapplied.
@@ -1717,15 +1724,74 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const adapter = manager(f.root);
     const binding = await prepareCleanupFixture(f, adapter);
     const root = path.normalize(binding.worktreePath);
-    let attempts = 0;
+    const original = await actualFs.lstat(root, { bigint: true });
+    const busy = busyError();
+    const delays = [20, 40, 80, 160, 320];
+    type RetryTimer = ReturnType<typeof captureSynchronousDeadline<Promise<unknown>>>;
+    const waiting = delays.map(() => Promise.withResolvers<RetryTimer>());
+    let attempts = 0, captured = 0, armed = false;
+    let timer: RetryTimer | undefined;
+    const proofs: string[] = [];
+    const proofsBeforeRetries: string[][] = [];
+    vi.mocked(lstat).mockImplementation((async (target, options) => {
+      const result = await actualFs.lstat(target, options);
+      if (attempts > 0 && path.normalize(String(target)) === root && options?.bigint) proofs.push(`${result.dev}:${result.ino}`);
+      return result;
+    }) as typeof actualFs.lstat);
     vi.mocked(rmdir).mockImplementation(async (target, options) => {
       if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (attempts > 0) proofsBeforeRetries.push(proofs.splice(0));
       attempts++;
-      throw busyError();
+      armed = true;
+      throw busy;
     });
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
-    expect(attempts).toBe(6);
-    expect(worktreePaths(f.repository)).toContain(root);
+    vi.mocked(delay).mockImplementation(<T>(milliseconds?: number, value?: T, options?: Parameters<typeof delay>[2]) => {
+      if (!armed) return actualTimers.setTimeout(milliseconds, value, options);
+      armed = false;
+      const notification = waiting[captured++];
+      if (notification === undefined) throw new Error("Unexpected extra busy retry delay.");
+      // Only a delay reached from the selected root's synthetic EBUSY is controlled.
+      timer = captureSynchronousDeadline(() => new Promise<T | undefined>(resolve => setTimeout(resolve, milliseconds, value)));
+      timer.markReady();
+      notification.resolve(timer);
+      return timer.result as Promise<T>;
+    });
+    const op = operation();
+    const removal = adapter.removeWorktree(f.project, f.owner, op).then(() => undefined, (error: unknown) => error);
+    const watchdog = Promise.withResolvers<never>();
+    const watchdogTimer = setTimeout(() => watchdog.reject(new Error("Busy retry delay was not observed.")), 10_000);
+    try {
+      for (const [index, milliseconds] of delays.entries()) {
+        const observed = await Promise.race([
+          waiting[index]!.promise,
+          removal.then(error => { throw new Error("Worktree removal ended before its busy retry delay.", { cause: error }); }),
+          watchdog.promise,
+        ]);
+        expect(attempts).toBe(index + 1);
+        expect(observed.count).toBe(1);
+        expect(observed.requested).toBe(milliseconds);
+        try { await observed.expire(); }
+        finally { observed.restore(); timer = undefined; }
+      }
+      expect(await removal).toBe(busy);
+      expect(attempts).toBe(6);
+      expect(captured).toBe(delays.length);
+      expect(proofsBeforeRetries).toHaveLength(5);
+      for (const identities of proofsBeforeRetries) {
+        expect(identities.length).toBeGreaterThanOrEqual(2);
+        expect(identities.every(identity => identity === `${original.dev}:${original.ino}`)).toBe(true);
+      }
+      const retained = await actualFs.lstat(root, { bigint: true });
+      expect([retained.dev, retained.ino]).toEqual([original.dev, original.ino]);
+      expect(worktreePaths(f.repository)).toContain(root);
+    } finally {
+      vi.mocked(delay).mockImplementation(actualTimers.setTimeout);
+      clearTimeout(watchdogTimer);
+      op.dispose();
+      try { if (timer !== undefined) await timer.expire(); }
+      finally { timer?.restore(); }
+      await removal;
+    }
   });
 
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {
