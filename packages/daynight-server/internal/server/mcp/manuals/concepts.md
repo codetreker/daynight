@@ -13,7 +13,6 @@ Use this topic when identity or the intended Project is unknown. A connection au
 | Project | A registered repository, owning Team, settings and Task/access scope, identified by UUID. |
 | Task | Ordinary work with `type: "task"`, its own UUID and nullable Goal `parentId`. |
 | Goal | An objective with `type: "goal"`, its own UUID and ordinary direct child Tasks. Parent ownership differs from dependency edges. |
-| Step | A Task-owned ordered record with a complete eight-hex-digit ID. |
 | Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. |
 | Attachment | Independent bytes and metadata at a complete case-sensitive Task-relative path. |
 | Session | Execution or conversation content with its own execution identity. Task material cannot reconstruct it. |

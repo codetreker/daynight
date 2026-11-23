@@ -38,7 +38,7 @@ Use `completedAt` for current done completion and `cancelledAt` for current canc
 
 Ordinary status changes omit `claimId` and neither launch a process nor acquire a claim. User-directed ordinary execution is independent of automatic-selection filters but still requires capabilities, sufficient inputs, satisfied dependencies and authorization. Explicit original Worker assignments and owned-claim completion follow [Worker operations](daynight://manuals/worker-operations.md).
 
-Ordinary completion requires actual outputs and acceptance for the selected scope. Set `done` with the newly observed exact Task version and no `claimId`. A finished Step/discussion, approved PR or empty ready result does not complete another scope. Missing required acceptance or confirmation preserves the actual state. Completing one Task grants no authority to execute its successor.
+Ordinary completion requires actual outputs and acceptance for the selected scope. Set `done` with the newly observed exact Task version and no `claimId`. A finished discussion, approved PR or empty ready result does not complete another scope. Missing required acceptance or confirmation preserves the actual state. Completing one Task grants no authority to execute its successor.
 
 ## Goal transitions
 
@@ -46,7 +46,7 @@ A Goal may move among `todo`, `in_progress`, `done` and `cancelled`, including r
 
 A child actually entering `in_progress`, manually or through a Worker claim, also starts its `todo` Parent in the same transaction. Other Goal states remain unchanged. Same-status requests and membership edits do not trigger this. Child completion, cancellation, rollback or claim release neither ends nor reverts the Goal; child progress does not derive Goal status.
 
-A new `in_progress` interval records a new start; returning to `todo` clears interval times. Done/cancelled record their respective time and retain a nullable start. A done/cancelled Goal prevents new automatic child claims, while existing claims continue and manual child changes obey their own rules. Goal assignment is independent of child assignment. Goals support no execution controls, Steps or Worker claims.
+A new `in_progress` interval records a new start; returning to `todo` clears interval times. Done/cancelled record their respective time and retain a nullable start. A done/cancelled Goal prevents new automatic child claims, while existing claims continue and manual child changes obey their own rules. Goal assignment is independent of child assignment. Goals support no execution controls or Worker claims.
 
 ## Cancellation and deletion
 

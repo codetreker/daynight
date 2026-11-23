@@ -442,8 +442,8 @@ Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再
 
 ## Steps 与讨论准入
 
-Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合，MCP 写响应
-也包含已有数据，因此写入需要 `step:write` 与 `step:read`。权限检查在原项目
+REST Steps 读取使用 `step:read`，写响应包含完整 Steps 集合，因此写入需要
+`step:write` 与 `step:read`。权限检查在原项目
 访问及写入角色检查后、读取 Steps 内容或修改之前执行；版本、排序、容量和
 事务完成语义保持原有规则。项目资源检查不隐含 `task:read` 或 `project:read`。
 
@@ -458,7 +458,8 @@ Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合�
 REST 的 Steps 集合及单项 GET（包括自动 HEAD）对应读取，集合 POST、单项
 PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执行业务。
 讨论 messages GET（包括自动 HEAD）对应读取，POST 对应发帖。MCP 的
-`task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
-`task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
-`task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
-复用原解析与资源检查，生产装配使用这些 scoped 入口。
+`task_thread_read` 对应读取，`task_thread_post` 对应发帖；MCP 不注册 Steps
+工具，旧工具名返回既有未知工具错误。显式 scoped 注册入口复用原解析与资源
+检查，生产装配使用这些 scoped 入口。凭据的 Steps scopes 及其目录仍按现有
+规则保存，MCP 入口退役不改写 grant 或授予新的权限，混合凭据继续使用其他
+原有授权。

@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除以及 MCP 工具已实现。CLI 与 Web 不提供 Steps 入口。
+状态：服务端持久化、REST 集合与单项读取、添加、内容与状态修改、移动和删除已实现。CLI、Web 与 MCP 不提供 Steps 入口。
 
 ## 目标与边界
 
@@ -10,7 +10,7 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端 Steps 资源仍可用，CLI 与 Web 不消费该资源；应用导航准入由独立路由所有者实现。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端 REST Steps 资源仍可用，CLI、Web 与 MCP 不消费该资源；应用导航准入由独立路由所有者实现。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
@@ -24,7 +24,6 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 ```mermaid
 flowchart LR
   HTTP[Steps HTTP 资源] --> Service[Task Steps 用例]
-  MCP[MCP Steps 工具] --> Service
   Service --> Pure[校验 / 候选 / 公开资源 codec]
   Service --> Tx[项目事务 + 父 Task 锁]
   Tx --> Rows[(task_steps)]
@@ -193,14 +192,13 @@ Web 不展示 Steps 集合。旧 `tab=steps` 地址和已保存的该选项按�
 
 单项字段写入可以局部持久化，但每次写入的完整响应和容量检查仍为 O(n + B)，其中 B 为编码字节量；排序对受影响行是 O(n) 上界。最大合法集合的解码、候选和编码缓冲会占用显著请求内存，不能宣称整体操作 O(1)。
 
-
-MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 查询及绑定父版本的游标；summary 不读取完整描述，显式 full 返回完整内容。读取直接投影保存的规范字段，不设置领域结构、容量或响应字节检查，不逐项查询和计量；cursor 指向最后返回项。单项分别使用普通 Get/GetSummary，输入的父版本条件仍显式比较。共享 MCP 入口的读取结果不执行输出 schema 或字节准入，大对象许可、输入和期限规则继续适用。写入复用上述原子用例及严格完整候选 codec，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
+MCP 装配不注册 Steps 工具，专用 adapter、schema、scope 工具清册和手册均已移除。旧工具名进入共享 Entry 的未知工具错误路径，不调用 Steps 服务。Task、Thread 和其他工具继续使用原有认证、请求预算与期限。共享 Steps 应用服务和 REST 装配保持，用于仍在提供的 HTTP 资源。退役边界及原机制的取舍见 [MCP 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-mcp-task-steps.md)。
 
 ## 迁移与部署
 
 迁移 `030_task_steps.sql` 增加表和约束，迁移注册保留已应用文件。迁移与 ledger 同事务；已有任务的字段、版本、时间、属性及历史不变。Steps API 读取零行得到合法空集合，不扫描或转换描述、Session todo 和原生历史。
 
-Steps 的 HTTP 和 MCP 仍遵循各自资源契约；CLI 和 Web 不提供 Steps 入口，普通 Task 投影保持独立。
+Steps 的 REST HTTP 资源继续遵循其公开契约；CLI、Web 和 MCP 不提供 Steps 入口，普通 Task 投影保持独立。
 
 本次交付覆盖前向迁移、正常重启和已写 Steps 数据保留。服务端二进制回退及相应降级恢复方案不在交付范围，不承诺旧二进制能启动已升级的数据库；既有迁移顺序和 checksum 检查保持严格。发布前复核实际迁移序号及全部 producer/consumer，普通 CLI 变更保持包版本，正式发布按既有发布流程单独提升版本。
 
@@ -212,6 +210,7 @@ Steps 的 HTTP 和 MCP 仍遵循各自资源契约；CLI 和 Web 不提供 Steps
 | Service 写协调 | 公开输入、项目准入、父任务门禁、同事务 DAO 调用、真实编码和 capture，分别检查回调与事务完成结果；Move/Delete 的集合规则由 Core 测试，SQL 区间与持久化由 PostgreSQL 测试负责。 |
 | 真实 PostgreSQL | 升级、重启、快照读写交错、并发同版本、软删除和 deferred order constraint；在已写部分位置/步骤行、已 touch 父版本但尚未提交处注入可确认回滚的失败，逐项核对完整集合、排列、父版本及全部时间零变更。提交结果未知另走读回，不能作为回滚证明。 |
 | HTTP | 严格字段、认证/成员、子 404/父 410、409 details、JSON DELETE、方法/HEAD/no-store、取消与提交后丢响应；对实际集合 GET 和修改响应检查 64 MiB 临界编码字节、换行和完整资源形状，不能只测纯 codec。 |
+| MCP | 真实 HTTP session 的发现不包含七项 Steps 工具及专用手册，旧名称调用明确失败；其他手册及普通 Task、Thread 和混合凭据的其他授权保持。 |
 | 打包 CLI | 帮助、补全和手册发现不提供 Steps；旧命令明确失败，普通 Task 流程保持，已安装 skill 按现有更新机制刷新。 |
 | Web | 弹窗、独立详情和 Goal 内嵌详情没有 Steps 页签或请求；旧地址、历史恢复、附件导航、普通 Task 修改和访问校验保持。 |
 | 指令语义与分发 | 产品手册和新生成的 Worker 提示不指向旧 CLI 命令；Session 日志不被上传，项目自定流程不被固化。打包/安装字节检查和语义情境分别报告。 |
@@ -223,9 +222,9 @@ Steps 的 HTTP 和 MCP 仍遵循各自资源契约；CLI 和 Web 不提供 Steps
 | 服务端 Steps 资源 | 表、领域候选、codec、事务和 HTTP 形成公开数据契约。 |
 | CLI 与指令资源 | 命令、API、帮助/补全及 canonical skill 不提供 Steps；普通 Task 与历史 Inbox 解码保持。 |
 | Web 任务详情 | 不提供 Steps 入口；普通 Task、附件和导航保持既有访问与状态边界。 |
-| 组合验证 | 服务端 HTTP 与 MCP 验证读取和原子修改；安装后的 CLI 和生产 Web 验证入口退役及普通 Task 行为。 |
+| 组合验证 | 服务端 REST HTTP 验证读取和原子修改；MCP HTTP session、安装后的 CLI 和生产 Web 验证入口退役及普通 Task 行为。 |
 
-上述关系表达组件职责。各能力的验收基于实际前置能力；HTTP 和 MCP 保留各自的公开契约。
+上述关系表达组件职责。各能力的验收基于实际前置能力；REST Steps 与剩余 MCP 工具保留各自的公开契约。
 
 ## 可观测性与失败边界
 
@@ -266,4 +265,4 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本、独立 HTTP 资源和 MCP 工具。CLI 与 Web 不提供 Steps 入口，保留普通 Task、导航和附件行为。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 REST HTTP 资源。CLI、Web 与 MCP 不提供 Steps 入口，保留普通 Task、导航、附件和其他已授权工具的行为。各层保持项目流程、Worker 和 Session 边界。

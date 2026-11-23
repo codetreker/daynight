@@ -699,7 +699,7 @@ an exact Session and source use session-history. Sending requires session-reads
 when establishing identity or admission; recovery retains the original operation.
 Dependency-only writes require dependencies, dependency-writes and write-safety;
 creation with dependencies or mixed updates also require task-writes.
-Steps, Thread, Session messages, and attachment reads and writes have separate
+Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's
 conditions; related topics retain explicit reading prerequisites. The materials
 topic defines Goal-owned shared specifications, architecture,
@@ -744,8 +744,8 @@ The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
-status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Project tag catalog management, Task discussion reads and posts, and attachment listing, removal,
+status, deletion, property, list, ready and graph tools, Project tag catalog
+management, Task discussion reads and posts, and attachment listing, removal,
 bounded reads and inline or resumable upload. The [attachment design](../../docs/design/daynight-task-attachments.md)
 owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
@@ -756,8 +756,8 @@ their input and I/O security rules. Close and expiry reclaim only the private sn
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
-property values use `valueText`. Task and Step reads default to marked
-summaries; request `full` for complete content. Task full and summary results
+property values use `valueText`. Task reads default to marked summaries;
+request `full` for complete content. Task full and summary results
 include `type` and nullable `parentId`; the Goal full result also includes
 `progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
 filters select Goal membership, and Task updates can assign or clear a Parent.
@@ -768,10 +768,11 @@ with stable IDs and current names, including an empty array when untagged. A
 tag-only update uses the dedicated association operation; mixed changes commit
 with metadata in one transaction. Unknown outcomes require a read before deciding
 what to do next.
-Step page cursors bind the parent version and reject
-continuation after a change. Step writes return confirmed version and change facts
-and preserve the original collection capacity. Discussion reads return complete
-messages in oldest-first order; an explicit claim ID supplies agent attribution.
+Task Steps tools and their dedicated manual are absent from discovery. Calls to
+retired `task_step_*` names use the existing unknown-tool error; the REST Steps
+service remains available. Existing mixed scoped grants keep their other
+authorizations, and this entry removal does not change the credential catalog or
+stored grants. Discussion reads return complete messages in oldest-first order; an explicit claim ID supplies agent attribution.
 A lost post response does not establish a receipt: read the thread before
 deciding whether to send again. Bot creation resolves omitted settings from
 available Worker defaults and does not imply startup readiness. Bot deletion
@@ -911,15 +912,7 @@ operations have a separate 16-slot budget. A saturated budget returns
 `resource_busy`. Attachment inspection and new download snapshots use a separate
 four-slot content budget; repeated open and transfer control calls remain on the
 control budget. A new open releases its control slot only after acquiring a content
-slot. Permits remain held until the handler and response delivery finish. The
-opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
-the 64 MiB Step collection and concurrent summary write admission with sampled
-Go heap. After preparing an isolated database, run it
-separately from CI:
-
-```bash
-go test -race -tags=stress ./internal/server/mcp -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
-```
+slot. Permits remain held until the handler and response delivery finish.
 
 The application stops webhook claims and rejects new HTTP work before draining
 requests and the Session relay. HTTP, Sessions, webhook attempts, maintenance
@@ -2574,10 +2567,11 @@ Runtime tests and tagged Webhook application tests retain their separate owners
 and build constraints. Root route tests check the registered patterns and
 unauthenticated refusals, including protected method fallbacks. A source binding
 check supplements the live identity and Session lifecycle witnesses for the
-shared Authentication instance. The MCP Step lifecycle uses a
-focused Entry host with controlled operations; its Service, Core, Capturer and
-Store receivers retain lower coordination, rules and persistence proofs. Other
-DAO/scope fixtures supply fixed domain records, query results, proposed writes, call counts and transaction
+shared Authentication instance. MCP retirement checks use real HTTP sessions
+against production registration to verify discovery and unknown-tool errors;
+REST Steps retains its Service, Core, Capturer and Store proofs. DAO/scope
+fixtures supply fixed domain records, query results, proposed writes, call counts
+and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
 state. Configuration validation and startup ordering live with Config and App;
 `internal/server/webui` owns the static route and request-log matrix. Root retains
@@ -2793,17 +2787,14 @@ explicit facts; operations verify arguments, context, authority and calls.
 Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;
-its Tasks dependency still serves ready and dependency reads. The Step lifecycle
-uses a focused Entry host and controlled operations, retaining both protocol
-versions and per-request checks. Thread scenarios use real Service and Core
-with controlled DAO facts and retain completed-response loss. Lower receivers
+its Tasks dependency still serves ready and dependency reads. Thread scenarios
+use real Service and Core with controlled DAO facts and retain completed-response loss. Lower receivers
 retain business and DAO responsibilities. Attachment and transfer scenarios use
 real services, Core, local files and the SDK through a host registering only
 their adapters, with controlled DAO facts. They retain pagination, deletion,
 upload response loss and download snapshot observations; Root retains the
 assembled authentication and revocation path. The ordinary test binary clears
-`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running;
-the separate stress build retains the database variable for its physical witness.
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running.
 
 Run from this module with the unit resource overlay:
 
@@ -4056,10 +4047,8 @@ follows the same full-resource/version rules. Other write refusals are
 `409 version_conflict`, `409 step_id_conflict` for Add and `409 version_exhausted`
 for actual changes. Reads use pure `ProjectCollection`/`ProjectItem` projection
 and ordinary JSON encoding without stored-field or collection-capacity checks.
-MCP Step pages use one `limit+1` query and an explicitly compared parent version;
-summary and full views retain the same item-count cursor. The shared MCP entry
-does not admit successful read output by schema or bytes. Invalid write candidates, natural decoding
-or encoding errors, database failures and failed transaction cleanup retain
+MCP exposes no Steps tools; the shared Steps service still supplies these REST
+operations. Invalid write candidates, natural decoding or encoding errors, database failures and failed transaction cleanup retain
 their causes; the service never substitutes a partial or empty result.
 
 The shared transaction owner preserves operation, commit and cleanup failures
