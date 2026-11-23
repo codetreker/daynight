@@ -32,9 +32,14 @@ or run your own service. The interface supports English and Simplified Chinese.
   prerequisites, card navigation to their tasks or Goals, task details and
   fullscreen reading.
 - **Inspect Goal acceptance dependencies.** Open the project Goals toolbar's
-  acceptance graph to inspect synchronized project-local prerequisites, terminal
-  prerequisite context and isolated active Goals. Its known relationships remain
-  distinct from the server's complete acceptance check and ordinary Task graphs.
+  graph to inspect synchronized local prerequisites, direct readable
+  cross-project relationships, terminal prerequisite context and isolated active
+  Goals. Local inspection follows the synchronized Goal relations and states.
+  External cards show their actual Project; first reads show partial context,
+  while complete refreshed traversals replace retained authorized results.
+  Unavailable prerequisites and retries remain explicit; confirmed target withdrawal
+  removes its earlier visible context immediately. The server retains the
+  complete acceptance check; ordinary Task graphs keep their execution scope.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.

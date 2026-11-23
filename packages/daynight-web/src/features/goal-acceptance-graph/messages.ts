@@ -4,10 +4,16 @@ export const goalAcceptanceMessages = (locale: string) => locale === 'zh-CN' ? {
   knownOnly: '本项目已知关系 · 全局验收待核验', none: '无本项目已知关系', satisfied: '已满足', blocking: '阻塞验收',
   progress: (done: number, total: number) => `${done} / ${total} 子 Task 已完成`,
   details: '详情', fit: '查看全图', count: (goals: number, edges: number) => `${goals} 个 Goal · ${edges} 条验收依赖`,
+  reading: '外部关系读取', retry: '重试', retryLabel: (title: string) => `重试关系：${title}`, hidden: (count: number) => `无法访问 ${count} 个前置 Goal`,
+  sourcePhase: { queued: '等待读取外部关系…', loading: '正在读取外部关系…', partial: '部分关系仍在读取。', ready: '已读取直接关系', failed: '无法读取全部关系。',
+    unavailable: '服务器不支持 Goal 关系读取。', denied: '无法访问此 Goal。', conflict: '关系读取存在冲突，请核对或重试。', interrupted: '关系待重新核验。' },
 } : {
   title: 'Goal acceptance dependencies', open: 'Acceptance graph', canvas: 'Goal acceptance dependency canvas', close: 'Close acceptance graph',
   empty: 'This project has no todo or in-progress Goals.', inspect: 'Select a Goal to inspect known relationships', prerequisites: 'Prerequisite Goals', successors: 'Dependent Goals',
   knownOnly: 'Known project relationships · Global acceptance is unverified', none: 'No known relationships in this project', satisfied: 'Satisfied', blocking: 'Blocks acceptance',
   progress: (done: number, total: number) => `${done} / ${total} child Tasks done`,
   details: 'Details', fit: 'Show all Goals', count: (goals: number, edges: number) => `${goals} Goals · ${edges} acceptance dependencies`,
+  reading: 'External relationship reads', retry: 'Retry', retryLabel: (title: string) => `Retry relationships: ${title}`, hidden: (count: number) => `You cannot access ${count} prerequisite Goals`,
+  sourcePhase: { queued: 'Waiting to read external relationships…', loading: 'Loading external relationships…', partial: 'Some relationships are still loading.', ready: 'Direct relationships loaded', failed: 'Could not load all relationships.',
+    unavailable: 'Goal relationships are unavailable on this server.', denied: 'You cannot access this Goal.', conflict: 'Relationship reads conflict. Review or retry.', interrupted: 'Relationships need rechecking.' },
 };
