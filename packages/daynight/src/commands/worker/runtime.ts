@@ -680,6 +680,8 @@ export const runLifecycleManagementOnly = async (options: { homeDirectory: strin
   }
 };
 
+type WorkerCommandOwner = { kind: "execution" | "telemetry" } | { kind: "cleanup"; claim: ClaimIdentity };
+
 export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   if (options.signal?.aborted) return;
   const cancellation = runtimeCancellation(options.signal);
@@ -693,9 +695,10 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
       const scope = scopes.create(lifecycleBinding?.scopeGeneration);
       const admittedResources = new Map<string, string>();
       const failures: unknown[] = [];
-      const commandSink = (cleanup?: ClaimIdentity): OwnedCommandLifecycleSink => async event => {
-        const commandOwner = cleanup === undefined ? "execution" : JSON.stringify([cleanup.projectId, cleanup.taskId, cleanup.claimId]);
-        if (admittedResources.has(event.resourceId) && admittedResources.get(event.resourceId) !== commandOwner) throw new OwnedCommandAdmissionError(new Error("Command reservation conflicts with its original cleanup owner."));
+      const commandSink = (owner: WorkerCommandOwner): OwnedCommandLifecycleSink => async event => {
+        const cleanup = owner.kind === "cleanup" ? owner.claim : undefined;
+        const commandOwner = cleanup === undefined ? owner.kind : JSON.stringify([cleanup.projectId, cleanup.taskId, cleanup.claimId]);
+        if (admittedResources.has(event.resourceId) && admittedResources.get(event.resourceId) !== commandOwner) throw new OwnedCommandAdmissionError(new Error("Command reservation conflicts with its original owner."));
         if (event.stage === "prepared" && !admittedResources.has(event.resourceId)) {
           try {
             if (cleanup === undefined) scope.signal.throwIfAborted();
@@ -737,9 +740,11 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
           if (event.stage === "stopped") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: event.sequence }, saveState: "durable" });
           if (event.stage === "unknown") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "unknown", error: "Original command boundary is unconfirmed." });
         }
-        if (event.stage === "unknown") scope.closeAdmission(new Error("Original command boundary is unconfirmed."));
+        // Telemetry retains an unconfirmed probe and checks it before starting
+        // a replacement. Its incomplete proof leaves other owners running.
+        if (event.stage === "unknown" && owner.kind !== "telemetry") scope.closeAdmission(new Error("Original command boundary is unconfirmed."));
       };
-      const rebuild = await withOwnedCommandLifecycle(commandSink(), () => {
+      const rebuild = await withOwnedCommandLifecycle(commandSink({ kind: "execution" }), () => {
         const run = () => runWorkerScope(root.manager === undefined ? options : { ...options, onExecutionScope: control => { root.manager!.attach(control); options.onExecutionScope?.(control); } }, root, scope, failures, commandSink);
         return root.lifecycle !== undefined && lifecycleBinding !== undefined ? withWorkerLifecycle({ store: root.lifecycle, binding: lifecycleBinding, failed: error => { scope.closeAdmission(error); try { root.lifecycle!.markBlocked("persistence_failed"); } catch { /* The original persistence failure remains authoritative. */ } } }, run) : run();
       });
@@ -760,7 +765,7 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   }
 };
 
-const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementRoot, scope: ExecutionScope, failures: unknown[], cleanupCommandLifecycle: (identity: ClaimIdentity) => OwnedCommandLifecycleSink): Promise<boolean> => {
+const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementRoot, scope: ExecutionScope, failures: unknown[], commandSink: (owner: WorkerCommandOwner) => OwnedCommandLifecycleSink): Promise<boolean> => {
   const platform = currentWorkerPlatform();
   const paths = resolveWorkerPaths(options.homeDirectory);
   const cancellation = root.cancellation;
@@ -1435,6 +1440,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       },
     });
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
+    const telemetryCommandLifecycle = commandSink({ kind: "telemetry" });
     let cachedTelemetry: Awaited<ReturnType<typeof telemetry.collect>> | undefined;
     reporter = createWorkerReporter({ signal: managementSignal, executionActive: () => !signal.aborted, collect: async operation => {
       if (signal.aborted) {
@@ -1443,7 +1449,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       }
       const executionOperation = createOperation({ signal: AbortSignal.any([operation.signal, signal]), limits: operation.limits });
       let sample: Awaited<ReturnType<typeof telemetry.collect>>;
-      try { sample = await telemetry.collect(executionOperation); }
+      try { sample = await withOwnedCommandLifecycle(telemetryCommandLifecycle, () => telemetry.collect(executionOperation)); }
       finally { executionOperation.dispose(); }
       const snapshot = manager.current();
       const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, local, "cloud");
@@ -1473,7 +1479,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
         }).catch(executionFailure);
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
-        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, cleanupCommandLifecycle,
+        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, cleanupCommandLifecycle: claim => commandSink({ kind: "cleanup", claim }),
           store: currentStore, git: getGit(), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
           archiveSessions: () => manager.current().effective.archiveSessions,
           prepareProject: async (projectId, preparationSignal) => {
