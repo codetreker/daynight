@@ -92,8 +92,16 @@ func (w *heldRegistrationWriter) WriteSession(ctx context.Context, work func(sto
 		if err := work(scope); err != nil {
 			return err
 		}
-		w.once.Do(func() { close(w.entered); <-w.release })
-		return nil
+		var heldError error
+		w.once.Do(func() {
+			close(w.entered)
+			select {
+			case <-w.release:
+			case <-ctx.Done():
+				heldError = ctx.Err()
+			}
+		})
+		return heldError
 	})
 }
 
@@ -111,9 +119,15 @@ func TestTwoRealSessionRegistrationsSerialize(t *testing.T) {
 	writer := &heldRegistrationWriter{SessionWriter: f.db, entered: make(chan struct{}), release: make(chan struct{})}
 	var release sync.Once
 	releaseFirst := func() { release.Do(func() { close(writer.release) }) }
-	t.Cleanup(releaseFirst)
 	engine := sessioncore.NewEngine(nil)
-	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	t.Cleanup(func() {
+		releaseFirst()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Errorf("stop registration engine: %v", err)
+		}
+	})
 	service := New(writer, engine)
 	type result struct {
 		snapshot sp.Snapshot
@@ -135,7 +149,7 @@ func TestTwoRealSessionRegistrationsSerialize(t *testing.T) {
 		v, err := service.Register(ctx, f.owner, f.project, f.task, f.registration)
 		second <- result{v, err}
 	}()
-	if err := waitArchiveLock(ctx, f.db, "SELECT id::text FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE"); err != nil {
+	if err := waitArchiveLock(ctx, f.db, "SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE"); err != nil {
 		t.Fatal(err)
 	}
 	releaseFirst()
