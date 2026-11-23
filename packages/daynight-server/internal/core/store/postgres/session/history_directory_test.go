@@ -255,6 +255,91 @@ func TestHistoryDirectoryGraphPagesAndOriginalClaims(t *testing.T) {
 	}
 }
 
+func TestHistoryDirectoryComponentsFollowVisibleGraphChanges(t *testing.T) {
+	db := isolatedStore(t)
+	project := queryProject(t, db, 1)
+	for _, number := range []int{10, 11, 12, 20, 21, 30, 40, 50, 51, 52} {
+		queryTask(t, db, project.ID, number, model.TaskTodo)
+	}
+	mustQueryExec(t, db, `UPDATE tasks SET type='goal' WHERE id IN ($1,$2)`, queryID(40), queryID(50))
+	mustQueryExec(t, db, `UPDATE tasks SET deleted_at=now() WHERE id IN ($1,$2)`, queryID(50), queryID(52))
+	mustQueryExec(t, db, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, queryID(50), queryID(51))
+	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external,dependency_type) VALUES
+ ($1,$2,$3,false,'task'),($1,$3,$4,false,'task'),($1,$5,$6,false,'task'),
+ ($1,$3,$5,true,'task'),($1,$2,$6,false,'goal'),
+ ($1,$3,$7,false,'task'),($1,$7,$5,false,'task'),
+ ($1,$4,$8,false,'task'),($1,$8,$5,false,'task'),
+ ($1,$2,$9,false,'task'),($1,$9,$5,false,'task')`,
+		project.ID, queryID(10), queryID(11), queryID(12), queryID(20), queryID(21), queryID(40), queryID(51), queryID(52))
+
+	check := func(dao store.HistoryDirectoryDAO, wantGroups map[string]int, start string, wantMembers []string) error {
+		t.Helper()
+		groups, err := dao.Groups(t.Context(), project.ID, nil, 20)
+		if err != nil {
+			return err
+		}
+		gotGroups := make(map[string]int, len(groups))
+		for _, group := range groups {
+			gotGroups[group.ID] = group.MemberCount
+		}
+		if !reflect.DeepEqual(gotGroups, wantGroups) {
+			t.Fatalf("groups = %v, want %v", gotGroups, wantGroups)
+		}
+		members, err := dao.RetentionMembers(t.Context(), project.ID, start)
+		if err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(members))
+		for _, member := range members {
+			ids = append(ids, member.TaskID)
+		}
+		if !reflect.DeepEqual(ids, wantMembers) {
+			t.Fatalf("retention members from %s = %v, want %v", start, ids, wantMembers)
+		}
+		return nil
+	}
+	initialGroups := map[string]int{queryID(10): 3, queryID(20): 2, queryID(30): 1}
+	initialMembers := []string{queryID(10), queryID(11), queryID(12)}
+	if err := db.ReadHistoryDirectory(t.Context(), func(scope store.HistoryDirectoryScope) error {
+		dao := scope.HistoryDirectoryDAO()
+		if err := check(dao, initialGroups, queryID(12), initialMembers); err != nil {
+			return err
+		}
+		nonminimum, err := dao.Members(t.Context(), project.ID, queryID(12), "", 20)
+		if err != nil {
+			return err
+		}
+		if len(nonminimum) != 0 {
+			t.Fatalf("nonminimum group accepted: %+v", nonminimum)
+		}
+		for _, hidden := range []string{queryID(40), queryID(50), queryID(51), queryID(52)} {
+			members, err := dao.RetentionMembers(t.Context(), project.ID, hidden)
+			if err != nil {
+				return err
+			}
+			if len(members) != 0 {
+				t.Fatalf("hidden task %s is reachable: %+v", hidden, members)
+			}
+		}
+		// A later graph write must not change any query within this snapshot.
+		mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, queryID(12), queryID(20))
+		return check(dao, initialGroups, queryID(12), initialMembers)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadHistoryDirectory(t.Context(), func(scope store.HistoryDirectoryScope) error {
+		return check(scope.HistoryDirectoryDAO(), map[string]int{queryID(10): 5, queryID(30): 1}, queryID(21), []string{queryID(10), queryID(11), queryID(12), queryID(20), queryID(21)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, db, `DELETE FROM task_dependencies WHERE project_id=$1 AND task_id=$2 AND depends_on_task_id=$3`, project.ID, queryID(11), queryID(12))
+	if err := db.ReadHistoryDirectory(t.Context(), func(scope store.HistoryDirectoryScope) error {
+		return check(scope.HistoryDirectoryDAO(), map[string]int{queryID(10): 2, queryID(12): 3, queryID(30): 1}, queryID(21), []string{queryID(12), queryID(20), queryID(21)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHistoryDirectoryBoundedChainQuery(t *testing.T) {
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
