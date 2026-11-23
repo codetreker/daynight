@@ -105,11 +105,12 @@ responsibility. A failed or pending write cannot discard that evidence: recovery
 joins the original write and completes the same resource's terminal persistence
 without dispatch. This in-process evidence does not authorize clearing recovered
 null-proof records after the producer has been lost.
-Cancellation before the POSIX birth message closes command dispatch while the
-original private IPC handshake and independent proof capture continue within
-the cleanup deadline. Killing the direct launcher first would lose the witness
-needed to stop its proof helpers. Closure joins admitted handshake work before
-terminal persistence; genuinely missing or conflicting proof stays unknown.
+Cancellation before the POSIX birth message closes command dispatch. The
+[Linux pre-dispatch decision](../bug-fix/2026-11-23-linux-owned-command-pre-dispatch.md)
+defines the narrower Linux direct-close proof; other POSIX launchers retain the
+original handshake and independent proof capture within the cleanup deadline.
+Closure joins admitted handshake work before terminal persistence; genuinely
+missing or conflicting proof stays unknown where direct closure is insufficient.
 
 Original resource closure also settles dependent Git handles when inventory
 reconciliation finishes first. Consumers subscribe to the original closure
@@ -118,8 +119,8 @@ asynchronous spawn failure retains no-process evidence only when the original
 child never started and its close event and output writers have joined.
 The receipt also waits for original handle and Job lease release. A never-resumed
 Windows child can use its original native termination and handle-close evidence;
-a runnable POSIX launcher with missing birth proof cannot use direct-child closure
-because its proof helper may already have descendants.
+outside the Linux pre-dispatch gate, a runnable POSIX launcher with missing birth
+proof cannot use direct-child closure because its proof helper may have descendants.
 Closing admission still permits an already admitted resource to retry its original
 prepared write under the same journal checks. A probe's first explicit pre-write
 rejection creates no reservation; later rejections cannot erase an earlier

@@ -2,6 +2,8 @@ import crossSpawn from "cross-spawn";
 import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { captureProcessProof } from "../controller/process-proof.js";
+import { parseLinuxBoot, parseLinuxStat } from "../controller/linux-process-proof.js";
+import { readFile } from "node:fs/promises";
 
 // Only this trusted launcher runs before the parent commits the boundary proof.
 // It never interprets arguments or environment as shell text.
@@ -23,7 +25,12 @@ const send = (message: object) => {
   catch { abandon(); }
 };
 try {
-  const proof = await captureProcessProof(process.pid);
+  const proof = process.platform === "linux" ? await (async () => {
+    const boot = parseLinuxBoot(await readFile("/proc/sys/kernel/random/boot_id", "utf8"));
+    const stat = parseLinuxStat(process.pid, await readFile(`/proc/${process.pid}/stat`, "utf8"));
+    if (stat.zombie || stat.exiting) throw new Error("Launcher is exiting.");
+    return { pid: process.pid, parentPid: stat.parent, processGroupId: stat.group, startedAt: `linux:v1:${boot}:${stat.ticks}` };
+  })() : await captureProcessProof(process.pid);
   ownsGroup = process.platform !== "win32" && proof.processGroupId === process.pid;
   if (process.platform !== "win32" && !ownsGroup) process.exit(1);
   send({ kind: "bound", launchId, proof });

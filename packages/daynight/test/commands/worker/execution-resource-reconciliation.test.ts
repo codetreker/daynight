@@ -4,6 +4,7 @@ import { setTimeout as realSetTimeout, clearTimeout as realClearTimeout } from "
 import * as childProcesses from "node:child_process";
 import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
 import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import { afterEach, expect, it, vi } from "vitest";
@@ -30,6 +31,127 @@ afterEach(async () => {
   await pendingCleanup?.(); pendingCleanup = undefined;
   vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+}, 30_000);
+
+it.skipIf(process.platform !== "linux").each(["timeout", "cancellation", "cancellation-rejected"] as const)("closes a Linux launcher without dispatch after %s during delayed birth capture", async reason => {
+  const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
+  const cancellation = new AbortController(), operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 15_000 } });
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), childClosed = Promise.withResolvers<void>();
+  const originalCapture = processProof.captureProcessProof;
+  vi.spyOn(processProof, "captureProcessProof").mockImplementationOnce(async (pid, budget) => {
+    const proof = await originalCapture(pid, budget);
+    entered.resolve(); await release.promise;
+    if (reason === "cancellation-rejected") throw new Error("late birth observation failed");
+    return proof;
+  });
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  let child: ReturnType<typeof actual.spawn> | undefined, send: ReturnType<typeof vi.spyOn> | undefined;
+  vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof actual.spawn>) => {
+    child = Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+    send = vi.spyOn(child, "send");
+    child.once("close", () => childClosed.resolve());
+    return child;
+  });
+  const events: string[] = [], sink = journal.sink("21"), cancel = new Error("cancel during birth capture");
+  const running = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`], environment: process.env }, operation,
+    async event => { await sink(event); events.push(event.stage); }, { timeoutMs: reason === "timeout" ? 500 : 10_000 }).catch(error => error);
+  try {
+    await withinExecutionDeadline(Promise.race([entered.promise, running.then(result => { throw new Error("Birth capture did not start", { cause: result }); })]), Date.now() + 5000);
+    if (reason !== "timeout") cancellation.abort(cancel);
+    await withinExecutionDeadline(childClosed.promise, Date.now() + 5000);
+    expect(child!.stdout!.closed).toBe(true); expect(child!.stderr!.closed).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    expect(events).toEqual(["prepared"]);
+    release.resolve();
+    const failure = await withinExecutionDeadline(running, Date.now() + 5000);
+    if (reason !== "timeout") expect(failure).toBe(operation.signal.reason);
+    else expect(failure).toMatchObject({ message: "The owned prerequisite command deadline elapsed." });
+    expect(events).toEqual(["prepared", "stopped"]);
+    expect((await journal.read())[0]!.event).toMatchObject({ stage: "stopped", proof: null });
+    expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const reopened = await openExecutionResourceJournal({ directory: journalDirectory, identity });
+    await reopened.assertClosed();
+    const nextOperation = createOperation();
+    try {
+      const next = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('next scope')"], environment: process.env }, nextOperation, reopened.sink("22"));
+      expect(next.stdout).toBe("next scope");
+    } finally { nextOperation.dispose(); }
+    await reopened.assertClosed();
+  } finally {
+    release.resolve(); await running; operation.dispose();
+    await journal.reconcileRetained({ generation: "21", deadline: Date.now() + 10_000 });
+  }
+}, 30_000);
+
+it.skipIf(process.platform !== "linux")("ignores a readiness message delivered after pre-dispatch closure", async () => {
+  const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
+  const cancellation = new AbortController(), operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 15_000 } });
+  const received = Promise.withResolvers<void>();
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  let child: ReturnType<typeof actual.spawn> | undefined, emit: ReturnType<typeof actual.spawn>["emit"] | undefined, delayed: unknown;
+  vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof actual.spawn>) => {
+    child = Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+    emit = child.emit;
+    Object.defineProperty(child, "emit", { configurable: true, value: (event: string, ...values: unknown[]) => {
+      if (event === "message") { delayed = values[0]; received.resolve(); cancellation.abort(new Error("cancel before readiness is delivered")); return true; }
+      return Reflect.apply(emit!, child, [event, ...values]);
+    } });
+    return child;
+  });
+  const events: string[] = [], sink = journal.sink("24");
+  const running = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`], environment: process.env }, operation,
+    async event => { await sink(event); events.push(event.stage); }).catch(error => error);
+  try {
+    await withinExecutionDeadline(Promise.race([received.promise, running.then(result => { throw new Error("Readiness was not received", { cause: result }); })]), Date.now() + 5000);
+    expect(await withinExecutionDeadline(running, Date.now() + 5000)).toBe(operation.signal.reason);
+    expect(events).toEqual(["prepared", "stopped"]);
+    Reflect.apply(emit!, child, ["message", delayed]);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(events).toEqual(["prepared", "stopped"]);
+    expect((await journal.read())[0]!.event).toMatchObject({ stage: "stopped", proof: null });
+    expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    await (await openExecutionResourceJournal({ directory: journalDirectory, identity })).assertClosed();
+  } finally { cancellation.abort(); await running; operation.dispose(); await journal.reconcileRetained({ generation: "24", deadline: Date.now() + 10_000 }); }
+}, 20_000);
+
+it.skipIf(process.platform !== "linux")("retains direct closure evidence when a Linux pre-dispatch terminal save fails", async () => {
+  const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
+  const cancellation = new AbortController(), operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 15_000 } });
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  let child: ReturnType<typeof actual.spawn> | undefined, send: ReturnType<typeof vi.spyOn> | undefined;
+  vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof actual.spawn>) => {
+    child = Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+    send = vi.spyOn(child, "send");
+    child.once("spawn", () => cancellation.abort(new Error("cancel before readiness")));
+    return child;
+  });
+  const replace = files.replaceFileAtomically;
+  let rejectStop = true;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("pre-dispatch stop save failed");
+    return replace(file, text, ...rest);
+  });
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`], environment: process.env }, operation, journal.sink("23")).catch(error => error);
+  try {
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError" });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true);
+    expect(child!.stdout!.closed).toBe(true); expect(child!.stderr!.closed).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    const original = (await journal.read())[0]!.event;
+    expect(original).toMatchObject({ stage: "unknown", proof: null });
+    await expect(journal.assertClosed()).rejects.toThrow("replacement scope is forbidden");
+    const reopened = await openExecutionResourceJournal({ directory: journalDirectory, identity });
+    await expect(reopened.reconcile(original.resourceId, { deadline: Date.now() + 1000 })).rejects.toThrow("birth evidence is unavailable");
+    rejectStop = false;
+    await journal.reconcileRetained({ generation: "23", deadline: Date.now() + 10_000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    expect((await journal.read())[0]!.event).toMatchObject({ resourceId: original.resourceId, stage: "stopped", proof: null });
+    await (await openExecutionResourceJournal({ directory: journalDirectory, identity })).assertClosed();
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { rejectStop = false; operation.dispose(); await journal.reconcileRetained({ generation: "23", deadline: Date.now() + 10_000 }); }
 }, 30_000);
 
 it.each(["inventory-only", "stop-first", "inventory-first"])("joins original Git cleanup after %s closure without replay", async order => {

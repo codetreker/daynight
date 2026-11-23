@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
@@ -29,6 +30,27 @@ const killOriginal = async (proof: ProcessProof | undefined) => {
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe.skipIf(process.platform === "win32")("POSIX owned command guardian", () => {
+  it.skipIf(process.platform !== "linux")("announces Linux readiness without creating a pre-dispatch helper", async () => {
+    const helper = path.resolve(import.meta.dirname, "../../../dist/commands/worker/owned-command-helper.js"), launchId = randomUUID();
+    const child = spawn(process.execPath, [helper, launchId], { detached: true, env: { ...process.env, PATH: "" }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    child.stdout!.resume(); child.stderr!.resume();
+    const ready = Promise.withResolvers<{ launchId: string; proof: { pid: number; processGroupId: number; startedAt: string } }>();
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    const joined = Promise.all([exited, new Promise<void>(resolve => child.once("disconnect", () => resolve())),
+      ...[child.stdout!, child.stderr!].map(stream => new Promise<void>(resolve => stream.once("close", () => resolve())))]);
+    child.once("message", value => ready.resolve(value as { launchId: string; proof: { pid: number; processGroupId: number; startedAt: string } }));
+    child.once("error", error => ready.reject(error));
+    try {
+      const message = await withinExecutionDeadline(Promise.race([ready.promise, exited.then(() => { throw new Error("Launcher exited before readiness"); })]), Date.now() + 5000);
+      expect(message.launchId).toBe(launchId);
+      expect(message.proof).toMatchObject({ pid: child.pid, processGroupId: child.pid, startedAt: expect.stringMatching(/^linux:v1:/) });
+      expect((await readFile(`/proc/${child.pid}/task/${child.pid}/children`, "utf8")).trim()).toBe("");
+    } finally {
+      if (child.connected) child.disconnect();
+      await withinExecutionDeadline(joined, Date.now() + 5000);
+    }
+  }, 15_000);
+
   it.each([
     { git: false, exitMain: false }, { git: false, exitMain: true },
     { git: true, exitMain: false }, { git: true, exitMain: true },
@@ -136,7 +158,7 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       new Promise<void>(resolve => child.once("disconnect", () => resolve())),
       ...[child.stdout!, child.stderr!].map(stream => new Promise<void>(resolve => stream.once("close", () => resolve()))),
     ]);
-    const bound = Promise.withResolvers<ProcessProof>(), result = Promise.withResolvers<void>();
+    const bound = Promise.withResolvers<{ launchId: string; proof: Omit<ProcessProof, "commandHash"> & { commandHash?: string } }>(), result = Promise.withResolvers<void>();
     let diagnostic = "";
     const observations: string[] = [];
     child.on("exit", (code, signal) => observations.push(`exit=${code}/${signal}`));
@@ -154,15 +176,19 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
       } finally { clearTimeout(timer); }
     };
     child.on("message", (value: unknown) => {
-      const message = value as { kind: string; proof: ProcessProof };
-      if (message.kind === "bound") bound.resolve(message.proof);
+      const message = value as { kind: string; launchId: string; proof: Omit<ProcessProof, "commandHash"> & { commandHash?: string } };
+      if (message.kind === "bound") bound.resolve(message);
       if (message.kind === "result") result.resolve();
       observations.push(message.kind);
     });
     child.once("error", error => { bound.reject(error); result.reject(error); });
     let proof: ProcessProof | undefined, leafProof: ProcessProof | undefined;
     try {
-      proof = await bounded(bound.promise, "birth");
+      const handshake = await bounded(bound.promise, "birth");
+      expect(handshake.launchId).toBe(launchId);
+      proof = await captureProcessProof(child.pid!);
+      expect(handshake.proof).toMatchObject({ pid: proof.pid, parentPid: proof.parentPid, processGroupId: proof.processGroupId, startedAt: proof.startedAt });
+      if (process.platform !== "linux") expect(handshake.proof.commandHash).toBe(proof.commandHash);
       child.send({ kind: "run", file: process.execPath, args: ["--input-type=module", "--eval", source], environment: process.env });
       leafProof = await captureProcessProof(Number(await waitFile(ready)));
       await bounded(result.promise, "result");

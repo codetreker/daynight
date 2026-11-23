@@ -1,4 +1,4 @@
-import { createLinuxProcessCapture } from "../controller/linux-process-proof.js";
+import { createLinuxProcessCapture, parseLinuxBoot, parseLinuxStat } from "../controller/linux-process-proof.js";
 
 /**
  * The helper persists its own birth proof before admitting extraction. Before
@@ -22,7 +22,8 @@ if (process.platform === 'linux') {
   const capture = (${createLinuxProcessCapture.toString()})(
     (file, timeout) => fs.promises.readFile(file, {encoding:'utf8',signal:AbortSignal.timeout(timeout)}),
     (pid, timeout) => new Promise((resolve,reject) => cp.execFile('ps', ['-p',String(pid),'-o','pid=','-o','ppid=','-o','pgid=','-o','stat=','-o','lstart=','-o','command='], {encoding:'utf8',timeout,maxBuffer:8*1024*1024,env:{...process.env,LC_ALL:'C'}}, (error,stdout) => error ? reject(error) : resolve(stdout))),
-    text => crypto.createHash('sha256').update(text).digest('hex'));
+    text => crypto.createHash('sha256').update(text).digest('hex'),
+    () => performance.now(), (${parseLinuxBoot.toString()}), (${parseLinuxStat.toString()}));
   const state = await capture(process.pid, 5000);
   if (state.zombie || state.exiting || state.proof.processGroupId !== process.pid) process.exit(1);
   proof = state.proof;
