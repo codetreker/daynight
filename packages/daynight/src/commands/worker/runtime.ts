@@ -91,7 +91,7 @@ import { reconcilePreparedInitialReservation } from "./lifecycle-input-recovery.
 import { reportLifecycleHeartbeat, runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
 import { collectLifecycleRecovery, selectLifecycleRecoveryResources, type LifecycleRecoverySources } from "./lifecycle-recovery.js";
 import { requireWorkerNetworkToken, workerNetworkUnavailable } from "./management-network.js";
-import { readControllerSnapshot, readControllerOperation, readCompatibleControllerSnapshot, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "../controller/process-proof.js";
 import { preservesControllerProcessProof } from "./backends/orchestration.js";
 
@@ -466,15 +466,25 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
       if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
       if (resource.ownerKind !== "controller" || resource.processProof === null || typeof resource.identity.journalFile !== "string") continue;
       if (unresolvedTasks.has(`${resource.identity.projectId}/${resource.identity.taskId}`)) continue;
-      const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
-      const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
       const current = readControllerSnapshot(resource.identity.journalFile);
-      const historical = current?.controllerInstanceId !== ticket.controllerInstanceId || current.executionGeneration !== ticket.executionGeneration;
-      const saved = historical ? readHistoricalStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline)
-        : readCompatibleControllerSnapshot(resource.identity.journalFile, ticket, activeDeadline);
-      if (saved === null || saved.controllerProcess === null || !preservesControllerProcessProof(resource.processProof as ProcessProof, saved.controllerProcess, ticket.launchId)) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+      if (current === null || current.executionId !== resource.identity.executionId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+      const historical = current.controllerInstanceId !== resource.identity.controllerInstanceId
+        || typeof resource.identity.executionGeneration === "string" && current.executionGeneration !== resource.identity.executionGeneration;
+      let saved = current;
+      if (historical) {
+        const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
+        const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
+        const stopped = readHistoricalStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        if (stopped === null || stopped.controllerProcess === null || !preservesControllerProcessProof(resource.processProof as ProcessProof, stopped.controllerProcess, ticket.launchId)) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+        saved = stopped;
+      }
+      if (saved.controllerProcess === null) throw new Error("Original lifecycle Controller journal identity is unavailable.");
       if (process.platform === "win32") {
-        if (!historical) readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        if (!historical) {
+          const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
+          const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
+          readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        }
       } else if (!await confirmControllerProcessesStopped(resource.processProof as ProcessProof, saved.nativeProcesses, activeDeadline)) throw new Error("Original lifecycle native boundary is not empty.");
       lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "controller_boundary", executionId: saved.executionId, controllerInstanceId: saved.controllerInstanceId, nativeSessionId: saved.nativeSessionId }, saveState: "durable" });
     }
