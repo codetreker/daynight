@@ -581,7 +581,7 @@ func TestTaskDeletionCapturesAuthoritativeTombstone(t *testing.T) {
 
 func sourcePointer[T any](v T) *T { return &v }
 
-func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
+func TestStepWritesDoNotCaptureEvents(t *testing.T) {
 	for _, mode := range []string{"created", "updated", "in_progress", "done", "skipped", "todo", "moved", "deleted", "same title", "same status", "same position", "duplicate", "missing"} {
 		t.Run(mode, func(t *testing.T) {
 			current := sourceTask(model.TaskTodo)
@@ -594,7 +594,7 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 			s := NewTaskSteps(db, record)
 			var result StepsWriteResult
 			var err error
-			wantAction, wantStep := mode, "abcdef01"
+			isStatus := false
 			switch mode {
 			case "created", "duplicate":
 				id := "87654321"
@@ -602,7 +602,6 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 					id = "abcdef01"
 				}
 				result, err = s.Add(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, AddTaskStep{Version: 7, ID: id, Title: "Added"})
-				wantStep = id
 			case "updated", "same title":
 				title := "Changed"
 				if mode == "same title" {
@@ -616,7 +615,6 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 					id = "abcdef01"
 				}
 				result, err = s.Move(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, id, MoveTaskStep{Version: 7, Position: &position})
-				wantStep = id
 			case "deleted", "missing":
 				id := "abcdef01"
 				if mode == "missing" {
@@ -633,7 +631,7 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 						dao.steps[0].Status = model.TaskStepDone
 					}
 				}
-				dao.stepAction, wantAction = "status_changed", "status_changed"
+				dao.stepAction, isStatus = "status_changed", true
 				result, err = s.SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, "abcdef01", SetTaskStepStatus{Version: 7, Status: status})
 			}
 			if mode == "duplicate" || mode == "missing" {
@@ -656,18 +654,8 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 				}
 				return
 			}
-			if len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"step", "touch", "capture"}) || dao.headerCalls != 2 || dao.clockCalls != 1 {
-				t.Fatalf("Step source calls: %#v %v", record.facts, *calls)
-			}
-			f := record.facts[0]
-			if f.Type != protocol.StepUpdated || f.Action != wantAction || f.StepID != wantStep || f.TaskVersion != 8 || f.ProjectID != sourceProjectID || f.TaskID != sourceTaskID || !f.OccurredAt.Equal(dao.clock) {
-				t.Fatalf("Step source fact: %#v", f)
-			}
-			if mode == "moved" && (f.FromPosition == nil || *f.FromPosition != 1 || f.ToPosition == nil || *f.ToPosition != 0) {
-				t.Fatalf("Step move source positions: %#v", f)
-			}
-			if mode == "updated" && !reflect.DeepEqual(f.ChangedFields, []string{"title"}) {
-				t.Fatalf("Step update source fields: %#v", f)
+			if result.Resource.Version != 8 || len(record.facts) != 0 || len(record.calls) != 0 || !reflect.DeepEqual(*calls, []string{"step", "touch"}) || dao.headerCalls != 1 || dao.clockCalls != 1 {
+				t.Fatalf("Step write or capture calls: result=%+v facts=%#v calls=%v", result, record.facts, *calls)
 			}
 			if mode == "created" && (len(dao.stepWrites) != 1 || dao.stepWrites[0].Title != "Added") {
 				t.Fatalf("Step creation write: %#v", dao.stepWrites)
@@ -675,39 +663,23 @@ func TestStepSourcesUseMutationActionAndFinalRevision(t *testing.T) {
 			if mode == "updated" && (len(dao.stepWrites) != 1 || dao.stepWrites[0].Title != "Changed") {
 				t.Fatalf("Step update write: %#v", dao.stepWrites)
 			}
-			if wantAction == "status_changed" && (f.PreviousStatus != string(dao.steps[0].Status) || f.Status != mode) {
-				t.Fatalf("Step status source: %#v", f)
-			}
-			if wantAction == "status_changed" && (len(dao.stepWrites) != 1 || string(dao.stepWrites[0].Status) != mode) {
+			if isStatus && (len(dao.stepWrites) != 1 || string(dao.stepWrites[0].Status) != mode) {
 				t.Fatalf("Step status write: %#v", dao.stepWrites)
 			}
 		})
 	}
 }
 
-func TestSourceCaptureFailurePropagatesFromTaskAndStepWrites(t *testing.T) {
-	for _, mode := range []string{"task", "step"} {
-		t.Run(mode, func(t *testing.T) {
-			current := sourceTask(model.TaskTodo)
-			updated := current
-			updated.Status, updated.Version, updated.UpdatedAt = model.TaskInProgress, 8, current.UpdatedAt.Add(time.Second)
-			db, record, ctx, _ := newSourceWrite(t, current, updated)
-			cause := errors.New("capture refused prepared responsibility")
-			record.cause = cause
-			var err error
-			if mode == "task" {
-				_, err = NewTasks(db, record).SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.SetTaskStatus{Version: 7, Status: model.TaskInProgress})
-			} else {
-				db.scope.tasks.allowClock = true
-				db.scope.tasks.stepAction = "created"
-				db.scope.tasks.headers = []model.TaskHeader{{ProjectID: sourceProjectID, ID: sourceTaskID, Version: 7}, {ProjectID: sourceProjectID, ID: sourceTaskID, Version: 8}}
-				db.scope.tasks.steps = []model.TaskStep{}
-				_, err = NewTaskSteps(db, record).Add(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, AddTaskStep{Version: 7, ID: "87654321", Title: "Source"})
-			}
-			if !errors.Is(err, cause) || len(record.facts) != 1 {
-				t.Fatalf("source capture failure lost: %#v %v", record.facts, err)
-			}
-		})
+func TestSourceCaptureFailurePropagatesFromTaskWrites(t *testing.T) {
+	current := sourceTask(model.TaskTodo)
+	updated := current
+	updated.Status, updated.Version, updated.UpdatedAt = model.TaskInProgress, 8, current.UpdatedAt.Add(time.Second)
+	db, record, ctx, _ := newSourceWrite(t, current, updated)
+	cause := errors.New("capture refused prepared responsibility")
+	record.cause = cause
+	_, err := NewTasks(db, record).SetStatus(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.SetTaskStatus{Version: 7, Status: model.TaskInProgress})
+	if !errors.Is(err, cause) || len(record.facts) != 1 {
+		t.Fatalf("source capture failure lost: %#v %v", record.facts, err)
 	}
 }
 

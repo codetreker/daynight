@@ -430,7 +430,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119)`); err != nil || result.RowsAffected() != 41 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120)`); err != nil || result.RowsAffected() != 42 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -458,9 +458,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at'), (SELECT count(*) FROM schema_migrations WHERE version=118)`).Scan(&activityColumn, &migrationCount); err != nil || !activityColumn || migrationCount != 1 {
 		t.Fatalf("upgraded browser session activity: column=%t migration count=%d error=%v", activityColumn, migrationCount, err)
 	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("upgraded Step Webhook retirement: migration count=%d error=%v", migrationCount, err)
+	}
 	var managementColumns int
 	var managementIndex bool
-	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=119)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
+	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=120)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
 		t.Fatalf("upgraded browser session management: columns=%d index=%t migration count=%d error=%v", managementColumns, managementIndex, migrationCount, err)
 	}
 	var historyPolicyColumn bool

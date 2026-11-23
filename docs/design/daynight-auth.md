@@ -739,6 +739,7 @@ panic/abort 保持原中止语义，abort 另有安全请求日志。
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
 `118_browser_session_activity.sql` 仅新增可空 last_used_at，不回填历史活动或改变旧行期限；首次合格活动按锁后主库时钟续期。
+`120_browser_session_management.sql` 在既有 119 迁移之后新增可空 browser、os 及账号创建顺序索引，不回填旧行，保留会话散列和到期索引。
 `035_team_invitations.sql` 随真实邀请入口建立独立邀请表、唯一散列及 Team/到期索引；
 删除 Team 的事务负责清除子记录，不引入 foreign key。
 

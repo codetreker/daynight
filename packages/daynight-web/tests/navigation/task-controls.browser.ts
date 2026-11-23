@@ -28,6 +28,7 @@ type FixtureOptions = {
   readonly exposeDeleteTask?: (remove: () => void) => void;
   readonly dualPauseReceipt?: boolean;
   readonly formerAssignee?: boolean;
+  readonly assigneeName?: string;
   readonly platformReceipt?: boolean;
 };
 
@@ -78,7 +79,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
-      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: !options.formerAssignee };
+      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: options.assigneeName ?? longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: !options.formerAssignee };
       return send({ items: requested.length === 0 || requested.includes(TEST_VIEWER_ID) ? [person] : [], unresolvedUserIds: requested.filter(id => id !== TEST_VIEWER_ID) });
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.platformReceipt) {
@@ -113,23 +114,33 @@ async function install(page: Page, running = false, linked = false, large = fals
   return writes;
 }
 
-async function openDialog(page: Page) {
+async function openDialog(page: Page, prerequisite = false) {
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
-  await page.locator(`#standalone-task-${taskId}`).click();
+  if (prerequisite) {
+    await page.locator('#project-task-tab-chains').click();
+    await page.locator(`#task-root-${previousId}`).click();
+    await page.locator(`[id="chain-task-${previousId}-${taskId}"]`).click();
+  } else {
+    await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+  }
   const dialog = page.locator('.task-detail-dialog');
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
 }
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) {
-  test(`detail state typography scales in ${presentation} at ${width}px in ${locale}`, async ({ page }) => {
-    const writes = await install(page, false, false, false, true, false, undefined, {}, { locale, formerAssignee: true });
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 640, 1280]) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) for (const ready of [true, false]) {
+  test(`detail state typography scales ${ready ? 'Ready' : 'Not ready'} in ${presentation} at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const formerAssignee = width !== 1280;
+    const assigneeName = formerAssignee ? longName : 'Alex';
+    const writes = await install(page, false, false, false, true, false, undefined,
+      ready ? {} : { ready: false, dependsOn: [previousId], blockedBy: [previousId] },
+      { locale, formerAssignee, assigneeName });
     await page.setViewportSize({ width, height: 900 });
     if (presentation === 'direct') await page.goto(`/projects/${projectId}/tasks/${taskId}`);
     else {
-      await openDialog(page);
+      await openDialog(page, !ready);
       if (presentation === 'fullscreen') await page.locator('.task-detail-dialog').getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
     }
     const detail = page.locator(presentation === 'direct' ? '.task-detail-page' : '.task-detail-dialog');
@@ -139,26 +150,52 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     const assignee = controls.locator('.assignee-trigger');
     const identity = assignee.locator('.task-assignee-identity');
     const platform = controls.locator('.native-select__control');
-    await expect(identity.locator('.assignee-name')).toHaveText(longName);
-    await expect(identity.locator('.assignee-former')).toBeVisible();
-    for (const root of [16, 24]) {
+    const badge = row.locator(ready ? '.task-detail-ready' : '.task-detail-blocked');
+    const measurements: object[] = [];
+    await expect(badge).toHaveText(locale === 'en' ? ready ? 'Ready' : 'Not ready' : ready ? '可开始' : '未就绪');
+    await expect(identity.locator('.assignee-name')).toHaveText(assigneeName);
+    await expect(identity.locator('.assignee-former')).toHaveCount(formerAssignee ? 1 : 0);
+    for (const root of [16, 24]) for (const height of presentation === 'fullscreen' ? [900, 400] : [900]) {
+      await page.setViewportSize({ width, height });
       await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
-      for (const element of [status, controls.locator('.assignee-field-label'), assignee, identity, identity.locator('.assignee-name'), identity.locator('.assignee-former'), platform, controls.locator('.native-select')]) {
+      for (const element of [status, controls.locator('.assignee-field-label'), assignee, identity, identity.locator('.assignee-name'), ...(formerAssignee ? [identity.locator('.assignee-former')] : []), platform, controls.locator('.native-select'), badge, row.locator('.task-automation-control > span').first()]) {
         await expect(element).toHaveCSS('font-size', `${root * 0.75}px`);
       }
-      await expect(row.locator('.task-detail-ready')).toHaveCSS('font-size', `${root * 0.875}px`);
-      await expect(row.locator('.task-automation-control > span').first()).toHaveCSS('font-size', `${root * 0.875}px`);
       await expect.poll(() => row.evaluate(element => {
         const bounds = element.getBoundingClientRect();
-        const boxes = [...element.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select, .task-detail-ready, .task-automation-control')].map(node => node.getBoundingClientRect());
+        const boxes = [...element.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select, .task-detail-ready, .task-detail-blocked, .task-automation-control')].map(node => node.getBoundingClientRect());
         return document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
       })).toBe(true);
+      await expect.poll(() => row.evaluate((element, standard) => {
+        const nodes = [...element.querySelectorAll('.task-status-trigger, .assignee-trigger, .native-select__control, .task-detail-ready, .task-detail-blocked, .task-automation-switch')];
+        const boxes = nodes.map(node => node.getBoundingClientRect());
+        const centers = boxes.map(box => box.top + box.height / 2);
+        if (standard) return Math.max(...centers) - Math.min(...centers) <= 1;
+        const badges = element.querySelector('.task-detail-badges')!.getBoundingClientRect();
+        const automation = element.querySelector('.task-automation-control')!.getBoundingClientRect();
+        return innerWidth <= 600 || Math.max(...centers.slice(0, -1)) - Math.min(...centers.slice(0, -1)) <= 1 || automation.top >= badges.bottom - 1;
+      }, width === 1280)).toBe(true);
+      await expect.poll(() => row.evaluate(element => [...element.querySelectorAll('.task-detail-ready, .task-detail-blocked, .task-automation-control > span:first-child')].every(node => {
+        const bounds = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node);
+        const text = range.getBoundingClientRect();
+        return text.left >= bounds.left - 1 && text.right <= bounds.right + 1 && text.top >= bounds.top - 1 && text.bottom <= bounds.bottom + 1 && text.top >= 0 && text.bottom <= innerHeight;
+      }))).toBe(true);
       await expect.poll(() => assignee.evaluate(button => {
         const bounds = button.getBoundingClientRect();
         const boxes = [...button.querySelectorAll('.assignee-avatar, .assignee-name, .assignee-former, .assignee-chevron')].map(node => node.getBoundingClientRect());
-        return boxes.length === 4 && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+        return boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
       })).toBe(true);
+      measurements.push(await row.evaluate((element, rootSize) => {
+        const nodes = [...element.querySelectorAll('.task-status-trigger, .assignee-trigger, .native-select__control, .task-detail-ready, .task-detail-blocked, .task-automation-switch')];
+        const controls = nodes.map(node => {
+          const box = node.getBoundingClientRect();
+          return { className: node.className, fontSize: getComputedStyle(node).fontSize, x: box.x, y: box.y, width: box.width, height: box.height, centerY: box.y + box.height / 2 };
+        });
+        return { rootSize, viewport: { width: innerWidth, height: innerHeight }, controls, centerSpread: Math.max(...controls.map(control => control.centerY)) - Math.min(...controls.map(control => control.centerY)) };
+      }, root));
     }
+    await testInfo.attach('state-row-measurements', { body: JSON.stringify({ locale, presentation, ready, measurements }, null, 2), contentType: 'application/json' });
+    await page.setViewportSize({ width, height: 900 });
     await status.focus(); await page.keyboard.press('Enter');
     await expect(detail.locator('.task-status-option').first()).toHaveCSS('font-size', '21px');
     await page.keyboard.press('Escape'); await expect(status).toBeFocused();

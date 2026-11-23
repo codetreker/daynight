@@ -16,7 +16,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
 var orderedStepIDs = []string{"00000000", "11111111", "abcdef01", "fedcba98"}
@@ -134,14 +133,10 @@ func (f *orderedWrite) rejected() {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: err}
 	}
 }
-func (f *orderedWrite) fact(action string, at time.Time) {
+func (f *orderedWrite) fact(_ string, at time.Time) {
 	f.observed = at
-	f.expectedFact = protocol.Fact{Type: protocol.StepUpdated, ProjectID: f.projectID, TaskID: f.taskID, TaskVersion: f.header.Version + 1, OccurredAt: at, StepID: f.target, Action: action}
-	if action == "moved" {
-		f.expectedFact.FromPosition = stepWritePtr(f.from)
-		f.expectedFact.ToPosition = stepWritePtr(f.to)
-	}
 }
+
 func orderedAt() time.Time { return time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC) }
 func canonicalPlacement(input MoveTaskStep) tasksteps.Placement {
 	p := tasksteps.Placement{Before: input.Before, After: input.After, Position: input.Position}

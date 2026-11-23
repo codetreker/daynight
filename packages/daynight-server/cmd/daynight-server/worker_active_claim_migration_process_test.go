@@ -42,7 +42,7 @@ ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 DROP INDEX sessions_user_created_id;
 ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119)`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120)`); err != nil {
 				t.Fatal(err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()
@@ -129,7 +129,11 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || activityApplied != wantCommitted {
 				t.Fatalf("activity migration after worker validation: applied=%t want=%t error=%v", activityApplied, wantCommitted, err)
 			}
-			const managementFacts = `SELECT (EXISTS(SELECT FROM schema_migrations WHERE version=119))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='browser'))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='os'))::int + (EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('sessions_user_created_id') AND indisvalid AND indisready))::int`
+			var stepRetirementApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || stepRetirementApplied != wantCommitted {
+				t.Fatalf("step retirement migration after worker validation: applied=%t want=%t error=%v", stepRetirementApplied, wantCommitted, err)
+			}
+			const managementFacts = `SELECT (EXISTS(SELECT FROM schema_migrations WHERE version=120))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='browser'))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='os'))::int + (EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('sessions_user_created_id') AND indisvalid AND indisready))::int`
 			var managementFactsCount int
 			wantFacts := 0
 			if wantCommitted {
@@ -165,6 +169,9 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			}
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || !activityApplied {
 				t.Fatalf("activity migration recovery: applied=%t error=%v", activityApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || !stepRetirementApplied {
+				t.Fatalf("step retirement migration recovery: applied=%t error=%v", stepRetirementApplied, err)
 			}
 			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != 4 {
 				t.Fatalf("session management migration recovery: facts=%d error=%v", managementFactsCount, err)

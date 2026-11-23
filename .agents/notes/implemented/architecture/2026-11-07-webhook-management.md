@@ -25,3 +25,5 @@ The management module uses an owner-scoped operation fence and stores a receipt 
 ## Consequences
 
 A lost commit result remains unknown until the original operation is read; a missing or unauthorized receipt does not prove rollback. Ordinary configuration projections remain redacted and secret reads remain separately authorized. Database and backup readers can recover stored targets and signing secrets. Dispatch is outside this module.
+
+The [Step event retirement](../simplification/2026-11-23-retire-step-webhook.md) preserves these boundaries while removing that subscription choice.
