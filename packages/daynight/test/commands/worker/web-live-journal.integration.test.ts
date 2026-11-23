@@ -225,19 +225,27 @@ const recoveredInitial = async (prepared: boolean) => {
   const file = path.join(controllerExecutionDirectory(f.home, f.source.ticket.executionId), "journal.sqlite");
   let journal = lifecycle.openControllerLifecycleStore(file, f.source.ticket);
   const first = { ...f.source.snapshot, nativeSessionId: nativeId, initialInputState: "not_submitted" as const,
+    controllerProcess: process.platform === "win32"
+      ? { ...f.source.snapshot.controllerProcess!, jobObjectName: `Local\\Daynight-${f.source.ticket.launchId}` }
+      : f.source.snapshot.controllerProcess,
     lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
   journal.patchSnapshot({ lifecycle: first.lifecycle, activity: first.activity, nativeSessionId: first.nativeSessionId,
     initialInputState: first.initialInputState, nativeStopped: first.nativeStopped, stoppedAt: first.stoppedAt,
     controllerProcess: first.controllerProcess, nativeProcesses: first.nativeProcesses, error: first.error });
   if (prepared) journal.prepareOperation({ operationId: f.source.ticket.initialOperationId, kind: "initial", payload: { text: f.source.ticket.initialPrompt } });
   journal.close();
+  if (process.platform === "win32") {
+    vi.mocked(lifecycle.recordStoppedControllerGeneration).mockRestore();
+    await lifecycle.recordStoppedControllerGeneration(file, f.source.ticket, { jobLease: {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease });
+  }
   let task = f.store.updateWebExecution(f.task, { initialInputState: "not_submitted", activity: "stopped", nativeProcesses: [] }, 10);
   task = f.store.beginWebGeneration(task, first, 11);
   const execution = task.webExecution!;
   const ticket = { ...f.source.ticket, launchId: execution.launchId, executionGeneration: execution.executionGeneration,
     controllerInstanceId: execution.controllerInstanceId, resumeNativeSessionId: nativeId };
   const ticketPath = await writeLaunchTicket(f.home, ticket);
-  const controllerProcess = { ...first.controllerProcess!, pid: 989, startedAt: "recovered" };
+  const controllerProcess = { ...first.controllerProcess!, pid: 989, startedAt: "recovered",
+    ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) };
   const nativeProcess = { ...controllerProcess, pid: 990, parentPid: controllerProcess.pid, startedAt: "native-recovered" };
   task = f.store.updateWebExecution(task, { ticketPath, launchSubmission: "acknowledged", controllerProcess, nativeProcesses: [nativeProcess] }, 12);
   journal = lifecycle.openControllerLifecycleStore(file, ticket);
@@ -404,4 +412,15 @@ it.each(["ordinary", "orchestration"] as const)("does not submit recovered input
   expect(f.store.getTask(f.task)!.recovery).toEqual(f.task.recovery);
   if (mode === "orchestration") expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
   expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state: "accepted", executionGeneration: "1" });
+});
+
+it.skipIf(process.platform === "win32")("retains the recovered fixture's preceding Windows Job stop proof", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const f = await recoveredInitial(true);
+    const evidence = await lifecycle.readRecoverableInitialInput(f.file, f.ticket, f.home);
+    expect(evidence.snapshot).toMatchObject({ executionGeneration: "2", nativeSessionId: f.ticket.resumeNativeSessionId });
+    expect(evidence.operation).toMatchObject({ operationId: f.ticket.initialOperationId, executionGeneration: "1", state: "accepted" });
+  } finally { Object.defineProperty(process, "platform", platform); }
 });
