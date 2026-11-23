@@ -57,7 +57,7 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, c
 	probe := func(value any) any { return map[string]any{"state": "ok", "checkedAt": stamp, "value": value} }
 	paths := map[string]any{"codex": map[string]any{"kind": "path", "path": commits.root + "/codex.mjs"}, "copilot": map[string]any{"kind": "auto"}}
 	bootstrap := map[string]any{
-		"maxConcurrent": 1, "pollIntervalMs": 1000, "recoveryLimit": 3,
+		"maxConcurrent": 1, "pollIntervalMs": 5000, "recoveryLimit": 3,
 		"preferPlatformSpecificTasks": false, "enableSudoCleanup": false, "archiveSessions": true,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []string{}},
 		"projects": []any{map[string]any{"projectId": projectID, "nativeOverrides": map[string]any{}}}, "toolPaths": paths,

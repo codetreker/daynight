@@ -50,11 +50,6 @@ func prepareReviewerFixtureGit(t *testing.T) reviewerFixtureCommits {
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(root); err != nil {
-			t.Error(err)
-		}
-	})
 	work, bare, checkout := filepath.Join(root, "seed"), filepath.Join(root, "remote.git"), filepath.Join(root, "worker-checkout")
 	reviewerCommand(t, root, "git", "init", "--initial-branch=trunk", work)
 	reviewerCommand(t, work, "git", "config", "user.name", "Integration")
@@ -144,7 +139,7 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 			t.Fatal(err)
 		}
 	}
-	peer, err := os.ReadFile(filepath.Join("..", "..", "..", "e2e_tests", "tests", "native-worker-peer.mjs"))
+	peer, err := os.ReadFile(filepath.Join("testdata", "reviewer", "native-worker-peer.mjs"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +186,7 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 		cmd = exec.Command(node, cli, "worker", "run")
 		cmd.Dir = root
 		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
-		cmd.Env = []string{"HOME=" + home, "CODEX_HOME=" + filepath.Join(root, "native"), "DAYNIGHT_WORKER_PEER_LOG=" + peerLog, "TMPDIR=" + root, "PATH=" + binDir + string(os.PathListSeparator) + filepath.Dir(node) + string(os.PathListSeparator) + os.Getenv("PATH"), "DN_CONFIG_DIR=" + configDir, "GIT_CONFIG_GLOBAL=" + gitConfig, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "NO_PROXY=127.0.0.1,localhost", "REVIEW_FIXTURE_STATE=" + state, "REVIEW_FIXTURE_PUBLICATION=" + publication, "REVIEW_FIXTURE_INPUT=" + input, "REVIEW_FIXTURE_REQUESTS=" + requests, "REVIEW_FIXTURE_BLOCK=" + block, "REVIEW_FIXTURE_STARTS=" + starts, "REVIEW_FIXTURE_STOPPED=" + stoppedReview}
+		cmd.Env = []string{"HOME=" + home, "CODEX_HOME=" + filepath.Join(root, "native"), "DAYNIGHT_WORKER_PEER_LOG=" + peerLog, "TMPDIR=" + root, "PATH=" + binDir + string(os.PathListSeparator) + filepath.Dir(node) + string(os.PathListSeparator) + os.Getenv("PATH"), "DN_CONFIG_DIR=" + configDir, "GIT_CONFIG_GLOBAL=" + gitConfig, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "NO_PROXY=127.0.0.1,localhost", "REVIEW_FIXTURE_STATE=" + state, "REVIEW_FIXTURE_PUBLICATION=" + publication, "REVIEW_FIXTURE_INPUT=" + input, "REVIEW_FIXTURE_REQUESTS=" + requests, "REVIEW_FIXTURE_BLOCK=" + block, "REVIEW_FIXTURE_STARTS=" + starts, "REVIEW_FIXTURE_STOPPED=" + stoppedReview, "DAYNIGHT_INTEGRATION_RUN_ROOT=" + integrationRunRoot(t), "DAYNIGHT_INTEGRATION_REVIEWER_ROOT=" + root}
 		cmd.Stdout, cmd.Stderr = logs, logs
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
@@ -202,31 +197,37 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 		stopped = false
 	}
 	stop := func() {
-		if stopped {
-			return
-		}
-		stopped = true
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		select {
-		case err := <-exited:
-			if err != nil {
-				t.Errorf("review Worker did not stop cleanly: %v\n%s", err, logs.String())
+		if cmd != nil && !stopped {
+			stopped = true
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case err := <-exited:
+				if err != nil {
+					t.Errorf("review Worker did not stop cleanly: %v\n%s", err, logs.String())
+				}
+			case <-time.After(15 * time.Second):
+				_ = cmd.Process.Kill()
+				<-exited
+				t.Error("review Worker did not stop in time")
 			}
-		case <-time.After(15 * time.Second):
-			_ = cmd.Process.Kill()
-			<-exited
-			t.Error("review Worker did not stop in time")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cleanup := exec.CommandContext(ctx, node, "scripts/integration-runtime.mts", "reviewer-cleanup", integrationRunRoot(t))
+		cleanup.Dir = filepath.Join("..", "..")
+		if out, err := cleanup.CombinedOutput(); err != nil {
+			t.Errorf("review Worker process cleanup failed: %v: %s", err, out)
 		}
 	}
-	start()
 	t.Cleanup(stop)
+	start()
 	assignmentPath := "/api/v1/projects/" + projectID + "/pull-requests/1/review-assignment"
 	assignmentBefore := requestJSON[reviewAssignmentResponse](t, f, http.MethodGet, assignmentPath, nil, http.StatusOK)
 	waitFor := func(description string, predicate func() bool) {
 		t.Helper()
 		deadline := time.NewTimer(90 * time.Second)
 		defer deadline.Stop()
-		ticker := time.NewTicker(250 * time.Millisecond)
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for !predicate() {
 			select {
@@ -261,15 +262,18 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 	// Worker must claim it and deliver its input to the controlled native peer.
 	task := createTask(t, f, api.Project{ID: projectID}, "Development while review is disabled", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
+	waitFor("waiting for the native peer to receive the development task", func() bool {
+		data, err := os.ReadFile(peerLog)
+		return err == nil && strings.Contains(string(data), `"method":"turn/start"`) && strings.Contains(string(data), "Assignment:")
+	})
 	var active api.Task
-	waitFor("waiting for the same Worker to execute the development task", func() bool {
+	waitFor("waiting for the same Worker to register its native session", func() bool {
 		active = requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK)
 		if active.Status != "in_progress" || active.Properties["worker"] == nil {
 			return false
 		}
 		claim := workerClaim(t, active)
-		data, err := os.ReadFile(peerLog)
-		return err == nil && claim.WorkerID == workerID && claim.NativeSessionID != nil && strings.Contains(string(data), `"method":"turn/start"`) && strings.Contains(string(data), "Assignment:")
+		return claim.WorkerID == workerID && claim.NativeSessionID != nil
 	})
 	claim := workerClaim(t, active)
 	var completed api.Task
