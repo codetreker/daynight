@@ -243,7 +243,7 @@ func (op *ArchiveOperation) PutHistoryLedger(ctx context.Context, writer ActiveH
 	if err := op.prepareHistoryLedger(ctx, writer); err != nil {
 		return sp.ArchiveFileReceipt{}, err
 	}
-	return op.putArchiveFile(ctx, "history", fileID, offset, length, digest, chunk, data, nil)
+	return op.putArchiveFile(ctx, "history", fileID, offset, length, digest, chunk, data, nil, 1)
 }
 func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer ActiveHistoryWriter, fileID string) (out sp.ArchiveFileReceipt, err error) {
 	op.mu.Lock()

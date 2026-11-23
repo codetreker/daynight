@@ -18,6 +18,16 @@ type ArchiveBundleFile struct {
 	TimelineRevision                                int64
 	StagingReleased                                 bool
 	Resource                                        json.RawMessage
+	UploadVersion                                   int
+	PrefixProof                                     []byte
+	SuccessorFileID                                 string
+	TerminalError                                   json.RawMessage
+}
+
+// SessionArchiveV2DAO atomically compares the complete previously observed file
+// state before changing it. The caller owns the transaction and transition rules.
+type SessionArchiveV2DAO interface {
+	CompareAndSwapSessionArchiveFile(context.Context, ArchiveBundleFile, ArchiveBundleFile) error
 }
 type ArchiveMigration struct {
 	SessionID, MigrationID, SourcePath, SourceHash, TargetPath, TargetHash, Phase string

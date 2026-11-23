@@ -2858,8 +2858,12 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		add("POST", archive+"/seal")
 		add("PUT", archive+"/prepare/history/{fileId}")
 		add("GET", archive+"/prepare/history/{fileId}/status")
+		add("POST", archive+"/prepare/history/{fileId}/complete")
+		add("POST", archive+"/prepare/history/{fileId}/restart")
 		add("GET PUT", archive+"/files/{fileId}")
 		add("GET", archive+"/files/{fileId}/status")
+		add("POST", archive+"/files/{fileId}/complete")
+		add("POST", archive+"/files/{fileId}/restart")
 		// Controller token endpoints perform their own credential parsing.
 		add("PUT", base+"/image-history-ledger/{fileId}")
 		add("GET", base+"/image-history-ledger/{fileId}/status")

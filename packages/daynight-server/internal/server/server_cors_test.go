@@ -444,8 +444,12 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 		add("PUT", base+"/archive/content")
 		add("PUT", base+"/archive/prepare/history/"+id)
 		add("GET HEAD", base+"/archive/prepare/history/"+id+"/status")
+		add("POST", base+"/archive/prepare/history/"+id+"/complete")
+		add("POST", base+"/archive/prepare/history/"+id+"/restart")
 		add("PUT", base+"/archive/files/"+id)
 		add("GET HEAD", base+"/archive/files/"+id+"/status")
+		add("POST", base+"/archive/files/"+id+"/complete")
+		add("POST", base+"/archive/files/"+id+"/restart")
 	}
 	for _, route := range routes {
 		for _, method := range strings.Fields(route.methods) {

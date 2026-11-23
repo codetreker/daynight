@@ -60,6 +60,8 @@ type ArchivePrepareReceipt struct {
 }
 type ArchiveFileReceipt struct {
 	TimelineRevision *string     `json:"-"`
+	UploadVersion    int         `json:"-"`
+	SuccessorFileID  *string     `json:"successorFileId,omitempty"`
 	FileID           string      `json:"fileId"`
 	State            string      `json:"state"`
 	AcceptedOffset   string      `json:"acceptedOffset"`
