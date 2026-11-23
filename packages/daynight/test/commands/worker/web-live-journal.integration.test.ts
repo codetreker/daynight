@@ -60,7 +60,7 @@ it("stops a live v16 boundary while the original cancelled Task writer remains u
   const coordinator = createWorkerCoordinator({ store, webStore: f.store, signal: root.signal, serverOrigin: f.task.serverOrigin,
     workerId: f.task.workerId, userId: f.task.userId!, platform: "windows", machine: { id: f.task.workerId, name: "fixture" },
     repositories: [{ project, configuration: f.task.configuration! }], globalConfiguration: f.task.configuration!, maxConcurrent: 1,
-    preferPlatformSpecificTasks: false, git: f.git, remote: { currentUserId: async () => f.task.userId!, readTask: async () => task } as never,
+    platformTaskMode: "all", git: f.git, remote: { currentUserId: async () => f.task.userId!, readTask: async () => task } as never,
     webBackend: { ...backend, cleanup, advance: async () => { entered(); await gate; return f.task; } }, emit: vi.fn() });
   const writer = coordinator.advanceRetry(f.task).catch(error => error);
   try {
