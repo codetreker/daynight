@@ -1350,3 +1350,16 @@ func TestArchiveStreamCompletionDeclinedDoesNotInventReceipt(t *testing.T) {
 		t.Fatalf("declined completion: receipt=%+v row=%+v err=%v", receipt, d.row, err)
 	}
 }
+
+func TestArchiveStreamHistoryCannotBypassCorruptSuccessor(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	op.execution.SetArchiveV2RegistrationEnabled(true)
+	d.allowInsert = true
+	h.allowCreate = true
+	d.row.State = "failed"
+	d.row.TerminalError = encode(sp.ImageError{Code: "staging_corrupt"})
+	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+	if err == nil || h.creates != 0 || d.next != nil || d.bundle.HistoryID != d.row.FileID || d.row.SuccessorFileID != "" {
+		t.Fatalf("history successor bypass: err=%v row=%+v", err, d.row)
+	}
+}
