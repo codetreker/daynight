@@ -21,7 +21,10 @@ with a real event-loop yield and cancellation checks.
 
 The operation has an independent real thirty-second budget. The tests check
 the output timer's actual remaining cleanup budget and its specific join error,
-then verify unknown responsibility before releasing the original consumer.
+then verify unknown responsibility before releasing the original consumer. The
+remaining-budget assertion uses the real clock read that computed the timer
+argument and the rounded cleanup deadline; registration-entry timestamps can
+advance after argument evaluation.
 Reconciliation preserves the same resource, lifecycle sequence and late error,
 and records stopped only after joining that consumer. Native termination grace
 and escalation tests continue to use real time.

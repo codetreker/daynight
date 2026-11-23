@@ -106,18 +106,28 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     return stopped;
   });
   type JoinTimer = ReturnType<typeof captureSynchronousDeadline<NodeJS.Timeout>>;
-  const registered = Promise.withResolvers<{ before: number; after: number; timer: JoinTimer }>();
+  const registered = Promise.withResolvers<{ at: number | undefined; before: number; after: number; timer: JoinTimer }>();
   const schedule = globalThis.setTimeout;
   let timer: JoinTimer | undefined, capturing = false;
+  const now = Date.now;
+  let outputJoinAt: number | undefined;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => {
+    const value = now();
+    if (!capturing && timer === undefined && consumerHeld && nativeClosed && nativeStopped) outputJoinAt = value;
+    return value;
+  });
   // Native proof helpers keep their real clocks. Only the next registration after
   // both closure observations and the held writer belongs to the output join.
   const scheduling = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) => {
     if (capturing || timer !== undefined || !consumerHeld || !nativeClosed || !nativeStopped) return schedule(callback, milliseconds, ...args);
-    const before = Date.now();
+    // The argument is computed before setTimeout is entered. Retain that real
+    // clock read so a millisecond tick during registration cannot alter the proof.
+    const at = outputJoinAt;
+    const before = now();
     capturing = true;
     try { timer = captureSynchronousDeadline(() => setTimeout(callback, milliseconds, ...args)); }
     finally { capturing = false; }
-    registered.resolve({ before, after: Date.now(), timer });
+    registered.resolve({ at, before, after: now(), timer });
     return timer.result;
   }) as typeof globalThis.setTimeout);
   const outcome = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('retained');"], environment: process.env }, operation, sink,
@@ -133,9 +143,12 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     await Promise.race([entered.promise, outcome.then(error => { throw error; })]);
     const join = await Promise.race([registered.promise, outcome.then(error => { throw error; })]);
     expect(join.timer.count).toBe(1);
-    expect(join.before).toBeLessThan(cleanupDeadline!);
-    expect(join.timer.requested).toBeGreaterThanOrEqual(cleanupDeadline! - join.after);
-    expect(join.timer.requested).toBeLessThanOrEqual(cleanupDeadline! - join.before);
+    expect(join.at).toBeTypeOf("number");
+    expect(join.at).toBeLessThanOrEqual(join.before);
+    expect(join.before).toBeLessThanOrEqual(join.after);
+    expect(Number.isSafeInteger(cleanupDeadline)).toBe(true);
+    expect(join.at).toBeLessThan(cleanupDeadline!);
+    expect(join.timer.requested).toBe(Math.max(1, cleanupDeadline! - join.at!));
     expect(nativeConfirmations).toBe(2);
     expect(nativeClosed).toBe(true);
     expect(nativeStopped).toBe(true);
@@ -147,6 +160,7 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     const error = await outcome;
     timer!.restore(); timer = undefined;
     scheduling.mockRestore();
+    clock.mockRestore();
     confirmation.mockRestore();
     expect(operation.signal.aborted).toBe(false);
     operation.check();
@@ -172,7 +186,7 @@ it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s ca
     expect(retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)).toBe(false);
     expect(dispatchedRuns!()).toBe(1);
   } finally {
-    timer?.restore(); scheduling.mockRestore(); confirmation.mockRestore();
+    timer?.restore(); scheduling.mockRestore(); clock.mockRestore(); confirmation.mockRestore();
     release.resolve(); await outcome; operation.dispose();
     const resourceId = events[0]?.resourceId;
     if (resourceId && retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 5000);

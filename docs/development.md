@@ -232,7 +232,8 @@ production paths. The
 describes their clock and cleanup boundaries.
 Owned-command capture fixtures hold the original output consumer, observe the
 original launcher close and confirm native boundary closure before capturing
-its output join timer. They check the remaining cleanup budget and specific
+its output join timer. They check the remaining cleanup budget using the actual
+clock read that computed the timer argument and the rounded deadline, plus the specific
 join error while the independent operation watchdog uses real time. Unknown
 responsibility, late errors and stopped persistence retain the original resource
 through release and reconciliation. Native termination grace and escalation
