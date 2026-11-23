@@ -90,3 +90,44 @@ func TestFromEnvironmentCreatesUsageWithoutKeys(t *testing.T) {
 		t.Fatal(service, err)
 	}
 }
+
+func TestCodexQualificationRequiresThePinnedResponseProfileAndVersion(t *testing.T) {
+	entry := "codex-response-0.169.0-v1@0.169.0"
+	service, err := New(nil, Options{WriteEnabled: true, QualifiedProfiles: []string{entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := service.profile("codex-response-0.169.0-v1", "codex", "0.169.0")
+	if err != nil || p.Capability.Qualification != "verified" {
+		t.Fatal("pinned response profile was not qualified", p, err)
+	}
+	p, err = service.profile("codex-response-0.169.0-v1", "codex", "0.169.1")
+	if err != nil || p.Capability.Qualification != "unverified" {
+		t.Fatal("qualification leaked to another version", p, err)
+	}
+	p, err = service.profile("codex-snapshot-unaccountable-v1", "codex", "0.169.0")
+	if err != nil || p.Capability.Qualification != "unsupported" {
+		t.Fatal("qualification upgraded legacy snapshots", p, err)
+	}
+	for _, invalid := range []string{
+		"codex-response-0.169.0-v1@0.169.1", "codex-response-0.169.0-v1@unknown", "codex-response-0.169.0-v1@0.169.0-beta",
+		"codex-snapshot-unaccountable-v1@0.169.0", "codex-response-0.169.0-v1@ 0.169.0",
+	} {
+		if _, err := New(nil, Options{QualifiedProfiles: []string{invalid}}); err == nil {
+			t.Fatalf("invalid Codex qualification accepted: %s", invalid)
+		}
+	}
+	profiles := service.Capabilities()["profiles"].([]profileAdvertisement)
+	found := false
+	for _, advertised := range profiles {
+		if advertised.ID == "codex-response-0.169.0-v1" {
+			found = true
+			if advertised.Capability.Qualification != "unverified" || len(advertised.QualifiedVersions) != 1 || advertised.QualifiedVersions[0].ProviderVersion != "0.169.0" || advertised.QualifiedVersions[0].Capability.Qualification != "verified" {
+				t.Fatal("advertised qualification changed its version scope", advertised)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("response profile was omitted from capabilities")
+	}
+}

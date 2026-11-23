@@ -147,6 +147,17 @@ contracts, and process lifetime tests also use executable invocations. The
 [Task CLI batching decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
 owns these boundaries.
 
+Task protocol matrices live in `packages/daynight/test/cli/task-protocol.test.ts`;
+native and mixed cases remain in `packages/daynight/test/cli/task.test.ts`. They
+share `test/fixtures/compiled-task.ts` and retain their original case names,
+assertions, timeouts and compiled invocation routes. The protocol file proves
+request and response behavior with real compiled CLI processes and loopback HTTP.
+The native file retains Git, guarded startup and environment behavior, Unicode
+arguments, file and binary transfers, interrupted responses, physical stdout,
+exit wiring and SIGINT. Ambiguous complete cases stay native. Ordinary CI runs
+both files on Linux, Windows and macOS ARM64; classification alone does not
+change platform selection or demonstrate a CI time saving.
+
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
 continuous-cursor fixture advances time by 10 ms per response: three pages fit
@@ -230,6 +241,16 @@ Real file operations, ownership records and lock observations stay in the
 production paths. The
 [observation deadline decision](../.agents/notes/implemented/testing/2026-11-23-worker-observation-deadline-fixtures.md)
 describes their clock and cleanup boundaries.
+Owned-command capture fixtures hold the original output consumer, observe the
+original launcher close and confirm native boundary closure before capturing
+its output join timer. They check the remaining cleanup budget using the actual
+clock read that computed the timer argument and the rounded deadline, plus the specific
+join error while the independent operation watchdog uses real time. Unknown
+responsibility, late errors and stopped persistence retain the original resource
+through release and reconciliation. Native termination grace and escalation
+keep real time. The
+[output join clock decision](../.agents/notes/implemented/testing/2026-11-23-owned-command-output-join-clock.md)
+owns this boundary.
 Worker lifecycle manager fixtures control the wait between observations. The
 local SQLite observer and cloud poll advance independently in ordering-sensitive
 cases. Real SQLite receipts, cancellation and writer joins remain part of

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -77,6 +78,7 @@ type archiveLedger struct {
 	StoppedContentPolicy                   string               `json:",omitempty"`
 	WithoutActiveBundle                    bool                 `json:",omitempty"`
 	OnlineImageOccurrences                 []sp.ImageOccurrence `json:",omitempty"`
+	PendingImageRetirement                 []sp.ImageOccurrence `json:",omitempty"`
 	HistoryEpoch, SourceThrough, HistoryID string
 	FinalSourceThrough                     string `json:",omitempty"`
 	FinalHistoryEpoch                      string `json:",omitempty"`
@@ -799,11 +801,12 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				if (previous.StoppedContentPolicy != "") != inventoryRequired {
 					return archiveConflict()
 				}
+				var inventoryOnline []sp.ImageOccurrence
 				if previous.StoppedContentPolicy != "" {
 					if r.HistoryContentPolicy == nil || *r.HistoryContentPolicy != previous.StoppedContentPolicy {
 						return invalidArchiveFile(archiveConflict())
 					}
-					if e = op.execution.verifyStoppedCaptures(ctx, tx, r, ledger, capturedImages); e != nil {
+					if e = op.execution.reconcileStoppedCaptures(ctx, tx, r, ledger, capturedImages, &inventoryOnline); e != nil {
 						return e
 					}
 				}
@@ -836,8 +839,9 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 						return invalidArchiveFile(e)
 					}
 				}
-				if op.historyWriter == nil && previous.ContentPolicy == "task_body" {
-					if e = op.execution.retireOnlineImageReferences(ctx, tx, r, previous.OnlineImageOccurrences, ledger.Resources); e != nil {
+				if op.historyWriter == nil && ledger.ContentPolicy == "task_body" {
+					ledger.PendingImageRetirement, e = pendingImageRetirements(previous.PendingImageRetirement, previous.OnlineImageOccurrences, inventoryOnline)
+					if e != nil {
 						return e
 					}
 				}
@@ -1043,6 +1047,15 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 	defer cancelGate()
 	archiveCtx := ctx
 	defer func() {
+		if err == nil && out.State == "ready" {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(archiveCtx), 5*time.Second)
+			if e := op.SettleExpiredUploads(cleanup); e != nil {
+				slog.ErrorContext(cleanup, "Ready archive upload settlement failed", "session_id", op.id, "error", e)
+			}
+			cancel()
+		}
+	}()
+	defer func() {
 		if err == nil {
 			op.retryArchiveStreamCleanup(archiveCtx)
 		}
@@ -1181,6 +1194,17 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 			if e = checkContentPublication(ctx, tx, op.id, manifestContentChange{data}); e != nil {
 				return e
 			}
+		}
+		var ledger archiveLedger
+		if json.Unmarshal(bundle.Ledger, &ledger) != nil {
+			return archiveConflict()
+		}
+		if bundle.Phase != "committed" && bundle.Phase != "verified" && len(ledger.PendingImageRetirement) != 0 {
+			if e = op.execution.retirePendingImages(ctx, tx, r, ledger.PendingImageRetirement, ledger.Resources); e != nil {
+				return e
+			}
+			ledger.PendingImageRetirement = nil
+			bundle.Ledger = encode(ledger)
 		}
 		if e = dao.SetUnifiedSessionArchiveReady(ctx, op.id, digest, len(data), path, manifest.Completeness); e != nil {
 			return e

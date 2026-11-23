@@ -254,14 +254,28 @@ execution_state，滞留 measurement 不承诺补传；能力请求暂时失败�
 
 Codex 与 Copilot 使用同一 journal、上传器和 stopped 补传机制。state 中的 provider
 在代次首次准入时固定，恢复不能改写 Provider 身份；旧 Copilot journal 无需迁移。
-上传器按 provider 选择固定 profile，并核对注册回执的 profile/provider。
+上传器按 state 中固定的 profile/provider 选择能力，并核对注册回执；旧 state 缺少
+profileId 时使用其历史 Provider profile，不因 CLI 升级改写计量口径。
 
 Codex 从实际 App Server initialize 回执的 `daynight/<version>` userAgent 读取版本，
 只准入已核实的 0.169.0/0.169.1；版本未核实不冒充原生 unsupported。
-原 thread 身份和 cwd 验证后登记 `codex-snapshot-unaccountable-v1`，仅上传
-unsupported/provider_unsupported 的 execution_state，不读取累计或 last 快照生成
-measurement。停止和恢复保留 unsupported，不把无计量误写成零或采集失败。
-原生快照缺少可比较权威修订且含上下文估计，因此 turn/completed 不构成用量最终回执。
+新 `0.169.0` state 登记 `codex-response-0.169.0-v1`，其余已核实版本和旧 state
+保留 `codex-snapshot-unaccountable-v1`。新线程通过 experimentalRawEvents 接收
+rawResponse/completed，冷恢复保持原 thread/resume，不能另建线程获取通知。
+responseId 与 threadId 的固定摘要映射到 immutable 来源；通知与 rollout 的单响应
+指标共用映射器。cache/reasoning 的默认零值缺少可观测性，不提升为已知零；模型未知。
+
+CodexUsageRollout 只读取启动或恢复回执 thread.path 指向的物理 regular file，
+核对原 session_meta 的版本、原生身份、cwd 和非 fork/子线程来源，拒绝链接、文件替换
+和截断。按有界 buffer/单行/时间增量读完整 JSONL 行，不保存 transcript；末尾半行
+留给原 writer 完成。仅 token_usage_record.usage 入计量，累计与上下文事件不计。
+turn/started 先将原 turn→state 写入 journal，再接收响应；恢复保留原归属，未绑定
+历史只记录缺口。停止确认后先等待已有 scan，再有界读最终 tail，然后 seal 用量。
+原生 best-effort 持久化以及子线程不在此 reader 范围内，故完成能力始终 partial_only。
+
+Controller journal 格式 019 保留原 018 表结构，版本屏障保护新增 profileId 与
+turn 归属元数据。升级不补写旧 state 的 profile，不重建历史 turn 归属；旧 CLI 明确
+拒绝 019，回退需使用认识该格式且关闭新 profile 的构建。新 CLI 保留对原 016、017、018 的只读兼容，活跃 owner 的旧 journal 不因观察或停止请求而迁移；退出后的升级仍须原 storage permit。服务端保持单表及旧 profile。
 
 ## Claude Controller 输入计量
 
@@ -338,13 +352,13 @@ backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒�
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的
-Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只报告不支持。
+Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只有精确匹配资格配置的 0.169.0 response profile 提供部分覆盖，其余版本与旧 snapshot profile 报告不支持。
 关闭新能力不停止原生执行、不修改旧累计 ACK，也不删除账本。
 
 迁移与 schema snapshot 同步维护，既有历史迁移不可改写。
 回退构建必须仍认识新迁移；`appliedMigrations` 的已知前缀检查会拒绝任意旧二进制。
 不得删迁移账本、checksum 或数据来伪造可回退状态。
-Controller journal 同样保留格式 014；回退 CLI 必须认识该格式，即使关闭用量功能。
+Controller journal 使用格式 019；回退 CLI 必须认识该格式，即使关闭用量功能。
 
 ## 验证职责
 

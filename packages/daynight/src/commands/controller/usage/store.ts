@@ -57,15 +57,25 @@ export const openUsageStore = (db: Database.Database, context: { read<T>(action:
     return item;
   };
   return {
-    ensureState: (generation, nativeSessionId, providerVersion, provider = "copilot") => context.write(() => {
+    ensureState: (generation, nativeSessionId, providerVersion, provider = "copilot", profileId) => context.write(() => {
       const existing = meta<string>(`generation:${generation}`);
       if (existing) {
         const value = state(existing);
         if (value.nativeSessionId !== nativeSessionId || value.providerVersion !== providerVersion || value.provider !== provider) throw new Error("Usage generation identity changed.");
         return value;
       }
-      const value: UsageState = { stateId: randomUUID(), registrationId: randomUUID(), generation, nativeSessionId, providerVersion, provider, grant: null, rowVersion: null, stateSequence: "0", reasons: [], stopped: false, registrationAttempted: false, grantRequestAttempted: false };
+      const value: UsageState = { stateId: randomUUID(), registrationId: randomUUID(), generation, nativeSessionId, providerVersion, provider, ...(profileId ? { profileId } : {}), grant: null, rowVersion: null, stateSequence: "0", reasons: [], stopped: false, registrationAttempted: false, grantRequestAttempted: false };
       save(value); put(`generation:${generation}`, value.stateId); return value;
+    }),
+    bindTurn: (id, turnId) => context.write(() => {
+      if (!turnId || Buffer.byteLength(turnId) > 256) throw new Error("collector_failed");
+      const value = state(id), key = `codex-turn:${JSON.stringify([value.nativeSessionId, turnId])}`, existing = meta<string>(key);
+      if (existing && existing !== id) return;
+      if (!existing) put(key, id);
+    }),
+    turnState: (nativeSessionId, turnId) => context.read(() => {
+      const id = meta<string>(`codex-turn:${JSON.stringify([nativeSessionId, turnId])}`);
+      return id ? state(id) : null;
     }),
     states: () => context.read(() => (db.prepare("SELECT value FROM usage_meta WHERE key LIKE 'state:%' ORDER BY key").all() as { value: string }[]).map(row => JSON.parse(row.value) as UsageState)),
     getState: id => context.read(() => state(id)),

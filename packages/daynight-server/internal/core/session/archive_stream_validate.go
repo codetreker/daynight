@@ -117,11 +117,12 @@ func (op *ArchiveOperation) validateArchiveStreamContent(ctx context.Context, fi
 			if (previous.StoppedContentPolicy != "") != inventoryRequired {
 				return archiveConflict()
 			}
+			var inventoryOnline []sp.ImageOccurrence
 			if previous.StoppedContentPolicy != "" {
 				if r.HistoryContentPolicy == nil || *r.HistoryContentPolicy != previous.StoppedContentPolicy {
 					return invalidArchiveFile(archiveConflict())
 				}
-				if e = op.execution.reconcileStoppedCaptures(ctx, tx, r, ledger, capturedImages, !validateOnly); e != nil {
+				if e = op.execution.reconcileStoppedCaptures(ctx, tx, r, ledger, capturedImages, &inventoryOnline); e != nil {
 					return e
 				}
 			}
@@ -138,8 +139,9 @@ func (op *ArchiveOperation) validateArchiveStreamContent(ctx context.Context, fi
 					return invalidArchiveFile(e)
 				}
 			}
-			if !validateOnly && previous.ContentPolicy == "task_body" {
-				if e = op.execution.retireOnlineImageReferences(ctx, tx, r, previous.OnlineImageOccurrences, ledger.Resources); e != nil {
+			if ledger.ContentPolicy == "task_body" {
+				ledger.PendingImageRetirement, e = pendingImageRetirements(previous.PendingImageRetirement, previous.OnlineImageOccurrences, inventoryOnline)
+				if e != nil {
 					return e
 				}
 			}

@@ -12,7 +12,7 @@ limit. Its log did not identify a slow migration phase or a production defect.
 
 ## Decision
 
-The shared v16 and v17 checksummed-history migration cases use a 15,000 ms
+The shared v16, v17 and v18 checksummed-history migration cases use a 15,000 ms
 test timeout. The real fixtures, byte and checksum checks, recovery bindings,
 and repeated reads remain in place. Its cleanup aborts and waits for the case's
 asynchronous work before releasing fixture handles, the Worker lock and files;

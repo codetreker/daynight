@@ -1,5 +1,6 @@
 import { assertProviderNativeDispatch } from "../native-lifecycle.js";
 import { codexUsageProviderVersion } from "./codex-usage.js";
+import { CodexUsageRollout } from "./codex-usage-rollout.js";
 import { CodexBotRecovery, CodexBotRecoveryError } from "./codex-bot-recovery.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertNativeImageAdmission } from "./image-admission.js";
@@ -67,6 +68,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", nativeExited = false, nativeClosed = false, closed = false, closing = false, sending = false;
+  let usageRollout: CodexUsageRollout | undefined, usageTimer: ReturnType<typeof setInterval> | undefined;
   let projection: CodexProjection;
   let authority: CodexReadAuthority | undefined;
   let imageInputs: CodexImageInputs, imageProjection: CodexImageProjection;
@@ -179,9 +181,10 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     authority?.observe(string(message.method), message.params);
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
+    if (method === "rawResponse/completed" && p.threadId === nativeId && recoveryVersion === "0.169.0") options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion: recoveryVersion, event: message });
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
     if (method === "thread/settings/updated") { invalidateImages(); controls?.observe(p.threadSettings); refreshRequested = true; queueMicrotask(recoverImages); }
-    if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); if (currentTurnId) startingImageTurns?.add(currentTurnId); controls?.beginTurn(); interruptions.started(currentTurnId); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
+    if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); if (currentTurnId) { startingImageTurns?.add(currentTurnId); options.usageRuntime?.bindTurn?.(currentTurnId); } controls?.beginTurn(); interruptions.started(currentTurnId); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
     if (method === "turn/completed") {
       const turn = record(p.turn), id = string(turn.id);
       for (const item of Array.isArray(turn.items) ? turn.items : []) projectItem(item, true, id);
@@ -287,9 +290,10 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     });
   });
   const stop = async () => {
+    clearInterval(usageTimer);
     initialSettingsAbort.abort(new Error("Native Codex stopped before initial settings persistence was confirmed."));
     closing = true; configObserver?.close(); invalidateImages(); controls.close();
-    if (nativeClosed || closed) { await rpc.stopped; await Promise.all(terminalProjections); await imageProjector.close(); return; }
+    if (nativeClosed || closed) { await rpc.stopped; await usageRollout?.drain(); await Promise.all(terminalProjections); await imageProjector.close(); return; }
     const exited = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native Codex stop is unconfirmed.")), 10_000); child.once("close", () => { clearTimeout(timer); resolve(); }); });
     const kill = nativeExited ? undefined : setTimeout(() => child.kill("SIGTERM"), 1_000);
     const force = nativeExited ? undefined : setTimeout(() => child.kill("SIGKILL"), 5_000);
@@ -299,6 +303,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       // Closing transport settles unknown dispatches and history reads. Finish
       // their known terminal projection before the owner can close its journal.
       await Promise.all(terminalProjections);
+      await usageRollout?.drain();
       await imageProjector.close();
     }
   };
@@ -321,6 +326,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
     const startParams = { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } };
+    if (!options.resumeNativeSessionId && options.usageRuntime && recoveryVersion === "0.169.0") Object.assign(startParams, { experimentalRawEvents: true });
     if (resumePath !== undefined) Object.assign(startParams, { path: resumePath });
     if (recovery && !options.resumeNativeSessionId) Object.assign(startParams, { historyMode: "legacy" });
     await configObserver?.prepare(startParams);
@@ -335,11 +341,17 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     // Legacy threads are lazy until named or used. Naming materializes the
     // original empty thread without submitting a synthetic conversation turn.
     if (recovery && !options.resumeNativeSessionId) await rpc.request("thread/name/set", { threadId: nativeId, name: "Daynight assistant" });
-    // Cumulative/context snapshots have no accountable source revision.
+    // The response plane and original rollout share stable invocation identities.
     try {
       const providerVersion = codexUsageProviderVersion(initialized);
       if (providerVersion) options.usageRuntime?.ready?.({ nativeSessionId: nativeId, providerVersion });
       else options.usageRuntime?.gap("profile_unverified");
+      if (options.usageRuntime && providerVersion === "0.169.0") {
+        usageRollout = new CodexUsageRollout({ file: recoveryPath, cwd: options.cwd, nativeSessionId: nativeId,
+          observe: event => options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion, event }), gap: reason => options.usageRuntime?.gap(reason) });
+        await usageRollout.scan();
+        usageTimer = setInterval(() => { void usageRollout?.scan(); }, 1000); usageTimer.unref();
+      }
     } catch { options.onDiagnostic?.("Codex usage capability could not be persisted; the native task continues."); }
     authority?.install({ initialized, remoteControl, response, nativeSessionId: nativeId, nativeCwd: string(thread.cwd) });
     configObservation = await configObserver?.bind(nativeId, { ...response, cwd: string(thread.cwd) }) ?? null;

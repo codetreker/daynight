@@ -69,7 +69,7 @@ Chain and Goal views consume server aggregates and their missing-member cursors
 directly. Current graph filters never redefine accounting membership; the UI
 shows known coverage and unknown members independently of completeness categories.
 
-Controller journal format 014 keeps usage source identities, grants and pending
+Controller journal format 019 keeps usage source identities, grants and pending
 events separate from timeline acknowledgements. Copilot's live immutable event
 plane enters this journal before history buffering; only the exact advertised
 SDK/runtime qualification permits measurement uploads. A bounded HTTP uploader
@@ -114,9 +114,11 @@ Cross-Test usage recovery requires a server-verifiable resume relationship;
 sharing a native ID alone cannot authorize it.
 
 Provider identity is fixed at journal state admission and checked across recovery.
-The uploader selects the fixed profile by that identity. Qualified connected
-Codex versions register unsupported coverage without emitting measurements;
+The uploader selects the fixed profile by that identity and the state's admitted
+profile. The original Codex snapshot profile registers unsupported coverage;
 stopped replay preserves this result instead of treating absent tokens as failure.
+The [response usage decision](../feature/2026-11-23-codex-response-token-usage.md)
+adds a separate evidenced Codex 0.169.0 plane, retaining old state semantics.
 Unverified handshakes do not acquire a supported-version capability.
 
 Claude admits immutable root-message input only when the actual SDK, CLI and

@@ -12,7 +12,7 @@ import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js"
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import { inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
+import { currentSqliteVersion, inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
 import { cleanupMigrationResources, cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
 // A Vitest timeout does not stop the case; keep its resources isolated until it settles.
@@ -36,7 +36,7 @@ afterEach(async () => {
   }
 });
 
-const previousJournalFixture = async (version: 16 | 17 = 16, resources?: (() => void)[]) => {
+const previousJournalFixture = async (version: 16 | 17 | 18 = 16, resources?: (() => void)[]) => {
   const fixture = await migrationFixture({}, resources);
   const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
   restoreControllerJournalVersion(journal, version);
@@ -46,7 +46,7 @@ const previousJournalFixture = async (version: 16 | 17 = 16, resources?: (() => 
 };
 
 describe("legacy Bot storage migration", () => {
-  it.each([16, 17] as const)("preserves checksummed v%i history and recovery copies across the v18 journal upgrade", version => trackMigrationCase(async (signal, resources) => {
+  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", version => trackMigrationCase(async (signal, resources) => {
     const f = await previousJournalFixture(version, resources), original = readFileSync(f.record.intent!.journalPath);
     signal.throwIfAborted();
     expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
@@ -75,7 +75,7 @@ describe("legacy Bot storage migration", () => {
     const f = await previousJournalFixture(), manifest = await migrateLegacyBot(f.input);
     const paths = resolveBotPaths(f.stateDirectory, f.botId), journal = path.join(paths.directory, manifest.journal!);
     const db = f.openRaw(journal, false);
-    if (conflict === "future") db.pragma("user_version=19");
+    if (conflict === "future") db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
     else if (conflict === "unversioned") db.pragma("user_version=0");
     else if (conflict === "schema") db.exec("DROP TABLE timeline_entries");
     else db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));

@@ -27,12 +27,28 @@ starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.m
 provides an isolated instance of the same production build.
 
 The project Goals toolbar opens a separate Goal acceptance graph from the
-existing committed TaskSync baseline. It includes active isolated Goals and
-their direct project-local prerequisites, including completed and cancelled
-context. Selection and relationship inspection are local; the inspector states
-that global acceptance remains unverified. Graph interactions do not change
-TaskSync requests, polling or watermarks. Existing Task and Goal-child execution
-graphs retain their own projection and navigation. The
+existing committed TaskSync baseline. It first displays active isolated Goals
+and their direct local prerequisites, including completed and cancelled context,
+then reads direct cross-project relationships through the existing Goal API.
+The graph session limits concurrent sources and follows each source's downstream
+pages sequentially. First reads publish verified partial results; repeated reads
+stage a complete replacement while retaining the prior still-authorized legal
+contribution. Failed, conflicting or unsupported replacement reads retain that
+contribution with their explicit phase while it remains authorized and legal;
+trusted withdrawal removes affected content immediately. A newly hidden prerequisite
+with a stable edge ID matching a prior readable target immediately removes that
+target from retained cards and inspection, even before replacement completes or
+if it later fails. It preserves the source and other targets; unmatched hidden
+edges do not identify a target. Inspection takes local relations, titles and states
+from full synchronized Goal indexes, combining raw external context without
+overwriting newer local facts or growing the canvas. The session exposes retries,
+unsupported reads and inaccessible prerequisites. External cards use their
+actual Project and lifecycle data without invented summary versions or progress.
+Graph sessions have no polling loop and do not change TaskSync requests or
+watermarks. Trusted withdrawal and identity/history fences clear affected data;
+conflicting external reads cannot introduce a cycle into the retained local
+graph. Existing Task and Goal-child execution graphs retain their own projection
+and navigation. The
 [Goal relationship design](../../docs/design/goal-dependencies.md#项目-goal-验收图)
 owns the acceptance projection, reading layer and update continuity.
 

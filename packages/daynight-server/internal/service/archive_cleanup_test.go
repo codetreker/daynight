@@ -7,7 +7,12 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 )
 
 type archiveRuntimeStore struct {
@@ -84,5 +89,117 @@ func TestArchiveCleanupAssemblyRequiresCapability(t *testing.T) {
 	app := &App{}
 	if err := app.assembleArchiveCleanup(nil, nil, nil); err == nil || app.archiveCleanup != nil {
 		t.Fatalf("missing store: %v", err)
+	}
+}
+
+type releasedRecoveryWriter struct {
+	store.ArchiveCleanupStore
+	completion store.Completion
+	cause      error
+	scope      store.ArchiveCleanupScope
+	calls      int
+}
+
+func (d *releasedRecoveryWriter) WriteArchiveCleanup(_ context.Context, _ store.ArchiveCleanupTarget, work func(store.ArchiveCleanupScope) error) (store.Completion, error) {
+	d.calls++
+	if d.cause != nil {
+		return d.completion, d.cause
+	}
+	if err := work(d.scope); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return d.completion, nil
+}
+func TestReleasedUploadRecoveryTransactionCompletion(t *testing.T) {
+	for _, scenario := range []string{"committed", "unknown", "write-error", "work-error", "stopped"} {
+		t.Run(scenario, func(t *testing.T) {
+			engine := sessioncore.NewEngine(nil)
+			app := &App{Application: &application.Application{Engine: engine}}
+			t.Cleanup(func() {
+				if err := engine.Stop(context.Background()); err != nil {
+					t.Error(err)
+				}
+			})
+			failure := errors.New("controlled failure")
+			db := &releasedRecoveryWriter{completion: store.Completion{Outcome: store.TransactionCommitted}}
+			if scenario == "unknown" {
+				db.completion.Outcome = store.TransactionUnknown
+			}
+			if scenario == "write-error" {
+				db.cause = failure
+				db.completion.Outcome = store.TransactionNotCommitted
+			}
+			if scenario == "stopped" {
+				if err := engine.Stop(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			called := 0
+			err := app.writeReleasedUploadRecovery(t.Context(), db, store.ArchiveCleanupTarget{}, func(op *sessioncore.Operation, scope store.ArchiveCleanupScope) error {
+				called++
+				if op == nil || scope != db.scope {
+					t.Fatal("wrong operation or scope")
+				}
+				if scenario == "work-error" {
+					return failure
+				}
+				return nil
+			})
+			switch scenario {
+			case "committed":
+				if err != nil || called != 1 {
+					t.Fatal(err, called)
+				}
+			case "write-error", "work-error":
+				if !errors.Is(err, failure) {
+					t.Fatal(err)
+				}
+			case "unknown", "stopped":
+				if err == nil {
+					t.Fatal("unconfirmed transaction accepted")
+				}
+			}
+			if scenario == "stopped" && db.calls != 0 {
+				t.Fatal("storage called after stop")
+			}
+		})
+	}
+}
+
+type recoveryScopeFixture struct {
+	store.ArchiveCleanupScope
+	target store.ArchiveCleanupTarget
+	dao    store.SessionDAO
+}
+
+func (s recoveryScopeFixture) Target() store.ArchiveCleanupTarget { return s.target }
+func (s recoveryScopeFixture) SessionDAO() store.SessionDAO       { return s.dao }
+
+type recoveryDAOFixture struct {
+	store.SessionDAO
+	record store.SessionRecord
+}
+
+func (d recoveryDAOFixture) LockSession(context.Context, string) (store.SessionRecord, error) {
+	return d.record, nil
+}
+func (d recoveryDAOFixture) SessionArchive(context.Context, string) (sp.ArchiveStatus, string, error) {
+	return sp.ArchiveStatus{State: "pending"}, "", nil
+}
+func TestReleasedUploadRecoveryCallbackSkipsUnreadyArchive(t *testing.T) {
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	engine := sessioncore.NewEngine(files)
+	defer engine.Stop(context.Background())
+	execution := sessioncore.NewExecution(engine, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	app := &App{Application: &application.Application{Engine: engine, Sessions: &sessionservice.Service{Execution: execution}}}
+	target := store.ArchiveCleanupTarget{SessionID: "10000000-0000-4000-8000-000000000001", OwnerID: "10000000-0000-4000-8000-000000000002"}
+	scope := recoveryScopeFixture{target: target, dao: recoveryDAOFixture{record: store.SessionRecord{Owner: target.OwnerID, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: target.SessionID}}}}}}
+	db := &releasedRecoveryWriter{completion: store.Completion{Outcome: store.TransactionCommitted}, scope: scope}
+	if err = app.releasedUploadRecovery(db)(t.Context(), target); err != nil || db.calls != 1 {
+		t.Fatal(err, db.calls)
 	}
 }
