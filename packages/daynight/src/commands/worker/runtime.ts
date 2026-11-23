@@ -34,8 +34,8 @@ import { probeNativeAgentVersion } from "./native-version.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
-import type { WorkerProject } from "./types.js";
-import type { TaskPlatform, WorkerMachine } from "../../api/types.js";
+import type { ClaimIdentity, WorkerProject } from "./types.js";
+import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import { createMonitoringObserver } from "./monitoring/observer.js";
@@ -392,6 +392,20 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
   let bots: WorkerBotHost | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let activeDeadline = deadline;
+  const currentTasks = new Map<string, Promise<Task>>();
+  const unresolvedTasks = new Set<string>();
+  const pendingClaims: ClaimIdentity[] = [];
+  const imported: { resourceId: string; group: "task" | "bot" }[] = [];
+  let claimErrors: unknown[] = [];
+  let reconcileClaimRequests: () => Promise<void>;
+  const importTask = (task: ClaimIdentity): void => {
+    const state = lifecycle.readState();
+    if (state.instanceId === null || state.instanceEpoch === null || state.intentVersion === null) return;
+    const resourceId = retainedResourceId(["task", task.claimId, state.scopeGeneration]);
+    const resource = lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
+      resourceId, operationId: task.claimId, ownerKind: "task", identity: { kind: "retained_task", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId } });
+    if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId: resource.resourceId, group: "task" });
+  };
   type CloseStep = { start(): Promise<void>; work?: Promise<void>; failed?: boolean };
   const step = (start: () => Promise<void>): CloseStep => ({ start });
   const join = (entry: CloseStep, reobserve = false): Promise<void> => {
@@ -401,7 +415,17 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
     }
     return entry.work;
   };
-  const stopTasks = step(async () => { if (coordinator !== undefined && !await coordinator.shutdown({ deadline: activeDeadline })) throw new Error("Original Task stop inventory remains incomplete."); });
+  const stopTasks = step(async () => {
+    if (coordinator === undefined) return;
+    const claims = reconcileClaimRequests();
+    const complete = await coordinator.shutdown({ deadline: activeDeadline, currentTasks, pendingClaims, unresolvedTasks });
+    await claims;
+    throwFailures([...claimErrors, ...(complete ? [] : [new Error("Original Task stop inventory remains incomplete.")])]);
+    for (const item of imported.filter(item => item.group === "task")) {
+      const resource = lifecycle.readResource(item.resourceId);
+      if (resource !== null && !["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: "task_shutdown", resourceId: item.resourceId }, saveState: "durable", error: null });
+    }
+  });
   const stopBots = step(async () => { await bots?.shutdown({ deadline: activeDeadline }); });
   const closeBots = step(async () => { await bots?.close(); });
   const stopJournal = step(async () => {
@@ -412,6 +436,7 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
     for (const resource of lifecycle.listResources()) {
       if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
       if (resource.ownerKind !== "controller" || resource.processProof === null || typeof resource.identity.journalFile !== "string") continue;
+      if (unresolvedTasks.has(`${resource.identity.projectId}/${resource.identity.taskId}`)) continue;
       const saved = readControllerSnapshot(resource.identity.journalFile);
       if (saved === null || saved.controllerProcess === null || saved.executionId !== resource.identity.executionId || saved.controllerInstanceId !== resource.identity.controllerInstanceId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
       if (process.platform === "win32") {
@@ -430,9 +455,12 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
   const cleanup = async (reobserve: boolean): Promise<void> => {
     const results = await Promise.allSettled([
       (async () => { await join(stopBots, reobserve); await join(closeBots, reobserve); })(),
-      join(stopJournal, reobserve), join(stopControllers, reobserve),
+      join(stopJournal, reobserve),
       (async () => {
-        await join(stopTasks, reobserve); await join(closeArchive, reobserve); await join(closeLeases, reobserve);
+        const taskStop = await Promise.allSettled([join(stopTasks, reobserve)]);
+        const controllerStop = await Promise.allSettled([join(stopControllers, reobserve)]);
+        throwFailures([...taskStop, ...controllerStop].flatMap(result => result.status === "rejected" ? [result.reason] : []));
+        await join(closeArchive, reobserve); await join(closeLeases, reobserve);
         await join(closeInput, reobserve); await join(closeStore, reobserve); await join(closeGit, reobserve);
       })(),
     ]);
@@ -443,26 +471,39 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
     const failures: unknown[] = [];
     try {
       const remote = managementRemote(local.serverUrl, local.serverToken);
-      const reconcileClaims = async (): Promise<void> => {
+      reconcileClaimRequests = async (): Promise<void> => {
+      currentTasks.clear(); unresolvedTasks.clear(); pendingClaims.length = 0; claimErrors = [];
+      const claimSignal = AbortSignal.timeout(Math.max(1, activeDeadline - Date.now()));
       for (const resource of lifecycle.listResources().filter(resource => resource.identity.kind === "task_claim" && !["confirmed", "stopped", "not_dispatched"].includes(resource.stage))) {
         const original = resource.identity;
+        const taskKey = `${original.projectId}/${original.taskId}`;
+        if (typeof original.projectId === "string" && typeof original.taskId === "string" && typeof original.claimId === "string") pendingClaims.push({ projectId: original.projectId, taskId: original.taskId, claimId: original.claimId });
+        const previous = currentTasks.get(taskKey);
+        const observed = (async (): Promise<Task> => {
+        if (previous !== undefined) await previous;
         if (typeof original.projectId !== "string" || typeof original.taskId !== "string" || typeof original.claimId !== "string" || typeof original.worktreeId !== "string" || typeof original.candidateVersion !== "string") throw new Error("Original claim reservation identity is incomplete.");
-        if (await remote.currentUserId(signal) !== identity.userId) throw new Error("Original claim reconciliation account changed.");
-        const task = await remote.readTask(original.projectId, original.taskId, signal), claim = readWorkerClaim(task.properties);
+        if (await remote.currentUserId(claimSignal) !== identity.userId) throw new Error("Original claim reconciliation account changed.");
+        const task = await remote.readTask(original.projectId, original.taskId, claimSignal), claim = readWorkerClaim(task.properties);
         const taskIdentity = { projectId: original.projectId, taskId: original.taskId, claimId: original.claimId };
-        if (claim?.claimId === original.claimId && claim.workerId === identity.workerId && claim.worktreeId === original.worktreeId && claim.state === "active") {
+        if (task.status === "in_progress" && claim?.claimId === original.claimId && claim.workerId === identity.workerId && claim.worktreeId === original.worktreeId && claim.state === "active") {
           if (root.store!.getTask(taskIdentity) === null) {
             const reserved = root.store!.getClaimToolReservation(taskIdentity);
             if (reserved !== null) root.store!.acceptClaimToolReservation(task, identity.workerId);
             else root.store!.registerPending({ ...taskIdentity, agent: claim.agent, agentControlMode: "web", nativeConfiguration: parseFrozenNative(original.frozenConfiguration) });
           }
+          importTask(taskIdentity);
           lifecycle.recordResource({ resourceId: resource.resourceId, stage: "confirmed", saveState: "durable", error: null });
         } else if (task.version > BigInt(original.candidateVersion)) {
           const reserved = root.store!.getClaimToolReservation(taskIdentity);
           if (reserved !== null) root.store!.releaseClaimToolReservation(reserved);
           lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "claim_superseded", taskVersion: String(task.version), originalClaimId: original.claimId }, saveState: "durable" });
-        }
+        } else throw new Error("Original claim request outcome remains unconfirmed.");
+        return task;
+        })().catch(error => { unresolvedTasks.add(taskKey); throw error; });
+        currentTasks.set(taskKey, observed);
       }
+      const results = await Promise.allSettled(currentTasks.values());
+      claimErrors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
       };
       web = await createWebRuntime({ ...options, managementOnly: true }, paths, root.store!, git, local.serverUrl, local.serverToken, identity.workerId, identity.userId, currentWorkerPlatform(), emit, signal);
       coordinator = createWorkerCoordinator({ store: root.store!, git, remote, webStore: web.webStore, webBackend: web.webBackend,
@@ -473,13 +514,10 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
         paths, owner: { serverOrigin: identity.serverOrigin, ownerUserId: identity.userId, workerId: identity.workerId }, serverToken: local.serverToken, managementOnly: true,
         configuration: () => null, canAdmitNewExecution: () => false, pollIntervalMs: () => null, recoveryLimit: () => null, emit });
       const state = lifecycle.readState();
-      const imported: { resourceId: string; group: "task" | "bot" }[] = [];
       if (state.instanceId !== null && state.instanceEpoch !== null && state.intentVersion !== null) {
         const binding = { ...identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
         for (const task of root.store!.listUnfinishedTasks()) {
-          const resourceId = retainedResourceId(["task", task.claimId, state.scopeGeneration]);
-          const resource = lifecycle.importResource({ binding, resourceId, operationId: task.claimId, ownerKind: "task", identity: { kind: "retained_task", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId } });
-          if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId: resource.resourceId, group: "task" });
+          importTask(task);
         }
         for (const bot of bots.snapshot().resources) {
           const resourceId = retainedResourceId(["bot", bot.botId, bot.executionId, bot.executionGeneration, state.scopeGeneration]);
@@ -491,11 +529,10 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
         join(stopTasks),
         join(stopBots),
         join(stopJournal),
-        reconcileClaims(),
       ]);
       root.recoverySources = { tasks: coordinator.executionSnapshot().recovery, bots: bots.snapshot().recovery };
       failures.push(...stopped.flatMap(result => result.status === "rejected" ? [result.reason] : []));
-      for (const item of imported) if (stopped[item.group === "task" ? 0 : 1]?.status === "fulfilled") lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: `${item.group}_shutdown`, resourceId: item.resourceId }, saveState: "durable", error: null });
+      for (const item of imported.filter(item => item.group === "bot")) if (stopped[1]?.status === "fulfilled") lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: "bot_shutdown", resourceId: item.resourceId }, saveState: "durable", error: null });
       // L's original journal is a second witness: it never infers a missing birth as stopped.
       for (const record of await root.journal!.read()) {
         const resource = lifecycle.readResource(record.event.resourceId);

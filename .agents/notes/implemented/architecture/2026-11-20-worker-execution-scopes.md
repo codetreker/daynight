@@ -29,7 +29,11 @@ observations. A timeout preserves unknown responsibility. Explicit reconciliatio
 rechecks failed owners without repeating completed cleanup or replaying business
 operations. A timed-out stop attempt remains owned until it settles; subsequent
 reconciliation joins that attempt instead of launching concurrent cleanup. Failed
-observation promises are not permanent resource facts.
+observation promises are not permanent resource facts. The
+[retired Web claim decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
+selects terminal resource removal only after current ownership confirms the
+original claim has ended; still-owned or unknown execution retains its stopping
+and preservation rules.
 Management reconciliation joins command producers and their event writes before
 re-observing retained native boundaries, output writers and durable closure.
 A settled producer's historical cleanup error cannot skip this reconciliation.

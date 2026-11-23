@@ -36,6 +36,9 @@ import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retai
 import { prepareBotEnvironment } from "../../../src/commands/worker/bots/environment.js";
 import * as agentCliAliases from "../../../src/cli/agent-cli-aliases.js";
 import * as lifecycleClients from "../../../src/api/worker-lifecycle-client.js";
+import * as controllerLifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as controllerProcessProof from "../../../src/commands/controller/process-proof.js";
+import * as lifecycleControllerTickets from "../../../src/commands/worker/lifecycle-controller-ticket.js";
 import { LifecycleAdmissionError, openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
 import type { LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import { ApiError } from "../../../src/api/client.js";
@@ -200,6 +203,89 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it.each(["initial", "retry"] as const)("joins a retained claim before reading pending inventory and settles Task and Controller receipts on %s cleanup", async attempt => {
+    const f = await fixture(true, false);
+    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
+    const taskIdentity = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71) };
+    f.store!.registerProject({ projectId: taskIdentity.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const saved = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
+    const state = saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
+    const binding = { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    saved.importResource({ binding, resourceId: uuid(73), operationId: taskIdentity.claimId, ownerKind: "task",
+      identity: { kind: "task_claim", ...taskIdentity, worktreeId: uuid(74), candidateVersion: "1", frozenConfiguration: { agent: "codex", model: "cloud-model", args: [] } } });
+    const journalFile = path.join(f.homeDirectory, "original-journal.sqlite");
+    const proof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+    saved.importResource({ binding, resourceId: uuid(75), operationId: uuid(76), ownerKind: "controller", stage: "running", processProof: proof,
+      identity: { ...taskIdentity, executionId: uuid(77), controllerInstanceId: uuid(78), launchId: uuid(76), journalFile } });
+    saved.close();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), shutdownEntered = Promise.withResolvers<void>(), receiptReady = Promise.withResolvers<void>();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    Object.assign(remote, { readTask: vi.fn(async () => {
+      entered.resolve(); await release.promise;
+      return { id: taskIdentity.taskId, projectId: taskIdentity.projectId, version: 2n, status: "in_progress", properties: {
+        worker: { claimId: taskIdentity.claimId, worktreeId: uuid(74), workerId, userId: uuid(6), state: "active", phase: "preparing", agent: "codex", agentControlMode: "web",
+          platform: "windows", machine: { id: uuid(5), name: "fixture" }, nativeSessionId: null, claimedAt: "2026-11-21T00:00:00Z" } } };
+    }) });
+    remote.report.mockResolvedValue({ observedAt: "2026-11-21T00:00:00Z", lastReportedAt: "2026-11-21T00:00:00Z" });
+    let stoppedReceipt = false;
+    const snapshot = { executionId: uuid(77), controllerInstanceId: uuid(78), controllerProcess: proof, nativeProcesses: [], nativeSessionId: null } as unknown as controllerLifecycle.ControllerSnapshot;
+    const readJournal = vi.spyOn(controllerLifecycle, "readControllerSnapshot").mockImplementation(() => {
+      if (!stoppedReceipt) return null;
+      receiptReady.resolve(); return snapshot;
+    });
+    const readTicket = vi.spyOn(lifecycleControllerTickets, "readLifecycleControllerTicket").mockResolvedValue({} as never);
+    const readWindows = vi.spyOn(controllerLifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(snapshot);
+    const readProcesses = vi.spyOn(controllerProcessProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    const shutdown = vi.fn(async (settings: Parameters<ReturnType<typeof import("../../../src/commands/worker/coordinator.js").createWorkerCoordinator>["shutdown"]>[0]) => {
+      shutdownEntered.resolve();
+      if (shutdown.mock.calls.length === 1) {
+        expect(f.store!.getTask(taskIdentity)).toBeNull();
+        expect(settings!.pendingClaims).toContainEqual(taskIdentity);
+      }
+      await settings!.currentTasks!.get(`${taskIdentity.projectId}/${taskIdentity.taskId}`);
+      expect(f.store!.getTask(taskIdentity)?.status).toBe("pending");
+      if (attempt === "retry" && shutdown.mock.calls.length === 1) return false;
+      stoppedReceipt = true;
+      return true;
+    });
+    mocks.coordinator.mockReturnValue({ ...coordinator(async () => {}), shutdown, executionSnapshot: () => ({ recovery: [] }) });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
+    const time = "2026-11-21T00:00:00Z";
+    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
+      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+    const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle write."); });
+    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
+      read: async () => cloud,
+      register: async request => {
+        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+      },
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
+    });
+    const messages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
+    try {
+      try { await withinExecutionDeadline(Promise.race([Promise.all([entered.promise, shutdownEntered.promise]), running.then(() => { throw new Error("Management stopped before claim observation."); })]), Date.now() + 5000); }
+      catch (cause) { throw new Error(`Management claim barrier failed: ${messages.join("; ")}`, { cause }); }
+      expect(readJournal).not.toHaveBeenCalled();
+      expect(f.store!.getTask(taskIdentity)).toBeNull();
+      release.resolve();
+      try { await withinExecutionDeadline(receiptReady.promise, Date.now() + 5000); }
+      catch (cause) { throw new Error(`Controller receipt barrier failed: ${messages.join("; ")}; shutdown calls=${shutdown.mock.calls.length}; readTask calls=${remote.readTask.mock.calls.length}`, { cause }); }
+      const check = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
+      try {
+        expect(check.readResource(uuid(73))?.stage).toBe("confirmed");
+        await vi.waitFor(() => expect(check.readResource(uuid(75))?.stage).toBe("stopped"));
+        expect(check.listResources().filter(resource => resource.identity.kind === "retained_task").map(resource => resource.stage)).toEqual(["stopped"]);
+      } finally { check.close(); }
+      expect(remote.readTask).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve(); cancellation.abort(); await running.catch(error => { if (error?.name !== "AbortError") throw error; });
+      client.mockRestore(); readJournal.mockRestore(); readTicket.mockRestore(); readWindows.mockRestore(); readProcesses.mockRestore();
+    }
+  }, 20_000);
+
   it("releases a Bot probe rejected by local disable during environment preparation", async () => {
     const f = await fixture(false, false);
     // Lifecycle initialization reconciles retained Task owners before opening a

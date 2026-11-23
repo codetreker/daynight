@@ -88,7 +88,15 @@ management under the original free instance lock, without taking over a live loc
 or launching a business scope. The original identity must already exist.
 Explicit management owners can stop original local resources without a saved
 service token. Their network methods refuse before dispatch; missing credentials
-cannot settle a cloud request or authorize recovery.
+cannot settle a cloud request or authorize recovery. Task candidates include
+original pending claim reservations. Each Task joins its own claim-request
+reconciliation before classifying ownership or stopping and reuses its successful
+current Task read. Independent Tasks do not await one another's requests. Failed
+reconciliation retains that Task; matching Controller lifecycle checks follow the
+Task stop attempt and skip unresolved Task records.
+The [retired Web claim decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
+owns terminal removal after confirmed ownership loss; normal lifecycle stopping
+continues to preserve current or unknown execution.
 
 Explicit resume freezes the local epoch when accepted, before entering the
 management queue. It validates that epoch after initialization, original-operation
