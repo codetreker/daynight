@@ -18,7 +18,7 @@ Task 弹窗、独立详情和 Goal 内嵌详情不提供 Steps 页签或请求�
 
 ## 所有权与模型
 
-应用服务、领域候选、codec、DAO、模型及 `task_steps` 表仍保留内部实现。它们不构成可调用的公开资源；入口退出不删除持久化行，也不改写现有父 Task。历史迁移及 checksum 保持。凭据的 `step:read`、`step:write` 与目录遵循其现有规则，入口退役不改写凭据或授予新的 Task 权限。
+应用服务、领域候选、codec、DAO、模型及 `task_steps` 表仍保留内部实现。它们不构成可调用的公开资源；入口退出不删除持久化行，也不改写现有父 Task。历史迁移及 checksum 保持。PAT 和 MCP 的可选目录及默认权限不包含 `step:read`、`step:write`。已存凭据及已批准未兑换授权码保留原 scope 和凭据身份；编辑可保留或移除已存旧值，移除后不能重新添加。旧值不授予新的 Task 权限。
 
 内部 Steps 以父 Task 和 Task 内八位十六进制 ID 定位，保留独立标题、Markdown 说明、四状态和 UTC 微秒内容时间，位置在 Task 内稠密。其状态不决定 Task 完成、review、Worker 调度或 Session 生命周期。普通 Task DTO 不内嵌 Steps。
 

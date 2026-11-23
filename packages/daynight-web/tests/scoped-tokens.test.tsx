@@ -33,6 +33,21 @@ const saveScope = () => fireEvent.click(within(screen.getByRole('dialog')).getBy
 afterEach(() => { invalidateAuthRequests(); sessionStorage.clear(); });
 
 describe('scoped PAT management', () => {
+  it('removes retired Steps permissions from an existing token without offering them again', async () => {
+    const historical = { ...token, scopePolicy: { scopes: ['task:read', 'step:read', 'step:write'], scopeVersion: '7' } };
+    const transport = fixture([historical]); render(page(transport)); await openScope();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Permissions currently unavailable:')).toBeInTheDocument();
+    expect(within(dialog).getByText('step:read')).toBeInTheDocument();
+    expect(within(dialog).getByText('step:write')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove unavailable permissions' }));
+    expect(within(dialog).queryByRole('button', { name: 'Remove unavailable permissions' })).toBeNull();
+    expect(within(dialog).queryByRole('checkbox', { name: /Steps/ })).toBeNull();
+    saveScope(); await screen.findByText('Permissions updated.');
+    expect(transport.scopes).toHaveBeenCalledOnce();
+    expect(transport.scopes.mock.calls[0]?.[0]).toBe(token.id);
+    expect(transport.scopes.mock.calls[0]?.[1]).toEqual({ expectedUserId: user.id, expectedScopeVersion: '7', catalogRevision: revision, scopes: ['task:read'] });
+  });
   it('starts manual creation with CLI defaults and forbids an empty selection', async () => {
     const transport = fixture(); render(page(transport));
     await openCreate(); openGroup();

@@ -2,6 +2,7 @@ package application
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,61 @@ func TestScopedApplicationRetainsPolicySourcesAndSharedEngine(t *testing.T) {
 	}
 	if app.Scoped.Attachments == nil || app.Scoped.Steps == nil || app.Scoped.Threads == nil || app.Scoped.Session == nil || app.Scoped.Observations != app.TaskObservations {
 		t.Fatal("scoped application published incomplete or distinct protocol adapters")
+	}
+}
+
+func TestRetiredStepScopesAreNotOfferedButRemainValidForEdits(t *testing.T) {
+	for _, kind := range []scopepolicy.CredentialType{scopepolicy.PAT, scopepolicy.MCP} {
+		t.Run(string(kind), func(t *testing.T) {
+			entries, err := scopepolicy.Catalog(kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var all []scopepolicy.ScopeID
+			for _, entry := range entries {
+				all = append(all, entry.ID)
+			}
+			old, err := scopepolicy.NewCatalogSnapshot(kind, all)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := availableCatalog(kind, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old.CatalogRevision == current.CatalogRevision {
+				t.Fatal("retirement did not change revision")
+			}
+			remaining := slices.DeleteFunc(slices.Clone(all), func(id scopepolicy.ScopeID) bool { return id == "step:read" || id == "step:write" })
+			want, err := scopepolicy.NewCatalogSnapshot(kind, remaining)
+			if err != nil || !reflect.DeepEqual(current, want) {
+				t.Fatalf("other choices changed: %v", err)
+			}
+			for _, group := range current.Groups {
+				if slices.Contains(group.ScopeIDs, "step:read") || slices.Contains(group.ScopeIDs, "step:write") {
+					t.Fatal("retired scope offered")
+				}
+			}
+			if slices.Contains(current.DefaultScopes, "step:read") || slices.Contains(current.DefaultScopes, "step:write") {
+				t.Fatal("retired scope selected by default")
+			}
+			existing := []scopepolicy.ScopeID{"step:read", "step:write", "task:read"}
+			if _, err := scopepolicy.NewPolicy(kind, existing, 1); err != nil {
+				t.Fatalf("historical policy rejected: %v", err)
+			}
+			if _, err := current.ValidateSelection(kind, existing); err == nil {
+				t.Fatal("new selection accepted retired scopes")
+			}
+			if _, err := current.ValidateEditSelection(kind, existing, existing); err != nil {
+				t.Fatalf("retaining historical scopes: %v", err)
+			}
+			if _, err := current.ValidateEditSelection(kind, []scopepolicy.ScopeID{"task:read"}, existing); err != nil {
+				t.Fatalf("removing historical scopes: %v", err)
+			}
+			if _, err := current.ValidateEditSelection(kind, existing, []scopepolicy.ScopeID{"task:read"}); err == nil {
+				t.Fatal("re-added retired scopes")
+			}
+		})
 	}
 }
 
