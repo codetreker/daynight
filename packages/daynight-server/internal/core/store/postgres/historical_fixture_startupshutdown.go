@@ -15,9 +15,9 @@ func ReplaySchema107ForTest(ctx context.Context, pool *pgxpool.Pool) error {
 	return replayHistoricalSchemaForTest(ctx, pool, 107)
 }
 
-// ReplaySchema120ForTest prepares the last schema before inherited Task deletion.
-func ReplaySchema120ForTest(ctx context.Context, pool *pgxpool.Pool) error {
-	return replayHistoricalSchemaForTest(ctx, pool, 120)
+// ReplaySchema121ForTest prepares the last schema before inherited Task deletion.
+func ReplaySchema121ForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	return replayHistoricalSchemaForTest(ctx, pool, 121)
 }
 
 func replayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, version int64) error {

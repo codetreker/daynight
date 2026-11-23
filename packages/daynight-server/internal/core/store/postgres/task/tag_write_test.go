@@ -25,7 +25,7 @@ func TestTaskTagAssociationsAndTouch(t *testing.T) {
 	dependency := readerTask(t, db, project.ID, 14, model.TaskTodo)
 	goalID, hiddenGoalID, hiddenChildID := readerID(15), readerID(16), readerID(17)
 	readerExec(t, db, `INSERT INTO tasks(id,project_id,title,type,status,deleted_at) VALUES ($1,$3,'goal','goal','todo',NULL),($2,$3,'hidden goal','goal','todo',now())`, goalID, hiddenGoalID, project.ID)
-	readerExec(t, db, `INSERT INTO tasks(id,project_id,title,type,status,parent_id) VALUES ($1,$2,'hidden child','task','todo',$3)`, hiddenChildID, project.ID, hiddenGoalID)
+	readerExec(t, db, `INSERT INTO tasks(id,project_id,title,type,status,parent_id,ancestor_deleted_at) SELECT $1,$2,'hidden child','task','todo',$3,deleted_at FROM tasks WHERE id=$3`, hiddenChildID, project.ID, hiddenGoalID)
 	actor := readerAssigneeUser(t, db, project.ID, 31, true)
 	readerExec(t, db, `UPDATE tasks SET parent_id=$2, assigned_to=$3, allow_agents=true, required_platform='linux' WHERE id=$1`, live.ID, goalID, actor)
 	readerExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)`, project.ID, live.ID, dependency.ID)

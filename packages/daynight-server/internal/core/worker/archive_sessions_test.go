@@ -11,7 +11,7 @@ import (
 func TestArchiveSessionsInputAndLegacyPreservation(t *testing.T) {
 	caps := workerprotocol.Capabilities{ArchiveSessions: true}
 	for _, enabled := range []bool{false, true} {
-		document := configurationInputDocument()
+		document := legacyConfigurationInputDocument()
 		document["archiveSessions"] = enabled
 		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), caps)
 		if err != nil || value.ArchiveSessions == nil || *value.ArchiveSessions != enabled {
@@ -19,13 +19,13 @@ func TestArchiveSessionsInputAndLegacyPreservation(t *testing.T) {
 		}
 	}
 	for _, invalid := range []any{nil, "false", 0, []any{}} {
-		document := configurationInputDocument()
+		document := legacyConfigurationInputDocument()
 		document["archiveSessions"] = invalid
 		if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), caps); err == nil {
 			t.Fatalf("accepted %v", invalid)
 		}
 	}
-	document := configurationInputDocument()
+	document := legacyConfigurationInputDocument()
 	if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), caps); err == nil {
 		t.Fatal("missing field accepted")
 	}
@@ -85,7 +85,7 @@ func TestArchiveAndSudoIndependentReplacement(t *testing.T) {
 		{"change both", true, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			document := configurationInputDocument()
+			document := legacyConfigurationInputDocument()
 			if tc.archiveSupported {
 				document["archiveSessions"] = true
 			}

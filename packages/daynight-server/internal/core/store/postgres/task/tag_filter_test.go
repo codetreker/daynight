@@ -21,7 +21,7 @@ func TestTaskTagFiltersBeforeSelection(t *testing.T) {
 	mustOK(t, err)
 	_, err = f.tx.Exec(ctx, `UPDATE tasks SET type='goal' WHERE id=$1;`, hidden)
 	mustOK(t, err)
-	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,parent_id,created_at) VALUES($1,$2,'task','Hidden child',$3,'2019-01-01')`, readerID(106), f.project, hidden)
+	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title,parent_id,created_at,ancestor_deleted_at) SELECT $1,$2,'task','Hidden child',$3,'2019-01-01',deleted_at FROM tasks WHERE id=$3`, readerID(106), f.project, hidden)
 	mustOK(t, err)
 	_, err = f.tx.Exec(ctx, `UPDATE tasks SET parent_id=$2,assigned_to=$3 WHERE id=$1`, a, goal, f.user)
 	mustOK(t, err)

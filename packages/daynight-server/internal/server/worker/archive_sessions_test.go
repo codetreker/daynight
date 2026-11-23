@@ -86,7 +86,7 @@ func TestArchiveSessionsHTTPWriteAndReport(t *testing.T) {
 			headers.Set(workerPromptsHeader, "[]")
 		}
 		enabled := false
-		result := workerservice.WorkerReportResult{Configuration: &model.WorkerConfigurationReceipt{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: model.WorkerConfiguration{ArchiveSessions: &enabled}}, ObservationRevision: "0"}}
+		result := workerservice.WorkerReportResult{Configuration: &model.WorkerConfigurationReceipt{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, ArchiveSessions: &enabled}}, ObservationRevision: "0"}}
 		f.operations.report = func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error) {
 			return result, nil
 		}
@@ -94,7 +94,7 @@ func TestArchiveSessionsHTTPWriteAndReport(t *testing.T) {
 			return workerservice.ConfigurationSyncResult{Native: result, Prompts: []model.PromptResult{}}, nil
 		}
 		response := controlModeRequest(t, f, "POST", "/report", jsonBody(t, configurationHTTPReportBody(nil, nil)), headers)
-		if response.Code != 200 || response.Header().Get(workerArchiveSessionsHeader) != "1" || !strings.Contains(response.Body.String(), `"archiveSessions":false`) {
+		if response.Code != 200 || response.Header().Get(workerArchiveSessionsHeader) != "1" || !strings.Contains(response.Body.String(), `"archiveSessions":false`) || !strings.Contains(response.Body.String(), `"preferPlatformSpecificTasks":false`) {
 			t.Fatalf("v%s: %d %s", version, response.Code, response.Body)
 		}
 	}

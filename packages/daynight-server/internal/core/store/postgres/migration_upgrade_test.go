@@ -249,7 +249,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	if err := json.Unmarshal(encoded, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	delete(legacy, "preferPlatformSpecificTasks")
+	delete(legacy, "platformTaskMode")
 	encoded, err = json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 		if err != nil {
 			return err
 		}
-		if resource.Desired == nil || resource.Desired.Value.PreferPlatformSpecificTasks || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
+		if resource.Desired == nil || !resource.Desired.ValueValid || resource.Desired.Value.PlatformTaskMode != "" || resource.Desired.Revision != "9" || resource.ObservationRevision != "8" || resource.Observation == nil || len(resource.Observation.Items) != 1 || resource.Observation.Items[0].Key.Kind != "projectRemoval" {
 			t.Fatalf("migrated resource differs: %+v", resource)
 		}
 		uninitialized, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, uninitializedID)
@@ -400,7 +400,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	// Current Task DAO reads typed columns, dependencies and tag references, and
 	// capture writes event actors; supply their structural shape while keeping
 	// the webhook ledger at version 50 for the 50-to-51 proof.
-	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid`); err != nil {
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid; ALTER TABLE tasks ADD COLUMN ancestor_deleted_at timestamptz`); err != nil {
 		t.Fatal(err)
 	}
 	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL, dependencyTypesSQL, webhookEventActorSQL} {

@@ -22,7 +22,7 @@ flowchart LR
   W --> R[当前目标与实际结果]
 ~~~
 
-目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup、enableWindowsProcessCleanup 和 taskTagFilter 直接包含在目标中，不增加字段专用的能力协商。
+目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档与平台任务规则分别通过独立能力头选择闭合字段。enableSudoCleanup、enableWindowsProcessCleanup 和 taskTagFilter 直接包含在目标中，不增加字段专用的能力协商。
 
 ## 持久化与表示
 
@@ -36,7 +36,7 @@ archive_sessions 是 `boolean NOT NULL DEFAULT true` 独立列，迁移为已有
 
 toolPaths 保存于同一 desired JSONB，新候选固定 Codex/Copilot 两项 choice/null。旧原始目标缺字段或含第三工具时不自动补全或转换。工具实际观察独立保存于现有 telemetry JSONB，由完整报告替换；后续报告省略扩展会清除原字段。
 
-数据库迁移为已初始化且缺少 preferPlatformSpecificTasks 的目标 JSON 补入 false，保留目标版本、修改时间、观测版本与原应用结果。缺少同名应用观测仍表示等待 Worker 确认，不从迁移后的目标推导已应用。当前完整目标解析始终要求该布尔字段。
+历史平台偏好迁移曾为已初始化目标补入 preferPlatformSpecificTasks:false，保留版本、时间及观察。平台任务规则迁移将实际布尔 false/true 分别改为 platformTaskMode:all/prefer，删除旧成员并推进目标版本与修改时间；未知兄弟和原观察保持。未初始化目标不建立默认配置，版本耗尽使迁移及账本整体回滚。当前领域解析只接受枚举，旧布尔转换集中在 HTTP 协议入口和首次 bootstrap，存储读取不做运行时旧数据修复。部署前必须排空旧配置写入者，数据库迁移锁不能阻止旧服务回写。
 
 另一项迁移只为非 null 且缺少 enableSudoCleanup 的目标补入 false。该变化推进 configuration_revision 并更新 configuration_updated_at；已有该字段的目标和 null 目标保持不变，观测及其他数据不变。若需修改的目标 revision 已耗尽，整个迁移事务失败，不产生同版本不同内容，也不生成应用观察。存储读取兼容历史目标缺字段；首次旧 bootstrap 缺字段时由服务初始化为 false。
 
@@ -48,7 +48,7 @@ toolPaths 保存于同一 desired JSONB，新候选固定 Codex/Copilot 两项 c
 
 报告复用 Store.WriteWorker。服务层重新解析基础配置 JSON 时单独保留归档候选，避免独立列字段丢失。配置分支锁定 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。toolPathsBootstrap 只填可应用目标中尚为 null 的两项工具；旧模式或第三工具需要显式纠正，报告不自动转换。观测比较自身 baseRevision 后保存，回执来自事务内最终目标与观测版本。
 
-PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将省略的 sudo 和未协商的归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与完整目标比较；未知字段使完整替换产生新版本。无法确认相同的项目条目时重新校验项目访问；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
+PUT 也锁定这行，先校验目标版本。平台规则在同一锁内读取当前原始目标及最近接纳观察：旧布尔 true 保留现有 only，false 返回升级冲突；枚举新启用 only 要求本批真实 platformTaskMode 项，保留 only 与明确退出不要求该项。该检查先于 typed 或 Raw 保值分支，避免无关配置编辑擦除严格目标。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将省略的 sudo 和未协商的归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与完整目标比较；未知字段使完整替换产生新版本。无法确认相同的项目条目时重新校验项目访问；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
 
 并发导入只建立一次初值。观测 CAS 失败不覆盖结果，也不使合法 telemetry 失败；目标 CAS 失败不改变目标。数据库操作、提交与回滚错误保留原链。
 
@@ -74,11 +74,13 @@ enableSudoCleanup 观察项沿用原 state、targetRevision 与 boolean/null app
 
 Daynight-Worker-Tool-Paths: 2 对报告、配置与详情必需，缺失或不匹配在业务调用前拒绝并提示升级；列表摘要不设门槛。成功响应回显版本。配置成功响应保留原始目标与未知字段并组合独立归档列，严格写入只接受两工具；配置协议 1/2 和 prompt 继续独立处理。
 
+Daynight-Worker-Platform-Task-Mode: 1 独立协商目标和应用项。HTTP 的 Raw 与 typed 投影都只输出所选字段：新视图为枚举，旧视图为布尔且 only 投影为 true。两个应用 kind 不相互合成，旧视图隐藏新应用项，新视图隐藏旧布尔项。报告仍整体替换观察，因此旧报告会撤回新支持证据，保存不创造观察。配置 GET/HEAD/PUT、报告和详情复用能力校验与回显；CORS 同时允许发送和读取能力头。配置报告的 bootstrap 固定解析旧布尔并转换为领域枚举，服务层内部重新规范化使用领域表示，不再次套用外部候选格式。
+
 Daynight-Worker-Archive-Sessions: 1 独立协商布尔目标与同名观测项。协议 codec 对未协商请求保留原闭合投影，确认后严格解析布尔值；服务回显能力，重复或无效头在业务调用前拒绝。旧 PUT 的值来自锁内实际列而非旧 GET。归档观测的私有槽与 mode 槽都按保存的序号还原，替换报告不保留未提供的旧证据。
 
 路径验证只处理远端语法，不能查询服务端文件或使用服务本机 filepath 规则替代 Worker 平台。工具观察包含目标、新准入 actual、candidate 和有界 activeSelections；它不进入 native appliedValue，服务验证不会产生执行资格。完整字段及降级规则由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
 
-旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。工具与归档能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件；标签筛选的观察和 claim 准入遵循上述独立规则。
+旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。工具、归档与平台任务规则能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件；标签筛选的观察和 claim 准入遵循上述独立规则。
 
 ## Web 字段与保存
 
@@ -98,7 +100,7 @@ Web 配置编辑器持有提交的账号、Worker、操作、目标版本与草�
 
 ## 验证边界
 
-真实 PostgreSQL 验证并发导入、独立 CAS、相同值、规范化比较、权限变化、事务失败与持久状态，包括 sudo 字段省略保留、显式关闭及版本冲突。HTTP 验证认证、Origin、查询/方法拒绝、精确字段、布尔 false、版本和原格式。迁移验证 preferPlatformSpecificTasks 补值保持版本与时间；enableSudoCleanup 补值推进版本与时间，已存在字段及未初始化目标不变，revision 耗尽时整体回滚。两者均不改变观测、Worker 遥测或任务数据，也不为未初始化 Worker 生成目标。归档列迁移及新建默认、并发旧写入、目标 CAS、回读、观察替换和未协商投影均使用其实际存储与协议边界验证。
+真实 PostgreSQL 验证并发导入、独立 CAS、相同值、规范化比较、权限变化、事务失败与持久状态，包括 sudo 字段省略保留、显式关闭及版本冲突。HTTP 验证认证、Origin、查询/方法拒绝、精确字段、布尔 false、版本和原格式。迁移验证历史 preferPlatformSpecificTasks 补值保持版本与时间，以及布尔转 platformTaskMode 推进版本与时间、删除旧字段、保留未知兄弟和未初始化事实。enableSudoCleanup 补值推进版本与时间，已存在字段及未初始化目标不变；涉及推进的 revision 耗尽时整体回滚。迁移均不改变观测、Worker 遥测或任务数据，也不为未初始化 Worker 生成目标。归档列迁移及新建默认、并发旧写入、目标 CAS、回读、观察替换和未协商投影均使用其实际存储与协议边界验证。
 
 Web 模块测试验证继承与自定义、保存/拒绝/未知结果及后台复核中的草稿连续性。`tests/navigation/worker-configuration-arrow.browser.ts` 在生产 App 的受控 API fixture 中检查公共箭头、表单几何、禁用和 forced-colors。箭头回归由 `team-playwright.config.ts` 的 `team-preference` 项目执行；公共组件矩阵由[公共选择组件](native-select.md#验证责任)拥有。
 
