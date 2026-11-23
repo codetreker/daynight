@@ -17,7 +17,7 @@ func mcpOrgEmptyGoalDependencies(t *testing.T, inspect bool) store.ProjectGoalDe
 	if inspect {
 		n = 1
 	}
-	return mcpOrgGoalDependencies{t: t, lock: mcpOrgCount(t, 1), inspect: mcpOrgCount(t, n)}
+	return mcpOrgGoalDependencies{t: t, lock: mcpOrgCount(t, 0), inspect: mcpOrgCount(t, n)}
 }
 func (d mcpOrgGoalDependencies) LockTeam(context.Context) error { d.lock(); return nil }
 func (d mcpOrgGoalDependencies) HasProjectEdges(context.Context) (bool, error) {
