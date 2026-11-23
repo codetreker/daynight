@@ -28,6 +28,9 @@ type v2ContractDAO struct {
 	nextExists                                                       bool
 	expectList                                                       bool
 	listCalls                                                        int
+	listErr                                                          error
+	listed                                                           []store.ArchiveBundleFile
+	leaseCalls                                                       int
 	saved                                                            []store.ArchiveBundleFile
 	previous, proposed                                               *store.ArchiveBundleFile
 	savedBundle                                                      *store.ArchiveBundle
@@ -54,12 +57,13 @@ func (d *v2ContractDAO) SessionArchiveFiles(_ context.Context, session string) (
 		d.t.Errorf("unexpected archive file listing: session=%s call=%d", session, d.listCalls)
 		return nil, errors.New("unexpected archive file listing")
 	}
-	return []store.ArchiveBundleFile{}, nil
+	return d.listed, d.listErr
 }
 func (d *v2ContractDAO) SessionResourceUsage(context.Context, string) (store.SessionResourceUsage, error) {
 	return d.usage, d.usageErr
 }
 func (d *v2ContractDAO) ListSessionResourceLeases(context.Context, string) ([]store.SessionResourceLease, error) {
+	d.leaseCalls++
 	return d.leases, d.leaseErr
 }
 func (d *v2ContractDAO) SaveSessionArchiveFile(_ context.Context, f store.ArchiveBundleFile) error {
@@ -197,6 +201,63 @@ type contractDeleteAll struct {
 	stagingCalls int
 }
 
+func TestV2TerminalCleanupStopsOnUncertainOrLiveLease(t *testing.T) {
+	sentinel := errors.New("controlled cleanup inventory failure")
+	for _, tc := range []struct {
+		name       string
+		setup      func(*v2ContractDAO)
+		wantError  bool
+		leaseCalls int
+	}{
+		{"file inventory failed", func(d *v2ContractDAO) { d.listErr = sentinel }, true, 0},
+		{"lease inventory failed", func(d *v2ContractDAO) { d.leaseErr = sentinel }, true, 1},
+		{"archive writer still active", func(d *v2ContractDAO) { d.leases = []store.SessionResourceLease{{Kind: "archive"}} }, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			op, d, _ := contractV2(t)
+			d.file.State = "complete"
+			d.listed = []store.ArchiveBundleFile{d.file}
+			d.expectList = true
+			tc.setup(d)
+			blocks := &contractDeleteBlocks{Storage: op.execution.files}
+			deletion := &contractDeleteAll{contractDeleteBlocks: blocks}
+			op.execution.files = deletion
+			err := op.cleanupV2Terminal(t.Context())
+			if tc.wantError && !errors.Is(err, sentinel) || !tc.wantError && err != nil {
+				t.Fatalf("cleanup error = %v", err)
+			}
+			if d.listCalls != 1 || d.leaseCalls != tc.leaseCalls || len(blocks.offsets) != 0 || deletion.stagingCalls != 0 || d.proposed != nil {
+				t.Fatalf("cleanup after uncertain inventory: lists=%d leases=%d offsets=%v staging=%d proposed=%+v", d.listCalls, d.leaseCalls, blocks.offsets, deletion.stagingCalls, d.proposed)
+			}
+		})
+	}
+}
+
+func TestV2TerminalCleanupSelectsOnlyUnreleasedTerminalFiles(t *testing.T) {
+	op, d, _ := contractV2(t)
+	d.file.State = "complete"
+	legacy := d.file
+	legacy.UploadVersion = 1
+	legacy.FileID = uuid.NewString()
+	released := d.file
+	released.StagingReleased = true
+	released.FileID = uuid.NewString()
+	receiving := d.file
+	receiving.State = "receiving"
+	receiving.FileID = uuid.NewString()
+	d.expectList = true
+	d.listed = []store.ArchiveBundleFile{legacy, released, receiving, d.file}
+	blocks := &contractDeleteBlocks{Storage: op.execution.files}
+	deletion := &contractDeleteAll{contractDeleteBlocks: blocks}
+	op.execution.files = deletion
+	if err := op.cleanupV2Terminal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if d.listCalls != 1 || d.leaseCalls != 1 || !reflect.DeepEqual(blocks.offsets, []int64{0}) || deletion.stagingCalls != 1 || d.proposed == nil || d.proposed.FileID != d.file.FileID || !d.proposed.StagingReleased {
+		t.Fatalf("cleanup selection: lists=%d leases=%d offsets=%v staging=%d proposed=%+v", d.listCalls, d.leaseCalls, blocks.offsets, deletion.stagingCalls, d.proposed)
+	}
+}
+
 func (s *contractDeleteAll) DeleteArchiveStaging(context.Context, string, string) error {
 	s.stagingCalls++
 	return s.stagingErr
@@ -273,6 +334,9 @@ func TestV2RestartAdmissionAndWriteFailures(t *testing.T) {
 			next := uuid.NewString()
 			tc.setup(d, next)
 			d.expectList = tc.name == "success" || tc.name == "replay"
+			if d.expectList {
+				d.listed = []store.ArchiveBundleFile{}
+			}
 			out, err := op.RestartArchiveFile(t.Context(), "history", d.file.FileID, next)
 			if (err != nil) != tc.wantErr || (d.proposed != nil) != tc.cas {
 				t.Fatalf("restart=%+v error=%v compare=%+v", out, err, d.proposed)
