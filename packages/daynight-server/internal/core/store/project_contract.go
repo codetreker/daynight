@@ -121,12 +121,7 @@ type TaskWriteDAO interface {
 	// TaskVisibilityHeader reads visibility under the Project lock without a Task row lock.
 	TaskVisibilityHeader(context.Context, string) (model.TaskHeader, error)
 	TaskHeader(context.Context, string) (model.TaskHeader, error)
-	TaskSteps(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStep(context.Context, string, model.TaskStep) error
 	TouchTask(context.Context, string, time.Time) error
-	UpdateTaskStep(context.Context, string, model.TaskStep) error
-	MoveTaskStep(context.Context, string, string, int64, int64) error
-	DeleteTaskStep(context.Context, string, string, int64, int64) error
 }
 
 type TaskSessionDrain struct {

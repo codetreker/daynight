@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，Steps 应用服务、专用领域逻辑、codec 和输入策略已移除；存储合同、模型、DAO 和表仍保留。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
+状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，Steps 应用服务、专用领域逻辑、codec 和输入策略已移除；Steps 存储合同、专用模型和 DAO 已移除，旧表仍保留。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
 
 ## 目标与边界
 
@@ -12,22 +12,22 @@
 
 | 位置 | 尚存职责 |
 |---|---|
-| `internal/core/model/task_steps.go` | Step、状态、父任务头和有序集合领域值。 |
-| `internal/core/store` | PostgreSQL 签名仍依赖的 Steps reader/writer 合同及投影类型。 |
+| `internal/core/model/task_header.go` | 普通资源使用的父任务头。 |
+| `internal/core/store` | 普通 Task、Thread 和同步的存储合同，不包含 Steps 接口。 |
 | `internal/core/task/codec` | 独立的 Thread 资源编码，不包含 Steps 投影或候选容量编码。 |
-| `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_steps.go` | 父任务头锁定、快照读取、差异写入、只更新父版本和时间。 |
+| `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_header.go` | 父任务头读取与锁定，以及普通 Task 的版本和时间更新。 |
 
-生产 `Application` 与 scoped 装配均没有 Steps 字段、端口或构造器。任务服务及 Core 不提供 Steps 用例或候选规则，输入策略目录没有 `step.*` 项。专用业务与协调测试随这些实现移除；PostgreSQL 测试继续证明尚存存储实现。共享 Thread 编码、普通 Task 文字准入和共享错误保留。
+生产 `Application` 与 scoped 装配均没有 Steps 字段、端口或构造器。任务服务及 Core 不提供 Steps 用例或候选规则，输入策略目录没有 `step.*` 项。Steps 专用存储实现及测试随接口移除；共享 Thread 编码、普通 Task 文字准入和共享错误保留。
 
 ## 存储选择
 
 迁移 `030_task_steps.sql` 创建独立 `task_steps` 行及 Task 内位置唯一约束，历史文件和 checksum 保持。独立行曾支持目标文字局部更新及排序区间写入，避免把完整集合塞入 Task JSON 或借用描述、Session todo。现有表不随入口退役迁移、清空或改写。
 
-Step 以 `(task_id,id)` 定位，ID 为 Task 内唯一的八位十六进制值，位置稠密。Task 软删除保留现存行。排序使用普通 INSERT/UPDATE，延迟唯一约束只检查最终排列，不充当 `ON CONFLICT` 仲裁器。
+旧行以 `(task_id,id)` 定位，Task 软删除保留现存行。现有 schema 保留原约束，删除表由独立迁移处理。
 
 ## 应用装配与存储边界
 
-应用层没有 Steps 读取、写入或 scoped 准入调用链。存储接口仍可表达父任务头、集合、单项和投影读取，以及差异写入、区间移动和删除；这些能力仅随尚存 DAO 保留，不再由生产应用服务装配。后续存储代码清理可独立删除这些方法及专用模型，普通 Task 仍依赖的 `TaskHeader`、`TouchTask` 和共享错误保持原职责。
+应用层没有 Steps 读取、写入或 scoped 准入调用链。存储接口和 PostgreSQL 实现不再提供 Steps 读取或写入；普通 Task 仍依赖的 `TaskHeader`、`TouchTask` 和共享错误保持原职责。
 
 共享事务所有者继续区分 operation、commit、cleanup 阶段及 committed、not_committed、unknown 完成结果；cleanup 不能把未知提交改成已回滚。普通 Task、Thread、Webhook 和同步继续使用各自现有合同。退役 REST 路径只使用通用未知 API 响应及请求日志；旧请求的 request ID 不能作为业务写入、回滚或数据清理的证明。
 
@@ -61,7 +61,7 @@ Web 不展示 Steps 集合。旧 `tab=steps` 地址和已保存的该选项按�
 
 ## 凭据、迁移与部署
 
-PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。存储代码及数据清理分别由其所有者处理。
+PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。旧表的数据清理由独立迁移处理。
 
 服务迁移仍严格验证顺序和 checksum；入口退役不增加数据迁移，也不证明生产制品已部署。生产发布、数据库清理和旧进程停机遵循各自的授权及验收要求。原始存储与协议取舍见[REST 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)及其前置记录。
 
@@ -69,6 +69,6 @@ PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision �
 
 真实候选服务验证旧集合、单项及两个 PUT 子资源的原有方法、HEAD、CORS 预检与 SPA 隔离。严格依赖观察证明请求未调用 Steps 用例或存储；持久化及版本观察证明没有父 Task 改写。普通 Task、Thread 和附件继续验证成功及认证、scope、项目权限拒绝，普通软删除回归使用自身 fixture。
 
-应用装配测试执行没有 Steps 服务的生产构造，并保留普通 Task、Thread、共享 Capturer、身份和观察能力的绑定证明。Task、Thread 与同步测试继续验证各自业务、编码和事务行为。PostgreSQL 测试继续拥有尚存 DAO 的 SQL、锁、快照、提交及回滚证明。Steps 专用 Service、Core 和 codec 测试随其实现移除。真实 MCP HTTP session、打包 CLI 与 Web 测试各自验证入口退役及普通操作。
+应用装配测试执行没有 Steps 服务的生产构造，并保留普通 Task、Thread、共享 Capturer、身份和观察能力的绑定证明。Task、Thread 与同步测试继续验证各自业务、编码和事务行为。PostgreSQL 测试继续拥有普通 Task 的 SQL、锁、快照、提交及回滚证明。Steps 专用 Service、Core 和 codec 测试随其实现移除。真实 MCP HTTP session、打包 CLI 与 Web 测试各自验证入口退役及普通操作。
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有当前命令，实际源码、产物、环境、状态码和版本组合记录在对应交付证据中。

@@ -281,8 +281,6 @@ func (mock *taskHTTPProjectScopeMock) SessionDAO() store.ProjectSessionDAO {
 
 type taskHTTPReaderMock struct {
 	TaskHeaderFn func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn   func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn  func(context.Context, string) ([]model.TaskStep, error)
 	taskHTTPMockBase
 	TaskFn                     func(context.Context, string, string) (model.Task, error)
 	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
@@ -339,26 +337,6 @@ func (mock *taskHTTPReaderMock) TaskPresence(p0 context.Context, p1 string, p2 s
 func (mock *taskHTTPReaderMock) TaskHeader(p0 context.Context, p1 string, p2 string) (model.TaskHeader, error) {
 	mock.need("TaskHeader", mock.TaskHeaderFn != nil)
 	return mock.TaskHeaderFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", mock.TaskStepFn != nil)
-	return mock.TaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	mock.need("TaskStepPage", false)
-	panic("unreachable")
-}
-
-func (mock *taskHTTPReaderMock) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	mock.need("TaskStepSummary", false)
-	panic("unreachable")
 }
 
 func (mock *taskHTTPReaderMock) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
@@ -420,12 +398,7 @@ type taskHTTPWriterMock struct {
 	ParentTaskFn     func(context.Context, string) (model.Task, error)
 	GoalProgressesFn func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TaskHeaderFn     func(context.Context, string) (model.TaskHeader, error)
-	TaskStepsFn      func(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStepFn func(context.Context, string, model.TaskStep) error
 	TouchTaskFn      func(context.Context, string, time.Time) error
-	UpdateTaskStepFn func(context.Context, string, model.TaskStep) error
-	MoveTaskStepFn   func(context.Context, string, string, int64, int64) error
-	DeleteTaskStepFn func(context.Context, string, string, int64, int64) error
 	taskHTTPMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
@@ -504,34 +477,9 @@ func (mock *taskHTTPWriterMock) TaskHeader(p0 context.Context, p1 string) (model
 	return mock.TaskHeaderFn(p0, p1)
 }
 
-func (mock *taskHTTPWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskHTTPWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
-	return mock.InsertTaskStepFn(p0, p1, p2)
-}
-
 func (mock *taskHTTPWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
 	mock.need("TouchTask", mock.TouchTaskFn != nil)
 	return mock.TouchTaskFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
-	return mock.UpdateTaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskHTTPWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
-	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskHTTPWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
-	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 type taskHTTPProjectReaderMock struct {

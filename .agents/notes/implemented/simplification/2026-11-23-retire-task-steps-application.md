@@ -19,8 +19,10 @@ dedicated codec and four step.* input-policy entries are removed with their
 tests. The independent Thread codec, ordinary Task text policy, shared errors,
 TaskHeader and TouchTask retain their existing consumers.
 
-PostgreSQL reader/writer contracts, signature-dependent models, DAO code and
-tests, migration 030 and persisted rows remain with storage. No replacement
+At this decision, PostgreSQL reader/writer contracts, signature-dependent models,
+DAO code and tests, migration 030 and persisted rows remained with storage. The
+[storage retirement](2026-11-23-retire-task-steps-storage.md) subsequently removes
+the Steps contracts and code while preserving the table. No replacement
 service or compatibility adapter occupies the removed application fields.
 The separate [credential-choice retirement](2026-11-23-retire-step-credential-choices.md)
 removes Step scopes from active PAT and MCP catalogs while preserving saved IDs
@@ -60,9 +62,7 @@ Application assembly tests preserve ordinary Task, Capturer, identity and
 observation wiring. Scoped construction tests also preserve catalog failure
 propagation and prevent partial publication through the existing assembly test
 boundary. Task, Thread and synchronization tests retain their behavior;
-Store tests retain real SQL, locks, snapshots, commit and rollback proof.
+Ordinary Store tests retain real SQL, locks, snapshots, commit and rollback proof.
 
-Remaining store methods and models are not a supported Steps product interface.
-They can be removed with the storage implementation while preserving shared Task
-helpers and error semantics. No data migration, production deployment or
+The subsequent storage retirement preserves shared Task helpers and error semantics. No data migration, production deployment or
 credential-scope retirement is established by this application removal.

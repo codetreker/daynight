@@ -297,22 +297,6 @@ func (c *listOperationCapability) TaskHeader(context.Context, string, string) (m
 	return model.TaskHeader{}, c.fail("TaskHeader")
 }
 
-func (c *listOperationCapability) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	return model.TaskStep{}, c.fail("TaskStep")
-}
-
-func (c *listOperationCapability) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	return nil, c.fail("TaskSteps")
-}
-
-func (c *listOperationCapability) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	return nil, c.fail("TaskStepPage")
-}
-
-func (c *listOperationCapability) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	return store.TaskStepProjection{}, c.fail("TaskStepSummary")
-}
-
 func (c *listOperationCapability) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	return model.ThreadMessage{}, c.fail("ThreadMessage")
 }

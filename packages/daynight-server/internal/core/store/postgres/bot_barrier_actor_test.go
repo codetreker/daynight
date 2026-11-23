@@ -48,8 +48,8 @@ func botBarrierDeletion() *model.BotDeletion {
 }
 
 // Project and Thread writes read a declared Bot through the shared barrier and
-// store the verified Bot actor with Task, Step and Thread captures.
-func TestDeclaredBotActorIsStoredWithTaskStepAndThreadCaptures(t *testing.T) {
+// store the verified Bot actor with Task and Thread captures.
+func TestDeclaredBotActorIsStoredWithTaskAndThreadCaptures(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	bot := runtimeStoredBot(t, f.db)
@@ -66,24 +66,8 @@ func TestDeclaredBotActorIsStoredWithTaskStepAndThreadCaptures(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		now, err := sc.TaskDAO().ObservedAt(ctx)
-		if err != nil {
-			return err
-		}
-		step := model.TaskStep{ID: "0000000a", Title: "declared", Status: model.TaskStepTodo, CreatedAt: now, UpdatedAt: now}
-		if err = sc.TaskDAO().InsertTaskStep(ctx, f.task, step); err != nil {
-			return err
-		}
-		if err = sc.TaskDAO().TouchTask(ctx, f.task, now); err != nil {
-			return err
-		}
-		header, err := sc.TaskDAO().TaskHeader(ctx, f.task)
-		if err != nil {
-			return err
-		}
 		for _, fact := range []protocol.Fact{
 			{Type: protocol.StatusChanged, ProjectID: f.project, TaskID: f.task, TaskVersion: changed.Version, OccurredAt: changed.UpdatedAt, PreviousStatus: "todo", Status: "in_progress"},
-			{Type: protocol.StepUpdated, ProjectID: f.project, TaskID: f.task, TaskVersion: header.Version, OccurredAt: now, StepID: step.ID, Action: "created"},
 		} {
 			id, err := botBarrierCapture(ctx, sc.CaptureDAO(), f.project, actor, fact)
 			if err != nil {
@@ -111,7 +95,7 @@ func TestDeclaredBotActorIsStoredWithTaskStepAndThreadCaptures(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("thread capture: %v %v", completion, err)
 	}
-	if len(events) != 3 {
+	if len(events) != 2 {
 		t.Fatalf("captured events: %v", events)
 	}
 	for _, id := range events {

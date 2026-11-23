@@ -73,21 +73,12 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		values.AllowAgents, values.AssignedTo, values.RequiredPlatform = true, &owner.UserID, &platform
 		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr/1","title":"Retained result"}]`)}
 	})
-	testutil.SeedStep(t, database.Pool, target.ID, "abcdef01", 0)
 	message := writerAppendThread(t, database, target.ID, owner.UserID, "Retained discussion")
 	attachment, created, err := database.PutAttachment(ctx, model.Attachment{
 		ProjectID: project.ID, TaskID: target.ID, Path: "retained.txt", ContentType: "text/plain", SizeBytes: 25,
 	})
 	if err != nil || !created {
 		t.Fatalf("attachment material fixture: %#v created=%t %v", attachment, created, err)
-	}
-	var beforeSteps []model.TaskStep
-	if err := writerRead(t, database, func(scope store.TaskReader) error {
-		var err error
-		beforeSteps, err = scope.TaskSteps(ctx, target.ID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 	var beforeEpoch string
 	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&beforeEpoch); err != nil {
@@ -110,10 +101,6 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 		presence, err := scope.TaskPresence(ctx, project.ID, target.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("cancelled Task became absent or deleted: %#v %v", presence, err)
-		}
-		steps, err := scope.TaskSteps(ctx, target.ID)
-		if err != nil || !reflect.DeepEqual(steps, beforeSteps) {
-			t.Fatalf("cancellation changed or hid Steps: %#v %v", steps, err)
 		}
 		storedMessage, err := scope.ThreadMessage(ctx, target.ID, message.ID)
 		if err != nil || !reflect.DeepEqual(storedMessage, message) {

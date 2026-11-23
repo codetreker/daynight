@@ -97,15 +97,6 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 		t.Fatalf("missing presence=%#v, err=%v", presence, err)
 	}
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("fixture", 7200))
-	helperExec(t, tx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'00000002',1,'Second','Two','in_progress',$2,$2),($1,'00000001',0,'First','One','todo',$2,$2)`, task, stamp)
-	steps, err := pg.ReadTaskSteps(ctx, tx, task)
-	if err != nil || len(steps) != 2 || steps[0].ID != "00000001" || steps[1].Title != "Second" || steps[1].Description != "Two" || string(steps[1].Status) != "in_progress" || steps[0].CreatedAt.Location() != time.UTC || !steps[0].CreatedAt.Equal(stamp) {
-		t.Fatalf("steps=%#v, err=%v", steps, err)
-	}
-	steps, err = pg.ReadTaskSteps(ctx, tx, missing)
-	if err != nil || steps == nil || len(steps) != 0 {
-		t.Fatalf("empty steps=%#v, err=%v", steps, err)
-	}
 	helperExec(t, tx, `UPDATE tasks SET deleted_at=$2 WHERE id=$1`, task, stamp)
 	presence, err = pg.TaskPresence(ctx, tx, project, task, "")
 	if err != nil || !presence.Found || presence.DeletedAt == nil || !presence.DeletedAt.Equal(stamp) || presence.DeletedAt.Location() != time.UTC {
@@ -307,7 +298,6 @@ func TestHelperQueriesRetainDriverFailures(t *testing.T) {
 		{"properties write", func() error { return pg.WriteTaskProperties(ctx, tx, uuid.NewString(), nil) }},
 		{"task", func() error { _, err := pg.ReadTaskWithLock(ctx, tx, "project", "task", ""); return err }},
 		{"header", func() error { _, err := pg.ReadTaskHeader(ctx, tx, "project", "task", ""); return err }},
-		{"steps", func() error { _, err := pg.ReadTaskSteps(ctx, tx, "task"); return err }},
 		{"presence", func() error { _, err := pg.TaskPresence(ctx, tx, "project", "task", ""); return err }},
 		{"thread", func() error { _, err := pg.ReadThreadMessage(ctx, tx, "task", "message"); return err }},
 		{"credential", func() error {

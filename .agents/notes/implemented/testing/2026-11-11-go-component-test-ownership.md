@@ -78,8 +78,7 @@ Core, SDK and local files with controlled DAO facts through a focused host;
 Root retains the assembled PAT isolation and revocation path. Controlled DAO
 results do not prove database persistence. Retired REST and MCP Step stress
 tests have no live protocol behavior to exercise. The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
-removes Steps Service, Core and codec witnesses; remaining Steps Store owners
-retain physical resource and transaction proofs.
+removes Steps Service, Core and codec witnesses. The subsequent [storage retirement](../simplification/2026-11-23-retire-task-steps-storage.md) removes Steps DAO witnesses while ordinary Task Store owners retain physical resource and transaction proofs.
 The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
 records why those operation-level observations were introduced.
 Webhook management and history mappings use the real HTTP registrar, Service

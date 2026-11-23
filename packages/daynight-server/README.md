@@ -2594,8 +2594,7 @@ check supplements the live identity and Session lifecycle witnesses for the
 shared Authentication instance. MCP retirement checks use real HTTP sessions
 against production registration to verify discovery and unknown-tool errors;
 REST retirement checks verify old methods, preflight and SPA isolation without
-Steps calls. The remaining Steps Store implementation retains its SQL and
-transaction proofs. DAO/scope
+Steps calls. Ordinary Task Store tests retain their SQL and transaction proofs. DAO/scope
 fixtures supply fixed domain records, query results, proposed writes, call counts
 and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
@@ -3983,8 +3982,8 @@ Project authorization and refusal rules.
 The [resource requirements](../../docs/spec/daynight-task-steps.md) and
 [design](../../docs/design/daynight-task-steps.md) own this retirement and the
 remaining storage boundary. Legacy and scoped Steps application services, domain
-candidates, dedicated codec and input-policy entries are removed. PostgreSQL
-interface signatures, their models, DAO code and migration 030 remain. The shared
+candidates, dedicated codec and input-policy entries are removed. Steps PostgreSQL interfaces, models and DAO code are removed; migration 030 and
+the current table remain. The shared
 Thread codec, TaskHeader, TouchTask and errors keep their ordinary consumers.
 Application removal does not delete persisted rows or change credentials. MCP, CLI and Web
 also expose no Steps entry point. The
@@ -3998,14 +3997,14 @@ Thread and attachment success and denial cases retain their own fixtures; Task
 soft-deletion proofs do not depend on Steps setup.
 
 Application assembly tests retain ordinary Task, Thread, identity, observation
-and Capturer binding proofs without Steps services. Remaining Steps Store tests
+and Capturer binding proofs without Steps services. Ordinary Task store tests
 own physical PostgreSQL readback and rollback. From this module:
 
 ```bash
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/service/application ./internal/service/task ./internal/core/task ./internal/core/task/codec ./internal/core/inputpolicy -count=1 -timeout=5m
 
-go test ./internal/core/store/postgres/... -run 'TestTaskSteps|TestTaskStepStore' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... -count=1 -timeout=5m
 ```
 
 Store commands require an isolated `DAYNIGHT_TEST_DATABASE_URL`; controlled

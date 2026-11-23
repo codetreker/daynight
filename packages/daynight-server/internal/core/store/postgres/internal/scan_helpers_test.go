@@ -176,19 +176,6 @@ func TestPageValuesAndUTCTimePreserveAbsence(t *testing.T) {
 	}
 }
 
-func TestScanTaskStepMapsEveryField(t *testing.T) {
-	at := projectionTime()
-	step, err := ScanTaskStep(projectionRow{values: []any{"step", int64(4), "title", "description", model.TaskStepSkipped, at, at}})
-	want := model.TaskStep{ID: "step", Position: 4, Title: "title", Description: "description", Status: model.TaskStepSkipped, CreatedAt: at.UTC(), UpdatedAt: at.UTC()}
-	if err != nil || !reflect.DeepEqual(step, want) {
-		t.Fatalf("step = %#v, %v; want %#v", step, err, want)
-	}
-	cause := errors.New("step scan failed")
-	if _, err := ScanTaskStep(projectionRow{err: cause}); !errors.Is(err, cause) {
-		t.Fatalf("scan error = %v", err)
-	}
-}
-
 func TestScanThreadMessageRequiresCompleteExecutionAttribution(t *testing.T) {
 	at := projectionTime()
 	name, claim, worker, provider, reply := "author", "claim", "worker", "codex", "reply"
