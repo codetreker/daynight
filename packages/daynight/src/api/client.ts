@@ -452,7 +452,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), ...(context.workerPlatformTaskMode === true ? { "Daynight-Worker-Platform-Task-Mode": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.operation.startsWith("task.") || ["worker.claim", "worker.update", "worker.complete", "worker.release", "worker.withdraw"].includes(context.operation) ? { "Daynight-Task-Relations": "task-parent-v1" } : {}), ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), ...(context.workerPlatformTaskMode === true ? { "Daynight-Worker-Platform-Task-Mode": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -659,6 +659,8 @@ export const createApiClient = (options: {
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
     if (filters.type !== undefined && filters.type !== "task" && filters.type !== "goal") throw new Error("Task type must be task or goal.");
     const parentId = taskParentInput(filters.parentId);
+    const parentTaskId = filters.parentTaskId === undefined ? undefined : resourceId(filters.parentTaskId);
+    if (parentId !== undefined && parentTaskId !== undefined) throw new Error("parentId and parentTaskId are mutually exclusive.");
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
@@ -682,7 +684,7 @@ export const createApiClient = (options: {
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
     const tags = normalizeTaskTagFilter(filters);
-    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) };
+    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -690,6 +692,7 @@ export const createApiClient = (options: {
     if (
       (task.type !== (filters.type ?? "task"))
       || (filters.parentId !== undefined && task.parentId !== taskParentInput(filters.parentId))
+      || (filters.parentTaskId !== undefined && task.parentTaskId !== resourceId(filters.parentTaskId))
       || (filters.automaticCandidate === true && task.type !== "task")
       || (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
       || (filters.status !== undefined && task.status !== filters.status)
@@ -1290,11 +1293,13 @@ export const createApiClient = (options: {
       const project = resourceId(projectId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
       const parentId = taskParentInput(input.parentId);
+      const parentTaskId = input.parentTaskId === undefined ? undefined : resourceId(input.parentTaskId);
+      if (parentTaskId !== undefined && (parentId !== undefined || input.type === "goal")) throw new Error("parentTaskId conflicts with parentId and Goal creation.");
       const goal = input.type === "goal";
       const tagIds = normalizeTaskTagIds(input.tagIds ?? []);
       return exchange({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", { kind: "json", ...(goal && assignedTo === undefined ? { requirePrincipal: true } : {}), parse: (value, metadata) => {
         const task = parseTask(value, project);
-        if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null)) throw new ProtocolError("Task does not confirm the requested type and parent.");
+        if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null) || parentTaskId !== undefined && task.parentTaskId !== parentTaskId) throw new ProtocolError("Task does not confirm the requested type and parent.");
         if (task.status !== (input.status ?? (goal ? "todo" : "proposed"))) throw new ProtocolError("Task does not confirm the requested initial status.");
         if (task.assignedTo !== (assignedTo === undefined ? (goal ? metadata.principalId : null) : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
         confirmTaskTagIds(task, tagIds);
@@ -1303,6 +1308,7 @@ export const createApiClient = (options: {
         title: input.title,
         ...(input.type === undefined ? {} : { type: input.type }),
         ...(parentId === undefined ? {} : { parentId }),
+        ...(parentTaskId === undefined ? {} : { parentTaskId }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -1407,11 +1413,13 @@ export const createApiClient = (options: {
       if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
       const normalized = taskFilterQuery(input);
       const parentId = taskParentInput(input.parentId);
+      const parentTaskId = input.parentTaskId === undefined ? undefined : resourceId(input.parentTaskId);
       const tags = normalizeTaskTagFilter(input);
       const filters = {
         ...tags,
         ...(input.type === undefined ? {} : { type: input.type }),
         ...(parentId === undefined ? {} : { parentId }),
+        ...(parentTaskId === undefined ? {} : { parentTaskId }),
         ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.ready === undefined ? {} : { ready: input.ready }),
@@ -1462,7 +1470,7 @@ export const createApiClient = (options: {
               const parsed = parseTaskSearchPage(value, project);
               const raw = value as { items: { assignedTo: string | null }[] };
               const assignment = filters.assignedTo === "me" ? principal : filters.assignedTo === "unassigned" ? null : filters.assignedTo;
-              if (parsed.items.some((item, index) => item.type !== (filters.type ?? "task") || parentId !== undefined && item.parentId !== parentId || filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
+              if (parsed.items.some((item, index) => item.type !== (filters.type ?? "task") || parentId !== undefined && item.parentId !== parentId || parentTaskId !== undefined && item.parentTaskId !== parentTaskId || filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
               return parsed;
             },
           }, [200], { kind: "json", value: { query: input.query, ...filters, limit: 100, ...(cursor === null ? {} : { cursor }) } }, true);
@@ -1592,11 +1600,12 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (!isTaskStatus(input.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
       taskVersion(input.version);
+      if (input.cancelDescendants !== undefined && (typeof input.cancelDescendants !== "boolean" || input.status !== "cancelled")) throw new Error("cancelDescendants is only valid for cancellation.");
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);
         if (result.status !== input.status || (result.version !== input.version && result.version !== input.version + 1n)) throw new ProtocolError("Task does not match the requested status or version.");
         return result;
-      } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
+      } }, [200], { kind: "json", value: { version: input.version, status: input.status, ...(input.cancelDescendants === undefined ? {} : { cancelDescendants: input.cancelDescendants }) } }, true);
     },
     claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
     updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),

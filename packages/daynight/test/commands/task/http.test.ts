@@ -543,4 +543,96 @@ describe("task commands over HTTP", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
     expect(f.signals.listenerCount("SIGINT")).toBe(0);
   });
+  it("creates a child with the selected Task parent and extended response", async () => {
+    const child = { ...task, parentTaskId: otherId, status: "proposed", ready: false, assignedTo: accountId };
+    const f = await fixture((_request, response, raw) => {
+      expect(raw.headers["daynight-task-relations"]).toBe("task-parent-v1");
+      respond(response, child, 201);
+    });
+    await f.run(["create", "--title", "Child", "--parent-task", otherId.toUpperCase()]);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ title: "Child", parentTaskId: otherId, assignedTo: accountId });
+    expect(f.context.stdout.mock.calls[0]![0]).toContain(`Parent: Task ${otherId}`);
+  });
+
+  it("preserves ordinary parent filtering across all five statuses and pages", async () => {
+    const statuses = ["proposed", "todo", "in_progress", "done", "cancelled"] as const;
+    const children = statuses.map((status, index) => ({ ...task, id: `abcdefab-${index + 2000}-4222-8333-123456789abc`, parentTaskId: otherId, status, ready: status === "todo", cancelledAt: status === "cancelled" ? time : null }));
+    const f = await fixture((request, response, raw) => {
+      expect(raw.headers["daynight-task-relations"]).toBe("task-parent-v1");
+      respond(response, request.query.has("cursor") ? { items: children.slice(2), nextCursor: null } : { items: children.slice(0, 2), nextCursor: "next" });
+    });
+    await f.run(["list", "--all", "--parent-task", otherId.toUpperCase(), "--json"]);
+    expect(f.requests.map(({ query }) => query.get("parentTaskId"))).toEqual([otherId, otherId]);
+    expect(f.requests.map(({ query }) => query.get("status"))).toEqual([null, null]);
+    expect((parseApiJson(f.context.stdout.mock.calls[0]![0]) as Task[]).map(item => item.status).sort()).toEqual([...statuses].sort());
+  });
+
+  it.each([["--parent", "none", "--parent-task", otherId], ["--parent-task", "none"], ["--type", "goal", "--parent-task", otherId]])("rejects conflicting or invalid parent inputs before dispatch %#", async (...args) => {
+    const f = await fixture(() => { throw new Error("Unexpected request"); });
+    await expect(f.run(["create", "--title", "Child", ...args])).rejects.toThrow();
+    expect(f.requests).toEqual([]);
+  });
+
+  it.each([undefined, "9223372036854775806"])("sends exactly one confirmed cancellation with the selected version %s", async version => {
+    const selected = version === undefined ? task.version : BigInt(version);
+    const f = await fixture((request, response, raw) => {
+      expect(raw.headers["daynight-task-relations"]).toBe("task-parent-v1");
+      if (request.method === "GET") respond(response, { ...task, parentTaskId: null });
+      else respond(response, { ...task, parentTaskId: null, status: "cancelled", ready: false, cancelledAt: time, version: selected + 1n });
+    });
+    await f.run(["set-status", taskId, "cancelled", "--confirm", ...(version === undefined ? [] : ["--if-version", version])]);
+    const taskRequests = f.requests.filter(({ path }) => path.endsWith(`/tasks/${taskId}`) || path.endsWith(`/tasks/${taskId}/status`));
+    expect(taskRequests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(parseApiJson(taskRequests[1]!.body)).toEqual({ version: selected, status: "cancelled", cancelDescendants: true });
+  });
+
+  it.each([
+    { code: "task_unfinished_children", details: { taskIds: [otherId] }, status: 409 },
+    { code: "invalid_input", details: undefined, status: 400 },
+    { code: "forbidden", details: undefined, status: 403 },
+  ])("retains cancellation refusal details without retrying: $code", async ({ code, details, status }) => {
+    const f = await fixture((request, response) => request.method === "GET" ? respond(response, task) : respond(response, { error: { code, message: "Refused", requestId: "refused", ...(details === undefined ? {} : { details }) } }, status));
+    await expect(f.run(["set-status", taskId, "cancelled", "--confirm"])).rejects.toMatchObject({ code, confirmedRefusal: true, ...(details === undefined ? {} : { details }) });
+    expect(f.requests.filter(({ path }) => path.includes(`/tasks/${taskId}`)).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+  });
+
+  it("filters ready Tasks by their ordinary parent", async () => {
+    const child = { ...task, parentTaskId: otherId };
+    const f = await fixture((request, response, raw) => {
+      expect(raw.headers["daynight-task-relations"]).toBe("task-parent-v1");
+      expect(request.query.get("parentTaskId")).toBe(otherId);
+      respond(response, { items: [child], nextCursor: null });
+    });
+    await f.run(["ready", "--parent-task", otherId, "--json"]);
+    expect((parseApiJson(f.context.stdout.mock.calls[0]![0]) as Task[])[0]!.parentTaskId).toBe(otherId);
+  });
+
+  it("keeps an old server's rejection of ordinary parent creation without retrying", async () => {
+    const f = await fixture((_request, response) => respond(response, { error: { code: "invalid_input", message: "unknown field parentTaskId", requestId: "old" } }, 400));
+    await expect(f.run(["create", "--title", "Child", "--parent-task", otherId])).rejects.toMatchObject({ code: "invalid_input", confirmedRefusal: true, serverMessage: "unknown field parentTaskId" });
+    expect(f.requests.filter(({ method }) => method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps an old server's rejection of the ordinary parent filter", async () => {
+    const f = await fixture((_request, response) => respond(response, { error: { code: "invalid_input", message: "unknown query parameter parentTaskId", requestId: "old" } }, 400));
+    await expect(f.run(["list", "--all", "--parent-task", otherId])).rejects.toMatchObject({ code: "invalid_input", serverMessage: "unknown query parameter parentTaskId" });
+    expect(f.requests.every(({ query }) => query.get("parentTaskId") === otherId)).toBe(true);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("reports a lost confirmed cancellation response without resubmitting", async () => {
+    const f = await fixture((request, response, raw) => request.method === "GET" ? respond(response, task) : raw.socket.destroy());
+    await expect(f.run(["set-status", taskId, "cancelled", "--confirm"])).rejects.toMatchObject({ operation: "task.set-status", outcomeUnconfirmed: true, message: expect.stringContaining("query the target before retrying") });
+    expect(f.requests.filter(({ method }) => method === "PUT")).toHaveLength(1);
+  });
+
+  it.each([true, false])("reports only server-provided blocker details on ordinary cancellation: readable=%s", async readable => {
+    const f = await fixture((request, response) => request.method === "GET" ? respond(response, task) : respond(response, { error: { code: "task_unfinished_children", message: "Unfinished children", requestId: "refused", ...(readable ? { details: { taskIds: [otherId] } } : {}) } }, 409));
+    const failure = await f.run(["set-status", taskId, "cancelled"]).catch((error: unknown) => error as Error);
+    expect(failure).toMatchObject({ code: "task_unfinished_children", confirmedRefusal: true });
+    expect((failure as Error).message.includes(otherId)).toBe(readable);
+    expect(f.requests.filter(({ method }) => method === "PUT")).toHaveLength(1);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, status: "cancelled" });
+  });
+
 });

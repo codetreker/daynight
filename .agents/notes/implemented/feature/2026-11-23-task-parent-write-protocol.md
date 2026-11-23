@@ -22,6 +22,13 @@ walk or mutate the subtree. This exposes the
 [parent lifecycle decision](../architecture/2026-11-23-task-parent-lifecycle.md)
 through public inputs without changing default read representations.
 
+The CLI selects the extended relation view and exposes ordinary parent creation
+and direct filtering separately from the existing Goal `--parent` option. Its
+`--confirm` cancellation sends the explicit descendant flag with the supplied
+or observed version in one status request; `--force` retains its Goal meaning.
+Missing extended fields remain valid for older services, while rejected new
+inputs are reported without replaying a weaker request.
+
 ## Alternatives
 
 **Treat false as an omitted field.** This loses the request's explicit input and
@@ -31,6 +38,9 @@ status operations.
 **Introduce a separate cancellation tool.** Existing status tools already carry
 exact versions, scope and write-outcome semantics; a separate tool would duplicate
 those contracts without adding a business capability.
+
+**Reuse the Goal parent option for ordinary Tasks.** Its established Goal and
+`none` semantics would become ambiguous, including for existing scripts.
 
 ## Consequences
 

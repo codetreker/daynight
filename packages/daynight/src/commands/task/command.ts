@@ -10,7 +10,7 @@ import { taskDefinition } from "./definition.js";
 import { isTerminalTaskStatus } from "../../task/status.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { CliCancelledError } from "../../cli/cancellation.js";
-import { parseParent } from "./parent.js";
+import { parseParent, parseParentTask } from "./parent.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -134,10 +134,12 @@ export const runTaskCommand = async (
   const status = command.options.get("--status") as TaskFilters["status"];
   const type = command.options.get("--type") as "task" | "goal" | undefined;
   const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
+  const parentTaskId = await parseParentTask(command.options.get("--parent-task") as string | undefined, parentId, help);
+  if (command.options.has("--confirm") && (!setsStatus || command.values[1] !== "cancelled")) throw new UsageError("--confirm is only valid for ordinary Task cancellation.", help);
   if (name === "create") {
     if (type === "goal" && status === "proposed") throw new UsageError("Goal initial status must be todo, in_progress, done or cancelled.", help);
     if (type !== "goal" && status !== undefined && status !== "proposed" && status !== "todo") throw new UsageError("Task initial status must be proposed or todo.", help);
-    if (type === "goal" && parentId != null) throw new UsageError("A Goal cannot have a parent.", help);
+    if (type === "goal" && (parentId != null || parentTaskId !== undefined)) throw new UsageError("A Goal cannot have a parent.", help);
   }
   const allowAgentsArgument = command.options.get("--allow-agents") as "true" | "false" | undefined;
   const allowAgents = allowAgentsArgument === undefined ? undefined : allowAgentsArgument === "true";
@@ -171,7 +173,7 @@ export const runTaskCommand = async (
   const groupArgument = command.options.get("--group-id") as string | undefined;
   const targetsCursor = command.options.get("--targets-cursor") as string | undefined;
   if (!grouped && name === "list" && [limitArgument, cursor, groupArgument, targetsCursor].some(value => value !== undefined)) throw new UsageError("Pagination options require --group-by chain.", help);
-  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined || type !== undefined || parentId !== undefined || ["--tag", "--tag-match", "--untagged"].some(option => command.options.has(option)))) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
+  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined || type !== undefined || parentId !== undefined || parentTaskId !== undefined || ["--tag", "--tag-match", "--untagged"].some(option => command.options.has(option)))) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
   if ((groupArgument === undefined) !== (targetsCursor === undefined)) throw new UsageError("--group-id and --targets-cursor must be supplied together.", help);
   if (groupArgument !== undefined && cursor !== undefined) throw new UsageError("--cursor cannot be combined with --targets-cursor.", help);
   const readyLimit = limitArgument === undefined ? (grouped ? 20 : 10) : Number(limitArgument);
@@ -258,7 +260,7 @@ export const runTaskCommand = async (
       }
       const createAssignment = clearAssignedTo ? { assignedTo: null } : assignedTo !== undefined ? { assignedTo } : type === "goal" ? {} : { assignedTo: (await api.getCurrentUser()).id };
       operation.check();
-      const input: CreateTaskInput = { title: title!, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(status === undefined ? {} : { status }), ...(description === undefined ? {} : { description }), ...createAssignment, ...platformFields, ...dependencyFields, ...tagFields };
+      const input: CreateTaskInput = { title: title!, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(status === undefined ? {} : { status }), ...(description === undefined ? {} : { description }), ...createAssignment, ...platformFields, ...dependencyFields, ...tagFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;
@@ -274,7 +276,7 @@ export const runTaskCommand = async (
         partialObservation = page.partial && !insufficientSessionScope;
         return command.options.has("--json") ? `${stringifyApiJson(page)}\n` : renderTaskWorkPage(page, project.id, assignedTo ?? "me");
       }
-      const filters: TaskFilters = { ...filterTags, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
+      const filters: TaskFilters = { ...filterTags, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const observed = await api.listObservedTasks(project.id, filters);
       insufficientSessionScope = observed.partial && !observed.unsupported && (observed.items.length === 0 || permissionOnly(observed.items.map(task => task.session)));
       partialObservation = observed.partial && !insufficientSessionScope;
@@ -286,7 +288,7 @@ export const runTaskCommand = async (
       return command.options.has("--json") ? renderTaskListJson(tasks) : renderTaskSummaryList(tasks);
     }
     if (command.command.name === "ready") {
-      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...filterTags, ...(parentId === undefined ? {} : { parentId }), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
+      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...filterTags, ...(parentId === undefined ? {} : { parentId }), ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
       operation.check();
       return command.options.has("--json") ? renderTaskJson(tasks) : tasks.length === 0 ? "No ready tasks.\n" : renderTaskList(tasks);
     }
@@ -314,6 +316,7 @@ export const runTaskCommand = async (
     const observed = (setsStatus || name === "delete" || expectedVersion === undefined) ? await api.getTask(project.id, taskId!) : undefined;
     const version = expectedVersion ?? observed!.version;
     operation.check();
+    if (observed?.type === "goal" && command.options.has("--confirm")) throw new UsageError("--confirm is only valid for ordinary Task cancellation; use --force for Goal confirmation.", help);
     if (observed?.type === "goal" && !command.options.has("--force") && (name === "delete" || (setsStatus && isTerminalTaskStatus(command.values[1] as Task["status"])))) {
       await confirmGoalChange(context, name === "delete" ? "delete" : "status", taskId!, project.id, operation.signal);
       operation.check();
@@ -325,7 +328,7 @@ export const runTaskCommand = async (
     }
     if (setsStatus) {
       const task = claimId === undefined
-        ? await api.setTaskStatus(project.id, taskId!, { version, status: command.values[1] as Task["status"] })
+        ? await api.setTaskStatus(project.id, taskId!, { version, status: command.values[1] as Task["status"], ...(command.options.has("--confirm") ? { cancelDescendants: true } : {}) })
         : await api.completeWorkerTask(project.id, taskId!, { version, claimId });
       operation.check();
       return `Task status set.\n${renderTask(task)}`;

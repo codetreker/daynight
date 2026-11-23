@@ -908,16 +908,16 @@ A positive exact full ID match ranks before a title match; fragments do not.
 Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
 `title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
-`--allow-agents`, `--compatible-platform`, `--type`, `--parent` and tag filters intersect the expression; search
+`--allow-agents`, `--compatible-platform`, `--type`, `--parent`, `--parent-task` and tag filters intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
 Search reads and validates every page before producing output, preserving the
 server's order. Text shows the full Task ID and title, type, parent, tags, status, actual
-parent Goal or `none`, positive match fields, and a description snippet when present. A
+direct parent or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`type`, `parentId`, `projectId`, `title`, `tags`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
+`type`, `parentId`, `projectId`, `title`, `tags`, `status`, `cancelledAt`, `context`, and `match`, with `parentTaskId` and `parentTaskContext` when supplied by the service. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -1038,11 +1038,21 @@ use and remains stable if another project later shares that repository.
 Task resources require `type` (`task` or `goal`) and a nullable `parentId`. Create,
 list and search default to `task`; `--type goal` selects a Goal. List, search and
 ready accept `--parent <goal-id|none>`: omission does not filter by parent, `none`
-selects Tasks without a Goal, and a Goal UUID selects its direct children. Filters apply
+selects Tasks without a direct Goal, and a Goal UUID selects its direct children. Filters apply
 before pagination and persist across pages. Create defaults to no parent; on update,
 omission preserves the current parent. `--parent none` sends null, and a Goal UUID
 sets the parent. A Goal cannot have a parent. Membership does not change Task
 identity, status, assignee, materials, dependencies or their classifications.
+
+Create, list, search and ready accept `--parent-task <task-id>` for an ordinary
+direct parent, mutually exclusive with `--parent`. Ordinary parentage is fixed
+at creation; the parent must be visible, nonterminal and in the same Project.
+It does not create a dependency or automatically start or complete the parent.
+Use `task list --parent-task <id> --all` to include terminal children. The
+`--parent none` filter also includes ordinary children. Extended reads expose
+`parentTaskId` separately from the Goal-only `parentId`; older services may omit
+it. An old service's rejection of a new filter or write is not retried with a
+weaker request.
 
 A Goal uses `todo`, `in_progress`, `done` or `cancelled` and is never ready. Full
 Goal reads include progress; its Session registration is `not_applicable`. Graph
@@ -1064,6 +1074,14 @@ creation does not inject a PR array or worker null. `task set-status <id> <statu
 sets `proposed`, `todo`, `in_progress`, `done` or `cancelled` for ordinary Tasks. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
 reopening and direct completion; ordinary Task cancellation is irreversible and does not prove
 delivery. Goal-specific lifecycle effects remain subject to the service's business checks. Cancelled records and materials remain readable unless effective parent deletion hides them.
+An unfinished direct child prevents ordinary completion, cancellation or
+deletion of its parent; refusals identify blocking Tasks when authorized. To
+cancel a parent and its unfinished descendants atomically, use
+`task set-status <id> cancelled --confirm`. The CLI sends one explicit request
+with the supplied or observed version. Terminal descendants keep their status;
+a protected descendant rejects the whole operation. `--force` remains the
+separate Goal confirmation option. On an unknown outcome, observe the original
+Task and descendants before deciding what to do next.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
