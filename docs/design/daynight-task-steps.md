@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show、Add、Update、Set-status、Move、Delete 与 Web Steps 阅读、状态设置、添加、内容编辑、位置调整和删除已实现。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 Web Steps 阅读、状态设置、添加、内容编辑、位置调整和删除已实现。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -10,7 +10,7 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端、CLI list/show/Add/Update/Set-status/Move/Delete 以及 Web 读取、状态设置、添加、内容编辑、位置调整和删除描述当前实现；Agent 指令资源描述尚待交付的目标机制。应用导航准入由独立路由所有者实现。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端以及 Web 读取、状态设置、添加、内容编辑、位置调整和删除描述当前实现；CLI 不再消费 Steps 资源。应用导航准入由独立路由所有者实现。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
@@ -26,10 +26,9 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ```mermaid
 flowchart LR
-  CLI[CLI step 命令] --> HTTP[Steps HTTP 资源]
+  HTTP[Steps HTTP 资源] --> Service[Task Steps 用例]
   Web[Web Steps 面板] --> Owner[TaskDetailSessions]
   Owner --> HTTP
-  HTTP --> Service[Task Steps 用例]
   Service --> Pure[校验 / 候选 / 公开资源 codec]
   Service --> Tx[项目事务 + 父 Task 锁]
   Tx --> Rows[(task_steps)]
@@ -46,7 +45,6 @@ flowchart LR
 | `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
 | `internal/service/task/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
 | `api/task_steps.go`、`internal/server/task/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
-| CLI `api/task-steps.ts`、`commands/task/step*.ts` | 已交付 list/show/Add/Update/Set-status/Move/Delete 的严格解析、版本分支、完整确认、同操作事实核对、输出与诊断。 |
 | Web `api/task-steps.ts`、Task 详情会话与 Steps 面板 | 独立资源读取、共享提交生命周期、草稿、呈现和附件导航。 |
 
 `internal/core/task/codec` 不依赖 API 或业务流程；service、API 与 server 复用其资源类型与编码，候选规则由 `internal/core/task/steps` 拥有。公开 DTO 与容量编码只有一个定义，避免 service 反向依赖 HTTP handler 或维护第二套字节估计。
@@ -123,7 +121,7 @@ Step ID 恰为 UUIDv4 第一段的 8 位十六进制字符，输入接受大小�
 | `PUT /steps/{stepId}/position` | version；before/after/position 恰好一个 | `200 StepsResource`。 |
 | `DELETE /steps/{stepId}` | version | `200 StepsResource`，返回删除后的集合。 |
 
-例如添加请求为 `{"version":12,"id":"a1b2c3d4","title":"Review 第 2 轮","status":"todo"}`；移动请求为 `{"version":13,"after":"6f7a8b9c"}`。HTTP add 必须给出提交前已确定的 ID，CLI 和 Web 在未显式给定时生成 UUIDv4 第一段。POST 的 Location 指向规范单项资源 `/steps/{stepId}`。所有引用只在指定 Task 中解释。添加省略锚点时位于末尾，before/after 互斥；移动的 before/after/position 恰好一个，锚点不能是目标自身。PATCH 只更新明确给出的字段，空字符串清空说明。删除结束记录存续期且不删除引用材料；之后可以使用同一 ID 创建全新记录，系统不提供逐次修改审计、恢复或历史归因承诺。
+例如添加请求为 `{"version":12,"id":"a1b2c3d4","title":"Review 第 2 轮","status":"todo"}`；移动请求为 `{"version":13,"after":"6f7a8b9c"}`。HTTP add 必须给出提交前已确定的 ID，Web 在未显式给定时生成 UUIDv4 第一段。POST 的 Location 指向规范单项资源 `/steps/{stepId}`。所有引用只在指定 Task 中解释。添加省略锚点时位于末尾，before/after 互斥；移动的 before/after/position 恰好一个，锚点不能是目标自身。PATCH 只更新明确给出的字段，空字符串清空说明。删除结束记录存续期且不删除引用材料；之后可以使用同一 ID 创建全新记录，系统不提供逐次修改审计、恢复或历史归因承诺。
 
 复用认证、Cookie 写 Origin 检查、HEAD、no-store、principal 回执、request ID 和 405/Allow。输入只接受一个 UTF-8 JSON 对象，沿用 1 MiB 请求体上限；拒绝未知/重复字段、非法 query、null、错误类型及只读字段。输入短 ID 接受大小写并转小写，响应解析要求已规范的小写 ID，不把坏响应改成合法值。
 
@@ -171,21 +169,9 @@ Step 写入由同一实例绑定项目写准入及 Add、Change、Move、Delete 
 
 Steps 错误分类先检查事务/cleanup 的内部故障，再映射纯业务 Fault；业务拒绝与回滚清理故障被 errors.Join 合并时，整体为内部错误并保留两条原因，不能只靠 errors.As 找到首个 Fault 就返回 4xx。验证同时覆盖纯拒绝及拒绝伴随清理失败。
 
-## CLI 与指令资源
+## CLI 入口退役
 
-`task step` 在通用 task handler 前分派，已交付 list/show/add/update/set-status/move/delete；定义树同时生成这些命令的帮助与 Bash/zsh 补全。四状态 Step 类型独立于 Task。`step-add.ts`、`step-update.ts`、`step-move.ts` 与 `step-delete.ts` 各自拥有参数与结果输出，`step-write.ts` 的 `performStepWrite` 和 `step-write-errors.ts` 拥有五个写命令共用的版本分支、不可变身份与结果事实；attempt 保留操作名、原身份、payload 和请求 UUID，没有未来操作注册器。
-
-`listTaskSteps`、`getTaskStep`、`addTaskStep`、`updateTaskStep`、`setTaskStepStatus`、`moveTaskStep` 与 `deleteTaskStep` 复用既有 `runServerCommand`、`exchange`、精确 bigint JSON、认证与预算。显式 project 避免项目/父 Task 预读；显式版本一次对应写入，默认 GET Steps 后一次写入，预读失败不递交。Add 的短 ID 在递交前确定，另生成完整请求 UUID；重复或未知结果不自动重放或换 ID。完整严格 201、principal、规范 Location、父版本 +1、目标字段/新时间和位置共同确认新增，默认分支还核对已读旧项保持。显式版本不补造旧基线。Update/Set-status 分别提交 PATCH/PUT，先核对完整 200、目标显式字段与 no-op/+1 版本；有预读时严格核对省略字段、顺序、全部非目标及创建时间，同值版本/更新时间保持，真实变化 +1 且目标更新时间变化。
-
-`moveTaskStep` 校验规范目标、恰好一种位置和非自引用锚点，经已有 exchange 提交 PUT 并确认完整结果中的首尾或相邻位置。默认预读允许比较每条 Step 的全部字段和内容时间、非目标相对顺序，以及真实变化 +1/no-op 同版本；显式版本只确认资源、位置和允许的版本范围，维持一次写请求。最大正 int64 的 no-op 允许同版本成功。
-
-Delete 以仅含 version 的 JSON 正文请求单项目标；严格 200、principal、完整作用域资源、父版本 +1 和目标缺失共同确认删除。默认分支还核对目标在预读中存在，剩余项所有字段、时间和顺序保持。末项删除保留合法空集合。
-
-五个写命令共用确认、拒绝及 unknown 的处理。公开错误保留容量 encodedBytes/maxEncodedBytes、原请求 UUID 和分别观察的服务/响应 ID；回显相等不构成确认门槛。完整解码 4xx 为已知拒绝；已递交而没有可信回执的故障为 unknown。只有同一 Operation/API/认证身份仍有效时，至多以 UUID.r1 读取一次完整集合，报告当前版本和目标 found/absent，结论仍 unknown、非零退出且不输出成功资源。取消/耗尽不创建脱离读取，无观察时给出普通显式 project list/show 指导，不回退旧预读或重放。当前缺失不证明未知删除的历史归因，当前同 ID 记录也不证明是原记录。
-
-严格写入回执的 `confirmedMutationId` 与既有 Thread 共用 transport 的实际确认机制，穿过后续清理；runtime 接受具体调用者的安全 failureText。确认后渲染、输出或清理失败保留已确认身份，不降为 unknown。可读成功输出对应操作的确认 ID 与完整集合，JSON 仅输出完整资源及 LF。终端控制/bidi 转义、PT4 可信发现事实和任意 cause 的安全边界保持。
-
-仓库流程的 task-content 区分持久 Steps 与 Session 计划、工具日志和授权，task-execution 按项目规则维护 Steps；公共手册拥有操作语义、父版本与核对。CLI 输出与安装 skill 使用同一手册。
+CLI 的 Task 命令定义、分派、API 导出、补全和手册主题清单均不包含 Steps。旧命令按未知 Task 操作在配置、Git 和网络之前失败。通用 HTTP 确认与输出机制继续服务 Thread 等调用者，历史 Inbox 事件保留共同解码。新生成的 Worker 提示不再指向旧命令；已安装 skill 通过现有更新机制刷新，首次安装及其他项目副本使用 `skill install`。退役决策见[CLI 退役记录](../../.agents/notes/implemented/simplification/2026-11-23-retire-cli-task-steps.md)。
 
 ## Web 资源与单一写入所有者
 
@@ -268,7 +254,7 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 单项字段写入可以局部持久化，但每次写入的完整响应和容量检查仍为 O(n + B)，其中 B 为编码字节量；排序对受影响行是 O(n) 上界。最大合法集合的解码、候选和编码缓冲会占用显著请求内存，不能宣称整体操作 O(1)。
 
-已交付 CLI list/show 各读取一次完整资源。客户端 Steps 正文的有效单响应上限取配置预算与既有 64 MiB 传输安全上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
+Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
 MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 查询及绑定父版本的游标；summary 不读取完整描述，显式 full 返回完整内容。读取直接投影保存的规范字段，不设置领域结构、容量或响应字节检查，不逐项查询和计量；cursor 指向最后返回项。单项分别使用普通 Get/GetSummary，输入的父版本条件仍显式比较。共享 MCP 入口的读取结果不执行输出 schema 或字节准入，大对象许可、输入和期限规则继续适用。写入复用上述原子用例及严格完整候选 codec，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
 
@@ -276,9 +262,9 @@ MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 
 
 迁移 `030_task_steps.sql` 增加表和约束，迁移注册保留已应用文件。迁移与 ledger 同事务；已有任务的字段、版本、时间、属性及历史不变。Steps API 读取零行得到合法空集合，不扫描或转换描述、Session todo 和原生历史。
 
-服务端先提供资源，CLI 和 Web 以同一契约交付。旧客户端忽略新入口并保留原 Task 投影；这是未变化的旧接口，不增加旧数据兼容分支。新客户端连接不支持 Steps 的服务时明确报告能力缺失，不能显示为空集合。
+Steps 的 HTTP、Web 和 MCP 仍遵循各自资源契约；CLI 不提供 Steps 入口，普通 Task 投影保持。客户端连接不支持 Steps 的服务时明确报告能力缺失，不能显示为空集合。
 
-本次交付覆盖前向迁移、正常重启和已写 Steps 数据保留。服务端二进制回退及相应降级恢复方案不在交付范围，不承诺旧二进制能启动已升级的数据库；既有迁移顺序和 checksum 检查保持严格。发布前复核实际迁移序号及全部 producer/consumer，CLI release-input 改动按既有规则提升版本。
+本次交付覆盖前向迁移、正常重启和已写 Steps 数据保留。服务端二进制回退及相应降级恢复方案不在交付范围，不承诺旧二进制能启动已升级的数据库；既有迁移顺序和 checksum 检查保持严格。发布前复核实际迁移序号及全部 producer/consumer，普通 CLI 变更保持包版本，正式发布按既有发布流程单独提升版本。
 
 ## 验证与组件依赖
 
@@ -288,27 +274,27 @@ MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 
 | Service 写协调 | 公开输入、项目准入、父任务门禁、同事务 DAO 调用、真实编码和 capture，分别检查回调与事务完成结果；Move/Delete 的集合规则由 Core 测试，SQL 区间与持久化由 PostgreSQL 测试负责。 |
 | 真实 PostgreSQL | 升级、重启、快照读写交错、并发同版本、软删除和 deferred order constraint；在已写部分位置/步骤行、已 touch 父版本但尚未提交处注入可确认回滚的失败，逐项核对完整集合、排列、父版本及全部时间零变更。提交结果未知另走读回，不能作为回滚证明。 |
 | HTTP | 严格字段、认证/成员、子 404/父 410、409 details、JSON DELETE、方法/HEAD/no-store、取消与提交后丢响应；对实际集合 GET 和修改响应检查 64 MiB 临界编码字节、换行和完整资源形状，不能只测纯 codec。 |
-| 打包 CLI | 精确大版本、一请求显式写、预读失败不递交、请求 ID 留存、非法/不匹配结果、完整 JSON 和帮助补全。 |
+| 打包 CLI | 帮助、补全和手册发现不提供 Steps；旧命令明确失败，普通 Task 流程保持，已安装 skill 按现有更新机制刷新。 |
 | Web session/cache | 单一互斥、普通 Task/Worker 写入驱动 Steps 重读、同步跳过中间版本、迟到读取排除、非法成功 body、父/子失效、unknown 读回、关闭后回执、权限 generation；在真实 session 的 fake fetch/IndexedDB 中控制成功 Steps 准入 await，覆盖摘要与 direct 来源的状态、位置写入期间父 410、新 generation 恢复、后续操作接管、准入完成后的同身份核验、项目/身份/会话及 direct history/opening retirement。删除后每次状态发布保持 deleted，不追加父 GET 或重放写入；正常来源仍完成各自的版本收敛。保留草稿且基线能够重新收敛。删除回执验证后暂停真实 cache 准入事务，替换 generation 后分别在新读取完成前或完成后释放；生产详情 hook 等待新父详情和集合准入；新读取先完成时，组件在旧准入结束前及 unknown 核对后均保留草稿。删除完成后撤权再恢复，确认私有资源清除、只读核对重新启动并恢复可写，且仅一次 DELETE。普通 unknown、目标缺失和正常可见/隐藏页签确认作为对照。 |
 | 生产浏览器 | 草稿、已编号历史项单次/连续 Back/Forward 的取消及采用、四状态、排序/删除焦点、中英文、320px、长内容、241 项分页、有界目标选择、跨页移动和末页删除。 |
-| 指令语义与分发 | 持久 Steps 被保留、Session 日志不被上传；项目自定流程不被固化。打包/安装字节检查和语义情境分别报告。 |
+| 指令语义与分发 | 产品手册和新生成的 Worker 提示不指向旧 CLI 命令；Session 日志不被上传，项目自定流程不被固化。打包/安装字节检查和语义情境分别报告。 |
 
-真实集成验收连接持久化服务、打包 CLI 与生产 Web，覆盖跨端互读、重启和故障。沿用 Go build/vet/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认/main 开启、PR 关闭；原型检查只证明呈现。
+真实集成验收连接持久化服务与生产 Web，覆盖 Steps 读写、重启和故障；打包 CLI 验证退役入口与普通 Task。沿用 Go build/vet/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认/main 开启、PR 关闭；原型检查只证明呈现。
 
 | 组件输出 | 技术依赖 |
 |---|---|
 | 服务端 Steps 资源 | 表、领域候选、codec、事务和 HTTP 形成公开数据契约。 |
-| CLI 与指令资源 | typed client、命令、诊断、帮助/补全及 canonical skill 消费服务端契约。 |
+| CLI 与指令资源 | 命令、API、帮助/补全及 canonical skill 不提供 Steps；普通 Task 与历史 Inbox 解码保持。 |
 | Web Steps 工作空间 | 独立资源读取、共享写入会话及页签/表单/导航消费同一服务端契约；显示使用每页 100 行及有界目标选择。 |
-| 跨端组合验收 | 持久化服务、安装后 CLI、分发指引与生产 Web 共同证明完整读取、七种命令、原子修改、跨 Session 持久化、Web 交互和内容边界。 |
+| 跨端组合验收 | 持久化服务与生产 Web 证明完整读取、原子修改、跨 Session 持久化、Web 交互和内容边界；安装后 CLI 证明旧入口失败与普通 Task 保持。 |
 
-上述关系表达组件职责。各能力可以围绕完整的读取或具体修改操作形成独立交付结果，验收基于已有前置能力；CLI 与 Web 对同一公开契约具有独立消费关系。
+上述关系表达组件职责。各能力可以围绕完整的读取或具体修改操作形成独立交付结果，验收基于已有前置能力；Web 和 MCP 对同一公开契约具有独立消费关系。
 
 ## 可观测性与失败边界
 
 复用现有请求 context、slog JSON 和 [RequestLogging/LogFailure](../../packages/daynight-server/internal/server/httpx/logging.go)。middleware 建立 request_id，认证后绑定 user_id，再附加经准入的 project_id/task_id；目标操作附加规范 step_id，列表以 Task 为最具体资源身份。
 
-CLI 与 Web 在递交 Steps 修改前生成标准 UUID 作为此次请求 ID，使用服务已支持的 `X-Request-ID` 传递，并与原 payload、Step ID 保留。恢复 GET 使用原 ID 加 `.r1`、`.r2` 等后缀，每个请求仍有独立 request_id，可按前缀关联；无须新增 HTTP header、幂等键或后端操作记录。该关联只用于诊断，不证明历史归因，也不参与授权或版本判断。直接 API 调用仍可使用既有请求 ID 规则。
+Web 在递交 Steps 修改前生成标准 UUID 作为此次请求 ID，使用服务已支持的 `X-Request-ID` 传递，并与原 payload、Step ID 保留。恢复 GET 使用原 ID 加 `.r1`、`.r2` 等后缀，每个请求仍有独立 request_id，可按前缀关联；无须新增 HTTP header、幂等键或后端操作记录。该关联只用于诊断，不证明历史归因，也不参与授权或版本判断。直接 API 调用仍可使用既有请求 ID 规则。
 
 Steps 日志使用 `component=task_step`、operation、phase=read|prepare|persist|commit|response，以及 changed/unchanged/refused 等业务结果。事务和响应另有独立终态，不能把取消、5xx 或一个 HTTP 状态当作回滚或业务成功的证明：
 
@@ -343,6 +329,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Update/Set-status/Move/Delete 已通过独立 typed 客户端消费该资源。Web 读取、状态设置、位置调整、添加、内容编辑和删除接入现有详情会话的独立资源状态与共同提交生命周期，草稿使用窗口级导航准入。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI 不提供 Steps 命令与专用客户端。Web 读取、状态设置、位置调整、添加、内容编辑和删除接入现有详情会话的独立资源状态与共同提交生命周期，草稿使用窗口级导航准入。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。

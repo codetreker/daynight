@@ -62,7 +62,7 @@ const compileDependencies = async (
 };
 
 // An assistant environment identifies its Bot so the service can record it as
-// the operator of Task, Step and Thread writes. A malformed value is a broken
+// the operator of Task and Thread writes. A malformed value is a broken
 // environment; reject it instead of sending or silently dropping the header.
 // The validator loads only when the variable is present so help and argument
 // errors stay independent of API modules.
@@ -101,11 +101,6 @@ export const runTaskCommand = async (
   if (command.path[2] === "session") {
     const { runTaskSessionCommand } = await import("./session/registry.js");
     await runTaskSessionCommand(command, context, dependencies);
-    return;
-  }
-  if (command.path[2] === "step") {
-    const { runTaskStepCommand } = await import("./step.js");
-    await runTaskStepCommand(command, context, dependencies);
     return;
   }
   if (command.path[2] === "thread") {

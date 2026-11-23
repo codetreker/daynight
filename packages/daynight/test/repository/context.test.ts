@@ -68,6 +68,11 @@ const save = async (root: string, binding: Partial<ProjectBinding> = {}) => {
 };
 
 describe("repository project selection", () => {
+  it("rejects invalid facts rather than trusting arbitrary discovery candidates", () => {
+    const canonical = "aaaaaaaa-1111-4111-8111-111111111111";
+    for (const ids of [[canonical], [canonical, canonical], [canonical, "private\n\u001b[31m"], [canonical, canonical.toUpperCase()]]) expect(() => new ProjectDiscoveryError(ids)).toThrow();
+  });
+
   it("uses explicit project outside a repository without touching Git or metadata", async () => {
     const client = api();
     const result = await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: path.resolve("does-not-exist"), projectId: id });

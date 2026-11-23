@@ -4116,12 +4116,13 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts
 go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
-Step text boundaries are checked at their respective owners. From the repository
-root, `pnpm --filter @codetreker/daynight test test/cli/task-steps-text.test.ts`
-runs the built CLI's ten-process text sequence against controlled HTTP responses.
-From this module, the following commands exercise Core admission, Service
-coordination, HTTP parsing and physical Store readback and rollback. The Store
-commands require the isolated PostgreSQL database above; the other cases do not.
+Step text boundaries are checked at their respective server owners. The former
+CLI ten-process text sequence is recorded in the [historical proof](../../.agents/notes/implemented/testing/2026-11-10-step-cli-text-process-proof.md);
+the [CLI retirement decision](../../.agents/notes/implemented/simplification/2026-11-23-retire-cli-task-steps.md)
+removes that test with its commands. From this module, the following commands
+exercise Core admission, Service coordination, HTTP parsing and physical Store
+readback and rollback. The Store commands require the isolated PostgreSQL
+database above; the other cases do not.
 
 ```bash
 source scripts/env.sh
@@ -4130,8 +4131,8 @@ go test ./internal/core/store/postgres -run '^TestTaskSteps(ConfirmedRollbackAft
 go test ./internal/core/store/postgres/task -run '^TestTaskStepStore$' -count=1 -timeout=5m
 ```
 
-Controlled CLI responses and Service completion do not establish physical
-persistence; the Store tests use actual SQL and read back the persisted state.
+Controlled Service completion does not establish physical persistence; the Store
+tests use actual SQL and read back the persisted state.
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:

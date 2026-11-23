@@ -12,15 +12,20 @@ including the physical state observed after refusals.
 
 ## Decision
 
-The CLI module's [process proof](2026-11-10-step-cli-text-process-proof.md)
-retains the ten exact text requests, versions, refusal diagnostics and actual
-Node process lifecycle. Core admits the same Add and Change sequence and checks
-refusal fields, zero mutations and unchanged input. Service tests control Core
-refusal and verify that the actual callback suppresses subsequent writes and
-results. HTTP tests parse and forward the exact text and check protocol responses.
-PostgreSQL store tests exercise actual SQL rollback and complete persisted
-readback, independently of the upper-layer controlled outcomes. The dedicated
-server identity fixture and optional cross-module driver are removed.
+The original migration gave the CLI module's
+[process proof](2026-11-10-step-cli-text-process-proof.md) ten exact text requests,
+versions, refusal diagnostics and actual Node process lifecycle. Core admits the
+same Add and Change sequence and checks refusal fields, zero mutations and
+unchanged input. Service tests control Core refusal and verify that the actual
+callback suppresses subsequent writes and results. HTTP tests parse and forward
+the exact text and check protocol responses. PostgreSQL store tests exercise
+actual SQL rollback and complete persisted readback, independently of upper-layer
+controlled outcomes. The dedicated server identity fixture and optional
+cross-module driver were removed.
+
+The [CLI retirement](../simplification/2026-11-23-retire-cli-task-steps.md)
+removes that client's process proof with its commands. The server layers retain
+their independent ownership.
 
 ## Alternatives
 
@@ -41,7 +46,8 @@ and database again.
 The individual layers preserve their respective guarantees; no controlled fixture
 claims to prove a physical refusal. The old optional test did not inject partial
 writes, while the Store witnesses do exercise actual writes followed by rollback.
-The largest values enter the CLI process via a test-only argument file, so OS
-maximum argv capacity is not established. Ten child processes add CLI test cost;
-removing a normally skipped Go entry does not establish a routine CI speedup.
+The largest values entered the CLI process via a test-only argument file, so OS
+maximum argv capacity was not established. The ten child processes added CLI
+test cost while that capability existed;
+removing the normally skipped Go entry did not establish a routine CI speedup.
 Other cross-module test migrations remain independent work.
