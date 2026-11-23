@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or ordinary Task dependencies; it starts without acceptance relationships, which can be edited separately. Supply tagIds as the complete Project tag UUID set.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or ordinary Task dependencies; it starts without acceptance relationships, which can be edited separately. Supply tagIds as the complete Project tag UUID set. Ordinary parentTaskId creates a child of an existing visible unfinished Task; ordinary parent links are immutable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -100,6 +100,11 @@
             "v1"
           ],
           "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "parentTaskId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Existing visible unfinished ordinary Parent Task in this Project; mutually exclusive with a non-null Goal parentId."
         }
       },
       "required": [
@@ -140,8 +145,17 @@
               }
             },
             "not": {
-              "required": [
-                "requiredPlatform"
+              "anyOf": [
+                {
+                  "required": [
+                    "requiredPlatform"
+                  ]
+                },
+                {
+                  "required": [
+                    "parentTaskId"
+                  ]
+                }
               ]
             }
           },
@@ -164,6 +178,20 @@
                   "linux",
                   "macos"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "parentTaskId"
+            ]
+          },
+          "then": {
+            "properties": {
+              "parentId": {
+                "type": "null"
               }
             }
           }
@@ -219,7 +247,7 @@
   },
   {
     "name": "task_update",
-    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields. Supply tagIds as the complete Project tag UUID set.",
+    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields. Supply tagIds as the complete Project tag UUID set. Ordinary parent links cannot be added, cleared or moved by an update.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -304,7 +332,7 @@
             "null"
           ],
           "format": "uuid",
-          "description": "Omit to retain, null to clear, or a Goal UUID to assign."
+          "description": "Omit to retain, null to clear, or a Goal UUID to assign to an ordinary root. Existing ordinary child links are immutable."
         },
         "tagIds": {
           "type": "array",
@@ -383,7 +411,7 @@
   },
   {
     "name": "task_set_status",
-    "description": "Set Task status. For ordinary Tasks, cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim.",
+    "description": "Set Task status. For ordinary Tasks, cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim. cancelDescendants is valid only for ordinary cancelled operations; true confirms atomic cancellation of every visible unfinished descendant.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -428,6 +456,10 @@
             "v1"
           ],
           "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "cancelDescendants": {
+          "type": "boolean",
+          "description": "Explicitly confirm cancellation of visible unfinished descendants. Omission or false cancels only the target. Valid only for an ordinary cancelled operation."
         }
       },
       "required": [
@@ -447,6 +479,20 @@
             "properties": {
               "status": {
                 "const": "done"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "cancelDescendants"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "cancelled"
               }
             }
           }

@@ -115,6 +115,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("task tags", func(t *testing.T) { serverAPITaskTagsNormalFlow(t, f) })
 	t.Run("Goal dependencies", func(t *testing.T) { serverAPIGoalDependenciesNormalFlow(t, f) })
+	t.Run("ordinary subtasks", func(t *testing.T) { serverAPIOrdinarySubtaskNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})

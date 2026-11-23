@@ -14,6 +14,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,6 +44,7 @@ type taskArguments struct {
 	TaskID            string              `json:"taskId"`
 	Type              model.TaskType      `json:"type"`
 	ParentID          *string             `json:"parentId"`
+	ParentTaskID      *string             `json:"parentTaskId"`
 	Title             *string             `json:"title"`
 	Description       *string             `json:"description"`
 	AssignedTo        *string             `json:"assignedTo"`
@@ -57,6 +59,7 @@ type taskArguments struct {
 	TaskParentView    string              `json:"taskParentView"`
 	Status            model.TaskStatus    `json:"status"`
 	ClaimID           *string             `json:"claimId"`
+	CancelDescendants bool                `json:"cancelDescendants"`
 	RemoveDepends     bool                `json:"removeDepends"`
 	Mode              string              `json:"mode"`
 	Name              string              `json:"name"`
@@ -108,7 +111,7 @@ func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observati
 				return ToolResult{}, err
 			}
 			var input taskArguments
-			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "taskParentView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "parentTaskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "taskParentView", "status", "claimId", "cancelDescendants", "removeDepends", "mode", "name", "valueText")
 			if err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
 			}
@@ -154,7 +157,7 @@ func taskBusinessLimit(name string, fields map[string]json.RawMessage, version i
 		return nil
 	}
 	body := map[string]json.RawMessage{}
-	for _, key := range []string{"type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "status", "claimId", "removeDepends"} {
+	for _, key := range []string{"type", "parentId", "parentTaskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "status", "claimId", "cancelDescendants", "removeDepends"} {
 		if value, ok := fields[key]; ok {
 			body[key] = value
 		}
@@ -198,6 +201,13 @@ func taskResult(task model.Task, view string, previous int64, relations ...bool)
 		outcome = "unchanged"
 	}
 	return ToolResult{Data: taskView(task, view, relations...), Outcome: outcome, WriteOutcome: "confirmed", SuccessMetadata: view == "receipt", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+}
+
+func taskWriteError(err error) (ToolResult, error) {
+	if fault, ok := operation.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && len(fault.TaskIDs) > 0 {
+		return ToolResult{Refs: map[string]any{"taskIds": fault.TaskIDs}}, err
+	}
+	return ToolResult{}, err
 }
 func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOperations, input taskArguments) (int64, error) {
 	if input.IfVersion != nil {
@@ -260,7 +270,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if !assignedPresent && in.Type != model.TaskTypeGoal {
 			assigned = &actor.Principal.UserID
 		}
-		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, DefaultAssignedTo: &actor.Principal.UserID, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
+		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, ParentTaskID: in.ParentTaskID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, DefaultAssignedTo: &actor.Principal.UserID, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
 		if _, exists := fields["status"]; exists {
 			input.Status = &in.Status
 		}
@@ -272,7 +282,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		}
 		task, err := tasks.Create(ctx, actor.Principal, in.ProjectID, input)
 		if err != nil {
-			return ToolResult{}, err
+			return taskWriteError(err)
 		}
 		return taskResult(task, in.ReturnView, 0, relations), nil
 	case "task_show":
@@ -345,11 +355,12 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 			task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
 		}
 	case "task_set_status":
-		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID})
+		_, cancelDescendantsPresent := fields["cancelDescendants"]
+		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID, CancelDescendants: in.CancelDescendants, CancelDescendantsPresent: cancelDescendantsPresent})
 	case "task_delete":
 		err = tasks.Delete(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.DeleteTask{Version: version, RemoveDepends: in.RemoveDepends})
 		if err != nil {
-			return ToolResult{}, err
+			return taskWriteError(err)
 		}
 		projectID, _ := model.CanonicalID(in.ProjectID)
 		taskID, _ := model.CanonicalID(in.TaskID)
@@ -363,7 +374,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Unknown task operation."}
 	}
 	if err != nil {
-		return ToolResult{}, err
+		return taskWriteError(err)
 	}
 	return taskResult(task, in.ReturnView, version, relations), nil
 }

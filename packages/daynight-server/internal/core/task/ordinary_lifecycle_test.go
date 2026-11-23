@@ -70,6 +70,29 @@ func TestOrdinaryParentCannotChange(t *testing.T) {
 	faultCode(t, err, "task_parent_immutable")
 }
 
+func TestDescendantCancellationPresence(t *testing.T) {
+	for _, confirmation := range []bool{false, true} {
+		input := SetTaskStatus{Version: 1, Status: model.TaskCancelled, CancelDescendants: confirmation, CancelDescendantsPresent: true}
+		if _, err := ValidateStatus(input); err != nil {
+			t.Fatal(err)
+		}
+		for _, status := range []model.TaskStatus{model.TaskProposed, model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+			input.Status = status
+			_, err := ValidateStatus(input)
+			faultCode(t, err, "invalid_input")
+		}
+		input.Status = model.TaskCancelled
+		for _, currentStatus := range []model.TaskStatus{model.TaskTodo, model.TaskCancelled} {
+			goal := model.Task{Type: model.TaskTypeGoal, Status: currentStatus}
+			_, changed, err := StatusCandidate(t.Context(), nil, model.Principal{}, goal, input, nil)
+			faultCode(t, err, "invalid_input")
+			if changed {
+				t.Fatal("Goal cancellation with descendant input changed state")
+			}
+		}
+	}
+}
+
 func TestOrdinaryLifecycleChildAndParentGates(t *testing.T) {
 	current := model.Task{ID: childID, Type: model.TaskTypeTask, Status: model.TaskTodo, Properties: model.TaskProperties{}}
 	dao := &ordinaryDAO{taskDAO: taskDAO{children: []string{"a", "b"}}}
