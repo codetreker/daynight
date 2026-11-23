@@ -993,7 +993,7 @@ Loading configuration does not create directories or open business resources.
 Modules own their fields, defaults and validation; `internal/config` coordinates
 loading and cross-module checks.
 
-The executable accepts `--root` for normal startup or after `verify-storage`.
+The executable accepts `--root` for normal startup and its offline commands.
 Unknown, repeated and extra arguments fail before business resources open, without
 echoing argument values. `verify-storage` validates only database and storage
 semantics and opens the backup storage read-only. It reports each receiving v2
@@ -1001,6 +1001,23 @@ file’s Session ID, file ID, and recovery offset from the paired volume. Treat
 these observations as usable only when the entire command exits successfully
 (status 0); a later failure invalidates earlier output. It requires the local
 backend and refuses Azure configuration. Logs remain on stderr.
+
+`migrate-storage --root <target-config-root> --source-storage-root <absolute-local-volume>`
+reads the stopped paired local volume and an isolated restored destination
+PostgreSQL database selected by `database.url`. Configure `storage.backend:
+azure-blob` and the ordinary Azure settings; `storage.root` must be separate
+scratch. The command validates the current schema without applying migrations,
+copies retained attachments and Session objects, verifies length, SHA-256 and
+closure, then settles destination-only unfinished uploads. It preserves completed
+receipts, bundle revision and ledger, including valid active v1 history uploads.
+Optional unconfirmed image chunks may be absent on either backend; present bytes
+still require integrity verification, and mixed storage failures remain errors.
+Existing equal target objects are reusable;
+conflicting objects are never overwritten. JSON events report the run, objects,
+state transitions and differences on stderr. Only exit status 0 permits Azure
+activation. Keep every writer stopped and preserve the untouched original
+PostgreSQL/local pair. See the [offline migration design](../../docs/design/offline-storage-migration.md)
+and [paired restore procedure](../../deployment/localhost/README.md#persistence-and-backup).
 
 Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
 selected root, then appends the same JSON records to stderr and
@@ -1380,8 +1397,9 @@ on the separate listener are excluded.
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
-Both checks require `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL`
-for isolated PostgreSQL and Redis instances. The module check owns SQL,
+Both checks require `DAYNIGHT_TEST_DATABASE_URL`, `DAYNIGHT_TEST_REDIS_URL` and
+`DAYNIGHT_TEST_AZURITE_CONNECTION_STRING` for isolated PostgreSQL, Redis and
+Azurite instances. The module check owns SQL,
 Redis and other module mechanisms. The startup/shutdown check owns the
 command lifecycle, including Redis lease expiry after a writer process exits.
 Database-independent suites have focused commands below.
@@ -1403,11 +1421,14 @@ docker port daynight-server-redis-tests 6379
 docker exec daynight-server-redis-tests redis-cli ping
 ```
 
-Set the reported loopback ports in the test URLs, then run:
+Set the reported loopback ports in the test URLs and start the isolated Azurite
+instance described below. Both coverage partitions execute offline migration
+against that instance. Export its connection string, then run:
 
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
 export DAYNIGHT_TEST_REDIS_URL='redis://127.0.0.1:PORT/0'
+export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING='<isolated Azurite connection string>'
 bash scripts/check.sh
 bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests

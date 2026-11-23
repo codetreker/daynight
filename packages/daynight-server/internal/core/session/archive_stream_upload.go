@@ -349,6 +349,13 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 					return e
 				}
 			}
+			predecessors, e := d.ArchiveStagingRecords(ctx, op.id)
+			if e != nil {
+				return e
+			}
+			if row, e = restoreOfflineSuccessorRegistration(predecessors, row); e != nil {
+				return e
+			}
 			inserted, e := d.InsertArchiveStaging(ctx, row)
 			if e != nil {
 				return e

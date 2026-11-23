@@ -86,6 +86,39 @@ test("confirms observed corruption with complete and verifies both receipts afte
   expect(result).toBe(next); expect(revision).toBe("7"); expect(operations[0]).toBe(`POST ${id} complete`); expect(operations).toContain(`GET ${id} status`); expect(operations).toContain(`GET ${next} status`);
 });
 
+test.each(["history", "timeline", "resource"] as const)("uploads a revoked %s successor from zero using its confirmed original intent", async purpose => {
+  const bytes = Buffer.from("frozen migration source"), id = randomUUID(), successor = randomUUID(), hash = digest(bytes);
+  const puts: string[] = [];
+  let uploaded = false, complete = false, revision = "";
+  const receipt = (target: string) => {
+    const failed = target === id;
+    const value = { fileId: target, byteLength: String(bytes.length), sha256: hash, acceptedOffset: failed || !uploaded ? "0" : String(bytes.length), state: failed ? "failed" : complete ? "complete" : "receiving", error: failed ? { code: "staging_corrupt", message: "Archive staging is corrupt." } : null, ...(failed ? { successorFileId: successor } : {}) };
+    if (purpose !== "history") return value;
+    const { fileId, ...rest } = value;
+    return { syncId: fileId, ...rest, timelineRevision: !failed && complete ? "7" : null };
+  };
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input)), target = url.pathname.includes(successor) ? successor : id;
+    if (init?.method === "GET") return target === successor && !uploaded ? Response.json({}, { status: 404 }) : Response.json(receipt(target), { headers: version });
+    if (init?.method === "PUT") {
+      expect(target).toBe(successor);
+      expect(url.searchParams.get("offset")).toBe("0");
+      expect(new Headers(init.headers).get("Daynight-File-SHA256")).toBe(hash);
+      expect(new Headers(init.headers).get("Daynight-File-Byte-Length")).toBe(String(bytes.length));
+      expect(Buffer.from(await new Response(init.body as ConstructorParameters<typeof Response>[0]).arrayBuffer())).toEqual(bytes);
+      puts.push(target); uploaded = true;
+      return Response.json(receipt(target), { headers: version });
+    }
+    if (url.pathname.endsWith("/complete") && target === successor) { complete = true; return Response.json(receipt(target), { headers: version }); }
+    throw new Error("Confirmed replacement must not restart or rotate again.");
+  };
+  const signal = new AbortController().signal;
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => false, signal, deadline: 2100000, sessionId: randomUUID(), retryRuntime: runtime });
+  const result = await transferArchiveStream({ purpose, file: { fileId: id, byteLength: String(bytes.length), sha256: hash }, read: (offset, limit) => bytes.subarray(Number(offset), Number(offset) + limit), call, signal, runtime, deadline: 2100000, replacements: { [id]: successor }, initial: { raw: receipt(id), corrupt: false }, reserveReplacement: () => { throw new Error("Must preserve the reserved successor."); }, onHistoryRevision: value => { revision = value; } });
+  expect(result).toBe(successor); expect(puts).toEqual([successor]); expect(complete).toBe(true);
+  if (purpose === "history") expect(revision).toBe("7");
+});
+
 test.each(["PUT", "complete", "restart"])("refuses an invalid successful %s receipt without reconciling it away", async action => {
   const bytes = Buffer.from("original"), id = randomUUID(), next = randomUUID(), hash = digest(bytes), requests: string[] = [];
   const receiving = { fileId: id, byteLength: String(bytes.length), sha256: hash, acceptedOffset: action === "complete" ? String(bytes.length) : "0", state: "receiving", error: null };

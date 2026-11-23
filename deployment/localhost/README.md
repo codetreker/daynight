@@ -474,6 +474,43 @@ owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.
 
+## Offline local-to-Azure switch
+
+Stop and drain all application instances, maintenance executors and direct
+writers before taking the PostgreSQL/local-volume pair described above. Keep
+that original pair unchanged and restore its database into an isolated target.
+Use a dedicated Azure container and a separate scratch directory. The candidate
+binary must match the restored schema ledger; the offline command applies no DDL.
+
+Create the target root's `config/config.yml` with `database.url` pointing to that
+restored target and `storage.backend: azure-blob`, `storage.root` pointing to
+separate scratch, and the ordinary `storage.azure` settings documented in the
+[Server README](../../packages/daynight-server/README.md). Protect connection
+strings and logs as deployment configuration. Run the candidate binary with the
+original local volume mounted read-only:
+
+```bash
+daynight-server migrate-storage --root /isolated/target \
+  --source-storage-root /paired/source-storage 2> /isolated/migration-report.log
+```
+
+Keep all writers stopped until the entire command exits 0. The report identifies
+retained objects, source/target integrity, conflicts, unresolved publication and
+in-flight settlement by run and resource. An early object success does not prove
+the whole cut. Resolve differences against the same original pair and isolated
+target before rerunning. Equal verified Azure objects are reused; conflicts are
+preserved. Start one Azure Server only after successful migration, then check
+retained downloads, ordinary reuploads and restart behavior. The
+[migration design](../../docs/design/offline-storage-migration.md) owns the
+inventory, receipt and state-transition rules.
+
+To restore the pre-cut point, stop Azure writers, restore the untouched original
+PostgreSQL/local pair, configure `local`, and rotate affected project cache epochs
+before restarting as described above. This returns to the old backup time;
+subsequent writes and external effects require separate reconciliation. Paired
+backup after Azure begins accepting writes and automatic rollback have their own
+scope.
+
 ## Exposure
 
 The authenticated dashboard and API are published only on host `127.0.0.1`.

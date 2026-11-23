@@ -270,7 +270,7 @@ timeline 和两种完整历史同步的版本 1 共用以下传输规则：
 
 `PUT` 使用原文件路径、`offset`、`application/octet-stream`、完整长度和摘要头以及准确的 `Content-Length`。正文是从该偏移开始的全部剩余 bytes，不包含逐块摘要。服务在读取前检查请求和存储偏移，以后端指定的有界缓冲追加；本地使用 512 KiB，Azure 使用 1 MiB，末段按实际长度追加。不完整的内存尾部不确认。取消或结果未知后查询同一 fileId 的 status，从存储报告的可恢复偏移继续；配对恢复可能使偏移比先前观察更小。接收时 PostgreSQL 不保存逐块进度或访问逐块表。
 
-Controller 在首传前持久冻结 history 和 timeline 字节及各文件身份，并按偏移读取；资源沿原受保护的来源和描述符读取。已登记文件以 status 确认实际版本，未登记文件才按 prepare 能力选择版本，因此同一归档可以继续旧版在途文件并使用新版传输新文件。每个版本选择和损坏文件的唯一 successor 在发送对应变更前持久化。timeline 完成后，manifest 使用实际完成的 fileId；归档回执确认前保留冻结来源。
+Controller 在首传前持久冻结 history 和 timeline 字节及各文件身份，并按偏移读取；资源沿原受保护的来源和描述符读取。已登记文件以 status 确认实际版本，未登记文件才按 prepare 能力选择版本，因此同一归档可以继续旧版在途文件并使用新版传输新文件。每个版本选择和损坏文件的唯一 successor 在发送对应变更前持久化。旧失败回执确认与该 intent 相同的 successor 后，Controller 转入其文件身份；离线迁移撤销登记造成的普通 `404` 按首次 PUT 从 `0` 上传，缺失或不匹配的原始 successor intent 仍拒绝。timeline 完成后，manifest 使用实际完成的 fileId；归档回执确认前保留冻结来源。
 
 读取绑定实际媒体操作的取消上下文；取消会中断阻塞的网络读取，存储保护和 lease 持有至操作退出。入口不能控制读取截止时间时拒绝流，不能以网络连接仍在等待代替写者已退出的证明。
 
@@ -445,5 +445,7 @@ Azure 使用 Append Blob、有限租约和预期追加位置条件。观察返�
 本地暂存默认不可用。Linux 适配器在调用方确认实际参与实例的卷语义后，检查文件系统类型、根目录与挂载身份，并以独立进程探测锁和双向可见性；这些本机检查不能替代多实例验证。支持的类型为 ext4、XFS 和 Btrfs；tmpfs、网络和未知文件系统拒绝启用。每层目录和文件的挂载身份必须与根一致，避免子挂载绕过检查。探测依赖 `flock`、`cat`、`dd` 和 Linux `statx`；缺失或失败时拒绝启用。
 
 停写的 `verify-storage` 在同一个只读 PG 快照内取得库存，并在配对卷检查每个 receiving 暂存对象的存在和长度，报告恢复偏移。已收满的文件核对整文件 SHA-256；部分前缀的等长损坏由完成时的整文件摘要拦截。完成的 timeline 和资源使用已发布对象及既有引用闭包验证；seal 前当前完成 history 对照 bundle 的 ID、revision、phase 和持久账本，不要求已清理的 history 暂存。封存后即使 timeline 尚未完成，也验证封存的资源账本及原件；完成 timeline 时按当前文件身份核对内容和闭包，支持 v1/v2 混合。合法退休或 failed 记录的暂存只用于清理。旧归档转换的源归档与迁移闭包沿既有规则核对。验证器不修复或重新取得原始内容。
+
+本地到 Azure 的 `migrate-storage` 复用上述保留对象与闭包规则，并在隔离目标库存中投影确认未完成的归档登记撤销。版本 1 的在线 history 在 `active` 阶段也可保持合法 receiving 登记；迁移按原 Session、当前指针和 revision 核对并撤销。它只清空指向被撤销文件的当前 `history_id`/`timeline_id`，保留原 revision、此前完成的 ledger history 与同批完成回执。原冻结 `fileId` 在切换后按普通未登记 `404` 从 `0` 首次上传；若源或目标已存在正式发布对象但未得到完成回执，迁移报告差异并保留事实。源配对材料始终只读，图片释放和 MCP 私有内容结算仅发生在目标。具体复制顺序、报告和恢复边界见[离线迁移设计](offline-storage-migration.md)。
 
 版本 1 继续读取逐块库存。数据库迁移账本必须与验证器版本一致，部署迁移前停止旧写入方；回滚须使用理解当前 schema 的版本或恢复匹配的旧配对备份。选择该布局的原因见[单文件暂存决策](../../.agents/notes/implemented/architecture/2026-11-23-archive-single-file-staging.md)。

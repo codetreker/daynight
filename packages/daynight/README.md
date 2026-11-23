@@ -3135,7 +3135,12 @@ per resource; incomplete or oversized archives fail explicitly and retain their
 source. Independent Controller uploads and this retry command use the same
 [terminal archive capacity backoff](../../docs/design/daynight-worker.md#结束清理与退出)
 as Worker uploads, preserving the original intent and stop evidence. Completed
-pages disable all Agent controls.
+pages disable all Agent controls. For a stopped local-to-Azure storage migration,
+v2 uploads keep their frozen source and file identity. An unregistered file starts
+at offset 0; a confirmed successor uses its persisted local replacement intent
+and follows the same first-upload flow when its registration has been revoked.
+See the [offline migration procedure](../../docs/design/offline-storage-migration.md)
+for the matching Server and Controller candidates and the untouched restore pair.
 
 Resume a stopped Test Session with its native context:
 

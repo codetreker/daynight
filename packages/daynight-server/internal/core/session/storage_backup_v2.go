@@ -105,32 +105,8 @@ func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, invent
 			}
 		}
 		if file.State == "failed" {
-			var terminal struct {
-				Code string `json:"code"`
-			}
-			if json.Unmarshal(file.TerminalError, &terminal) != nil || terminal.Code == "" {
-				return errors.New("invalid archive terminal error")
-			}
-			if file.SuccessorFileID != "" {
-				next, ok := byFile[file.SuccessorFileID]
-				if !ok || file.SuccessorFileID == file.FileID || terminal.Code != "staging_corrupt" || next.UploadVersion != 2 || next.Purpose != file.Purpose || next.ByteLength != file.ByteLength || next.SHA256 != file.SHA256 || next.TimelineRevision != file.TimelineRevision || !jsonEqual(next.Resource, file.Resource) {
-					return errors.New("archive successor identity mismatch")
-				}
-				seen := map[string]bool{file.FileID: true}
-				for next.FileID != "" {
-					if seen[next.FileID] {
-						return errors.New("archive successor cycle")
-					}
-					seen[next.FileID] = true
-					if next.SuccessorFileID == "" {
-						break
-					}
-					var exists bool
-					next, exists = byFile[next.SuccessorFileID]
-					if !exists {
-						return errors.New("archive successor missing")
-					}
-				}
+			if err := verifyArchiveSuccessors(inventory.SessionID, file, byFile); err != nil {
+				return err
 			}
 			continue
 		}
