@@ -255,6 +255,9 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 				wantUser.PersonalTeam = ref
 				wantSession := session
 				wantSession.UserID = user.ID
+				wantSession.CreatedAt = f.now
+				wantSession.ExpiresAt = f.now.Add(core.SessionLifetime)
+				wantSession.LastUsedAt = &f.now
 				f.equal(got, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, User: wantUser, Session: wantSession, Secret: value})
 				if err != nil {
 					t.Fatal(err)
