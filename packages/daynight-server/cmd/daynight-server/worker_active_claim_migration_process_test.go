@@ -42,7 +42,7 @@ ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 DROP INDEX sessions_user_created_id;
 ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120)`); err != nil {
+DELETE FROM schema_migrations WHERE version >= 115`); err != nil {
 				t.Fatal(err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()

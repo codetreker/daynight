@@ -371,6 +371,9 @@ var retireStepWebhookBindingsSQL string
 //go:embed schema/migrations/120_browser_session_management.sql
 var browserSessionManagementSQL string
 
+//go:embed schema/migrations/121_worker_platform_task_mode.sql
+var workerPlatformTaskModeSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -497,6 +500,7 @@ var schemaMigrations = []migration{
 	{version: 118, sql: browserSessionActivitySQL},
 	{version: 119, sql: retireStepWebhookBindingsSQL},
 	{version: 120, sql: browserSessionManagementSQL},
+	{version: 121, sql: workerPlatformTaskModeSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -58,7 +58,7 @@ func assertWorkerBrowserResponse(t *testing.T, w *httptest.ResponseRecorder) {
 	if w.Header().Get("Access-Control-Allow-Origin") != workerBrowserOrigin || w.Header().Get("Access-Control-Allow-Credentials") != "" {
 		t.Fatalf("CORS headers: %v", w.Header())
 	}
-	for _, name := range []string{"Daynight-User-ID", "Daynight-Worker-Configuration", "Daynight-Worker-Control-Mode", "Daynight-Worker-Tool-Paths", "Daynight-Worker-Archive-Sessions"} {
+	for _, name := range []string{"Daynight-User-ID", "Daynight-Worker-Configuration", "Daynight-Worker-Control-Mode", "Daynight-Worker-Tool-Paths", "Daynight-Worker-Archive-Sessions", "Daynight-Worker-Platform-Task-Mode"} {
 		if !strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), name) {
 			t.Fatalf("missing exposed Worker header %s", name)
 		}

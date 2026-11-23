@@ -107,6 +107,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
 	t.Run("worker lifecycle", func(t *testing.T) { serverAPIWorkerLifecycleFlow(t, f) })
 	t.Run("worker task tag admission", func(t *testing.T) { serverAPIWorkerTaskTagAdmissionFlow(t, f) })
+	t.Run("worker platform task mode", func(t *testing.T) { serverAPIWorkerPlatformTaskModeFlow(t, f) })
 	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
 	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })

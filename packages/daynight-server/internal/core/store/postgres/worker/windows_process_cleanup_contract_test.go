@@ -67,7 +67,7 @@ func TestWindowsProcessCleanupConfigurationTransactionContract(t *testing.T) {
 	}
 	exchange := func(raw string) *model.WorkerConfigurationReceipt {
 		t.Helper()
-		input, err := workercore.ParseWorkerConfigurationExchange(json.RawMessage(raw))
+		input, err := workercore.ParseWorkerConfigurationExchangeProtocol(json.RawMessage(raw), workerprotocol.Capabilities{})
 		if err != nil {
 			t.Fatal(err)
 		}

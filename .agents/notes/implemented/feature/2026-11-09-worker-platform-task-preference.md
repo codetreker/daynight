@@ -14,7 +14,7 @@ unrestricted tasks in one Project.
 
 ## Decision
 
-Each Worker has a cloud-managed `preferPlatformSpecificTasks` boolean, initially
+The existing two-state clients expose a cloud-managed `preferPlatformSpecificTasks` boolean, initially
 false. It is editable in My Workers and hot-applied to subsequent acquisition.
 The control names the viewed Worker’s platform using the shared display names;
 when its platform is unavailable, the control retains a generic label.
@@ -41,7 +41,7 @@ Disabled Workers retain their original mixed candidate stream. The
 ordering and the [configuration protocol](../../../../docs/spec/daynight-worker-configuration.md)
 owns the target and application values.
 
-The server migrates initialized targets to include false without changing
+The original server migration initialized targets with false without changing
 configuration versions, timestamps or prior observations. Platform preference
 was introduced in local schema 2 with an explicit schema 1 migration. The current
 [fact representation](../architecture/2026-11-12-worker-configuration-fact-separation.md)
@@ -90,4 +90,4 @@ Finding no dedicated candidate requires scanning that category across eligible
 Projects before unrestricted acquisition. The additional list condition is
 independent of search and single-request ready selectors. The new required cloud
 field and local cache version require compatible service and Worker binaries;
-older strict clients cannot consume the expanded target.
+older strict clients cannot consume the expanded target without an appropriate projection. The [platform mode protocol](2026-11-23-worker-platform-task-mode-protocol.md) now stores an enum on the server and negotiates the original boolean view for two-state clients, retaining the scheduling decisions described here.
