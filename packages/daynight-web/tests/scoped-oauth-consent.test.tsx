@@ -17,6 +17,22 @@ const page = (transport: ReturnType<typeof fixture>) => <ScopedOAuthConsentPage 
 afterEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 
 describe('scoped OAuth consent', () => {
+  it('requires removing retired Steps selections when the pending catalog changes', async () => {
+    const old: ScopeCatalog = { ...catalog, groups: [...catalog.groups, { id: 'step', scopeIds: ['step:read', 'step:write'] }], defaultScopes: [...catalog.defaultScopes, 'step:read', 'step:write'] };
+    const updated: ScopeCatalog = { ...catalog, catalogRevision: nextRevision };
+    const api = fixture(); api.inspect.mockResolvedValueOnce(view).mockResolvedValue({ ...view, catalogRevision: nextRevision });
+    api.catalog.mockResolvedValueOnce({ pat: old, mcp: old }).mockResolvedValue({ pat: updated, mcp: updated });
+    api.decide.mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict'));
+    render(page(api)); fireEvent.click(await screen.findByRole('button', { name: 'Allow access' }));
+    await screen.findByText(/Previously selected permissions are unavailable: step:read, step:write/);
+    fireEvent.click(screen.getByRole('button', { name: 'I reviewed the permissions' }));
+    expect(screen.getByRole('button', { name: 'Allow access' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable permissions' }));
+    expect(screen.queryByRole('checkbox', { name: /Steps/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow access' }));
+    await screen.findByRole('heading', { name: 'Authorization request approved' });
+    expect(api.decide.mock.calls[1]?.[2]).toEqual({ catalogRevision: nextRevision, scopes: catalog.defaultScopes });
+  });
   it('uses the catalog defaults and submits the actual selection, or denies without one', async () => {
     const api = fixture(); const rendered = render(page(api));
     const allow = await screen.findByRole('button', { name: 'Allow access' });

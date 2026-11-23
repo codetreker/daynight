@@ -17,6 +17,23 @@ const match = async () => fireEvent.click(await screen.findByRole('checkbox', { 
 beforeEach(() => { sessionStorage.clear(); vi.clearAllMocks(); });
 
 describe('scoped CLI authorization', () => {
+  it('requires removing retired Steps selections when the pending catalog changes', async () => {
+    const old: ScopeCatalog = { ...catalog(), groups: [...catalog().groups, { id: 'step', scopeIds: ['step:read', 'step:write'] }], defaultScopes: ['team:read', 'step:read', 'step:write'] };
+    const transport = fixture();
+    transport.inspect.mockResolvedValueOnce(inspection()).mockResolvedValue(inspection(revision2));
+    transport.catalog.mockResolvedValueOnce({ pat: old, mcp: catalog() }).mockResolvedValue({ pat: catalog(revision2), mcp: catalog() });
+    transport.decide.mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict'));
+    render(page(transport)); await match(); fireEvent.click(screen.getByRole('button', { name: 'Authorize CLI' }));
+    await screen.findByRole('button', { name: 'Remove step:read' });
+    fireEvent.click(screen.getByRole('button', { name: 'I reviewed the permissions' })); await match();
+    expect(screen.getByRole('button', { name: 'Authorize CLI' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove step:read' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove step:write' }));
+    expect(screen.queryByRole('checkbox', { name: /Steps/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Authorize CLI' }));
+    await screen.findByRole('heading', { name: 'CLI authorized' });
+    expect(transport.decide.mock.calls[1]?.[3]).toEqual({ catalogRevision: revision2, scopes: ['team:read'] });
+  });
   it('approves explicit defaults only after comparing the code', async () => {
     const transport = fixture(); render(page(transport));
     const approve = await screen.findByRole('button', { name: 'Authorize CLI' });
