@@ -14,14 +14,12 @@ func taskBlockedMigrationIndex(t *testing.T) int {
 	return index
 }
 
-// Columns added by later migrations are absent before migration 87 runs.
-var laterWebhookEventColumns = []string{"actor_kind", "actor_user_id", "actor_bot_id"}
-
 func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	beforeMigrations := schemaMigrations[:taskBlockedMigrationIndex(t)]
-	if err := migrate(ctx, pool, beforeMigrations); err != nil {
+	index := taskBlockedMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(ctx, pool, migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -42,16 +40,16 @@ func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 		var value string
 		err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
  'tasks',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM tasks t),
- 'projects',(SELECT jsonb_agg(to_jsonb(p)-'repository_version' ORDER BY id) FROM projects p),
+ 'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),
  'properties',(SELECT jsonb_agg(jsonb_build_object('task',task_id,'name',CASE WHEN $1 AND name='paused' THEN 'blocked' ELSE name END,'value',value) ORDER BY task_id,CASE WHEN $1 AND name='paused' THEN 'blocked' ELSE name END) FROM task_properties),
- 'webhookEvents',(SELECT coalesce(jsonb_agg(to_jsonb(e) - $2::text[] ORDER BY id),'[]'::jsonb) FROM webhook_events e))::text`, normalize, laterWebhookEventColumns).Scan(&value)
+ 'webhookEvents',(SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY id),'[]'::jsonb) FROM webhook_events e))::text`, normalize).Scan(&value)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return value
 	}
 	before := snapshot(true)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	if after := snapshot(false); after != before {
@@ -69,7 +67,7 @@ func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT applied_at::text FROM schema_migrations WHERE version=87`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	var repeated string
@@ -92,7 +90,9 @@ func TestTaskBlockedMigrationRejectsBadRowsAtomically(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
+			index := taskBlockedMigrationIndex(t)
+			migrations := schemaMigrations[:index+1]
+			if err := migrate(ctx, pool, migrations[:index]); err != nil {
 				t.Fatal(err)
 			}
 			db := &Store{Pool: pool}
@@ -111,14 +111,14 @@ func TestTaskBlockedMigrationRejectsBadRowsAtomically(t *testing.T) {
 			if err := pool.QueryRow(ctx, read).Scan(&before); err != nil {
 				t.Fatal(err)
 			}
-			if err := migrate(ctx, pool, schemaMigrations); err == nil {
+			if err := migrate(ctx, pool, migrations); err == nil {
 				t.Fatal("invalid data was accepted")
 			}
 			if err := pool.QueryRow(ctx, read).Scan(&after); err != nil || before != after {
 				t.Fatalf("failed migration changed rows or ledger: before=%s after=%s err=%v", before, after, err)
 			}
 			mustQueryExec(t, db, `DELETE FROM task_properties WHERE task_id=$1 AND name=$2`, id, tc.property)
-			if err := migrate(ctx, pool, schemaMigrations); err != nil {
+			if err := migrate(ctx, pool, migrations); err != nil {
 				t.Fatalf("repaired migration: %v", err)
 			}
 		})
