@@ -74,6 +74,8 @@ type archiveLedgerEntry struct {
 }
 type archiveLedger struct {
 	ContentPolicy                          string               `json:",omitempty"`
+	StoppedContentPolicy                   string               `json:",omitempty"`
+	WithoutActiveBundle                    bool                 `json:",omitempty"`
 	OnlineImageOccurrences                 []sp.ImageOccurrence `json:",omitempty"`
 	HistoryEpoch, SourceThrough, HistoryID string
 	FinalSourceThrough                     string `json:",omitempty"`
@@ -345,7 +347,24 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 			if in.FailedFileID != "" {
 				return archiveConflict()
 			}
-			bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: in.ControllerInstanceID, Phase: "settling", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
+			policy := ""
+			if r.HistoryContentPolicy != nil {
+				policy = *r.HistoryContentPolicy
+				media, e := archiveMediaDAO(tx)
+				if e != nil {
+					return e
+				}
+				leases, e := media.ListSessionResourceLeases(ctx, op.id)
+				if e != nil {
+					return e
+				}
+				for _, lease := range leases {
+					if lease.Kind != "read" {
+						return fault("resource_busy", "An original resource writer is still running.")
+					}
+				}
+			}
+			bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: in.ControllerInstanceID, Phase: "settling", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{WithoutActiveBundle: true, StoppedContentPolicy: policy, HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
 			if err = dao.SaveSessionArchiveBundle(ctx, bundle); err != nil {
 				return err
 			}
@@ -454,6 +473,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	var file store.ArchiveBundleFile
 	var chunk store.ArchiveBundleChunk
 	var epoch int64
+	var inventoryRequired bool
 	leaseID := uuid.NewString()
 	archiveCtx := ctx
 	var finish func() error
@@ -493,6 +513,13 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	err = op.bundleAccess(ctx, func(tx *operationTx, r *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if (purpose == "history" && bundle.Phase != "active" || purpose == "resource") && bundle.Phase != "settling" || purpose == "timeline" && bundle.Phase != "sealed" {
 			return archiveConflict()
+		}
+		if purpose == "history" {
+			var existing archiveLedger
+			if json.Unmarshal(bundle.Ledger, &existing) != nil {
+				return archiveConflict()
+			}
+			inventoryRequired = existing.StoppedContentPolicy != ""
 		}
 		media, e := archiveMediaDAO(tx)
 		if e != nil {
@@ -704,6 +731,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		var candidate archiveLedger
 		var history sp.ArchiveHistoryContent
 		var timeline sp.ArchiveTimeline
+		var capturedImages map[string]string
 		if purpose == "history" {
 			history, err = sp.DecodeArchiveHistory(content)
 			if err == nil {
@@ -713,6 +741,12 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				return out, invalidArchiveFile(err)
 			}
 			candidate.HistoryID = fileID
+			if inventoryRequired {
+				capturedImages, err = stoppedCaptureImages(history.Entries)
+				if err != nil {
+					return out, err
+				}
+			}
 		} else if purpose == "timeline" {
 			timeline, err = sp.DecodeArchiveTimeline(content)
 			if err != nil {
@@ -764,6 +798,31 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				var previous archiveLedger
 				if json.Unmarshal(bundle.Ledger, &previous) != nil {
 					return archiveConflict()
+				}
+				if r.HistoryContentPolicy != nil {
+					want := *r.HistoryContentPolicy
+					if want == "legacy" {
+						want = ""
+					}
+					if (want != "" && want != "task_body") || ledger.ContentPolicy != want {
+						return invalidArchiveFile(archiveConflict())
+					}
+				}
+				ledger.StoppedContentPolicy = previous.StoppedContentPolicy
+				ledger.WithoutActiveBundle = previous.WithoutActiveBundle
+				if previous.WithoutActiveBundle && ((r.HistoryContentPolicy == nil) != (previous.StoppedContentPolicy == "") || r.HistoryContentPolicy != nil && *r.HistoryContentPolicy != previous.StoppedContentPolicy) {
+					return invalidArchiveFile(archiveConflict())
+				}
+				if (previous.StoppedContentPolicy != "") != inventoryRequired {
+					return archiveConflict()
+				}
+				if previous.StoppedContentPolicy != "" {
+					if r.HistoryContentPolicy == nil || *r.HistoryContentPolicy != previous.StoppedContentPolicy {
+						return invalidArchiveFile(archiveConflict())
+					}
+					if e = op.execution.verifyStoppedCaptures(ctx, tx, r, ledger, capturedImages); e != nil {
+						return e
+					}
 				}
 				if previous.HistoryID != "" {
 					if previous.ContentPolicy != ledger.ContentPolicy {
