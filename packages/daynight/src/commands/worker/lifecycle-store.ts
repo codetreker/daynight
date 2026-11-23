@@ -7,6 +7,7 @@ import { openSqliteDatabase, runSqliteImmediate, closeSqliteDatabase } from "../
 import { assertCurrentSqlite, inspectSqlite, type SqliteFormat } from "../../platform/sqlite-format.js";
 import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 import type { ExecutionOwnerKind, OwnerStopResult } from "./execution-scope.js";
+import type { ClaimIdentity } from "./types.js";
 
 /** A definite rejection before any resource reservation write has begun. */
 export class LifecycleAdmissionError extends Error {
@@ -342,6 +343,15 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       const resourceId = uuid(input.resourceId), operationId = uuid(input.operationId), ownerKind = choice(input.ownerKind, ["task", "bot", "assistant", "probe", "repository", "configuration", "controller"]), originalIdentity = encode(objectValue(input.identity));
       if (getResource(resourceId) !== null) invalid("resource already has an original reservation");
       db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), operationId);
+      bump(); return getResource(resourceId)!;
+    }),
+    reserveCleanupCommand: (input: { binding: LifecycleBinding; task: ClaimIdentity; resourceId: string }): LifecycleResource => atomic(() => {
+      const current = state(), frozen = bindingValue(input.binding);
+      if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId || current.instanceEpoch !== frozen.instanceEpoch
+        || current.localEpoch !== frozen.localEpoch || current.intentVersion !== frozen.intentVersion || current.scopeGeneration !== frozen.scopeGeneration) throw new LifecycleAdmissionError("Worker lifecycle cleanup binding is stale.");
+      const resourceId = uuid(input.resourceId), task = { projectId: uuid(input.task.projectId), taskId: uuid(input.task.taskId), claimId: uuid(input.task.claimId) };
+      if (getResource(resourceId) !== null) invalid("cleanup command already has an original reservation");
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, "repository", encode({ kind: "cleanup_command", ...task }), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), resourceId);
       bump(); return getResource(resourceId)!;
     }),
     importResource: (input: { binding: LifecycleBinding; resourceId: string; ownerKind: ExecutionOwnerKind; identity: { [key: string]: LifecycleJson }; operationId: string; stage?: LifecycleStage; processProof?: LifecycleJson | null; stopProof?: LifecycleJson | null; saveState?: LifecycleResource["saveState"]; error?: string | null }): LifecycleResource => atomic(() => {
