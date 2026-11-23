@@ -40,6 +40,10 @@ HTTP/WebSocket 适配层拥有协议阶段名称，业务层和存储层继续�
 
 ## Controller 历史同步诊断
 
+本节仅适用于兼容在线模式的 `image-history-ledger` 请求：`GET status` 查询原同步身份，`PUT chunk` 发送原冻结历史。`onlineMode=relay` 的在线 Session 不发送活动账本，也不因发图、采图、ACK 或重连重新启用此路径。正文保留策略 `legacy`/`task_body`、在线模式 `legacy`/`relay` 与最终归档传输版本 v1/v2 是独立选择；保留 `legacy` 正文不表示必须采用旧在线模式或 v1 归档。
+
+下述 15 秒请求期限只适用于此兼容历史同步调用。停止归档 v2 使用独立长流期限，从存储确认的实际偏移续传，并沿原 fileId 核对回执、complete 和结果未知；restart 仍须核对失败回执及新旧文件身份。v2 不调用本节的诊断 formatter。这里的日志约束不要求保留旧上传协议；旧在线 sender 按既有支持窗口和未结算责任退役时，其专属 formatter 与测试可一并删除，Server 的 Controller 通道诊断仍独立适用。
+
 失败的 `GET status` 和 `PUT chunk` 分别记录固定操作名、HTTP 状态，以及响应中可安全提取的错误 code 和 request ID。错误 code 限制为 1–64 个小写 ASCII 字母、数字和下划线；request ID 沿用产品规则，限制为 1–64 个 ASCII 字符，首字符只能为字母或数字，其后还允许点号、下划线和连字符。任意 message、响应正文、URL查询、其他 header 和凭据均不得进入日志。
 
 既有 `readArchiveRequestError` 是错误响应的唯一读取者，保留 64 KiB 业务解析上限、原请求的 15 秒 deadline 和调用方取消信号。诊断不另读响应，也不扩大业务读取预算；只有完整响应体不超过独立的 16 KiB 诊断提取预算时，才从已解析 envelope 提取上述标识符。超过诊断预算、空响应、非法 JSON、错误 UTF-8 或字段格式不符时，诊断仅保留操作和 HTTP 状态。业务层已有的传输错误、取消和结果未知分类继续传播，不被诊断替换为普通 HTTP 拒绝。
