@@ -86,6 +86,10 @@ func availableCatalog(kind scopepolicy.CredentialType, unavailable []scopepolicy
 		return scopepolicy.CatalogSnapshot{}, err
 	}
 	excluded := make(map[scopepolicy.ScopeID]bool, len(unavailable))
+	// Retain these IDs in the policy catalog to decode existing credentials and
+	// approved codes, but do not offer them after their public endpoints retire.
+	excluded["step:read"] = true
+	excluded["step:write"] = true
 	for _, id := range unavailable {
 		excluded[id] = true
 	}

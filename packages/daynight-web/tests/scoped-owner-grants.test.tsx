@@ -25,6 +25,21 @@ beforeEach(() => sessionStorage.clear());
 afterEach(() => invalidateAuthRequests());
 
 describe('scoped application authorization editing', () => {
+  it('removes retired Steps permissions from an existing grant without offering them again', async () => {
+    const historical = { ...grant, scopePolicy: { scopeVersion: '7', scopes: ['team:read', 'step:read', 'step:write'] } };
+    const transport = fixture([historical]); render(page(transport)); await screen.findByText('App'); edit();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Permissions currently unavailable:')).toBeInTheDocument();
+    expect(within(dialog).getByText('step:read')).toBeInTheDocument();
+    expect(within(dialog).getByText('step:write')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove unavailable permissions' }));
+    expect(within(dialog).queryByRole('button', { name: 'Remove unavailable permissions' })).toBeNull();
+    expect(within(dialog).queryByRole('checkbox', { name: /Steps/ })).toBeNull();
+    save(); await screen.findByText('Permissions updated.');
+    expect(transport.updateScopes).toHaveBeenCalledOnce();
+    expect(transport.updateScopes.mock.calls[0]?.[0]).toBe(grant.id);
+    expect(transport.updateScopes.mock.calls[0]?.[1]).toEqual({ expectedUserId: user.id, expectedScopeVersion: '7', catalogRevision: catalog.catalogRevision, scopes: ['team:read'] });
+  });
   it('starts collapsed, shows the difference, prevents an empty save and restores focus on Escape', async () => {
     const transport = fixture(); const view = render(page(transport));
     const button = await screen.findByRole('button', { name: 'Edit permissions: App' }); button.focus(); edit();

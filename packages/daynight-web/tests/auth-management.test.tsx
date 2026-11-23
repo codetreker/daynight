@@ -8,6 +8,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { waitForState } from './helpers/waitForState';
+import * as browserSessions from "../src/api/browser-sessions";
 import * as auth from '../src/api/auth';
 import * as grants from '../src/api/oauth-grants';
 import { messagesByLocale } from '../src/i18n/messages';
@@ -18,6 +19,8 @@ import { workerHistory } from '../src/app/page-history';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
+
+vi.mock('../src/api/browser-sessions', () => ({ listBrowserSessions: vi.fn(), getBrowserSession: vi.fn(), revokeBrowserSession: vi.fn() }));
 
 vi.mock('../src/api/oauth-grants', () => ({ revokeOwnerGrant: vi.fn(), updateOwnerGrantDescription: vi.fn() }));
 
@@ -90,6 +93,7 @@ beforeEach(() => {
   vi.mocked(getProject).mockImplementation(async (id) => ({ id, name: "Very long project name" } as Project));
   actorRole = 'admin';
   vi.mocked(auth.getProjectAccess).mockImplementation(async (projectId) => directAccessFixture(projectId, user.id, actorRole));
+  vi.mocked(browserSessions.listBrowserSessions).mockImplementation(async (_signal, userId) => ({ userId, current: { id: '00000000-0000-4000-8000-000000000203', browser: 'Chrome', os: 'Linux', createdAt: '2026-10-22T12:00:00Z', lastUsedAt: null, expiresAt: '2099-10-22T12:00:00Z' }, items: [], nextCursor: null }));
   vi.mocked(scopedCredentials.listScopedTokens).mockResolvedValue([]);
   vi.mocked(scopedCredentials.listScopedOwnerGrants).mockResolvedValue([]);
   vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));

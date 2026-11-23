@@ -996,7 +996,10 @@ loading and cross-module checks.
 The executable accepts `--root` for normal startup or after `verify-storage`.
 Unknown, repeated and extra arguments fail before business resources open, without
 echoing argument values. `verify-storage` validates only database and storage
-semantics and opens the backup storage read-only. Logs remain on stderr.
+semantics and opens the backup storage read-only. It reports each receiving v2
+file’s Session ID, file ID, and recovery offset from the paired volume. Treat
+these observations as usable only when the entire command exits successfully
+(status 0); a later failure invalidates earlier output. Logs remain on stderr.
 
 Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
 selected root, then appends the same JSON records to stderr and

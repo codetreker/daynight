@@ -2,7 +2,7 @@
 
 ## 范围与所有者
 
-Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15。标准化 timeline 的权威是原 `journal.sqlite` 的当前行。`execution.history_content_policy` 持久区分 `legacy` 与 `task_body`；正文策略把消息与在线详情分别保存，在线读取合并两者，同步及归档只消费正文。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
+Controller journal 的唯一编号序列为 `001`–`017`，当前格式为 v17。标准化 timeline 的权威是原 `journal.sqlite` 的当前行。`execution.history_content_policy` 持久区分 `legacy` 与 `task_body`；正文策略把消息与在线详情分别保存，在线读取合并两者，同步及归档只消费正文。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
 
 | 模块 | 责任 |
 |---|---|

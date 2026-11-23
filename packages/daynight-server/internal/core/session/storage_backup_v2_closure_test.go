@@ -2,13 +2,12 @@ package session
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -70,7 +69,7 @@ func TestBackupV2CompletedTimelineRequiresSealedResourceClosure(t *testing.T) {
 			put(archiveBucket, filePath+"/content", body)
 			put("session-resources", blobPath, original)
 			bundle := store.ArchiveBundle{SessionID: id, Phase: "sealed", Revision: 1, HistoryID: historyID, TimelineID: fileID, Ledger: encode(ledger), Resources: encode(refs)}
-			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "timeline", State: "complete", SHA256: archiveDigest(body), ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: filePath, PrefixProof: make([]byte, 32), StagingReleased: true}
+			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "timeline", State: "complete", SHA256: archiveDigest(body), ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: filePath, StagingReleased: true}
 			inventory := store.StorageInventory{SessionID: id, OwnerID: owner, ArchiveBundle: &bundle, ArchiveFilesV2: []store.StorageArchiveFileV2{file}, Resources: []store.SessionResourceRecord{{SessionID: id, Resource: resource, BlobID: blobID, BlobPath: blobPath}}}
 			inventory.ArchiveTimeline = &store.StorageArchiveTimeline{FileID: fileID, State: "complete", Path: filePath, SHA256: archiveDigest(body), UploadVersion: 2, ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1}
 			switch tc.name {
@@ -148,8 +147,14 @@ func TestBackupV2RestartSuccessorIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
-			current := store.StorageArchiveFileV2{UploadVersion: 2, FileID: newID, Purpose: "history", State: "receiving", SHA256: archiveDigest([]byte("history")), ByteLength: 7, TimelineRevision: 1, Path: n.Directory() + "/files/" + newID, PrefixProof: proof[:], Resource: json.RawMessage(`null`)}
+			stage, err := filestorage.ArchiveStagingPath(n, newID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = files.Put(t.Context(), archiveBucket, stage, bytes.NewReader(nil)); err != nil {
+				t.Fatal(err)
+			}
+			current := store.StorageArchiveFileV2{UploadVersion: 2, FileID: newID, Purpose: "history", State: "receiving", SHA256: archiveDigest([]byte("history")), ByteLength: 7, TimelineRevision: 1, Path: n.Directory() + "/files/" + newID, Resource: json.RawMessage(`null`)}
 			old := current
 			old.FileID, old.Path, old.State, old.SuccessorFileID = oldID, n.Directory()+"/files/"+oldID, "failed", newID
 			old.TerminalError = json.RawMessage(`{"code":"staging_corrupt"}`)
@@ -202,8 +207,18 @@ func TestBackupV2ReceivingResourceIdentity(t *testing.T) {
 			body := []byte("pending bytes")
 			length, hash, mime := decimal(int64(len(body))), archiveDigest(body), "text/plain"
 			resource := sp.Resource{ResourceID: resourceID, Name: "original", Status: "available", MediaType: &mime, ByteLength: &length, SHA256: &hash}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
-			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "receiving", SHA256: hash, ByteLength: int64(len(body)), TimelineRevision: 1, Path: blobPath, PrefixProof: proof[:], Resource: encode(resource)}
+			n, err := archiveNamespace("", owner, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage, err := filestorage.ArchiveStagingPath(n, fileID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = files.Put(t.Context(), archiveBucket, stage, bytes.NewReader(nil)); err != nil {
+				t.Fatal(err)
+			}
+			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "receiving", SHA256: hash, ByteLength: int64(len(body)), TimelineRevision: 1, Path: blobPath, Resource: encode(resource)}
 			entry, err := sp.DecodeTimeline([]byte(`{"entryId":"` + uuid.NewString() + `","entrySeq":"1","revision":"1","kind":"assistant_message","content":[{"type":"resource","resourceId":"` + resourceID + `","label":"original"}]}`))
 			if err != nil {
 				t.Fatal(err)
@@ -270,8 +285,7 @@ func TestBackupV2CompletedResourceRequiresPublishedOriginal(t *testing.T) {
 			if _, err = files.Put(t.Context(), "session-resources", path, bytes.NewReader(body)); err != nil {
 				t.Fatal(err)
 			}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
-			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "complete", SHA256: hash, ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: path, PrefixProof: proof[:], Resource: encode(resource), StagingReleased: true}
+			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "complete", SHA256: hash, ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: path, Resource: encode(resource), StagingReleased: true}
 			bundle := store.ArchiveBundle{SessionID: id, Phase: "settling", Revision: 1}
 			inventory := store.StorageInventory{SessionID: id, OwnerID: owner, ArchiveBundle: &bundle, ArchiveFilesV2: []store.StorageArchiveFileV2{file}, Resources: []store.SessionResourceRecord{{SessionID: id, Resource: resource, BlobID: fileID, BlobPath: path}}}
 			switch tc.name {
@@ -330,8 +344,7 @@ func TestBackupV2SealedUnavailableResource(t *testing.T) {
 			if _, err := files.Put(t.Context(), archiveBucket, path+"/content", bytes.NewReader(body)); err != nil {
 				t.Fatal(err)
 			}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
-			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "timeline", State: "complete", SHA256: archiveDigest(body), ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: path, PrefixProof: proof[:]}
+			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "timeline", State: "complete", SHA256: archiveDigest(body), ByteLength: int64(len(body)), AcceptedOffset: int64(len(body)), TimelineRevision: 1, Path: path}
 			saved := store.SessionResourceRecord{SessionID: id, Resource: resource}
 			if tc.name == "unavailable with blob" {
 				value := uuid.NewString()
@@ -356,7 +369,7 @@ func TestBackupV2ReceivingResourceAfterHistoryRevision(t *testing.T) {
 		want          bool
 	}{
 		{"sealed", "", true}, {"failed", "", true},
-		{"sealed", "corrupt", false}, {"failed", "missing", false},
+		{"sealed", "corrupt", true}, {"failed", "missing", false},
 	} {
 		t.Run(tc.phase+"/"+tc.damage, func(t *testing.T) {
 			files, err := local.New(t.TempDir())
@@ -377,12 +390,10 @@ func TestBackupV2ReceivingResourceAfterHistoryRevision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			blockPath, err := namespace.BlockPath(fileID, 0)
+			blockPath, err := filestorage.ArchiveStagingPath(namespace, fileID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			blockHash := sha256.Sum256(block)
-			proof := sessionarchive.AdvancePrefixProof(sessionarchive.InitialPrefixProof(), 0, uint32(len(block)), blockHash)
 			if tc.damage != "missing" {
 				if tc.damage == "corrupt" {
 					block[0] = 'b'
@@ -401,7 +412,7 @@ func TestBackupV2ReceivingResourceAfterHistoryRevision(t *testing.T) {
 			}
 			ledger.HistoryID = historyID
 			bundle := store.ArchiveBundle{SessionID: id, Phase: tc.phase, Revision: 2, HistoryID: historyID, Ledger: encode(ledger), Resources: json.RawMessage(`[]`)}
-			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "receiving", SHA256: hash, ByteLength: int64(len(full)), AcceptedOffset: int64(len(block)), TimelineRevision: 1, Path: path, PrefixProof: proof[:], Resource: encode(resource)}
+			file := store.StorageArchiveFileV2{UploadVersion: 2, FileID: fileID, Purpose: "resource", State: "receiving", SHA256: hash, ByteLength: int64(len(full)), AcceptedOffset: int64(len(block)), TimelineRevision: 1, Path: path, Resource: encode(resource)}
 			err = VerifyStorageBackup(t.Context(), files, store.StorageInventory{SessionID: id, OwnerID: owner, ArchiveBundle: &bundle, ArchiveFilesV2: []store.StorageArchiveFileV2{file}})
 			if (err == nil) != tc.want {
 				t.Fatalf("verification error = %v, want success %v", err, tc.want)

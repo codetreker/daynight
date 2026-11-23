@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,10 +21,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Construct the restored volume and proof independently of the archive writer.
-// A receiving file may have a durable but unacknowledged next block; that block
-// is not required for recovery, including when its contents are unrelated.
-func TestVerifyStorageCommandNumberedArchiveBlocks(t *testing.T) {
+// The command reads independently constructed database and volume state. The
+// unaligned on-disk tail is deliberately not treated as a durable resume point.
+func TestVerifyStorageCommandSingleFileStaging(t *testing.T) {
 	values := processAPIEnvironment(t)
 	db, err := postgres.Open(t.Context(), values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
@@ -34,23 +32,28 @@ func TestVerifyStorageCommandNumberedArchiveBlocks(t *testing.T) {
 	defer db.Close()
 	const blockSize = 512 * 1024
 	cases := []struct {
-		name              string
-		confirmed, length int
-		damage            string
-		version           int
-		purpose           string
-		want              bool
+		name           string
+		stored, length int
+		damage         string
+		version        int
+		purpose        string
+		want           bool
+		offset         int
 	}{
-		{"partial", blockSize, blockSize + 13, "unconfirmed", 2, "history", true},
-		{"fully received", blockSize + 13, blockSize + 13, "", 2, "history", true},
-		{"zero offset", 0, blockSize + 13, "", 2, "history", true},
-		{"empty migration resource", 0, 0, "", 2, "resource", true},
-		{"empty resource descriptor missing", 0, 0, "missing-descriptor", 2, "resource", false},
-		{"empty resource from earlier history", 0, 0, "ledger-mismatch", 2, "resource", true},
-		{"missing confirmed block", blockSize + 13, blockSize + 13, "missing", 2, "history", false},
-		{"modified confirmed block", blockSize + 13, blockSize + 13, "modified", 2, "history", false},
-		{"mismatched volume", blockSize, blockSize + 13, "wrong-volume", 2, "history", false},
-		{"legacy chunk row", 13, 13, "", 1, "history", true},
+		{"partial with tail", blockSize + 7, blockSize + 13, "", 2, "history", true, blockSize},
+		{"fully received", blockSize + 13, blockSize + 13, "", 2, "history", true, blockSize + 13},
+		{"zero offset", 0, blockSize + 13, "", 2, "history", true, 0},
+		{"empty migration resource", 0, 0, "", 2, "resource", true, 0},
+		{"empty resource descriptor missing", 0, 0, "missing-descriptor", 2, "resource", false, 0},
+		{"empty resource from earlier history", 0, 0, "ledger-mismatch", 2, "resource", true, 0},
+		{"missing staging", 0, blockSize + 13, "missing", 2, "history", false, 0},
+		{"modified full staging", blockSize + 13, blockSize + 13, "modified", 2, "history", false, 0},
+		{"oversized staging", blockSize + 14, blockSize + 13, "oversized", 2, "history", false, 0},
+		{"mismatched volume", blockSize, blockSize + 13, "wrong-volume", 2, "history", false, 0},
+		{"staging hardlink", blockSize, blockSize + 13, "hardlink", 2, "history", false, 0},
+		{"staging directory alias", blockSize + 13, blockSize + 13, "staging-alias", 2, "history", false, 0},
+		{"session directory alias", blockSize + 13, blockSize + 13, "session-alias", 2, "history", false, 0},
+		{"legacy chunk row", 13, 13, "", 1, "history", true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,48 +72,61 @@ func TestVerifyStorageCommandNumberedArchiveBlocks(t *testing.T) {
 				contents[i] = byte((i*37 + 11) % 251)
 			}
 			fullHash := sha256.Sum256(contents)
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
 			volume := testStorageRoot(t)
-			writeBlock := func(offset int, data []byte) {
-				t.Helper()
-				path := filepath.Join(volume, "session-archives", filepath.FromSlash(namespace.Directory()), "files", fileID, "chunks", fmt.Sprint(offset))
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatal(err)
+			if tc.damage != "missing" {
+				staging := filepath.Join(volume, "session-archives", filepath.FromSlash(namespace.Directory()), ".staging", fileID)
+				if tc.damage == "wrong-volume" {
+					staging = filepath.Join(volume, "session-archives", "users", uuid.NewString(), id[:2], id, ".staging", fileID)
 				}
-				if err := os.WriteFile(path, data, 0o600); err != nil {
-					t.Fatal(err)
+				if tc.version == 1 {
+					staging = filepath.Join(volume, "session-archives", filepath.FromSlash(namespace.Directory()), "files", fileID, "chunks", "0")
 				}
-			}
-			for offset := 0; offset < tc.confirmed; offset += blockSize {
-				end := min(offset+blockSize, tc.confirmed)
-				block := contents[offset:end]
-				hash := sha256.Sum256(block)
-				var encoded [12]byte
-				binary.BigEndian.PutUint64(encoded[:8], uint64(offset))
-				binary.BigEndian.PutUint32(encoded[8:], uint32(len(block)))
-				h := sha256.New()
-				h.Write(proof[:])
-				h.Write(encoded[:])
-				h.Write(hash[:])
-				copy(proof[:], h.Sum(nil))
-				if tc.damage != "wrong-volume" && !(tc.damage == "missing" && offset == 0) {
-					if tc.damage == "modified" && offset == 0 {
-						block = append([]byte(nil), block...)
-						block[0] ^= 0xff
+				if tc.damage == "staging-alias" || tc.damage == "session-alias" {
+					sessionDir := filepath.Join(volume, "session-archives", filepath.FromSlash(namespace.Directory()))
+					alias := filepath.Join(sessionDir, ".staging")
+					if tc.damage == "session-alias" {
+						alias = sessionDir
 					}
-					writeBlock(offset, block)
+					target := filepath.Join(volume, "session-archives", "alias-target", uuid.NewString())
+					if err := os.MkdirAll(filepath.Dir(alias), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(target, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					relative, err := filepath.Rel(filepath.Dir(alias), target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(relative, alias); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			if tc.damage == "unconfirmed" {
-				writeBlock(tc.confirmed, []byte("unconfirmed bytes"))
-			}
-			if tc.damage == "wrong-volume" {
-				other := filepath.Join(volume, "session-archives", "users", uuid.NewString(), id[:2], id, "files", fileID, "chunks", "0")
-				if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(other, contents[:tc.confirmed], 0o600); err != nil {
+				data := append([]byte(nil), contents[:min(tc.stored, len(contents))]...)
+				if tc.damage == "modified" {
+					data[0] ^= 0xff
+				}
+				if tc.damage == "oversized" {
+					data = append(data, 0)
+				}
+				if err := os.WriteFile(staging, data, 0o600); err != nil {
 					t.Fatal(err)
+				}
+				if tc.damage == "hardlink" {
+					otherNamespace, err := sessionarchive.NewNamespace(sessionarchive.Users, owner, uuid.NewString())
+					if err != nil {
+						t.Fatal(err)
+					}
+					other := filepath.Join(volume, "session-archives", filepath.FromSlash(otherNamespace.Directory()), ".staging", uuid.NewString())
+					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Link(staging, other); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			exec := func(query string, args ...any) {
@@ -189,15 +205,44 @@ func TestVerifyStorageCommandNumberedArchiveBlocks(t *testing.T) {
 			}
 			exec(`INSERT INTO session_archive_bundles(session_id,prepare_id,phase,revision,identity,resources,ledger,history_id) VALUES($1,$2,'settling',1,'{}','[]',$3,$4)`, id, uuid.NewString(), ledger, historyID)
 			if tc.version == 2 {
-				exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,upload_version,prefix_proof) VALUES($1,$2,$3,$4,$5,$6,'receiving',$7,$8,1,2,$9)`, id, fileID, tc.purpose, hex.EncodeToString(fullHash[:]), tc.length, tc.confirmed, filePath, resource, proof[:])
+				exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,upload_version) VALUES($1,$2,$3,$4,$5,0,'receiving',$6,$7,1,2)`, id, fileID, tc.purpose, hex.EncodeToString(fullHash[:]), tc.length, filePath, resource)
 			} else {
-				exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision) VALUES($1,$2,$3,$4,$5,$6,'receiving',$7,$8,1)`, id, fileID, tc.purpose, hex.EncodeToString(fullHash[:]), tc.length, tc.confirmed, filePath, resource)
+				exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision) VALUES($1,$2,$3,$4,$5,$6,'receiving',$7,$8,1)`, id, fileID, tc.purpose, hex.EncodeToString(fullHash[:]), tc.length, tc.stored, filePath, resource)
 				exec(`INSERT INTO session_archive_chunks(session_id,file_id,chunk_offset,byte_length,sha256,object_path) VALUES($1,$2,0,$3,$4,$5)`, id, fileID, tc.length, hex.EncodeToString(fullHash[:]), namespace.Directory()+"/files/"+fileID+"/chunks/0")
 			}
 			got, output := runV2BackupVerifierProcess(t, values["DAYNIGHT_DATABASE_URL"], volume)
 			if got != tc.want {
 				t.Fatalf("verification success = %v, want %v; output: %s", got, tc.want, output)
 			}
+			if tc.version == 2 && tc.want {
+				want := fmt.Sprintf("Session %s file %s recovery offset %d", id, fileID, tc.offset)
+				if !strings.Contains(output, want) {
+					t.Fatalf("missing %q in verifier output: %s", want, output)
+				}
+			}
+			if tc.name == "partial with tail" {
+				// A paired earlier volume can legitimately report a smaller offset
+				// with the same immutable database identity.
+				backup := testStorageRoot(t)
+				if err := os.CopyFS(backup, os.DirFS(volume)); err != nil {
+					t.Fatal(err)
+				}
+				original := filepath.Join(volume, "session-archives", filepath.FromSlash(namespace.Directory()), ".staging", fileID)
+				if err := os.WriteFile(original, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ok, live := runV2BackupVerifierProcess(t, values["DAYNIGHT_DATABASE_URL"], volume)
+				wantLive := fmt.Sprintf("Session %s file %s recovery offset %d", id, fileID, tc.length)
+				if !ok || !strings.Contains(live, wantLive) {
+					t.Fatalf("later volume: %s", live)
+				}
+				ok, restored := runV2BackupVerifierProcess(t, values["DAYNIGHT_DATABASE_URL"], backup)
+				wantBackup := fmt.Sprintf("Session %s file %s recovery offset %d", id, fileID, blockSize)
+				if !ok || !strings.Contains(restored, wantBackup) {
+					t.Fatalf("paired backup: %s", restored)
+				}
+			}
+
 		})
 	}
 }
@@ -213,6 +258,9 @@ func runV2BackupVerifierProcess(t *testing.T, database, volume string) (bool, st
 	root := testStorageRoot(t)
 	writeTestConfig(t, root, map[string]any{"database": map[string]any{"url": database}, "storage": map[string]any{"root": volume}})
 	command := exec.CommandContext(ctx, executable, "-test.run=^TestVerifyStorageProcessHelper$")
+	if candidate := os.Getenv("DAYNIGHT_TEST_VERIFIER_BINARY"); candidate != "" {
+		command = exec.CommandContext(ctx, candidate, "verify-storage", "--root", root)
+	}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		if !strings.HasPrefix(key, "DAYNIGHT_") {

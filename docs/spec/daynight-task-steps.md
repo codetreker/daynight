@@ -18,7 +18,7 @@ Task 弹窗、独立详情和 Goal 内嵌详情不提供 Steps 页签或请求�
 
 ## 所有权与模型
 
-应用装配不提供旧或 scoped Steps 服务；Steps 用例、领域候选、专用 codec 和 `step.*` 输入策略均已移除。共享 Thread codec、普通 Task 文字策略和共享错误保持各自职责。PostgreSQL 当前方法签名依赖的存储合同、模型、DAO 及 `task_steps` 表仍保留；它们不构成应用层可调用入口。持久化行和现有父 Task 不因此改写，历史迁移及 checksum 保持。凭据的 `step:read`、`step:write` 与目录遵循其现有规则，不因应用服务移除而改写凭据或授予新的 Task 权限。
+应用装配不提供旧或 scoped Steps 服务；Steps 用例、领域候选、专用 codec 和 `step.*` 输入策略均已移除。共享 Thread codec、普通 Task 文字策略和共享错误保持各自职责。PostgreSQL 当前方法签名依赖的存储合同、模型、DAO 及 `task_steps` 表仍保留；它们不构成应用层可调用入口。持久化行和现有父 Task 不因此改写，历史迁移及 checksum 保持。PAT 和 MCP 的可选目录及默认权限不包含 `step:read`、`step:write`。已存凭据及已批准未兑换授权码保留原 scope 和凭据身份；编辑可保留或移除已存旧值，移除后不能重新添加。旧值不授予新的 Task 权限。
 
 尚存的存储记录以父 Task 和 Task 内八位十六进制 ID 定位，保留独立标题、Markdown 说明、四状态和 UTC 微秒内容时间，位置在 Task 内稠密。其状态不决定 Task 完成、review、Worker 调度或 Session 生命周期。普通 Task DTO 不内嵌 Steps。
 

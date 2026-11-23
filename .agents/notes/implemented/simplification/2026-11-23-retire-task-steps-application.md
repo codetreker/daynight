@@ -22,8 +22,10 @@ TaskHeader and TouchTask retain their existing consumers.
 PostgreSQL reader/writer contracts, signature-dependent models, DAO code and
 tests, migration 030 and persisted rows remain with storage. No replacement
 service or compatibility adapter occupies the removed application fields.
-Credential scopes and historical Webhook event decoding retain their respective
-owners; removing application logic does not rewrite either persistence format.
+The separate [credential-choice retirement](2026-11-23-retire-step-credential-choices.md)
+removes Step scopes from active PAT and MCP catalogs while preserving saved IDs
+and approved codes. Historical Webhook event decoding retains its owner; removing
+application logic does not rewrite either persistence format.
 
 This follows [REST retirement](2026-11-23-retire-rest-task-steps.md) and
 [MCP retirement](2026-11-23-retire-mcp-task-steps.md). It supersedes the Step
