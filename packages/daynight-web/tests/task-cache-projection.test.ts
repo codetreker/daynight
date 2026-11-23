@@ -71,7 +71,7 @@ it("compares intrinsic facts including versions and preserves semantically equal
 });
 
 it("uses authoritative dependency states for hidden prerequisites and excludes Goals from the graph", () => {
-  const goal = task(1, { type: "goal", allowAgents: false });
+  const goal = task(1, { type: "goal", allowAgents: false, dependsOn: [id(10)] });
   const satisfied = task(2, { parentId: goal.id, dependsOn: [id(20)] });
   const blocked = task(3, { dependsOn: [id(21)], externalDependsOn: [id(21)] });
   const states = new Map<string, TaskDependencyState>([
@@ -84,6 +84,8 @@ it("uses authoritative dependency states for hidden prerequisites and excludes G
   expect(result.index.nodes.get(satisfied.id)).toMatchObject({ parentId: goal.id, ready: true, blockedBy: [] });
   expect(result.index.nodes.get(blocked.id)).toMatchObject({ ready: false, blockedBy: [id(21)] });
   expect(result.versions.get(goal.id)).toBe(1n);
+  expect(result.index.nodes.has(id(10))).toBe(false);
+  expect(sameSummary(goal, { ...goal, dependsOn: [] })).toBe(false);
   expect(projectChain(result.index, blocked.id).edges).toEqual([]);
   expect(() => projectSummaries(project, [satisfied], new Map(), time)).toThrow(GraphDataError);
   expect(() => projectSummaries(project, [satisfied], new Map([[satisfied.id, { taskVersion: 2n, blockedBy: [], ready: true }]]), time)).toThrow(GraphDataError);

@@ -28,6 +28,8 @@
 
 创建、标题、description、标签引用、完整 properties、五状态设置、Agent 许可、执行平台要求、负责人 assignedTo、依赖及外部性质变化通过任务摘要的业务 version 被发现。snapshot 和 delta 的每条 Task／Goal 摘要都包含同一数据库快照中的必填完整 title、titlePreview、titleTruncated、assignedTo 与完整当前 properties 对象；预览取标题的前 160 个 Unicode 字符，截断标记反映标题是否超过该长度。历史标题不受当前写入字节限制截断，读取不增加标题上限或逐项详情请求。没有属性时为 {}，不补入缺失键。属性设置、删除与 Worker 生命周期变化沿用任务整体 version/updatedAt，普通属性变化不轮换 epoch。
 
+浏览器按资源 type 解释摘要的 `dependsOn`：普通 Task 保留执行前置；Goal 可接纳项目内验收前置，包括空集合，且 `externalDependsOn` 必须为空。Goal 的同步边保留在 typed 摘要中，不进入普通 Task 图、执行阻塞或 ready 计算。Goal 详情及写入回执不提供这些同步边；与摘要核对时仅比较回执实际覆盖的字段，临时写入投影保留当前同步边，后续项目同步才可替换它们。摘要之间的同版本完整字段比较保持严格。
+
 服务端同步响应还包含 `dependencyStates`：完整 snapshot 覆盖所有可见普通 Task，delta 为自身或直接前置命中同步窗口的 Task 提供状态 patch。每项携带所属 Task 的精确版本、未满足前置和自身 ready；普通 Task 摘要必须伴随同版本状态。隐藏前置的真实状态仍决定满足性，父 Goal 状态不改变 Task.ready。该字段与摘要、epoch、时间和 Session source 属于同一数据库快照；查询失败不能返回部分结果。Web 严格消费该状态，按所属 Task 版本合并，不从可见图推断隐藏前置的满足性。
 
 客户端严格解析完整 title，缺失或非字符串是协议错误；按任务 ID/version 替换整条摘要和属性对象，缺失键自然删除；不使用属性 tombstone。浏览器严格解析必填标签引用，并比较包括 assignedTo 和标签引用在内的全部自身字段和全部属性键与 JSON 值，属性对象成员顺序无意义，属性数组顺序有意义，缺失、空数组与 null 不相等；标签按 ID 和名称的集合比较。同版本自身内容不同是协议错误，较旧响应不能复活已删除属性。图绘制投影去掉 properties 和 tags，完整属性保留在摘要集合中。状态的阻塞列表必须是所属 Task 依赖的子集，ready 须符合 Task 状态及阻塞列表；相同 Task 版本下依赖状态变化可更新阻塞、可执行性与统计，即使后继自身未编辑。同一版本的不同前置观察可能乱序到达，旧状态可暂时覆盖新状态；后续相关变化或完整 snapshot 可刷新，不能保证下一轮轮询必然修正。资源存在性包括 Goal，普通图只包含 Task，保留指向不可见前置的引用，不制造隐藏节点或拒绝合法图。取消不轮换epoch、不删除节点，也不清空仍可读的详情和附件。

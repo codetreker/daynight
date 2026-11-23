@@ -30,6 +30,10 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) && sameTime(left.cancelledAt, right.cancelledAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
+// Goal detail responses omit the acceptance edges carried only by TaskSync.
+export const sameDetailSummary = (synchronized: TaskSummary, detail: TaskSummary): boolean =>
+  sameSummary(synchronized, detail.type === "goal" ? { ...detail, dependsOn: synchronized.dependsOn, externalDependsOn: synchronized.externalDependsOn } : detail);
+
 export const sameProject = (left: Project, right: Project): boolean =>
   left.id === right.id && left.name === right.name && left.repoUrl === right.repoUrl &&
   left.ownership.teamId === right.ownership.teamId && left.ownership.version === right.ownership.version &&
