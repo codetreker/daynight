@@ -6,7 +6,9 @@ Status: implemented
 
 An owned command can return an error while its process boundary still needs
 reconciliation. Promoting that uncertainty to scope cancellation interrupts
-healthy Task sessions and shuts down unrelated producers.
+healthy Task sessions and shuts down unrelated producers. The former
+[ordinary closure fixture](../../archived/testing/2026-11-21-worker-ordinary-closure-observation.md)
+covered that shutdown policy and its timing.
 
 ## Decision
 
