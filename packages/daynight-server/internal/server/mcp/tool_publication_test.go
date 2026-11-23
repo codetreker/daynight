@@ -12,6 +12,17 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestRegisterToolRejectsInvalidBudgetClass(t *testing.T) {
+	fixture := newEntryFixture(t)
+	err := fixture.entry.RegisterTool(simpleTestTool("bad_budget", testObjectSchema()), BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		t.Fatal("invalid registration invoked handler")
+		return ToolResult{}, nil
+	})
+	if err == nil {
+		t.Fatal("invalid budget class was accepted")
+	}
+}
+
 func TestToolPublicationPreservesInternalDefinition(t *testing.T) {
 	for _, version := range []string{"2026-07-28", "2025-11-25"} {
 		t.Run(version, func(t *testing.T) {

@@ -14,7 +14,7 @@ Results contain `items`, `hasMoreBefore` and `hasMoreAfter`. A message has `id`,
 | Forward reading | `afterId`: latest fully consumed message; follow `hasMoreAfter` |
 | Empty forward page | Retain the previous `afterId` |
 
-Supply at most one boundary, using a message UUID from the same Task. Task/Step list cursors are not Thread boundaries. `message_not_found` is a refusal, not an empty page. Reading the latest page does not consume earlier history; read it when needed.
+Supply at most one boundary, using a message UUID from the same Task. Task list cursors are not Thread boundaries. `message_not_found` is a refusal, not an empty page. Reading the latest page does not consume earlier history; read it when needed.
 
 Posting does not advance reading. If A was last consumed, unseen B then local post C must still be read from A; jumping to C skips B. Retain the consumed position separately from posting receipts.
 

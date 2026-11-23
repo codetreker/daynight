@@ -256,13 +256,13 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 查询及绑定父版本的游标；summary 不读取完整描述，显式 full 返回完整内容。读取直接投影保存的规范字段，不设置领域结构、容量或响应字节检查，不逐项查询和计量；cursor 指向最后返回项。单项分别使用普通 Get/GetSummary，输入的父版本条件仍显式比较。共享 MCP 入口的读取结果不执行输出 schema 或字节准入，大对象许可、输入和期限规则继续适用。写入复用上述原子用例及严格完整候选 codec，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
+MCP 装配不注册 Steps 工具，专用 adapter、schema、scope 工具清册和手册均已移除。旧工具名进入共享 Entry 的未知工具错误路径，不调用 Steps 服务。Task、Thread 和其他工具继续使用原有认证、请求预算与期限。共享 Steps 应用服务和 REST 装配保持，用于仍在提供的 HTTP 资源。退役边界及原机制的取舍见 [MCP 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-mcp-task-steps.md)。
 
 ## 迁移与部署
 
 迁移 `030_task_steps.sql` 增加表和约束，迁移注册保留已应用文件。迁移与 ledger 同事务；已有任务的字段、版本、时间、属性及历史不变。Steps API 读取零行得到合法空集合，不扫描或转换描述、Session todo 和原生历史。
 
-Steps 的 HTTP、Web 和 MCP 仍遵循各自资源契约；CLI 不提供 Steps 入口，普通 Task 投影保持。客户端连接不支持 Steps 的服务时明确报告能力缺失，不能显示为空集合。
+Steps 的 HTTP 和 Web 仍遵循各自资源契约；CLI 和 MCP 不提供 Steps 入口，普通 Task 投影保持。客户端连接不支持 Steps 的服务时明确报告能力缺失，不能显示为空集合。
 
 本次交付覆盖前向迁移、正常重启和已写 Steps 数据保留。服务端二进制回退及相应降级恢复方案不在交付范围，不承诺旧二进制能启动已升级的数据库；既有迁移顺序和 checksum 检查保持严格。发布前复核实际迁移序号及全部 producer/consumer，普通 CLI 变更保持包版本，正式发布按既有发布流程单独提升版本。
 

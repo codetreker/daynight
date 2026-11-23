@@ -50,9 +50,11 @@ replaces the earlier ordinary-component search context with actual membership. E
 ranking, Boolean evidence, the project fence, sort order and count cursors remain.
 
 Step collection and item reads use pure `ProjectCollection`/`ProjectItem`
-projection. MCP Step lists use one `limit+1` DAO query; ordinary Get/GetSummary
-preserve their response views. Request syntax and explicit expected parent
-versions remain checked before page reads. Task MCP lists keep their existing
+projection. The original MCP Step lists used one `limit+1` DAO query and
+ordinary Get/GetSummary views before the [MCP Steps retirement](2026-11-23-retire-mcp-task-steps.md).
+The original page reads checked request syntax and explicit expected parent
+versions. REST retains its collection and item projections. Task MCP lists keep
+their existing
 priority selection and fence; full views batch their selected-item materialization. Task graph summary and full views both return the complete
 selected graph. These domain paths have no read-byte slicing or admission; the
 shared MCP entry has no read-output schema or byte admission. Input checks,

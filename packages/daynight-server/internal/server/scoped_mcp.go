@@ -40,7 +40,6 @@ func registerScopedMCPTools(app *application.Application, entry *mcphttp.Entry, 
 				return mcphttp.RegisterScopedSessionReadTools(e, app.TaskHistory, app.TaskInspection, sessionservice.NewScopedReadChecker(app.Sessions, s.Session.SessionWrite), s.Session.SessionWrite, s.Session.SessionSnapshot)
 			}, mcphttp.ScopedSessionCommandSendModule(app.Sessions, s.Session.SessionWrite, s.Session.SessionSnapshot))
 		},
-		func() error { return mcphttp.RegisterScopedStepTools(entry, s.Steps) },
 		func() error {
 			return mcphttp.RegisterScopedAttachmentTools(entry, s.Attachments, mcphttp.AttachmentAuthorizationFromActor)
 		},

@@ -23,6 +23,9 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const mcpThreadProjectID = "c3333333-3333-4333-8333-333333333333"
+const mcpThreadTaskID = "d4444444-4444-4444-8444-444444444444"
+
 type fakeThreads struct {
 	listInput taskservice.ThreadListRequest
 	postInput taskservice.CreateThreadMessage
@@ -356,7 +359,7 @@ func mcpThreadClone[T any](value T) T {
 	return result
 }
 
-func mcpStepsCheck(t *testing.T, ok bool, message string, values ...any) {
+func mcpThreadCheck(t *testing.T, ok bool, message string, values ...any) {
 	t.Helper()
 	if !ok {
 		t.Errorf(message, values...)
@@ -393,7 +396,7 @@ func (p *mcpThreadWritePlan) write(tx *mcpThreadStore) {
 	p.Inserted = mcpThreadClone(p.Inserted)
 	tx.WriteThreadCall = func(ctx context.Context, write func(store.ThreadScope) error) (store.Completion, error) {
 		p.called("write")
-		mcpStepsCheck(p.t, ctx.Err() == nil && write != nil, "invalid Thread write callback")
+		mcpThreadCheck(p.t, ctx.Err() == nil && write != nil, "invalid Thread write callback")
 		err := write(&mcpThreadWriteScope{p: p})
 		return p.Completion, err
 	}
@@ -413,57 +416,57 @@ func (s *mcpThreadWriteScope) CaptureDAO() store.WebhookCaptureDAO {
 }
 func (s *mcpThreadWriteScope) LockTaskPresence(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
 	s.p.called("presence")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && projectID == mcpStepsProjectID && taskID == s.p.TaskID, "Thread presence scope: %s/%s", projectID, taskID)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && projectID == mcpThreadProjectID && taskID == s.p.TaskID, "Thread presence scope: %s/%s", projectID, taskID)
 	return store.TaskPresence{Found: true}, nil
 }
 func (s *mcpThreadWriteScope) SourceTask(ctx context.Context, projectID, taskID string) (model.Task, error) {
 	s.p.called("source")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && projectID == mcpStepsProjectID && taskID == s.p.TaskID && s.p.Source.ID == taskID, "Thread claim source changed: %s/%s", projectID, taskID)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && projectID == mcpThreadProjectID && taskID == s.p.TaskID && s.p.Source.ID == taskID, "Thread claim source changed: %s/%s", projectID, taskID)
 	return mcpThreadClone(s.p.Source), nil
 }
 func (s *mcpThreadWriteScope) Credential(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
 	s.p.called("credential")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && principal == s.p.Principal, "Thread credential actor: %+v", principal)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && principal == s.p.Principal, "Thread credential actor: %+v", principal)
 	return store.ThreadCredential{}, nil
 }
 func (s *mcpThreadWriteScope) CredentialValid(ctx context.Context, credential store.ThreadCredential) (bool, error) {
 	s.p.called("valid")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && credential.ExpiresAt == nil, "Thread final credential changed")
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && credential.ExpiresAt == nil, "Thread final credential changed")
 	return true, nil
 }
 func (s *mcpThreadWriteScope) AuthorName(ctx context.Context, userID string) (*string, error) {
 	s.p.called("name")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && userID == s.p.Principal.UserID, "Thread author identity: %s", userID)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && userID == s.p.Principal.UserID, "Thread author identity: %s", userID)
 	return mcpThreadClone(s.p.Input.Author.DisplayName), nil
 }
 func (s *mcpThreadWriteScope) LockProjectAuthorization(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	s.p.called("access")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && principal == s.p.Principal && projectID == mcpStepsProjectID, "Thread Project admission changed")
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && principal == s.p.Principal && projectID == mcpThreadProjectID, "Thread Project admission changed")
 	return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
 }
 func (s *mcpThreadWriteScope) LockHead(ctx context.Context, taskID string) (*model.ThreadPosition, error) {
 	s.p.called("head")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID, "Thread head identity: %s", taskID)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID, "Thread head identity: %s", taskID)
 	return mcpThreadClone(s.p.Head), nil
 }
 func (s *mcpThreadWriteScope) ThreadMessage(ctx context.Context, taskID, id string) (model.ThreadMessage, error) {
 	s.p.called("reply")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID && id == s.p.ReplyID, "Thread reply scope: %s/%s", taskID, id)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID && id == s.p.ReplyID, "Thread reply scope: %s/%s", taskID, id)
 	return mcpThreadClone(s.p.Reply), s.p.ReplyError
 }
 func (s *mcpThreadWriteScope) InsertMessage(ctx context.Context, message model.ThreadMessage) (model.ThreadMessage, error) {
 	s.p.called("insert")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && reflect.DeepEqual(message, s.p.Input), "Thread insert changed body/author/reply: %+v want %+v", message, s.p.Input)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && reflect.DeepEqual(message, s.p.Input), "Thread insert changed body/author/reply: %+v want %+v", message, s.p.Input)
 	return mcpThreadClone(s.p.Inserted), nil
 }
 func (s *mcpThreadWriteScope) PrepareTimestamp(ctx context.Context, message *model.ThreadMessage, head *model.ThreadPosition) error {
 	s.p.called("clock")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && message != nil && reflect.DeepEqual(*message, s.p.Inserted) && reflect.DeepEqual(head, s.p.Head), "Thread timestamp did not use the inserted message and admitted head")
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && message != nil && reflect.DeepEqual(*message, s.p.Inserted) && reflect.DeepEqual(head, s.p.Head), "Thread timestamp did not use the inserted message and admitted head")
 	return nil
 }
 func (s *mcpThreadWriteScope) AdvanceHead(ctx context.Context, taskID string, position model.ThreadPosition) error {
 	s.p.called("advance")
-	mcpStepsCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID && position == s.p.Inserted.Position(), "Thread advance changed message position: %s/%+v", taskID, position)
+	mcpThreadCheck(s.p.t, ctx.Err() == nil && taskID == s.p.TaskID && position == s.p.Inserted.Position(), "Thread advance changed message position: %s/%+v", taskID, position)
 	return nil
 }
 
@@ -474,7 +477,7 @@ type mcpThreadCapture struct {
 
 func (c *mcpThreadCapture) FreezeAudience(ctx context.Context, projectID string, eventTypes []string) ([]store.WebhookAudience, error) {
 	c.p.called("capture")
-	mcpStepsCheck(c.p.t, ctx.Err() == nil && projectID == mcpStepsProjectID && reflect.DeepEqual(eventTypes, []string{"task.thread_posted"}), "Thread capture changed Project/type: %s/%v", projectID, eventTypes)
+	mcpThreadCheck(c.p.t, ctx.Err() == nil && projectID == mcpThreadProjectID && reflect.DeepEqual(eventTypes, []string{"task.thread_posted"}), "Thread capture changed Project/type: %s/%v", projectID, eventTypes)
 	return []store.WebhookAudience{}, nil
 }
 
@@ -502,7 +505,7 @@ func (p *mcpThreadReadPlan) snapshot(tx *mcpThreadStore) {
 	s.Tasks = &mcpThreadReader{p: p}
 	tx.ReadSnapshotCall = func(ctx context.Context, read func(store.SnapshotScope) error) error {
 		p.plan.Called("snapshot")
-		mcpStepsCheck(p.t, ctx.Err() == nil && read != nil, "invalid Thread snapshot callback")
+		mcpThreadCheck(p.t, ctx.Err() == nil && read != nil, "invalid Thread snapshot callback")
 		return read(s)
 	}
 }
@@ -511,7 +514,7 @@ type mcpThreadReadCredential struct{ p *mcpThreadReadPlan }
 
 func (r *mcpThreadReadCredential) Credential(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
 	r.p.plan.Called("credential")
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && principal == r.p.Principal, "Thread read credential actor changed: %+v", principal)
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && principal == r.p.Principal, "Thread read credential actor changed: %+v", principal)
 	return store.ThreadCredential{}, nil
 }
 
@@ -522,7 +525,7 @@ type mcpThreadReadProject struct {
 
 func (r *mcpThreadReadProject) ProjectAccess(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	r.p.plan.Called("access")
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && principal == r.p.Principal && projectID == mcpStepsProjectID, "Thread read Project actor/scope changed")
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && principal == r.p.Principal && projectID == mcpThreadProjectID, "Thread read Project actor/scope changed")
 	return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectAdmin}, r.p.AccessError
 }
 
@@ -533,12 +536,12 @@ type mcpThreadReader struct {
 
 func (r *mcpThreadReader) TaskPresence(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
 	r.p.plan.Called("presence")
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && projectID == mcpStepsProjectID && taskID == r.p.TaskID, "Thread read presence changed: %s/%s", projectID, taskID)
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && projectID == mcpThreadProjectID && taskID == r.p.TaskID, "Thread read presence changed: %s/%s", projectID, taskID)
 	return store.TaskPresence{Found: true}, nil
 }
 func (r *mcpThreadReader) ThreadMessage(ctx context.Context, taskID, id string) (model.ThreadMessage, error) {
 	r.p.plan.Called("anchor")
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && id == r.p.AnchorID, "Thread read anchor changed: %s/%s", taskID, id)
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && id == r.p.AnchorID, "Thread read anchor changed: %s/%s", taskID, id)
 	return mcpThreadClone(r.p.Anchor), nil
 }
 func (r *mcpThreadReader) ThreadCandidates(ctx context.Context, taskID string, anchor *model.ThreadPosition, before bool, limit int) ([]model.ThreadMessage, error) {
@@ -548,12 +551,12 @@ func (r *mcpThreadReader) ThreadCandidates(ctx context.Context, taskID string, a
 		position := r.p.Anchor.Position()
 		expected = &position
 	}
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && reflect.DeepEqual(anchor, expected) && before == r.p.Before && limit == r.p.Limit, "Thread candidate scope/bounds: %s/%+v/%v/%d", taskID, anchor, before, limit)
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && reflect.DeepEqual(anchor, expected) && before == r.p.Before && limit == r.p.Limit, "Thread candidate scope/bounds: %s/%+v/%v/%d", taskID, anchor, before, limit)
 	return mcpThreadClone(r.p.Candidates), nil
 }
 func (r *mcpThreadReader) ThreadSides(ctx context.Context, taskID string, first, last model.ThreadPosition) (bool, bool, error) {
 	r.p.plan.Called("sides")
-	mcpStepsCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && first == r.p.First && last == r.p.Last, "Thread page sides changed identity/positions: %s/%+v/%+v", taskID, first, last)
+	mcpThreadCheck(r.p.t, ctx.Err() == nil && taskID == r.p.TaskID && first == r.p.First && last == r.p.Last, "Thread page sides changed identity/positions: %s/%+v/%+v", taskID, first, last)
 	return r.p.MoreBefore, r.p.MoreAfter, nil
 }
 
@@ -611,7 +614,7 @@ func TestMCPThreadProduction(t *testing.T) {
 				}
 				return result, envelope
 			}
-			args := func(id string) map[string]any { return map[string]any{"projectId": mcpStepsProjectID, "taskId": id} }
+			args := func(id string) map[string]any { return map[string]any{"projectId": mcpThreadProjectID, "taskId": id} }
 			message := func(taskID, id, body string, at time.Time, reply *string) model.ThreadMessage {
 				return model.ThreadMessage{TaskID: taskID, ID: id, Author: model.ThreadAuthor{UserID: principal.UserID, DisplayName: &name}, Body: body, CreatedAt: at, ReplyTo: reply}
 			}
@@ -704,10 +707,10 @@ func TestMCPThreadProduction(t *testing.T) {
 				tx.WriteThreadCall = nil
 				return p
 			}
-			firstModel := message(mcpStepsTaskID, "a1111111-1111-4111-8111-111111111110", "first", now, nil)
+			firstModel := message(mcpThreadTaskID, "a1111111-1111-4111-8111-111111111110", "first", now, nil)
 			first := post(firstModel, nil, model.ThreadMessage{}, model.Task{})
 			firstID := firstModel.ID
-			secondModel := message(mcpStepsTaskID, "a1111111-1111-4111-8111-111111111112", "reply", now.Add(time.Second), &firstID)
+			secondModel := message(mcpThreadTaskID, "a1111111-1111-4111-8111-111111111112", "reply", now.Add(time.Second), &firstID)
 			second := post(secondModel, head(firstModel), firstModel, model.Task{})
 			secondID := secondModel.ID
 			if second["replyTo"] != firstID {
@@ -723,8 +726,8 @@ func TestMCPThreadProduction(t *testing.T) {
 				t.Fatalf("cross-task reply: %+v", value)
 			}
 			verifyPost(crossPlan)
-			deniedPlan := planRead(outsider, mcpStepsTaskID, model.ThreadMessage{}, true, 21, nil, model.ThreadPosition{}, model.ThreadPosition{}, false, false, model.ErrNotFound)
-			result, value = call(denied, "task_thread_read", args(mcpStepsTaskID))
+			deniedPlan := planRead(outsider, mcpThreadTaskID, model.ThreadMessage{}, true, 21, nil, model.ThreadPosition{}, model.ThreadPosition{}, false, false, model.ErrNotFound)
+			result, value = call(denied, "task_thread_read", args(mcpThreadTaskID))
 			if !result.IsError || value["error"].(map[string]any)["code"] != "forbidden" {
 				t.Fatalf("unauthorized read: %+v", value)
 			}
@@ -734,8 +737,8 @@ func TestMCPThreadProduction(t *testing.T) {
 				anchor, row                   model.ThreadMessage
 				before, moreBefore, moreAfter bool
 			}{{"beforeId", secondID, firstID, secondModel, firstModel, true, false, true}, {"afterId", firstID, secondID, firstModel, secondModel, false, true, false}} {
-				p := planRead(principal, mcpStepsTaskID, tc.anchor, tc.before, 2, []model.ThreadMessage{tc.row}, tc.row.Position(), tc.row.Position(), tc.moreBefore, tc.moreAfter, nil)
-				a := args(mcpStepsTaskID)
+				p := planRead(principal, mcpThreadTaskID, tc.anchor, tc.before, 2, []model.ThreadMessage{tc.row}, tc.row.Position(), tc.row.Position(), tc.moreBefore, tc.moreAfter, nil)
+				a := args(mcpThreadTaskID)
 				a[tc.field] = tc.boundary
 				a["count"] = 1
 				result, value = call(client, "task_thread_read", a)
@@ -822,16 +825,16 @@ func TestMCPThreadProduction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := model.Task{ID: mcpStepsTaskID, ProjectID: mcpStepsProjectID, Status: model.TaskInProgress, Version: 3, Properties: model.TaskProperties{"worker": workerRaw}}
-			agentModel := message(mcpStepsTaskID, "a1111111-1111-4111-8111-111111111116", "agent message", now.Add(10*time.Second), nil)
+			source := model.Task{ID: mcpThreadTaskID, ProjectID: mcpThreadProjectID, Status: model.TaskInProgress, Version: 3, Properties: model.TaskProperties{"worker": workerRaw}}
+			agentModel := message(mcpThreadTaskID, "a1111111-1111-4111-8111-111111111116", "agent message", now.Add(10*time.Second), nil)
 			agentModel.Author.Agent = true
 			agentModel.Author.Execution = &model.ThreadExecution{ClaimID: claimID, WorkerID: workerID, Provider: "codex"}
 			posted := post(agentModel, head(secondModel), model.ThreadMessage{}, source)
 			if posted["author"].(map[string]any)["Agent"] != true {
 				t.Fatalf("claim post: %+v", posted)
 			}
-			detailsPlan := planRead(principal, mcpStepsTaskID, model.ThreadMessage{}, true, 21, []model.ThreadMessage{agentModel, secondModel, firstModel}, firstModel.Position(), agentModel.Position(), false, false, nil)
-			a := args(mcpStepsTaskID)
+			detailsPlan := planRead(principal, mcpThreadTaskID, model.ThreadMessage{}, true, 21, []model.ThreadMessage{agentModel, secondModel, firstModel}, firstModel.Position(), agentModel.Position(), false, false, nil)
+			a := args(mcpThreadTaskID)
 			a["details"] = true
 			result, value = call(client, "task_thread_read", a)
 			if result.IsError {
@@ -853,17 +856,17 @@ func TestMCPThreadProduction(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer lost.Close()
-			lostModel := message(mcpStepsTaskID, "a1111111-1111-4111-8111-111111111117", "lost response", now.Add(11*time.Second), nil)
+			lostModel := message(mcpThreadTaskID, "a1111111-1111-4111-8111-111111111117", "lost response", now.Add(11*time.Second), nil)
 			lostPlan := planPost(lostModel, head(agentModel), model.ThreadMessage{}, nil, model.Task{})
 			transport.drop = true
-			a = args(mcpStepsTaskID)
+			a = args(mcpThreadTaskID)
 			a["body"] = "lost response"
 			if _, err = lost.CallTool(ctx, &sdk.CallToolParams{Name: "task_thread_post", Arguments: a}); err == nil {
 				t.Fatal("expected lost response")
 			}
 			verifyPost(lostPlan)
-			readAfterLoss := planRead(principal, mcpStepsTaskID, model.ThreadMessage{}, true, 21, []model.ThreadMessage{lostModel, agentModel, secondModel, firstModel}, firstModel.Position(), lostModel.Position(), false, false, nil)
-			result, value = call(client, "task_thread_read", args(mcpStepsTaskID))
+			readAfterLoss := planRead(principal, mcpThreadTaskID, model.ThreadMessage{}, true, 21, []model.ThreadMessage{lostModel, agentModel, secondModel, firstModel}, firstModel.Position(), lostModel.Position(), false, false, nil)
+			result, value = call(client, "task_thread_read", args(mcpThreadTaskID))
 			if result.IsError {
 				t.Fatalf("read after loss: %+v", value)
 			}

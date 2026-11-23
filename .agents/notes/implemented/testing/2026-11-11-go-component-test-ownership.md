@@ -68,13 +68,15 @@ Project and Team HTTP organization scenarios use their real registrars and
 Service/Core with controlled DAO facts. Project, Team and Invitation MCP
 scenarios use a focused Entry host with those real collaborators and the SDK;
 Root retains full catalog, default authentication and cross-route proofs.
-Step MCP lifecycle scenarios use the same focused host with controlled Step
-operations, and Thread scenarios retain the real service with controlled DAO
-facts. Attachment, upload and download MCP scenarios use their real services,
+The original Step MCP lifecycle scenarios used a focused host with controlled
+operations until the [MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md).
+Thread scenarios retain the real service with controlled DAO facts. Attachment,
+upload and download MCP scenarios use their real services,
 Core, SDK and local files with controlled DAO facts through a focused host;
 Root retains the assembled PAT isolation and revocation path. Controlled DAO
-results do not prove database persistence. The separate Step stress test uses
-PostgreSQL and real Step services.
+results do not prove database persistence. REST Step stress tests retain their
+physical resource witnesses; the retired MCP Step stress test has no live tool
+behavior to exercise.
 The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
 records why those operation-level observations were introduced.
 Webhook management and history mappings use the real HTTP registrar, Service
