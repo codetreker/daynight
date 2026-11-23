@@ -20,7 +20,7 @@ Go 1.27.2 [body.Close](https://github.com/golang/go/blob/022c8636110ebac86a9b887
 
 **Use the existing MCP Control budget for pre-reading.** Holding it while a tool asks for its own Control slot could reject admitted work, while pre-reading before any reservation permits concurrent buffers without a bound.
 
-**Detach cancellation for every response.** It would allow ordinary business output after client cancellation and weaken the request lifecycle. Only definite terminal body refusals have an independent response attempt.
+**Detach cancellation for every response.** It would allow ordinary business output after client cancellation and weaken the request lifecycle. Only definite terminal body refusals have an independent response attempt. The later [attachment refusal decision](../bug-fix/2026-11-24-attachment-refusal-response.md) instead orders an eligible business response before body cleanup while retaining the original context.
 
 **Convert every capacity Fault into a body refusal.** Capacity faults can describe metadata or output admission rather than an observed upload byte. Wrapping the whole error tree also hides publication, transaction or cleanup uncertainty. A typed reader refusal lets the existing visitor retain those facts.
 
