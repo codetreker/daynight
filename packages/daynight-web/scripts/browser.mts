@@ -43,6 +43,7 @@ export const browserConfigs = [
   'task-tags-playwright.config.ts',
   'goal-reading-playwright.config.ts',
   'goal-dependencies-playwright.config.ts',
+  'goal-acceptance-playwright.config.ts',
   'identity-cache-playwright.config.ts',
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',

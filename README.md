@@ -31,6 +31,10 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with direct external
   prerequisites, card navigation to their tasks or Goals, task details and
   fullscreen reading.
+- **Inspect Goal acceptance dependencies.** Open the project Goals toolbar's
+  acceptance graph to inspect synchronized project-local prerequisites, terminal
+  prerequisite context and isolated active Goals. Its known relationships remain
+  distinct from the server's complete acceptance check and ordinary Task graphs.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.

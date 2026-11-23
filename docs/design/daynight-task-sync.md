@@ -155,6 +155,8 @@ type TaskSync = {
 
 Web 的 `parseTaskSummary` 按资源 type 接纳依赖：普通 Task 继续使用执行前置，Goal 的 `dependsOn` 可为项目内验收前置集合，`externalDependsOn` 必须为空。Goal 不得出现在 `dependencyStates`，`projectSummaries` 先选择普通 Task 再构建执行图；typed 摘要集合保留 Goal 和其同步边。Server 的 Goal 摘要与浏览器 schema 14 的一次摘要重建配套启用，避免旧空边基线与同版本新边发生冲突。该接纳与详情核对的职责见[Goal 摘要决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-summary-admission.md)。
 
+项目 Goal 验收图直接消费已提交的项目同步基线，图的开关及本地交互不增加 TaskSync 读取或改变其调度、水位和 URL。详情驱动的即时视图投影与该基线分开，Goal 图边只随正常同步提交变化。投影范围、局部检查与阅读层由[Goal 关系设计](goal-dependencies.md#项目-goal-验收图)拥有。
+
 `dependencyStates` 是必填非 null 的普通 Task 派生状态 map。snapshot 覆盖全部可见普通 Task；delta 仅包含自身或直接前置的 updatedAt 命中同一窗口下界的可见普通 Task。每项 `taskVersion` 是所属 Task 的精确十进制版本，`blockedBy` 是未满足的直接前置 ID 数组，`ready` 沿用 Task 自身规则，不受父 Goal 状态影响。每条普通 Task 摘要都伴随同版本状态；空集合为 `{}`，空阻塞数组为 `[]`。一次批量 SQL 在相同快照读取保留的物理前置事实，隐藏的 done/cancelled 前置仍满足，隐藏的未结束前置仍阻塞。读取和事务失败使整个同步失败。Web 严格解码并持久化该 map，依照所属 Task 版本合并。
 
 map 的键和 `blockedBy` 元素是规范 Task UUID；`taskVersion` 为正 int64 的规范十进制字符串，`blockedBy` 按 ID 排序且属于该 Task 的 `dependsOn` 子集。普通 Task 的 `ready` 等价于 status 为 `todo` 且 `blockedBy` 为空。同版本状态可能反映不同前置观察，跨响应乱序时旧状态可能晚到；该协议不提供派生状态的严格全序。后续相关变化或完整 snapshot 可刷新它，但不保证下一轮轮询必然修正。

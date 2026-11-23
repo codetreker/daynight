@@ -46,6 +46,16 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 关联点击记录该 entry 最近的来源链接，只有实际进入对应目标才激活返回焦点；取消草稿导航后改去无关路由会清除链接意图并保留阅读位置。返回取得当前授权投影后聚焦原关联链接，链接已不在该页时回退 Goal 标题。焦点恢复仅消费本次意图，随后原生前进到同一目标再后退可重新恢复焦点。返回后翻页会更新源 entry 的位置，下一次返回使用新位置。瞬时读取失败保留返回位置和焦点意图，重试仍读取该页，不能用第一页提前消耗返回意图。取舍见[Web Goal 依赖决策](../../.agents/notes/implemented/feature/2026-11-19-web-goal-dependencies.md)。
 
+## 项目 Goal 验收图
+
+`goal-acceptance-graph` 是 Goal 节点的验收关系视图，`GoalGraphDialog` 和 `GoalTaskGraph` 继续承担普通子 Task 的整体执行图。项目 Goals 工具栏打开独立的验收图浮层；项目现有 `useTaskGraph` 所有者以 `syncedSnapshot` 暴露已经提交且未经详情回执投影的摘要基线，`GoalAcceptanceHost` 将其交给画布。图不建立第二个同步读取生命周期，也不以详情回执的临时投影更新边。请求、epoch/since、水位与轮询继续由[任务同步](daynight-task-sync.md)拥有。
+
+`projectGoalAcceptance` 从 typed 摘要选择 `todo` 和 `in_progress` Goal 根及其直接项目内前置，保留孤点与终态前置，省略无关终态。图边只从 Goal 的 `dependsOn` 生成，不使用普通 Task 索引推断验收关系。局部前置和下游索引供检查及高亮使用；检查栏按真实状态区分已满足与已知阻塞，同时明确本项目覆盖和全局待核验。TaskSync 不包含跨项目关系或权威验收阻塞，不能由已知边推导全局可完成。
+
+`GoalAcceptanceGraph` 与专属 Goal 卡片复用中立布局、几何缩放、边绘制、检查配色及工具栏，保持 Goal 自身四态和独立 Details 动作。选择不参与拓扑键，状态或标题变化只更新内容；拓扑变化通过已有节点位置锚定新几何，保留有效选择与视口。方向或显式全图动作决定新的 framing，手机检查栏按布局断点置于画布下方。
+
+验收图使用 `TaskGraphDialogShell` 的 portal、全屏、焦点约束及分层 Escape。项目详情 owner 将图内 Goal Details 归入同一阅读层，保留背景列表和关闭回焦。同步失败沿现有项目反馈保留仍获准内容；账号、项目或历史准入失效仍撤销相应阅读资格，最后显示的数据不能重新授权详情。项目图与现有普通 Task 图的地址和范围分别拥有各自语义。需求由[Goal 验收依赖图](../spec/daynight-goals.md#goal-验收依赖图)拥有，取舍见[验收图决策](../../.agents/notes/implemented/feature/2026-11-23-project-goal-acceptance-graph.md)。
+
 ## 验证归属
 
 core 测试拥有编辑规则和隐藏投影，service 测试拥有 scope、授权快照调用及 completion 处理。真实 PostgreSQL 测试证明 ACL 过滤先于 LIMIT、修订持久化、无远端行锁的图串行化、跨项目闭环、完成与新增竞争，以及撤权和项目移入交错。项目转出再转回及边集恢复原样后，旧修订仍须拒绝；隐藏边可单独移除并保留其他关系。普通 Task detail、sync、图及 ready 继续由各自协议与存储测试保护。
