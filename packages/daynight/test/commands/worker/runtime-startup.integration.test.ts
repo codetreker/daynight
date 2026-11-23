@@ -262,7 +262,7 @@ describe("worker cloud-first startup", () => {
       const check = openLifecycleStore({ file, identity, allowCreate: false });
       try { await vi.waitFor(() => expect(check.listResources().filter(row => row.identity.kind === "retained_task").map(row => row.stage)).toEqual(["stopped"])); }
       finally { check.close(); }
-      expect(mocks.git).toHaveBeenCalledOnce();
+      expect(mocks.git).toHaveBeenCalledWith(expect.objectContaining({ temporaryDirectory: f.paths.temporaryDirectory, prepareFormat: expect.any(Function) }));
       expect(remote.readTask).toHaveBeenCalledOnce();
       expect(remote.configuration).not.toHaveBeenCalled();
       expect(unexpected).not.toHaveBeenCalled();
