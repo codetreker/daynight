@@ -89,14 +89,17 @@ func migrationDatabasePair(t *testing.T) (string, string, func()) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
+		defer pool.Close()
 		for _, name := range []string{target, source} {
+			// DROP DATABASE waits for a cluster checkpoint, so cleanup has its own
+			// I/O budget: https://github.com/postgres/postgres/blob/724edf9bde9d356724ad384a2e196edc3c9f80f7/src/backend/commands/dbcommands.c#L1870-L1873
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			started := time.Now()
 			if _, err := pool.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
-				t.Error(err)
+				t.Errorf("drop fixture database %s after %s: %v", name, time.Since(started), err)
 			}
+			cancel()
 		}
-		pool.Close()
 	})
 	withDatabase := func(name string) string {
 		copied := *parsed

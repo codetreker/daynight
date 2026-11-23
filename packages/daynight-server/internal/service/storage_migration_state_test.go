@@ -73,19 +73,21 @@ func TestStorageMigrationCleanupPreservesReceiptsAndReportsOperations(t *testing
 		Uploads:      []store.OfflineImageUpload{{ProjectID: project, OwnerID: owner, Upload: store.SessionUploadRecord{SessionID: id, Spec: sp.ImageUploadSpec{UploadID: uploadID}, Receipt: sp.ImageUploadReceipt{UploadID: uploadID, State: "receiving", AcceptedOffset: "1048576"}}}},
 		Transfers:    []model.PrivateTransfer{{ID: transferID, State: "committing", Data: []byte(`{"operation":"retained"}`)}},
 	}
-	for _, failAt := range []string{"none", "archive", "image", "transfer", "report"} {
+	for _, failAt := range []string{"none", "archive", "archive_staging", "image", "transfer", "report", "image_report", "transfer_report"} {
 		t.Run(failAt, func(t *testing.T) {
 			failure := errors.New("cleanup failed")
 			var deleted []string
+			imageCalls, transferCalls := 0, 0
 			target := migrationTargetFixture{
 				delete: func(ctx context.Context, bucket, path string) error {
-					if failAt == "archive" {
+					if failAt == "archive" || failAt == "archive_staging" && len(deleted) == 1 {
 						return failure
 					}
 					deleted = append(deleted, path)
 					return nil
 				},
 				upload: func(ctx context.Context, n sessionresource.Namespace, got string) error {
+					imageCalls++
 					if got != uploadID {
 						t.Fatal("wrong upload")
 					}
@@ -95,6 +97,7 @@ func TestStorageMigrationCleanupPreservesReceiptsAndReportsOperations(t *testing
 					return nil
 				},
 				transfer: func(ctx context.Context, n filestorage.TransferNamespace) error {
+					transferCalls++
 					if n.ID() != transferID {
 						t.Fatal("wrong ticket")
 					}
@@ -107,7 +110,7 @@ func TestStorageMigrationCleanupPreservesReceiptsAndReportsOperations(t *testing
 			var events []StorageMigrationEvent
 			uploads, transfers, err := cleanupOfflineStorage(t.Context(), target, state, func(e StorageMigrationEvent) error {
 				events = append(events, e)
-				if failAt == "report" {
+				if failAt == "report" || failAt == "image_report" && e.Status == "image_release_ready" || failAt == "transfer_report" && e.Status == "transfer_close_ready" {
 					return failure
 				}
 				return nil
@@ -115,6 +118,14 @@ func TestStorageMigrationCleanupPreservesReceiptsAndReportsOperations(t *testing
 			if failAt != "none" {
 				if !errors.Is(err, failure) {
 					t.Fatal(err)
+				}
+				if uploads != nil || transfers != nil {
+					t.Fatal("failed cleanup exposed a partial transition", uploads, transfers)
+				}
+				wantImage := failAt == "image" || failAt == "image_report" || failAt == "transfer" || failAt == "transfer_report"
+				wantTransfer := failAt == "transfer" || failAt == "transfer_report"
+				if (imageCalls == 1) != wantImage || (transferCalls == 1) != wantTransfer {
+					t.Fatalf("cleanup continued after failure: images=%d transfers=%d", imageCalls, transferCalls)
 				}
 				return
 			}

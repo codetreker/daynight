@@ -54,20 +54,24 @@ func (f migrationTargetFixture) DeleteTransferNamespace(ctx context.Context, n f
 }
 
 func TestStorageMigrationTransitionRequiresVerifiedCopy(t *testing.T) {
-	for _, phase := range []string{"success", "state_read", "inventory", "attachments", "commit", "unknown", "readback", "report"} {
+	for _, phase := range []string{"success", "state_read", "invalid_state", "inventory", "attachments", "commit", "unknown", "readback", "remaining", "target_inventory", "final_inventory", "state_report", "final_report", "report"} {
 		t.Run(phase, func(t *testing.T) {
 			failure := errors.New("injected failure")
-			applied, reads := 0, 0
+			applied, reads, inventories := 0, 0, 0
 			database := migrationDatabaseFixture{
 				state: func(context.Context) (store.OfflineStorageState, error) {
 					reads++
 					if phase == "state_read" || phase == "readback" && reads > 1 {
 						return store.OfflineStorageState{}, failure
 					}
+					if phase == "invalid_state" || phase == "remaining" && reads > 1 {
+						return store.OfflineStorageState{Uploads: []store.OfflineImageUpload{{ProjectID: "invalid"}}}, nil
+					}
 					return store.OfflineStorageState{}, nil
 				},
 				inventory: func(context.Context, func(store.StorageInventory) error) error {
-					if phase == "inventory" {
+					inventories++
+					if phase == "inventory" || phase == "target_inventory" && inventories == 2 || phase == "final_inventory" && inventories == 3 {
 						return failure
 					}
 					return nil
@@ -100,7 +104,7 @@ func TestStorageMigrationTransitionRequiresVerifiedCopy(t *testing.T) {
 			var events []StorageMigrationEvent
 			err := migrateStorage(t.Context(), database, reader, target, func(e StorageMigrationEvent) error {
 				events = append(events, e)
-				if phase == "report" {
+				if phase == "report" || phase == "state_report" && e.Kind == "state" || phase == "final_report" && e.Kind == "migration" && e.Status == "verified" {
 					return failure
 				}
 				return nil
@@ -108,16 +112,22 @@ func TestStorageMigrationTransitionRequiresVerifiedCopy(t *testing.T) {
 			if (err == nil) != (phase == "success") {
 				t.Fatal(err)
 			}
-			if phase != "unknown" && phase != "success" && !errors.Is(err, failure) {
+			if phase != "unknown" && phase != "success" && phase != "invalid_state" && phase != "remaining" && !errors.Is(err, failure) {
 				t.Fatal("lost failure cause", err)
 			}
-			wantApply := phase == "success" || phase == "commit" || phase == "unknown" || phase == "readback"
+			wantApply := phase == "success" || phase == "commit" || phase == "unknown" || phase == "readback" || phase == "remaining" || phase == "final_inventory" || phase == "state_report" || phase == "final_report"
 			if (applied == 1) != wantApply {
 				t.Fatalf("applied=%d", applied)
 			}
 			last := events[len(events)-1]
 			if last.Kind != "summary" || last.RunID == "" || last.Counts == nil {
 				t.Fatal("missing run summary", last)
+			}
+			if (last.Status == "verified") != (phase == "success") {
+				t.Fatal("failed migration reported a verified summary", last)
+			}
+			if phase == "unknown" && last.Counts["pending"] != 1 {
+				t.Fatal("unknown state outcome missing from summary", last)
 			}
 		})
 	}
