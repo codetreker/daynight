@@ -3,13 +3,14 @@ import { createUsageUploader, type UsageUploaderOptions } from "./uploader.js";
 import { usageCollectionState, usageProfileReasons } from "./profiles.js";
 import { mapClaudeUsageEvent } from "../providers/claude-usage.js";
 import { mapCopilotUsageEvent } from "../providers/copilot-usage.js";
+import { mapCodexUsageEvent } from "../providers/codex-usage.js";
 
 /** Metering failures stay outside the native command and timeline failure paths. */
 export const createUsageRuntime = (options: UsageUploaderOptions & { generation: string; provider?: "copilot" | "codex" | "claude" }) => {
   const uploader = createUsageUploader(options), store: UsageStore = options.store;
   let current: UsageState | null = null, warned = false, closed = false;
   const provider = options.provider ?? "copilot";
-  const pendingReasons = new Set<string>(usageProfileReasons(provider));
+  const pendingReasons = new Set<string>();
   const reported = new Map<string, string>();
   const diagnose = () => options.onDiagnostic?.("Usage collection is incomplete; the native task continues.");
   const safe = (action: () => void) => {
@@ -23,7 +24,8 @@ export const createUsageRuntime = (options: UsageUploaderOptions & { generation:
     }
   };
   const ready = (input: { nativeSessionId: string; providerVersion: string }) => safe(() => {
-    if (current?.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) current = store.ensureState(options.generation, input.nativeSessionId, input.providerVersion, provider);
+    if (current?.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) current = store.ensureState(options.generation, input.nativeSessionId, input.providerVersion, provider, provider === "codex" && input.providerVersion === "0.169.0" ? "codex-response-0.169.0-v1" : undefined);
+    for (const reason of usageProfileReasons(provider, current.profileId)) pendingReasons.add(reason);
     for (const reason of pendingReasons) store.gap(current.stateId, reason);
   });
   const gap = (reason: string) => safe(() => { pendingReasons.add(reason); if (current) store.gap(current.stateId, reason); });
@@ -42,14 +44,17 @@ export const createUsageRuntime = (options: UsageUploaderOptions & { generation:
   const timer = setInterval(() => { void tick(); }, 1000); timer.unref();
   return {
     ready, gap,
+    bindTurn(turnId: string) { safe(() => { if (current) store.bindTurn(current.stateId, turnId); }); },
     observe(input: { nativeSessionId: string; providerVersion: string; event: unknown }) {
       if (closed) return;
       safe(() => {
         ready(input);
         if (!current || current.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) return;
-        const body = provider === "copilot" ? mapCopilotUsageEvent(input.event) : provider === "claude" ? mapClaudeUsageEvent(input.event) : null;
+        const body = provider === "copilot" ? mapCopilotUsageEvent(input.event) : provider === "claude" ? mapClaudeUsageEvent(input.event) : current.profileId === "codex-response-0.169.0-v1" ? mapCodexUsageEvent(input.event) : null;
         if (body) {
-          store.enqueueMeasurement(current.stateId, body);
+          const target = provider === "codex" && body.nativeTurnId ? store.turnState(input.nativeSessionId, body.nativeTurnId) : current;
+          if (!target || provider === "codex" && target.profileId !== body.profileId) { gap("attribution_unknown"); return; }
+          store.enqueueMeasurement(target.stateId, body);
           if (body.reasonCodes.includes("native_integer_unrepresentable")) gap("native_integer_unrepresentable");
         }
         if (!warned && store.nearCapacity()) { warned = true; options.onDiagnostic?.("Usage journal is approaching its capacity."); }

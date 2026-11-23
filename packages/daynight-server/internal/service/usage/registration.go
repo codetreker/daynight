@@ -121,7 +121,7 @@ func (s *Service) Register(ctx context.Context, p model.Principal, input Registr
 		r.CreatedAt = now
 		r.UpdatedAt = now
 		r.RowVersion = "1"
-		r.ReasonCodes = core.ProfileReasons(provider)
+		r.ReasonCodes = core.ProfileReasons(provider, profile.ID)
 		if profile.Capability.Qualification == "unverified" {
 			r.CollectionState = core.Ptr("unavailable")
 			r.ReasonCodes = core.MergeReasons(r.ReasonCodes, "profile_unverified")

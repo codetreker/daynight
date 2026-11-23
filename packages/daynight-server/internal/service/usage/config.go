@@ -54,7 +54,7 @@ func qualificationEntries(entries []string) (map[string]bool, error) {
 		id, version, ok := strings.Cut(entry, "@")
 		known := false
 		for _, p := range core.Profiles() {
-			known = known || p.ID == id && p.Provider != "codex"
+			known = known || p.ID == id && (p.Provider != "codex" || p.ID == "codex-response-0.169.0-v1" && version == "0.169.0")
 		}
 		if !ok || !known || !core.Text(version, 128) || strings.TrimSpace(version) != version || strings.ContainsAny(version, ",@") || seen[entry] {
 			return nil, configurationError("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "must contain unique supported profileId@providerVersion pairs separated by commas")

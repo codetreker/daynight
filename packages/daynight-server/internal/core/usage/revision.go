@@ -145,7 +145,7 @@ func ApplyState(old model.UsageRecord, e model.UsageEvent, p Profile, now time.T
 		}
 	}
 	if e.CollectionState == "partial" || e.CollectionState == "unsupported" {
-		for _, required := range ProfileReasons(p.Provider) {
+		for _, required := range ProfileReasons(p.Provider, p.ID) {
 			found := false
 			for _, r := range e.ReasonCodes {
 				found = found || r == required

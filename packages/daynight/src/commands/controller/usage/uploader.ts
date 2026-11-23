@@ -30,10 +30,10 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
   const blocked = new Set<string>();
   const diagnose = (message: string) => options.onDiagnostic?.(message);
   const capability = (state: UsageState): UsagePayload | null => {
-    const profile = profiles?.find(item => item.id === usageProfileId(state.provider) && item.provider === state.provider);
+    const profile = profiles?.find(item => item.id === usageProfileId(state.provider, state.profileId) && item.provider === state.provider);
     const exact = (Array.isArray(profile?.qualifiedVersions) ? profile.qualifiedVersions : []).map(object).find(item => item.providerVersion === state.providerVersion);
     const value = object(exact?.capability ?? profile?.capability);
-    if (value.profileId !== usageProfileId(state.provider) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
+    if (value.profileId !== usageProfileId(state.provider, state.profileId) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
     if (!exact && value.qualification === "verified") return { ...value, qualification: "unverified" };
     return value;
   };
@@ -81,7 +81,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     if (response.status === 429 || response.status >= 500) { delay(response.headers.get("retry-after")); return true; }
     return false;
   };
-  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === usageProfileId(state.provider) && value.provider === state.provider && sequence(value.rowVersion);
+  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === usageProfileId(state.provider, state.profileId) && value.provider === state.provider && sequence(value.rowVersion);
   const saveReceipt = (state: UsageState, value: Record<string, unknown>): boolean => {
     const remote = object(value.state), grant = object(value.grant);
     if (!validState(state, remote) || typeof grant.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(grant.token) || typeof grant.expiresAt !== "string" || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()) return false;
@@ -105,7 +105,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
       const result = await request("/api/usage/v1/registrations", token, {
         protocol: PROTOCOL, stateId: state.stateId, registrationId: state.registrationId,
         ...options.identity, connectionEpoch: connection.connectionEpoch, nativeSessionId: state.nativeSessionId,
-        profileId: usageProfileId(state.provider), providerVersion: state.providerVersion,
+        profileId: usageProfileId(state.provider, state.profileId), providerVersion: state.providerVersion,
       });
       if (result.response.status === 429) store.clearRegistrationAttempted(state.stateId);
       if (refusal(state, result.response)) return false;

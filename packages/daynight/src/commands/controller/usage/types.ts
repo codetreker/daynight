@@ -3,6 +3,7 @@ export type UsageGrant = { token: string; expiresAt: string };
 export type UsageState = {
   stateId: string; registrationId: string; generation: string;
   nativeSessionId: string; providerVersion: string; provider: string;
+  profileId?: string;
   grant: UsageGrant | null; rowVersion: string | null;
   stateSequence: string; reasons: string[]; stopped: boolean;
   registrationAttempted: boolean; grantRequestAttempted: boolean;
@@ -17,7 +18,9 @@ export type UsageAck = {
   finality: string | null;
 };
 export type UsageStore = {
-  ensureState(generation: string, nativeSessionId: string, providerVersion: string, provider?: string): UsageState;
+  ensureState(generation: string, nativeSessionId: string, providerVersion: string, provider?: string, profileId?: string): UsageState;
+  bindTurn(stateId: string, turnId: string): void;
+  turnState(nativeSessionId: string, turnId: string): UsageState | null;
   states(): UsageState[];
   getState(stateId: string): UsageState;
   nearCapacity(): boolean;
