@@ -83,7 +83,7 @@
 .project-session-control:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]),
 .project-session-text:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]) { color: var(--task-attention-ink); }
 
-.task-node:has(.task-node-expansions) .task-node-details { bottom: calc(3.75rem + 6px); }
+.task-node:has(.task-node-expansions) .task-node-details { bottom: calc(3.75rem + 4px); }
 .task-node-meta-labels .task-paused-badge, .task-node-meta-labels .task-agent-permission, .task-node-meta-labels .task-platform, .task-node-meta-labels .task-stuck-label { padding:0 3px; font-size:var(--text-xs); line-height:1.25; }
 .task-node .task-node-usage { line-height:1.35; flex:none; }
 .graph-section-heading, .graph-legend, .graph-toolbar, .graph-toolbar-actions { flex-wrap: wrap; }
@@ -105,8 +105,9 @@
 .task-node-bottom .task-duration { justify-content:flex-end; }
 .task-node-expand > span, .task-node-expand > small { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .graph-reading-hint[popover] { box-sizing:border-box; overflow:auto; position:fixed; inset:auto; margin:0; max-width:min(320px, calc(100vw - 16px)); padding:7px 10px; border:1px solid #cad4e0; border-radius:6px; background:#253247; color:white; font-size:var(--text-sm); line-height:1.4; overflow-wrap:anywhere; box-shadow:0 4px 14px #17244733; }
-.task-node-body { padding-block:4px; }
-.task-node-meta { margin-bottom:1px; }
+.task-node-body { padding-block:2px 4px; }
+.task-node-meta { margin-bottom:0; }
+.task-node-details { bottom:4px; }
 .task-node-title { line-height:1.2; min-height:1.2em; }
 .task-node-bottom { padding-top:0; }
 .task-node-readings { padding-bottom:.4rem; }
