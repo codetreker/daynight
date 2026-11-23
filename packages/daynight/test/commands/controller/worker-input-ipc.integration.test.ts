@@ -137,6 +137,7 @@ const action = (operationId = randomUUID(), prompt = "continue"): WorkerInputAct
 test.skipIf(process.platform === "win32").each(["absent", "accepted"] as const)("recovered %s initial input uses the original journal and dispatches once", async recovery => {
   const v = await setup({ recovery });
   try {
+    expect(await requestController(v.ticket, { kind: "observe" })).toMatchObject({ workerInputProtocol: 1, recoveredInitialInputProtocol: 1 });
     const before = await readRecoverableInitialInput(v.journal, v.ticket, v.home);
     expect(before.snapshot).toMatchObject({ executionGeneration: "2", initialInputState: "not_submitted", nativeSessionId: v.ticket.resumeNativeSessionId });
     expect(before.operation?.state ?? null).toBe(recovery === "accepted" ? "accepted" : null);

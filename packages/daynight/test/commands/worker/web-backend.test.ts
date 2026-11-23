@@ -1120,8 +1120,8 @@ it("does not submit a recovered initial assignment without original launch and q
   f.store.beginRecovery(f.task, 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
   f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", initialInputState: "not_submitted", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } }));
-  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("original launch, native identity and queued input protocol");
-  expect(f.store.getTask(f.task)?.recovery.pauseReason).toContain("original launch, native identity and queued input protocol");
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("does not advertise safe recovered initial input");
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).toContain("does not advertise safe recovered initial input");
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
 });
 

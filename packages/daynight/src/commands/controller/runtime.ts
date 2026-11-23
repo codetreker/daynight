@@ -692,7 +692,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
               if (operation === null) return;
             }
           }
-          socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
+          socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const, recoveredInitialInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
         } catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
       })().catch(fail);
     });

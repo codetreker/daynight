@@ -16,7 +16,7 @@ export type ControllerLocalAction =
   | { readonly kind: "cleanup"; readonly operationId: string; readonly prompt: string; readonly deadline: number }
   | { readonly kind: "stop"; readonly deadline: number };
 export type ControllerLocalRequest = SessionBinding & { readonly requestId: string; readonly executionId: string; readonly executionGeneration: string; readonly controllerInstanceId: string; readonly secret: string; readonly action: ControllerLocalAction };
-export type ControllerLocalResponse = { readonly requestId: string; readonly ok: true; readonly snapshot: ControllerSnapshot; readonly operation?: ControllerOperation; readonly inputResult?: WorkerInputResult; readonly workerInputProtocol?: 1; readonly workerLifecycleProtocol?: 1 } | { readonly requestId: string; readonly ok: false; readonly error: string };
+export type ControllerLocalResponse = { readonly requestId: string; readonly ok: true; readonly snapshot: ControllerSnapshot; readonly operation?: ControllerOperation; readonly inputResult?: WorkerInputResult; readonly workerInputProtocol?: 1; readonly recoveredInitialInputProtocol?: 1; readonly workerLifecycleProtocol?: 1 } | { readonly requestId: string; readonly ok: false; readonly error: string };
 export class ControllerIpcFrameLimitError extends Error {
   constructor(readonly actualBytes: number, readonly maxBytes: number) { super("Controller IPC request exceeds its encoded frame limit."); }
 }
@@ -87,6 +87,7 @@ export const requestController = (ticket: ControllerLaunchTicket, action: Contro
         validateWorkerInputResult(response, action, ticket);
       }
       if (action.kind === "observe" && Object.hasOwn(response, "workerInputProtocol") && response.workerInputProtocol !== 1) throw new ControllerIpcIdentityConflictError("Controller Worker input protocol is unsupported.");
+      if (action.kind === "observe" && Object.hasOwn(response, "recoveredInitialInputProtocol") && response.recoveredInitialInputProtocol !== 1) throw new ControllerIpcIdentityConflictError("Controller recovered initial input protocol is unsupported.");
       finish(undefined, response);
     } catch (error) { finish(error); }
   });

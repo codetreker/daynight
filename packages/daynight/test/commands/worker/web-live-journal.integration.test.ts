@@ -251,7 +251,7 @@ const recoveredInitial = async (prepared: boolean) => {
   f.launcher.prepare.mockResolvedValue(ticket);
   const request = vi.fn<typeof localClient.requestController>();
   request.mockImplementation(async (_ticket, action) => {
-    if (action.kind === "observe") return { requestId: ticket.launchId, ok: true, snapshot, workerInputProtocol: 1 };
+    if (action.kind === "observe") return { requestId: ticket.launchId, ok: true, snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
     throw new Error(`Unexpected ${action.kind} request`);
   });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher,
@@ -263,7 +263,7 @@ it.each([false, true])("submits the frozen initial operation through ordinary Wo
   const f = await recoveredInitial(prepared);
   const before = f.store.getTask(f.task)!;
   f.request.mockImplementation(async (_ticket, action) => {
-    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 };
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
     expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
     const operation = { operationId: f.ticket.initialOperationId, executionGeneration: "2", kind: "initial" as const,
       payload: { text: f.ticket.initialPrompt }, payloadHash: controllerPayloadHash({ kind: "initial", payload: { text: f.ticket.initialPrompt } }),
@@ -284,7 +284,7 @@ it("retains an orchestration blocker until the same recovered journal and origin
   const f = await recoveredInitial(true);
   f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
   f.request.mockImplementation(async (_ticket, action) => {
-    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 };
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
     expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
     return { requestId: f.ticket.launchId, ok: true, snapshot: { ...f.snapshot, initialInputState: "confirmed" } };
   });
@@ -343,7 +343,7 @@ it.each(["missing-journal", "missing-ticket", "missing-stop", "stop-native", "st
 it("retains the recovered operation after a lost response and never replays it after Worker restart", async () => {
   const f = await recoveredInitial(false);
   f.request.mockImplementation(async (_ticket, action) => {
-    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 };
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
     expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
     const operation = { operationId: f.ticket.initialOperationId, executionGeneration: "2", kind: "initial",
       payload: { text: f.ticket.initialPrompt }, payloadHash: controllerPayloadHash({ kind: "initial", payload: { text: f.ticket.initialPrompt } }),
@@ -385,11 +385,23 @@ it.each(["ordinary", "orchestration"] as const)("waits without replay when journ
       db.prepare("UPDATE operations SET value=? WHERE id=?").run(JSON.stringify(operation), f.ticket.initialOperationId);
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...f.snapshot, initialInputState: "dispatching" }));
     } finally { db.close(); }
-    return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 };
+    return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
   });
   expect(await f.backend.advanceResult(f.task, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "native_input" });
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
   expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)?.state).toBe("dispatching");
   expect(f.store.getTask(f.task)!.recovery).toEqual(f.task.recovery);
   if (mode === "orchestration") expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+});
+
+
+it.each(["ordinary", "orchestration"] as const)("does not submit recovered input to an older Controller during %s advance", async mode => {
+  const f = await recoveredInitial(true);
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
+  f.request.mockResolvedValue({ requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 });
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal)).rejects.toThrow("does not advertise safe recovered initial input");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getTask(f.task)!.recovery).toEqual(f.task.recovery);
+  if (mode === "orchestration") expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state: "accepted", executionGeneration: "1" });
 });

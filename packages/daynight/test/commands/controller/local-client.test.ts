@@ -76,6 +76,16 @@ test("observe accepts legacy capability absence and rejects unsupported declarat
   capability = 2; await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });
 
+test("observe identifies recovered initial input separately from the legacy Worker input capability", async () => {
+  const base = ticket(); let recovery: unknown = undefined;
+  const t = await listen(base, req => ({ requestId: req.requestId, ok: true, snapshot: snapshot(base), workerInputProtocol: 1, ...(recovery === undefined ? {} : { recoveredInitialInputProtocol: recovery }) }));
+  expect((await requestController(t, { kind: "observe" })).recoveredInitialInputProtocol).toBeUndefined();
+  recovery = 1;
+  expect((await requestController(t, { kind: "observe" })).recoveredInitialInputProtocol).toBe(1);
+  recovery = 2;
+  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+});
+
 test("version two tickets require the persistent lifecycle capability on every successful IPC result", async () => {
   const base = { ...ticket(), schemaVersion: 2 as const }; let capability: unknown;
   const t = await listen(base, req => ({ requestId: req.requestId, ok: true, snapshot: snapshot(base), ...(capability === undefined ? {} : { workerLifecycleProtocol: capability }) }));
