@@ -32,6 +32,8 @@ import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/m
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
+import { createRetiredClaimNativeCleanup } from "../../../src/commands/worker/backends/retired-claim-native.js";
+import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 // Replace only the selected Git command with a real process that executes Git
 // and leaves its inherited output open. All other subprocesses remain native.
@@ -153,10 +155,29 @@ const fixture = async (maxConcurrent = 1) => {
   const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
   const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
   const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
-  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const retiredNativeCleanup = createRetiredClaimNativeCleanup({ homeDirectory: root, identity: { serverOrigin: origin, workerId, userId: uuid(2) }, jobLeases: createControllerJobLeases() });
+  const options = { store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => { stores.splice(stores.indexOf(store), 1); store.close(); store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store; return store; };
   return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, worktrees, manifests, git, remote, events, options, clock: (value: number) => { clock = value; }, bind };
 };
+
+it("reconciles a persisted missing-Web cleanup schedule on first shutdown after the local index became done", async () => {
+  const f = await fixture();
+  const owner = { projectId: f.project.projectId, taskId: uuid(970), claimId: uuid(971), worktreeId: uuid(972) };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+  f.store.saveCleanupSchedule(owner, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "worktree-removal", lastError: null });
+  f.store.completeTask(owner); f.bind(owner); f.reopenStore();
+  vi.mocked(f.remote.readTask).mockResolvedValue({ ...task(owner.projectId, owner.taskId), status: "done" });
+  const verify = vi.fn(async () => { throw new Error("Session registration cannot decide retained cleanup."); });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebUnregistered: verify });
+  await expect(coordinator.shutdown()).resolves.toBe(true);
+  expect(f.store.getTask(owner)?.status).toBe("done");
+  expect(f.store.getCleanupSchedule(owner)).toBeNull();
+  expect(f.git.removeUnpublishedReservation).toHaveBeenCalledExactlyOnceWith(f.project, expect.objectContaining(owner), expect.anything());
+  expect(verify).not.toHaveBeenCalled();
+  expect(f.remote.readTask).toHaveBeenCalledOnce();
+});
+
 const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store: WebExecutionStore, task: WebTask) => {
   const execution = task.webExecution!;
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: task.resources.worktree?.worktreePath ?? f.project.localPath, nativeHome: path.join(f.root, "native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -669,7 +690,8 @@ it("preserves independent Web work when enumeration fails after another cleanup"
   f.store.activateTask(f.store.registerPending({ ...healthyOwner, agent: "codex", agentControlMode: "web" }));
   webStore.register({ ...healthyOwner, project: healthy, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
   let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
-  record = webStore.bindWorktree(record, worktree, 2); record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 3);
+  record = webStore.bindWorktree(record, worktree, 2); record = webStore.initializeWebExecution(record, 3);
+  record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 4);
   f.worktrees.set(owner.claimId, { owner, binding: worktree }); f.manifests.set(owner.claimId, { owner, binding: worktree });
   const cleanupEntered = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
   const scanEntered = Promise.withResolvers<void>(), finishScan = Promise.withResolvers<void>();

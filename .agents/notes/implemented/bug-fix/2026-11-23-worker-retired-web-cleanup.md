@@ -25,7 +25,7 @@ bounded current Task reads supply the same classification. The same WorkerRemote
 first verifies its principal against the original Worker account. Persisted
 cleanup schedules discover responsibility but do not prove current ownership.
 
-A retired claim with usable Web execution state enters immediate terminal
+A retired Web claim enters immediate terminal
 cleanup. Polling and shutdown share its Task-serialized executor and settlement:
 stop the original Controller and Provider, close the backend, remove the original
 Git worktree and settle the old local row, schedule and reservations. Original
@@ -57,9 +57,11 @@ shared Task stopping result, then reconciles late terminal commands and
 synchronizes matching generation and proof stop receipts into the lifecycle
 ledger. This captures commands created during terminal cleanup without making
 producer progress depend on a closed command gate. Current or unknown ownership
-retains preserve-site stopping. Insufficient local Web state retains the existing
-provenance failures and responsibility; current ownership alone does not prove
-that a process stopped or provide a missing native boundary.
+retains preserve-site stopping. Missing or incomplete Web state uses the original
+Worker's Controller lifecycle resources and a batch of its existing Task launch
+tickets to locate every matching execution generation. Exact ticket, journal,
+Worker identity and process-boundary validation remains required; current
+ownership alone cannot prove a process stopped.
 
 Management-only reconciliation gives each Task its own original claim-request
 result Promise. Cleanup candidates include pending reservations as well as saved
@@ -69,9 +71,12 @@ current Task reads are reused; failed reconciliation retains that Task without
 making independent Tasks await its request. After original native stopping,
 management-only terminal file cleanup checks that the original retained repository
 directory exists, validates its repository and worktree format, and prepares its
-fresh Git manager before inspecting or removing the original worktree. A missing
-directory cannot trigger a clone, and format preparation does not query Session
-registration or authorize business execution. An already formatted repository does
+fresh Git manager before inspecting or removing the original worktree. A pending
+claim with complete empty native inventory, no known worktree or cleanup owner,
+and an absent original repository can settle without Git preparation. A known
+owner still requires its original Git binding to be checked. A missing directory
+cannot trigger a clone, and format preparation does not query Session registration
+or authorize business execution. An already formatted repository does
 not populate that manager's preparation state. Failed preparation retains that
 Task's cleanup responsibility for retry while independent stopping continues. Controller lifecycle reconciliation follows the Task
 stop attempt, skips unresolved Task records and consumes actual
@@ -81,7 +86,20 @@ Task cleanup and stopJournal retries synchronize actual command stop receipts
 through the existing standalone command path; the active cleanup sink is not
 installed for management-only commands.
 
-This replaces the retired-complete-Web portion of the archived
+Local resource discovery remains separate from coordinator orchestration. The
+adapter owns original native boundaries, endpoints and durable stop receipts;
+the coordinator owns exact Git bindings and local settlement. A complete local
+inventory with no remaining original resources yields actual resource clearance,
+not a fabricated Web record, Session receipt or never-started observation.
+Clearance is fenced to the current cleanup attempt before releasing capacity.
+Windows stopping retains its original Job lease until its durable generation
+receipt is saved; a newer journal generation cannot receive an older receipt.
+Generations share one current journal snapshot. The matching validated ticket
+identifies that actual boundary; other historical or unsubmitted tickets without
+independent process evidence do not invent additional running resources or stop
+receipts. Retained lifecycle proof still requires its own boundary check.
+
+This replaces the retired-Web portion of the archived
 [direct shutdown decision](../../archived/bug-fix/2026-10-28-worker-direct-shutdown.md).
 The [execution scope decision](../architecture/2026-11-20-worker-execution-scopes.md)
 continues to own producer joins and original stop responsibility, and the
@@ -104,7 +122,8 @@ without changing current or unknown execution's preservation rules.
 
 ## Consequences
 
-Retired complete-Web execution stops without a model-dependent cleanup turn.
+Retired Web execution stops without a model-dependent cleanup turn, including
+claims whose Web state no longer supplies execution identity.
 Attributable external temporary resources may remain. Archive failures retain
 their independent sources and retry policy; they do not gate safe worktree
 removal. Native stop, backend closure and Git failures remain distinct,
@@ -112,7 +131,9 @@ observable and retryable. Successor resources and archived Session history
 retain their own lifecycle.
 
 Ownership reads add bounded shutdown work where no complete inventory is known.
-Unavailable ownership and incomplete Web evidence still retain responsibility.
+Unavailable ownership and actual local lookup, stopping or deletion failures
+still retain responsibility. Raw ticket discovery does not claim archive upload
+or synthesize original execution history.
 The existing native stop and deletion mechanisms, original deadlines and local
 formats remain unchanged; no reconstructed execution or compatibility state is
 introduced.
