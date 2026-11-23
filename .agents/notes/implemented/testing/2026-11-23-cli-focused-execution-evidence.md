@@ -17,7 +17,10 @@ actual Vitest discovery and JSON results, source and runtime identity, command
 outcomes, structured case identities and statuses, and passing native sentinels.
 The small portable sample is bound to Git objects for the test files and
 conservatively guarded CLI source, tests, scripts, build and dependency inputs.
-A guarded change invalidates the sample until it is reviewed again. The
+A guarded change invalidates the sample until it is reviewed again. Parameterized
+tests with runtime-generated inputs use distinct stable labels so their case
+identities remain comparable while their actual inputs and assertions remain
+unchanged. The
 [development guide](../../../../docs/development.md#cli-development) describes
 operation and evidence limits. The existing required matrix remains full, and
 [Windows shard verification](2026-11-11-windows-cli-verified-shards.md) retains

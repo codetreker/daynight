@@ -731,7 +731,11 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
 
-  it.each([".tmp", "scratch", randomUUID()])("ignores unrelated nonempty directory %s during migration", async name => {
+  it.each([
+    { label: "temporary name", name: ".tmp" },
+    { label: "scratch name", name: "scratch" },
+    { label: "random UUID", name: randomUUID() },
+  ])("ignores unrelated nonempty directory $label during migration", async ({ name }) => {
     const f = fixture(), value = owner(), original = f.add(value), cwd = path.join(f.namespace, name);
     mkdirSync(cwd); writeFileSync(path.join(cwd, "foreign.txt"), "keep\n");
     await expect(f.migrate()).resolves.toEqual([expected(value)]);

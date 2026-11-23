@@ -18,7 +18,7 @@
   ],
   "guards": {
     "packages/daynight/src": "cd0e90002e51fc3d9a552be9b41d746e616cd272",
-    "packages/daynight/test": "96d613f408ac2134374b0982959a8f2957b2f158",
+    "packages/daynight/test": "54cc9c1bd44cd0c0cb377a8bd4ea08c49e815504",
     "packages/daynight/scripts": "76e34299c661b4cbe2455799719a3f01e04df60b",
     "packages/daynight/package.json": "ad0a07414dabba690d6d75a6fe00bf3cc759379b",
     "packages/daynight/vitest.config.ts": "5545db2be9ae0f2a0616fe90e17dcbf3d5bc7ac2",
