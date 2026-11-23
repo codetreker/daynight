@@ -86,15 +86,12 @@ func TestGoalRelationsMixedGraphQualification(t *testing.T) {
 			var walStart, walEnd string
 			var heldLocks int
 			started = time.Now()
-			_, err = f.db.WriteProject(ctx, f.downProject.ID, func(scope store.ProjectWriteScope) error {
-				if err := scope.ProjectGoalDependencyDAO().LockTeam(ctx); err != nil {
-					return err
-				}
+			_, err = f.db.WriteProjectTransfer(ctx, f.downProject.ID, func(scope store.ProjectWriteScope) error {
 				tx := scope.(*ProjectTx).tx
 				if err := tx.QueryRow(ctx, `SELECT pg_current_wal_insert_lsn()::text`).Scan(&walStart); err != nil {
 					return err
 				}
-				if err := scope.ProjectGoalDependencyDAO().RemoveProjectEdges(ctx); err != nil {
+				if err := scope.ProjectGoalDependencyDAO().RemoveProjectEdges(ctx, false); err != nil {
 					return err
 				}
 				return tx.QueryRow(ctx, `SELECT pg_current_wal_insert_lsn()::text,(SELECT count(*) FROM pg_locks WHERE pid=pg_backend_pid() AND granted)`).Scan(&walEnd, &heldLocks)

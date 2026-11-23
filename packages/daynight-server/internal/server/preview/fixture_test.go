@@ -22,6 +22,7 @@ type operations struct {
 	complete     func(context.Context, string, string) (string, error)
 	authenticate func(context.Context, string) (model.Principal, time.Time, error)
 	retry        func(context.Context, string, string, model.Principal) (string, error)
+	renew        func(context.Context, string, model.Principal) error
 }
 
 func (o *operations) Create(ctx context.Context, target string) (model.PreviewSSOLogin, error) {
@@ -50,6 +51,12 @@ func (o *operations) Retry(ctx context.Context, id, state string, principal mode
 		panic("unexpected preview retry")
 	}
 	return o.retry(ctx, id, state, principal)
+}
+func (o *operations) Renew(ctx context.Context, value string, principal model.Principal) error {
+	if o.renew == nil {
+		panic("unexpected preview renewal")
+	}
+	return o.renew(ctx, value, principal)
 }
 
 func fixture(t *testing.T, ops *operations, secure bool) (*Routes, *bytes.Buffer, http.Handler) {

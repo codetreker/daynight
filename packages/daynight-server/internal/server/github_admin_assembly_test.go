@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +29,25 @@ type adminAssemblyStore struct {
 	hash          []byte
 }
 
+func (s *adminAssemblyStore) AppAdminVisibility(_ context.Context, appID, userID string) error {
+	if appID != assemblyAppID || userID != defaultHTTPPrincipal().UserID {
+		s.t.Fatalf("unexpected visibility %q %q", appID, userID)
+	}
+	return nil
+}
+func (s *adminAssemblyStore) AdminMembershipVisibility(context.Context, string, string) error {
+	s.t.Fatal("unexpected membership visibility")
+	return nil
+}
+func (s *adminAssemblyStore) AdminInvitationVisibility(context.Context, string, string) error {
+	s.t.Fatal("unexpected invitation visibility")
+	return nil
+}
+
+func (s *adminAssemblyStore) AvailableAdminInvitation(context.Context, []byte) (store.GitHubAdminInvitationRef, error) {
+	s.t.Fatal("unexpected invitation lookup")
+	return store.GitHubAdminInvitationRef{}, nil
+}
 func (s *adminAssemblyStore) ReadGitHubAppAdmins(ctx context.Context, fn func(store.GitHubAppAdminReader) error) error {
 	s.reads++
 	return fn(s)
@@ -83,7 +101,8 @@ func TestGitHubAdminProductionRouteAssembly(t *testing.T) {
 	app.GitHubAdmins = githubservice.NewAdminManager(adminStore)
 	witness := &rootIdentityWitness{IdentityOperations: app.Identity}
 	app.Identity = witness
-	root, err := New(app, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var logs bytes.Buffer
+	root, err := New(app, cfg, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +152,7 @@ func TestGitHubAdminProductionRouteAssembly(t *testing.T) {
 	base := "/api/v1/github/apps/" + assemblyAppID
 	res := request(http.MethodGet, base+"/admins", "")
 	if res.Code != http.StatusOK || adminStore.reads != 1 || !strings.Contains(res.Body.String(), `"items":[]`) {
-		t.Fatalf("admin list: %d %s", res.Code, res.Body.String())
+		t.Fatalf("admin list: %d %s logs=%s", res.Code, res.Body.String(), logs.String())
 	}
 	res = request(http.MethodPost, base+"/admin-invitations", `{"expectedUserId":"`+defaultHTTPPrincipal().UserID+`"}`)
 	if res.Code != http.StatusCreated || adminStore.writes != 1 {

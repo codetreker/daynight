@@ -1,3 +1,4 @@
+import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import path from "node:path";
 import { resolveBotControllerStateDirectory } from "./paths.js";
 import { randomUUID } from "node:crypto";
@@ -33,7 +34,7 @@ const checkProcess = (proof: ProcessProof): void => {
   if (proof === null || typeof proof !== "object" || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || proof.pid > 2_147_483_647
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 0 || proof.parentPid > 2_147_483_647
     || !(proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0)
-    || typeof proof.startedAt !== "string" || proof.startedAt.trim() === "" || !proof.startedAt.isWellFormed()
+    || !isProcessBirth(proof.startedAt)
     || typeof proof.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.commandHash)
     || proof.jobObjectName !== undefined && (typeof proof.jobObjectName !== "string" || proof.jobObjectName.trim() === "" || /\0/.test(proof.jobObjectName))) {
     throw new Error("Bot controller process evidence is invalid.");
@@ -92,6 +93,21 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   if (!(value.aliasDirectory === null || typeof value.aliasDirectory === "string" && path.isAbsolute(value.aliasDirectory) && !/[\0\r\n]/.test(value.aliasDirectory))) throw new Error("Bot alias directory must be an absolute path.");
   if (!(value.lastError === null || typeof value.lastError === "string" && value.lastError.isWellFormed())) throw new Error("Bot execution error must be Unicode text or null.");
   return value;
+};
+
+/** Revalidate the retained launch before granting replay of its never-started deletion. */
+export const hasNeverStartedDeletionEvidence = (record: BotRecord, execution: BotExecution | null): boolean => {
+  const intent = record.intent, stop = record.cleanup?.stop;
+  if (intent === null || intent.executionGeneration !== "1" || intent.sessionId === null || intent.nativeSessionId !== null || execution === null
+    || stop == null || stop.stopProof.kind !== "never_started") return false;
+  check(record, execution);
+  const rejected = execution.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
+    && execution.controllerProcess === null && execution.snapshot === null;
+  return (execution.launchSubmission === "not-submitted" && execution.startup === null || rejected)
+    && stop.protocol === "daynight.session.v1" && stop.sessionId === intent.sessionId && stop.testExecutionId === intent.executionId
+    && stop.executionGeneration === intent.executionGeneration && stop.controllerId === intent.registration.controllerId
+    && stop.controllerInstanceId === intent.controllerInstanceId && stop.stopProof.previousControllerInstanceId === intent.controllerInstanceId
+    && stop.stopProof.recordId === intent.launchId;
 };
 
 /** The caller retains the owning storage lock; these rows never enter Task capacity or cleanup inventory. */
@@ -174,6 +190,22 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (previous === null) throw new Error("Bot execution evidence has not been prepared.");
       if (typeof reason !== "string" || reason.trim() === "" || !reason.isWellFormed()) throw new Error("Bot recovery block requires a nonempty reason.");
       return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
+    }),
+    /** The caller holds the Bot lock and publishes the replacement ticket first.
+     * Only local dispatch identity changes; the remote recovery fence may already be granted.
+     */
+    replaceUnsubmittedLaunch: (record: BotRecord, launchId: string, homeDirectory: string): BotRecord => atomic(() => {
+      const saved = current(record), execution = get(saved), intent = saved.intent!;
+      botUUID(launchId, "Bot launch ID");
+      if (saved.observed.deletion !== null || execution === null || execution.launchSubmission !== "not-submitted"
+        || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot launch replacement requires proven never-submitted execution.");
+      if (launchId === intent.launchId || execution.retainedLaunchIds.includes(launchId)
+        || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot launch replacement requires a new identity in its original private home.");
+      const next: BotRecord = { ...saved, intent: { ...intent, launchId,
+        ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) } };
+      db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
+      put(next, { ...execution, launchId, retainedLaunchIds: [...execution.retainedLaunchIds, intent.launchId] });
+      return next;
     }),
     /** The caller first proves process-tree stop and commits the matching journal snapshot. */
     beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch): BotRecord => atomic(() => {

@@ -143,6 +143,9 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 	if definition == nil || definition.Name == "" || definition.InputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}
+	if e.toolNames[definition.Name] {
+		return fmt.Errorf("duplicate MCP tool %q", definition.Name)
+	}
 	input, err := resolveSchema(definition.InputSchema)
 	if err != nil {
 		return fmt.Errorf("input schema: %w", err)
@@ -156,6 +159,10 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 	// Discovery never publishes an output schema.
 	published := *definition
 	published.OutputSchema = nil
+	if e.toolNames == nil {
+		e.toolNames = make(map[string]bool)
+	}
+	e.toolNames[definition.Name] = true
 	e.server.AddTool(&published, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		call, err := e.beginInvocation(sdkctx)
 		if err != nil {
@@ -163,6 +170,16 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 		}
 		defer call.done()
 		ctx, actor, scope := call.ctx, call.actor, call.scope
+		if actor.Authorization != nil {
+			if !e.scopedTools[definition.Name] {
+				failure := envelopeError{Code: "forbidden", Message: "This tool is unavailable for the credential.", RequestID: actor.RequestID}
+				if inferWriteOutcome {
+					failure.WriteOutcome = "not_committed"
+				}
+				return e.errorResult(actor, failure), nil
+			}
+			ctx = context.WithValue(ctx, scopedAuthorizationKey{}, *actor.Authorization)
+		}
 		ctx = attachmentservice.WithUploadLeaseRetainer(ctx, func(lease io.Closer) {
 			scope.hold(func() {
 				if err := lease.Close(); err != nil {
@@ -251,6 +268,9 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 			} else if fault, ok := operation.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
 				failure.Code = fault.Code
 				failure.Message = fault.Message
+				if fault.Code == "insufficient_scope" && inferWriteOutcome && failure.WriteOutcome == "" {
+					failure.WriteOutcome = "not_committed"
+				}
 			}
 			cause := httpx.ErrorKind(err)
 			if errors.Is(err, ErrResourceBusy) {
@@ -292,6 +312,7 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 	})
 	return nil
 }
+
 func (e *Entry) errorResult(actor RequestActor, failure envelopeError) *sdk.CallToolResult {
 	if failure.WriteOutcome != "" && failure.WriteOutcome != "confirmed" && failure.WriteOutcome != "not_committed" && failure.WriteOutcome != "unknown" {
 		failure.WriteOutcome = ""

@@ -10,13 +10,17 @@ alone does not bound individual fields.
 
 ## Decision
 
-Step add and change apply the [shared text policy](2026-11-07-api-input-policy.md)
+The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md) removes Step
+admission, codec and dedicated tests. This record preserves why field admission
+was separate from read projection and collection capacity.
+
+Step add and change originally applied the [shared text policy](2026-11-07-api-input-policy.md)
 to the complete target candidate before encoding the collection and persisting
 the mutation. The [Step contract](../../../../docs/spec/daynight-task-steps.md)
-defines the write field and collection limits and their failure behavior. Reads
-use pure stored-field projection without repeat structural or capacity checks,
+now defines the application and storage retirement boundary. Reads
+used pure stored-field projection without repeat structural or capacity checks,
 as recorded in the [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md).
-Move and delete do not apply the target field budget to existing values.
+Move and delete did not apply the target field budget to existing values.
 
 ## Alternatives
 
@@ -28,7 +32,7 @@ bounds each decoded field for every write entry point.
 
 ## Consequences
 
-Partial updates check retained text as part of the target candidate. Existing
-long values remain readable and removable, but a change must bring the entire
-target within the field limits. Exact JSON encoding remains necessary because
-individually legal Steps can exceed the collection budget together.
+Partial updates checked retained text as part of the target candidate. Existing
+long values remained readable and removable, but a change had to bring the entire
+target within the field limits. Exact JSON encoding was necessary because
+individually legal Steps could exceed the collection budget together.

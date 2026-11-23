@@ -15,7 +15,7 @@ export const createExecutionCapacity = (changed: (owner: ResourceOwner, stopped:
     if (value === undefined) { value = { owner, sequence: 0, attempt: null, observation: null }; entries.set(key, value); }
     return value;
   };
-  const isStopped = (value: StopObservation | null): boolean => value?.kind === "stopped" || value?.kind === "not-started";
+  const isStopped = (value: StopObservation | null): boolean => value?.kind === "stopped" || value?.kind === "not-started" || value?.kind === "resources-cleared";
   const set = (item: Entry, observation: StopObservation | null): void => {
     const before = isStopped(item.observation), after = isStopped(observation);
     item.observation = observation;
@@ -33,8 +33,11 @@ export const createExecutionCapacity = (changed: (owner: ResourceOwner, stopped:
         if (observation.error instanceof ExecutionSourceConflictError) item.attempt = null;
         else if (isStopped(item.observation)) return;
       } else {
-        const actual = observation.kind === "not-started" ? observation.owner : observation.execution.owner;
+        const actual = observation.kind === "not-started" || observation.kind === "resources-cleared" ? observation.owner : observation.execution.owner;
         if (ownerKey(actual) !== ownerKey(owner)) return;
+        // Full terminal inventory clearance is produced only by its cleanup attempt.
+        if (observation.kind === "resources-cleared") return;
+        if (item.observation?.kind === "resources-cleared") return;
         if (item.observation?.kind === "stopped" && observation.kind === "running" && sameExecution(item.observation.execution, observation.execution)) return;
       }
       set(item, observation);
@@ -42,11 +45,11 @@ export const createExecutionCapacity = (changed: (owner: ResourceOwner, stopped:
     notice(notice: ExecutionStoppedNotice): void {
       const item = entry(notice.attempt.owner), observation = notice.observation;
       if (item.attempt !== notice.attempt.attemptId) return;
-      const actual = observation.kind === "not-started" ? observation.owner : observation.execution.owner;
+      const actual = observation.kind === "not-started" || observation.kind === "resources-cleared" ? observation.owner : observation.execution.owner;
       if (ownerKey(actual) !== ownerKey(item.owner)) return;
-      if (item.observation?.kind === "running" || item.observation?.kind === "stopped") {
+      if (observation.kind !== "resources-cleared" && (item.observation?.kind === "running" || item.observation?.kind === "stopped")) {
         if (observation.kind !== "stopped" || !sameExecution(observation.execution, item.observation.execution)) return;
-      } else if (item.observation?.kind === "not-started" && observation.kind !== "not-started") return;
+      } else if (observation.kind !== "resources-cleared" && item.observation?.kind === "not-started" && observation.kind !== "not-started") return;
       item.sequence++;
       set(item, observation);
     },

@@ -72,11 +72,16 @@ func (a *App) Start(root context.Context) error {
 		return errors.New("application already drained")
 	}
 	w := a.webhookRuntime
-	if w == nil && a.CredentialUsage == nil && a.githubRuntime == nil && a.archiveCleanup == nil {
+	if w == nil && a.CredentialUsage == nil && a.githubRuntime == nil && a.archiveCleanup == nil && a.reviewAssignment == nil {
 		return nil
 	}
 	if root == nil || root.Err() != nil {
 		return errors.New("invalid application runtime context")
+	}
+	if a.reviewAssignment != nil {
+		if err := a.reviewAssignment.Start(root); err != nil {
+			return err
+		}
 	}
 	if a.archiveCleanup != nil {
 		if err := a.archiveCleanup.Start(root); err != nil {
@@ -170,6 +175,9 @@ func (a *App) StopClaims() {
 
 // CancelWork cancels outstanding attempts and maintenance after claims stop.
 func (a *App) CancelWork() {
+	if a.reviewAssignment != nil {
+		a.reviewAssignment.Cancel()
+	}
 	if a.archiveCleanup != nil {
 		a.archiveCleanup.Cancel()
 	}
@@ -234,6 +242,11 @@ func (a *App) drainResult(err error, complete bool) error {
 }
 
 func (a *App) drainProducers(ctx context.Context) error {
+	if a.reviewAssignment != nil {
+		if err := a.reviewAssignment.Stop(ctx); err != nil {
+			return err
+		}
+	}
 	if a.archiveCleanup != nil {
 		if err := a.archiveCleanup.Stop(ctx); err != nil {
 			return err

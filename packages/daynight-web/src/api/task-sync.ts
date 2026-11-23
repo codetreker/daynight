@@ -111,7 +111,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
     completedAt: data.completedAt === null ? null : timestamp(data.completedAt),
     createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt),
   };
-  if (result.type === "goal" && (result.status === "proposed" || result.dependsOn.length !== 0 || result.allowAgents || result.requiredPlatform !== null)) return malformed();
+  if (result.type === "goal" && (result.status === "proposed" || result.externalDependsOn.length !== 0 || result.allowAgents || result.requiredPlatform !== null)) return malformed();
   return result;
 };
 

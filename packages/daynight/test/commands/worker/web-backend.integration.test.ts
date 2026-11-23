@@ -45,7 +45,7 @@ it.each(["valid", "missing", "generation", "process"] as const)("Web orderly rec
       if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
     }
-    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
     const launcher = { prepare: vi.fn(async (record: LocalTask) => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId })), launch: vi.fn(async (_record: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal) => {}), refreshGrant: vi.fn(async () => {}) };
     source.request.mockImplementation(async ticket => { if (ticket.executionGeneration === "1") throw new ControllerIpcOutcomeUnknownError("Original controller exited"); return { requestId: randomUUID(), ok: true, snapshot: { ...source.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeStopped: false, stoppedAt: null, error: null } }; });
     source.stopped.mockClear();

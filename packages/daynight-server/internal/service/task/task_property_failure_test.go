@@ -24,7 +24,7 @@ func TestWorkerClaimClockFailurePreventsTaskWrite(t *testing.T) {
 	defer cancel()
 	f.ctx = ctx
 	f.scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
-		return &workerClaimAdmissionMock{read: func(actual context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+		return &workerClaimAdmissionMock{check: func(context.Context, string, string) error { return nil }, read: func(actual context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 			if actual != ctx || user != f.principal.UserID || worker == "" {
 				t.Fatal("claim admission identity changed")
 			}

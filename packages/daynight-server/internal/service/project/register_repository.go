@@ -11,6 +11,10 @@ import (
 // RegisterRepository reuses a visible match in the resolved Team, or creates a
 // Project when explicitly confirmed.
 func (s *Projects) RegisterRepository(ctx context.Context, principal model.Principal, input core.CreateProject, confirm bool) (model.Project, bool, error) {
+	return s.registerRepository(ctx, principal, input, confirm, nil)
+}
+
+func (s *Projects) registerRepository(ctx context.Context, principal model.Principal, input core.CreateProject, confirm bool, admitCreate func() error) (model.Project, bool, error) {
 	if err := core.ValidateCreateFields(principal, input); err != nil {
 		return model.Project{}, false, err
 	}
@@ -42,6 +46,11 @@ func (s *Projects) RegisterRepository(ctx context.Context, principal model.Princ
 	}
 	if err := core.RequireRepositoryCreationConfirmation(confirm); err != nil {
 		return model.Project{}, false, err
+	}
+	if admitCreate != nil {
+		if err := admitCreate(); err != nil {
+			return model.Project{}, false, err
+		}
 	}
 	created, _, err := s.createValidated(ctx, principal, input)
 	if err != nil {

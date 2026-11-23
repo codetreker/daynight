@@ -14,6 +14,8 @@ func (s *Store) WriteWorker(ctx context.Context, operation func(store.WorkerScop
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin worker snapshot", err)
 	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(worker.NewWriter(tx)) })
+	err = transact(ctx, tx, func(tx pgx.Tx) error {
+		return operation(authorizedWorkerScope{worker.NewWriter(tx), credentialAuthorization{tx}})
+	})
 	return teamCompletion("write worker snapshot", err)
 }

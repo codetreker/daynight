@@ -1,6 +1,6 @@
 # Temporary webhook test host
 
-This fixture runs the production webhook, identity, Team, Task, Step, Thread and Project routes
+This fixture runs the production webhook, identity, Team, Task, Thread and Project routes
 with real authentication and PostgreSQL. It binds only to loopback and creates
 an isolated schema. Destinations and signing secrets use the production plaintext
 storage format. The controlled receiver records HMAC headers for independent

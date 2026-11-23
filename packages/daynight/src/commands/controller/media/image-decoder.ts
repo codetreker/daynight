@@ -7,7 +7,7 @@ import { parseValidatedImage, type ValidatedImage } from "../../../session/image
 import { IMAGE_VALIDATION_BUILD_ID, IMAGE_VALIDATION_ERROR_CODES, ImageValidationError, type ImageValidationRequest } from "./image-validation.js";
 
 export type ImageDecoder = (request: ImageValidationRequest, signal?: AbortSignal) => Promise<ValidatedImage>;
-export type ImageDecoderConfiguration = { runtimePath: string; helperPath: string; enginePath: string; helperSha256: string; engineSha256: string; buildId: string; timeoutMilliseconds?: number; rssLimitBytes?: number; onPeakRss?(bytes: number): void };
+export type ImageDecoderConfiguration = { runtimePath: string; helperPath: string; enginePath: string; helperSha256: string; engineSha256: string; buildId: string; timeoutMilliseconds?: number; rssLimitBytes?: number; onPeakRss?(bytes: number): void; beforeSpawn?(): void };
 
 /** A decoder owns one child and does not resolve cancellation before process close. */
 export const createImageDecoder = (configuration: ImageDecoderConfiguration): ImageDecoder => async (request, signal) => {
@@ -18,6 +18,8 @@ export const createImageDecoder = (configuration: ImageDecoderConfiguration): Im
     const stat = await lstat(filename);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1_048_576 || await realpath(filename) !== filename || createHash("sha256").update(await readFile(filename)).digest("hex") !== hash) throw new Error("Image decoder component_unsupported: artifact integrity failed.");
   }
+  if (signal?.aborted) throw signal.reason;
+  c.beforeSpawn?.();
   const child = spawn(c.runtimePath, ["--max-old-space-size=256", c.helperPath], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, VIPS_CONCURRENCY: "1", UV_THREADPOOL_SIZE: "1" } });
   return new Promise<ValidatedImage>((resolve, reject) => {
     let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), failure: unknown;
@@ -60,7 +62,7 @@ export const createImageDecoder = (configuration: ImageDecoderConfiguration): Im
   });
 };
 
-export const bundledImageDecoder = (): ImageDecoder => async (request, signal) => {
+export const bundledImageDecoder = (beforeSpawn?: () => void): ImageDecoder => async (request, signal) => {
   const helperPath = fileURLToPath(new URL("./image-validation-helper.js", import.meta.url));
   let manifest: unknown;
   try { manifest = JSON.parse(await readFile(new URL("./image-validation-manifest.json", import.meta.url), "utf8")); }
@@ -68,5 +70,5 @@ export const bundledImageDecoder = (): ImageDecoder => async (request, signal) =
   if (!manifest || typeof manifest !== "object") throw new Error("Image decoder component_unsupported.");
   const m = manifest as Record<string, unknown>;
   if (m.version !== 1 || typeof m.buildId !== "string" || typeof m.helperSha256 !== "string" || typeof m.engineSha256 !== "string") throw new Error("Image decoder component_unsupported.");
-  return createImageDecoder({ runtimePath: process.execPath, helperPath, enginePath: fileURLToPath(new URL("./image-validation.js", import.meta.url)), buildId: m.buildId, helperSha256: m.helperSha256, engineSha256: m.engineSha256 })(request, signal);
+  return createImageDecoder({ ...(beforeSpawn === undefined ? {} : { beforeSpawn }), runtimePath: process.execPath, helperPath, enginePath: fileURLToPath(new URL("./image-validation.js", import.meta.url)), buildId: m.buildId, helperSha256: m.helperSha256, engineSha256: m.engineSha256 })(request, signal);
 };

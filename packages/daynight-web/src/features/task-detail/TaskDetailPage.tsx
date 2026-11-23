@@ -42,7 +42,7 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
   };
   const navigateExternalTask = (id: string, trigger: HTMLElement) => {
     const node = graph.snapshot?.index.nodes.get(id);
-    if (node === undefined) { graph.refresh(); return; }
+    if (node === undefined) { select(id, { tab: 'overview', path: null }); return; }
     if (node.parentId === null) { navigate(`/projects/${encodeURIComponent(projectId)}#task=${encodeURIComponent(id)}`); return; }
     targetTrigger.current = trigger;
     history.select({ goalChildren: null, externalGoal: { id: node.parentId, witness: id, navigation: { tab: 'description', path: null }, goalChildren: { graphRootId: null, task: { id, navigation: { tab: 'overview', path: null } } } } });

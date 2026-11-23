@@ -12,11 +12,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -25,6 +27,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/reviewassignment"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -38,30 +41,34 @@ import (
 
 // App owns the shared modules and their underlying resources.
 type App struct {
+	ScopeError error
 	*application.Application
-	GitHubRead           *coregithub.Reader
-	GitHubApps           *githubservice.AppManager
-	GitHubConfig         *githubservice.ConfigManager
-	GitHubAdmins         *githubservice.AdminManager
-	GitHubGrants         *githubservice.GrantManager
-	GitHubProject        *githubservice.ProjectAppManager
-	GitHubWebhook        *githubservice.AppWebhookReceiver
-	Metrics              *prometheus.Registry
-	Web                  *webresources.Resources
-	Ready                func(context.Context) error
-	Webhooks             *webhook.Service
-	webhookRuntime       *webhookRuntime
-	githubRuntime        *githubRuntime
-	archiveCleanup       *sessionservice.ArchiveCleanupRunner
-	OAuthProfile         *OAuthProfile
-	OAuthError           error
-	PreviewSSOError      error
-	DirectMembers        *team.DirectMembers
-	ProjectDirectMembers *projectservice.DirectMembers
-	APIIssuer            *oauthservice.UserAPIIssuer
-	ImageValidationError error
-	UsageError           error
-	oauthMaintenance     *oauthservice.MaintenanceRunner
+	GitHubRead             *coregithub.Reader
+	GitHubApps             *githubservice.AppManager
+	GitHubConfig           *githubservice.ConfigManager
+	GitHubAdmins           *githubservice.AdminManager
+	GitHubGrants           *githubservice.GrantManager
+	GitHubProject          *githubservice.ProjectAppManager
+	GitHubWebhook          *githubservice.AppWebhookReceiver
+	Metrics                *prometheus.Registry
+	Web                    *webresources.Resources
+	Ready                  func(context.Context) error
+	Webhooks               *webhook.Service
+	AssistantTaskInbox     *assistanttask.Inbox
+	webhookRuntime         *webhookRuntime
+	githubRuntime          *githubRuntime
+	archiveCleanup         *sessionservice.ArchiveCleanupRunner
+	reviewAssignment       *reviewassignment.Runner
+	OAuthProfile           *OAuthProfile
+	OAuthError             error
+	PreviewSSOError        error
+	DirectMembers          *team.DirectMembers
+	ProjectDirectMembers   *projectservice.DirectMembers
+	APIIssuer              *oauthservice.UserAPIIssuer
+	ImageValidationError   error
+	UsageError             error
+	ArchiveUploadV2Enabled bool
+	oauthMaintenance       *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
 	drainLock         chan struct{}
@@ -103,16 +110,39 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	preview, previewErr := identityservice.NewPreviewSSO(database, c.Server.PublicOrigin, c.Server.PreviewOrigin, c.UniAuth.CallbackURL)
+	unavailable := []scopepolicy.ScopeID{}
+	if !c.Webhook.Enabled {
+		unavailable = append(unavailable, "webhook:deliver")
+	}
+	if _, ok := database.(githubAppStore); !ok {
+		unavailable = append(unavailable, "github:manage")
+	}
+	if _, ok := database.(store.AssistantTaskInboundWriter); !ok {
+		unavailable = append(unavailable, "assistant-task:inbox")
+	}
+	if err := c.Session.Validate(); err != nil {
+		return &App{ScopeError: err}
+	}
+	archiveLimits := &coresession.ArchiveLimits{MaxConcurrent: c.Session.MaxConcurrent, MaxConcurrentPerOwner: c.Session.MaxConcurrentPerOwner}
+	modules, scopeErr := application.NewScoped(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, c.Server.PublicOrigin, unavailable, archiveLimits, capture...)
+	if scopeErr != nil {
+		return &App{ScopeError: scopeErr}
+	}
 	app := &App{
-		Application:     application.New(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, capture...),
+		Application:     modules,
 		PreviewSSOError: previewErr,
 		GitHubRead:      coregithub.NewReader(database, true),
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
+	app.Engine.SetArchiveV2RegistrationEnabled(c.Storage.ArchiveUploadV2Enabled)
+	app.ArchiveUploadV2Enabled = c.Storage.ArchiveUploadV2Enabled
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
-	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
+	if inbound, ok := database.(store.AssistantTaskInboundWriter); ok {
+		app.AssistantTaskInbox = assistanttask.NewInbox(inbound, c.Server.PublicOrigin)
+	}
+	app.Usage, app.UsageError = usageapp.ScopedFromEnvironment(database, app.Scoped.Credentials.Usage)
 	app.closeLock <- struct{}{}
-	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
+	app.DirectMembers, app.ScopeError = team.NewScopedDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1", app.Scoped.Credentials.Current, app.Scoped.Credentials.TeamWrite)
 	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")
 	app.drainLock <- struct{}{}
 	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
@@ -126,7 +156,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		if err != nil {
 			app.OAuthError = err
 		} else {
-			authorizations, authErr := oauthservice.NewAuthorizations(database, clients, admission, c.Server.PublicOrigin)
+			authorizations, authErr := oauthservice.NewAuthorizationsWithScopes(database, clients, admission, c.Server.PublicOrigin, app.Scoped.MCPCatalog)
 			if authErr != nil {
 				app.OAuthError = authErr
 			} else {
@@ -145,14 +175,14 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	private, ok := files.(filestorage.TransferStorage)
 	if ok {
 		budget, reserve := c.MCP.Transfer.TempBudgetBytes, c.MCP.Transfer.ReservedFreeBytes
-		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
+		app.PrivateContent, _ = mcptransfer.NewScoped(database, files, private, budget, reserve)
 		if app.PrivateContent != nil {
 			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
 		}
 	}
 	// Unavailable test dependencies fail explicitly on upload calls. OpenApp
 	// refuses startup unless the complete private storage lifecycle is present.
-	app.Uploads = mcptransfer.NewUploads(app.PrivateContent, private, app.Attachments)
+	app.Uploads, _ = mcptransfer.NewScopedUploads(app.PrivateContent, private, app.Attachments)
 	return app
 }
 
@@ -182,7 +212,12 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 		logger = slog.Default()
 	}
 	return openApp(ctx, c, logger, appOpeners{
-		files: func(root string) (appStorage, error) { return openFileStorage(root, c.Monitoring.Redis.RedisURL) },
+		filesContext: func(ctx context.Context, root string) (appStorage, error) {
+			if c.Storage.BackendName() == "azure-blob" {
+				return openAzureFileStorage(ctx, c.Storage, nil, nil)
+			}
+			return openFileStorage(root, c.Monitoring.Redis.RedisURL)
+		},
 		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
 			return openPostgresWithLogger(ctx, databaseURL, logger)
 		},
@@ -210,10 +245,11 @@ func openMonitoring(rawURL string) (monitoringBackend, error) {
 }
 
 type appOpeners struct {
-	files      func(string) (appStorage, error)
-	database   func(context.Context, string) (persistenceBackend, error)
-	monitoring func(string) (monitoringBackend, error)
-	metrics    func() (*prometheus.Registry, error)
+	files        func(string) (appStorage, error)
+	filesContext func(context.Context, string) (appStorage, error)
+	database     func(context.Context, string) (persistenceBackend, error)
+	monitoring   func(string) (monitoringBackend, error)
+	metrics      func() (*prometheus.Registry, error)
 }
 
 func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open appOpeners) (*App, error) {
@@ -226,9 +262,32 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	startup, cancel := context.WithTimeout(ctx, c.Server.StartupTimeout)
 	defer cancel()
-	files, err := open.files(c.Storage.Root)
+	var files appStorage
+	if open.filesContext != nil {
+		files, err = open.filesContext(startup, c.Storage.Root)
+	} else {
+		files, err = open.files(c.Storage.Root)
+	}
 	if err != nil {
+		if c.Storage.BackendName() == "azure-blob" {
+			return nil, err
+		}
 		return nil, &configvalue.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
+	}
+	if c.Storage.BackendName() == "azure-blob" {
+		if _, ok := files.(filestorage.ArchiveStagingBackend); !ok {
+			return nil, errors.Join(errors.New("Azure archive staging backend unavailable"), files.Close())
+		}
+	} else if c.Storage.ArchiveStagingTopologyVerified {
+		staging, ok := files.(interface {
+			EnableArchiveStaging(context.Context, bool) error
+		})
+		if !ok {
+			return nil, errors.Join(errors.New("archive staging backend unavailable"), files.Close())
+		}
+		if err := staging.EnableArchiveStaging(startup, true); err != nil {
+			return nil, errors.Join(err, files.Close())
+		}
 	}
 	database, err := openPersistence(startup, c.Database.URL, open.database)
 	if err != nil {
@@ -243,6 +302,12 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
+	if app.ScopeError != nil {
+		database.Close()
+		return nil, errors.Join(app.ScopeError, files.Close())
+	}
+	app.Projects.SetRepositoryLogger(logger)
+	app.Tasks.SetLifecycleLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
@@ -254,6 +319,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 			return nil, errors.Join(cause, err)
 		}
 		return nil, cause
+	}
+	if app.ScopeError != nil {
+		return failOpen(app.ScopeError)
 	}
 	if app.PreviewSSOError != nil {
 		return failOpen(app.PreviewSSOError)
@@ -300,6 +368,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		return failOpen(err)
 	}
 	if err := app.assembleGitHub(database.Transactions, logger); err != nil {
+		return failOpen(err)
+	}
+	if err := app.assembleReviewAssignment(database.Transactions, logger); err != nil {
 		return failOpen(err)
 	}
 	if err := app.assembleArchiveCleanup(database.Transactions, files, logger); err != nil {

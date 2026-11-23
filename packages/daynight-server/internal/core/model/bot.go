@@ -11,7 +11,8 @@ type Bot struct {
 	AttentionCount        int64
 	ID                    string
 	OwnerUserID           string
-	WorkerID              string
+	WorkerID              string // Original creation selection; Recovery owns later hosting.
+	Recovery              *BotRecovery
 	Name                  string
 	Version               int64
 	CreationOrder         int64

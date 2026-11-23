@@ -21,6 +21,8 @@
 
 [runtime.ts](../../packages/daynight/src/commands/controller/runtime.ts) 将 Provider 的正文和完成元数据交给 pipeline，以 250 ms 周期分别推进解析与采集；原生回调不等待媒体工作。断线使活动来源失效；停止先取消并等待来源工作，再关闭 Provider、完成已有正文的投影结算和关闭媒体存储。停止后不启动来源请求或后台 query。已持久的 unknown、validated 和 retained 仍属于原执行的恢复与归档闭包。
 
+原生图片的可信 source locator 也由同一 coordinator 读取。它核对原 capture、attempt、native Session 和 Provider 生成的 contextId，持久保存来源上下文与封存准入；本地读取使用同一原生权限 checkpoint、根句柄和取消屏障，外部读取使用同一出口策略。projector 消费已验证的 stage，服务读取时重新核对相同请求、attempt 和来源准入。重启只恢复已持久的准入与封存结果；未确认的来源读取不能自行重读或假定成功。
+
 原生图片 projector 逐 entry 保留当前正文的完成元数据；正文相同但 complete 改变仍须发布，迟到图片回执沿用当前元数据，缺失元数据的新正文不能继承旧允许。原生输入的原子 publication 或查询仅在 committed 后进入 Markdown 管线；初次完整性以及已有 streaming 正文的完成提升，必须由持久原始 intent 的文本与当前唯一正文精确一致证明，publication 的 seed 或图片回执本身不证明 Markdown 完整。
 
 `publishMarkdownProjection` 在 journal 的同一个 SQLite 事务中保存 Markdown projection state、SQL 当前正文及 totals 和 source outbox，避免 state 已完成而时间线仍为旧正文的恢复窗口。失败回滚保持上一份完整可见状态；事务结果未确认时沿 journal 隔离规则处理，不能用本连接的未提交状态恢复。

@@ -32,10 +32,10 @@ describe('personal task overview', () => {
     mock.value = state([{ ...a, task: { ...a.task, allowAgents: false } }]);
     const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     const row = screen.getByText('Task 0').closest('li')!;
-    expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(row.querySelector('.task-row-primary-status')).toHaveTextContent('In progress');
     expect(row).toHaveTextContent('In progress');
     mock.value = state([a]); view.rerender(<MyTasksPage />);
-    expect(row).toHaveTextContent('No current Session');
+    expect(row).toHaveTextContent('No current session');
   });
   it('shows each current Worker independently of Session and pause, and updates on refresh', () => {
     const a = item(0), b = item(1), c = item(2);
@@ -49,8 +49,8 @@ describe('personal task overview', () => {
     expect(screen.getByText('Claim machine: <worker-one>')).toBeInTheDocument();
     expect(screen.getByText('Claim machine: 第二台机器')).toBeInTheDocument();
     expect(within(screen.getByText('Task 2').closest('li')!).getByText('No machine record')).toBeInTheDocument();
-    expect(screen.getByText('Session unavailable')).toBeInTheDocument();
-    expect(screen.getByText('Session observation expired')).toBeInTheDocument();
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Observation expired')).toBeInTheDocument();
     expect(screen.getByText('Blocked')).toBeInTheDocument();
     view.setLocale('zh-CN');
     expect(screen.getByText('认领机器：<worker-one>')).toBeInTheDocument();
@@ -170,15 +170,15 @@ describe('personal task overview', () => {
     mock.value = state([current(first, '2026-11-13T10:01:59.999Z'), current(second, '2026-11-13T10:02:00Z')]);
     renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     const row = screen.getByText('Task 0').closest('li')!, other = screen.getByText('Task 1').closest('li')!;
-    expect(within(row).queryByText(/Session needs checking/)).not.toBeInTheDocument();
+    expect(within(row).queryByText('Needs attention')).not.toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /Open Session/ })).toBeInTheDocument();
-    expect(within(other).getByText('Session needs checking · Needs attention')).toBeInTheDocument();
+    expect(within(other).getByText('Needs attention')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(1);
     act(() => vi.advanceTimersByTime(1));
-    expect(within(row).getByText('Session needs checking · Needs attention')).toBeInTheDocument();
+    expect(within(row).getByText('Needs attention')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(30_000);
     act(() => vi.advanceTimersByTime(29_999));
-    expect(within(row).getByText('Session observation expired')).toBeInTheDocument();
+    expect(within(row).getByText('Observation expired')).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /Open Session/ })).not.toBeInTheDocument();
     expect(screen.getByText('Task 0').closest('li')).toBe(row);
   });
@@ -193,16 +193,16 @@ describe('personal task overview', () => {
       { ...c, receivedMonotonic: 0, task: { ...c.task, worker: activeWorker }, sessionRow: { ...c.sessionRow, state: 'notice', needsAttention: true, canOpen: true } },
     ]);
     const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
-    expect(screen.getByText('Session working')).toBeInTheDocument();
-    expect(screen.getByText('Session unavailable')).toBeInTheDocument();
-    expect(screen.getByText('Session needs a response · Needs attention')).toBeInTheDocument();
+    expect(screen.getByText('Working')).toBeInTheDocument();
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Needs a response')).toBeInTheDocument();
     expect(screen.getByText('Blocked')).toBeInTheDocument();
     expect(screen.getByText('Duration unknown')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(2_000);
     act(() => vi.advanceTimersByTime(2_000));
-    expect(within(screen.getByText('Task 0').closest('li')!).getByText('Session observation expired')).toBeInTheDocument();
+    expect(within(screen.getByText('Task 0').closest('li')!).getByText('Observation expired')).toBeInTheDocument();
     view.setLocale('zh-CN');
-    expect(screen.getByText('Session 需要响应 · 需要关注')).toBeInTheDocument();
+    expect(screen.getByText('需要响应')).toBeInTheDocument();
   });
 
   it('reconciles retained observations on visibility restoration and replaces them on refresh', () => {
@@ -215,7 +215,7 @@ describe('personal task overview', () => {
     mock.value = state([old]);
     const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     const row = screen.getByText('Task 0').closest('li')!;
-    expect(within(row).getByText('Session working')).toBeInTheDocument();
+    expect(within(row).getByText('Working')).toBeInTheDocument();
     visibility.mockReturnValue('hidden');
     fireEvent(document, new Event('visibilitychange'));
     expect(vi.getTimerCount()).toBe(0);
@@ -223,11 +223,11 @@ describe('personal task overview', () => {
     act(() => vi.advanceTimersByTime(2_000));
     visibility.mockReturnValue('visible');
     fireEvent(document, new Event('visibilitychange'));
-    expect(within(row).getByText('Session observation expired')).toBeInTheDocument();
+    expect(within(row).getByText('Observation expired')).toBeInTheDocument();
     mock.value = state([{ ...old, receivedMonotonic: 2_000, responseSessionAt: '2026-11-13T10:00:02Z',
       sessionRow: { ...old.sessionRow, state: 'notice', observedAt: '2026-11-13T10:00:02Z', freshUntil: '2026-11-13T10:00:32Z' } }]);
     view.rerender(<MyTasksPage />);
-    expect(within(row).getByText('Session needs a response')).toBeInTheDocument();
+    expect(within(row).getByText('Needs a response')).toBeInTheDocument();
     expect(screen.getByText('Task 0').closest('li')).toBe(row);
   });
 

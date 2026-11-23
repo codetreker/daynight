@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ const (
 type IssueInput struct {
 	UserID, ClientID, Resource string
 	ClientSnapshot             json.RawMessage
+	ApprovedScopes             []scopepolicy.ScopeID
 }
 
 // IssuedFamily contains secrets returned only from a successful DAO operation.
@@ -45,22 +47,22 @@ func invalidInput() error {
 // supplied transaction-bound DAO. The caller owns commit, rollback, and any
 // prerequisite client-row lock; secrets must not be delivered before commit.
 func IssueFamily(ctx context.Context, dao store.CredentialFamilyDAO, input IssueInput, now time.Time) (IssuedFamily, error) {
-	return issueFamily(ctx, dao, input, mcpProfile, now)
+	return issueFamily(ctx, dao, input, mcpProfile, nil, now)
 }
 
 // IssueAPIFamily issues the fixed application family without an authorization-code client.
 // The caller owns the transaction and may deliver secrets only after confirmed commit.
 func IssueAPIFamily(ctx context.Context, dao store.CredentialFamilyDAO, userID, resource string, now time.Time) (IssuedFamily, error) {
-	return issueFamily(ctx, dao, IssueInput{UserID: userID, ClientID: APIClientID, Resource: resource, ClientSnapshot: json.RawMessage(`{"clientId":"` + APIClientID + `","clientName":"` + APIClientName + `"}`)}, apiProfile, now)
+	return issueFamily(ctx, dao, IssueInput{UserID: userID, ClientID: APIClientID, Resource: resource, ClientSnapshot: json.RawMessage(`{"clientId":"` + APIClientID + `","clientName":"` + APIClientName + `"}`)}, apiProfile, nil, now)
 }
 
-func issueFamily(ctx context.Context, dao store.CredentialFamilyDAO, input IssueInput, profile credentialProfile, now time.Time) (IssuedFamily, error) {
+func issueFamily(ctx context.Context, dao store.CredentialFamilyDAO, input IssueInput, profile credentialProfile, policy *scopepolicy.Policy, now time.Time) (IssuedFamily, error) {
 	user, err := model.CanonicalID(input.UserID)
 	if err != nil || user == uuid.Nil.String() || input.ClientID == "" || !utf8.ValidString(input.ClientID) || strings.ContainsRune(input.ClientID, 0) || !profile.validResource(input.Resource) || !json.Valid(input.ClientSnapshot) || len(input.ClientSnapshot) == 0 || strings.TrimSpace(string(input.ClientSnapshot))[0] != '{' || now.IsZero() {
 		return IssuedFamily{}, invalidInput()
 	}
 	now = now.UTC().Truncate(time.Microsecond)
-	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: user, ClientID: input.ClientID, Resource: input.Resource, Scope: profile.scope, ClientSnapshot: append(json.RawMessage(nil), input.ClientSnapshot...), CreatedAt: now, ExpiresAt: now.Add(GrantLifetime)}
+	grant := store.OAuthGrant{ScopePolicy: policy, ID: uuid.NewString(), UserID: user, ClientID: input.ClientID, Resource: input.Resource, Scope: profile.scope, ClientSnapshot: append(json.RawMessage(nil), input.ClientSnapshot...), CreatedAt: now, ExpiresAt: now.Add(GrantLifetime)}
 	issued := IssuedFamily{Grant: grant, AccessID: uuid.NewString(), AccessToken: secret.Random(profile.accessPrefix), RefreshToken: secret.Random(profile.refreshPrefix), AccessExpiresAt: now.Add(AccessLifetime)}
 	issue := store.OAuthFamilyIssue{Grant: grant, AccessID: issued.AccessID, AccessHash: secret.Hash(issued.AccessToken), RefreshHash: secret.Hash(issued.RefreshToken), AccessExpiresAt: issued.AccessExpiresAt}
 	if err := dao.IssueFamily(ctx, issue); err != nil {

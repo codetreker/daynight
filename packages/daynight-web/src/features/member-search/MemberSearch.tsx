@@ -58,15 +58,28 @@ export const MemberSearch = (props: Props) => {
       const box = owner.current.getBoundingClientRect(), width = Math.min(box.width, window.innerWidth - 32);
       popup.current.style.width = `${Math.max(0, width)}px`;
       popup.current.style.left = `${Math.max(16, Math.min(box.left, window.innerWidth - width - 16))}px`;
-      const below = window.innerHeight - box.bottom - 14, above = box.top - 14, useBelow = below >= 180 || below >= above;
-      popup.current.style.maxHeight = `${Math.min(480, Math.max(120, useBelow ? below : above))}px`;
-      popup.current.style.top = `${useBelow ? box.bottom + 7 : Math.max(8, box.top - 7 - popup.current.getBoundingClientRect().height)}px`;
+      if (props.scope === "team") {
+        const below = window.innerHeight - box.bottom - 14, above = box.top - 14, useBelow = below >= 180 || below >= above;
+        popup.current.style.maxHeight = `${Math.min(480, Math.max(120, useBelow ? below : above))}px`;
+        popup.current.style.top = `${useBelow ? box.bottom + 7 : Math.max(8, box.top - 7 - popup.current.getBoundingClientRect().height)}px`;
+      } else {
+        const navigation = owner.current.closest(".project-settings-layout")?.querySelector<HTMLElement>(".project-settings-tabs");
+        const obstacles = [navigation, document.querySelector<HTMLElement>(".topbar")];
+        const top = obstacles.reduce((edge, element) => {
+          if (!element) return edge;
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < box.top && rect.left < box.right && rect.right > box.left ? Math.max(edge, rect.bottom + 7) : edge;
+        }, 8);
+        const below = Math.max(0, window.innerHeight - box.bottom - 14), above = Math.max(0, box.top - 7 - top), useBelow = below >= 180 || below >= above;
+        popup.current.style.maxHeight = `${Math.min(480, useBelow ? below : above)}px`;
+        popup.current.style.top = `${useBelow ? box.bottom + 7 : Math.max(top, box.top - 7 - popup.current.getBoundingClientRect().height)}px`;
+      }
     };
     position();
     const observer = new ResizeObserver(position); observer.observe(owner.current); observer.observe(popup.current);
     window.addEventListener("resize", position); document.addEventListener("scroll", position, true);
     return () => { observer.disconnect(); window.removeEventListener("resize", position); document.removeEventListener("scroll", position, true); };
-  }, [visible]);
+  }, [visible, props.scope]);
   useEffect(() => {
     if (!visible) return;
     const outside = (event: PointerEvent) => { if (!owner.current?.contains(event.target as Node) && !popup.current?.contains(event.target as Node)) setOpen(false); };
@@ -76,7 +89,7 @@ export const MemberSearch = (props: Props) => {
   }, [visible]);
   const close = () => { input.current?.focus({ preventScroll: true }); setOpen(false); };
   const memberIds = new Set(props.members.map(member => member.userId));
-  const content = present && <div ref={popup} id={popupId} className="member-search-popover" hidden={!props.active} role="dialog" aria-label={m.dialog} aria-modal="false" onKeyDown={event => {
+  const content = present && <div ref={popup} id={popupId} className={`member-search-popover${props.scope === "project" ? " project-member-search-popover" : ""}`} hidden={!props.active} role="dialog" aria-label={m.dialog} aria-modal="false" onKeyDown={event => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
   }}>
@@ -106,5 +119,5 @@ export const MemberSearch = (props: Props) => {
     </div>
     <footer className="member-search-footer"><span>{m.footer}</span><span>Esc {m.close}</span></footer>
   </div>;
-  return <div ref={owner} className="member-search-owner"><div className="member-search-field"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input ref={input} type="search" value={search.draft} aria-label={m.label} placeholder={m.placeholder} aria-haspopup="dialog" aria-expanded={visible} aria-controls={visible ? popupId : undefined} onFocus={() => setOpen(true)} onChange={event => { missingTarget.current = null; search.setDraft(event.currentTarget.value); setOpen(true); }} onKeyDown={event => { if (event.nativeEvent.isComposing) return; if (event.key === "Escape") { event.preventDefault(); setOpen(false); } else if (event.key === "Enter") event.preventDefault(); else if (event.key === "ArrowDown" && visible) { event.preventDefault(); popup.current?.querySelector<HTMLElement>("button:not(:disabled),summary")?.focus(); } }} />{search.draft !== "" && <button type="button" aria-label={m.clear} className="member-search-clear" onClick={() => { missingTarget.current = null; search.setDraft(""); input.current?.focus(); }}>×</button>}</div>{content && createPortal(content, document.body)}</div>;
+  return <div ref={owner} className="member-search-owner"><div className="member-search-field"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input ref={input} data-touch-text="responsive" type="search" value={search.draft} aria-label={m.label} placeholder={m.placeholder} aria-haspopup="dialog" aria-expanded={visible} aria-controls={visible ? popupId : undefined} onFocus={() => setOpen(true)} onChange={event => { missingTarget.current = null; search.setDraft(event.currentTarget.value); setOpen(true); }} onKeyDown={event => { if (event.nativeEvent.isComposing) return; if (event.key === "Escape") { event.preventDefault(); setOpen(false); } else if (event.key === "Enter") event.preventDefault(); else if (event.key === "ArrowDown" && visible) { event.preventDefault(); popup.current?.querySelector<HTMLElement>("button:not(:disabled),summary")?.focus(); } }} />{search.draft !== "" && <button type="button" aria-label={m.clear} className="member-search-clear" onClick={() => { missingTarget.current = null; search.setDraft(""); input.current?.focus(); }}>×</button>}</div>{content && createPortal(content, document.body)}</div>;
 };

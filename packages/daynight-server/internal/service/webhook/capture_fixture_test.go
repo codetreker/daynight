@@ -24,6 +24,8 @@ const (
 
 var captureOccurredAt = time.Date(2026, 11, 6, 8, 0, 0, 123000, time.UTC)
 
+var captureActor = wm.UserActor(captureOwnerID)
+
 type captureWrite struct {
 	context    context.Context
 	event      store.WebhookCapturedEvent

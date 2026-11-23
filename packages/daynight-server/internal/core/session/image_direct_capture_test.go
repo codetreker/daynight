@@ -437,3 +437,39 @@ func TestDirectCapturePersistsFailureWhenDecoderUnavailable(t *testing.T) {
 		t.Fatal("decoder failure replay changed the original result", replay, err)
 	}
 }
+
+func TestRelayDirectCaptureUsesAcknowledgedCurrentSourceAndReplaysOriginal(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	f.r.OnlineMode = "relay"
+	f.d.bundle = store.ArchiveBundle{}
+	epoch := uuid.NewString()
+	f.r.SourceEpoch, f.r.SourceSeq = &epoch, 2
+	request := directCaptureFixture(t, f)
+	input := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &sp.ImageError{Code: "source_timeout", Message: "Timed out."}}}
+	for _, proof := range []struct{ epoch, seq string }{{"", ""}, {uuid.NewString(), "1"}, {epoch, "3"}} {
+		input.SourceEpoch, input.SourceSeq = proof.epoch, proof.seq
+		_, err := directCaptureCall(t, f, input)
+		if err == nil || len(f.d.captures) != 0 {
+			t.Fatalf("unacknowledged proof accepted: %+v: %v", proof, err)
+		}
+	}
+	input.SourceEpoch, input.SourceSeq = epoch, "2"
+	first, err := directCaptureCall(t, f, input)
+	if err != nil || first.State != "failed" {
+		t.Fatal("acknowledged source refused", first, err)
+	}
+	next := uuid.NewString()
+	f.r.SourceEpoch, f.r.SourceSeq = &next, 0
+	replay, err := directCaptureCall(t, f, input)
+	if err != nil || !reflect.DeepEqual(first, replay) || len(f.d.captures) != 1 {
+		t.Fatal("original accepted request failed reconciliation", replay, err)
+	}
+	changed := input
+	changed.Request.Occurrence.EntryID = uuid.NewString()
+	if _, err = directCaptureCall(t, f, changed); err == nil {
+		t.Fatal("changed immutable request accepted")
+	}
+	if _, err = f.s.captureMessage(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{Action: "register", MediaBody: encode(request)}); err == nil {
+		t.Fatal("legacy register accepted in relay mode")
+	}
+}

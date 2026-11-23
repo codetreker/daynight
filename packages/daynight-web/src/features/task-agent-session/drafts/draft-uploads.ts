@@ -1,3 +1,4 @@
+import { ApiError } from '../../../api/client';
 import { IMAGE_LIMITS, type ImageUploadReceipt } from '../../../../../daynight/src/session/image-values';
 import type { SessionResourceClient } from '../../../../../daynight/src/session/resource-client';
 import type { SessionDraftStore } from './draft-store';
@@ -5,6 +6,14 @@ import { isValidatedDraftBlob } from './draft-types';
 import type { DraftBlobInput, DraftHandle, DraftUpload, DraftUploadAction } from './draft-types';
 import { underDraftLock } from './draft-send';
 import { assertDraftUploadReceipt } from './draft-validation';
+
+/**
+ * A message, operation, archive or native resume references the original, so
+ * the service keeps it. This exact answer ends the draft's release obligation;
+ * it neither invalidates that reference nor authorizes another release attempt.
+ */
+export const draftReleaseRetained = (error: unknown): boolean =>
+  error instanceof ApiError && error.kind === 'server' && error.status === 409 && error.code === 'resource_in_use';
 
 export type DraftUploadOptions = {
   readonly store: SessionDraftStore;
@@ -43,6 +52,11 @@ export class DraftUploader {
           this.live(); await o.changed();
           return true;
         } catch (error) {
+          if (action.kind === 'release' && draftReleaseRetained(error) && o.isCurrent()) {
+            upload = await o.store.retainRelease(handle, uploadId, sequence);
+            await o.changed();
+            return false;
+          }
           // A cancelled or failed request may already have reached the service.
           // Epoch checks prevent a revoked owner from being resurrected here.
           if (o.isCurrent()) {
@@ -65,7 +79,7 @@ export class DraftUploader {
       }
       this.live();
       if (upload.releaseIntent) {
-        if (upload.receipt?.state !== 'released') await request({ kind: 'release' }, () => o.resources.releaseUpload(uploadId, o.signal));
+        if (upload.receipt?.state !== 'released' && !upload.releaseRetained) await request({ kind: 'release' }, () => o.resources.releaseUpload(uploadId, o.signal));
         return;
       }
       if (!o.canPrepare() || !original) return;

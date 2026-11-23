@@ -26,7 +26,8 @@ request rules are owned by the [Worker design](../../../../docs/design/daynight-
 
 Archive requests retain the HTTP status and structured service error code. Only
 an explicitly replayable request receiving `429 resource_busy` gets bounded
-short retries inside the original round deadline. Each retry preserves the
+retries inside the original round deadline, using the
+[terminal archive backoff policy](2026-11-20-terminal-archive-backoff.md). Each retry preserves the
 original identity and bytes. Current reads, durable source batches, ordinary
 preparation, offset/hash-bound chunks, sealing and manifest commits support that
 replay. A future preparation reset must be evaluated separately. Busy can follow

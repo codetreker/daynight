@@ -21,6 +21,13 @@ type GitHubReadDAO interface {
 	PullRequestStatistics(context.Context, GitHubPRStatisticsQuery) (GitHubPRStatistics, error)
 }
 
+// GitHubPullRequestVisibilityReader checks only existence in the caller's
+// snapshot, using the same fixed legacy or explicit source as PullRequest.
+type GitHubPullRequestVisibilityReader interface {
+	RequireRepositoryVisible(context.Context, string, int64) error
+	RequirePullRequestVisible(context.Context, string, int64, *int64) error
+}
+
 // GitHubRepositoriesQuery selects one ascending source page plus its continuation row.
 type GitHubRepositoriesQuery struct {
 	ProjectID         string
@@ -157,12 +164,13 @@ type GitHubClaim struct {
 	Until             time.Time
 }
 
-// GitHubRepositoryObservation updates presentation facts only when the
+// GitHubRepositoryObservation updates repository facts only when the
 // original installation and repository identities still match the binding.
 type GitHubRepositoryObservation struct {
 	InstallationID, RepositoryID                 int64
 	InstallationAccountLogin, RepositoryFullName string
 	RepositoryPrivate                            bool
+	RepositoryDefaultBranch                      *string
 }
 
 // GitHubRuntimeWrite contains only runtime facts controlled by the worker.

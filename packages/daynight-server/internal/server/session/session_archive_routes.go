@@ -21,31 +21,48 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
-func (h *Routes) registerArchiveRoutes(mux *http.ServeMux) {
-	h.registerHistoryLedgerRoutes(mux)
+func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
+	h.registerHistoryLedgerRoutes(mux, observe)
 	for _, base := range []string{sessionBase + "/{sessionId}/archive", "/api/v1/test-sessions/{sessionId}/archive"} {
-		h.registerUnifiedArchiveRoutes(mux, base)
+		h.registerUnifiedArchiveRoutes(mux, base, observe)
 		for method, handler := range map[string]httpx.AuthenticatedHandler{"GET": h.archiveStatus, "POST": h.updateArchive, "PUT": h.putArchive} {
-			route := h.auth.Require(h.Parameters(handler))
+			route := h.auth.Require(h.Parameters(handler, method == http.MethodGet))
 			if method == http.MethodPut {
-				route = h.archivePreflight(route)
+				route = h.archivePreflight(route, archiveVersionNone)
 			}
-			mux.HandleFunc(method+" "+base, route)
+			if method == http.MethodPost || method == http.MethodPut {
+				registerProducerRoute(mux, method+" "+base, route, producerCredential, observe)
+			} else {
+				mux.HandleFunc(method+" "+base, route)
+			}
 		}
-		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent))))
+		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent, true)), archiveVersionRequested))
 		for path, methods := range map[string]string{base: "GET, POST, PUT", base + "/content": "GET"} {
 			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				httpx.MethodNotAllowed(h.logger, methods)(w, r)
 			})
-			mux.HandleFunc(path, fallback)
-			mux.HandleFunc("HEAD "+path, fallback)
+			if path == base {
+				registerProducerRoute(mux, path, fallback, producerFallback, observe)
+				registerProducerRoute(mux, "HEAD "+path, fallback, producerFallback, observe)
+			} else {
+				mux.HandleFunc(path, fallback)
+				mux.HandleFunc("HEAD "+path, fallback)
+			}
 		}
 	}
 }
 
 type archiveReservationKey struct{}
 
-func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
+type archiveVersionAdvertisement int
+
+const (
+	archiveVersionNone archiveVersionAdvertisement = iota
+	archiveVersionKnown
+	archiveVersionRequested
+)
+
+func (h *Routes) archivePreflight(next http.HandlerFunc, version archiveVersionAdvertisement) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Downloads do not consume request bodies. Prevent net/http from
 		// draining an incomplete body before writing the response or after it.
@@ -54,6 +71,15 @@ func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
 		}
 		reservation, err := h.service.TryReserveArchivePreflight()
 		if err != nil {
+			// These routes are v1 Task body capable; /content is shared with
+			// legacy and v2 archives, so it additionally requires the request's
+			// explicit Task body capability selector.
+			protocol, protocolErr := selectedSessionProtocol(r)
+			requested := r.Header.Values("Daynight-Task-Body-History-Version")
+			if httpx.ErrorKind(err) == "resource_busy" && protocolErr == nil && protocol == sp.Protocol &&
+				(version == archiveVersionKnown || version == archiveVersionRequested && len(requested) == 1 && requested[0] == "1") {
+				w.Header().Set("Daynight-Task-Body-History-Version", "1")
+			}
 			httpx.CloseUnreadBody(w, r)
 			h.Failure(w, r, err)
 			return

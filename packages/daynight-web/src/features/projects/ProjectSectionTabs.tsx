@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { projectSectionUrl } from "../../app/router";
 import type { ProjectSection } from "./useProjectViewPreferences";
@@ -10,13 +10,31 @@ export const ProjectSectionTabs = ({ projectId, section, onChange }: {
   readonly section: ProjectSection;
   readonly onChange: (section: ProjectSection, onCommit?: () => void) => void;
 }) => {
-  const { messages: { workspace: { sections: m } } } = useI18n();
+  const { locale, messages: { workspace: { sections: m } } } = useI18n();
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const [horizontal, setHorizontal] = useState(() => window.innerWidth <= 740);
   useEffect(() => {
     const resize = () => { setHorizontal(window.innerWidth <= 740); };
     window.addEventListener("resize", resize);
     return () => { window.removeEventListener("resize", resize); };
   }, []);
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !horizontal) return;
+    const revealSelection = () => {
+      const tab = scroller.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!tab) return;
+      const bounds = scroller.getBoundingClientRect(), selected = tab.getBoundingClientRect();
+      // Keep correction inside the tab strip so content position and focus survive.
+      if (selected.left < bounds.left) scroller.scrollLeft += selected.left - bounds.left - 4;
+      else if (selected.right > bounds.right) scroller.scrollLeft += selected.right - bounds.right + 4;
+    };
+    revealSelection();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(revealSelection);
+    observer?.observe(scroller);
+    for (const tab of scroller.children) observer?.observe(tab);
+    return () => { observer?.disconnect(); };
+  }, [horizontal, locale, projectId, section]);
   const onKeyDown = (event: KeyboardEvent<HTMLAnchorElement>, current: ProjectSection) => {
     if (event.key === " ") { event.preventDefault(); onChange(current); return; }
     const position = sections.indexOf(current);
@@ -30,12 +48,6 @@ export const ProjectSectionTabs = ({ projectId, section, onChange }: {
     if (target !== current) onChange(target, () => {
       const tab = document.getElementById(`project-section-tab-${target}`);
       tab?.focus({ preventScroll: true });
-      const scroller = tab?.parentElement;
-      if (tab && scroller && horizontal) {
-        const bounds = scroller.getBoundingClientRect(), selected = tab.getBoundingClientRect();
-        if (selected.left < bounds.left) scroller.scrollLeft += selected.left - bounds.left;
-        else if (selected.right > bounds.right) scroller.scrollLeft += selected.right - bounds.right;
-      }
     });
   };
   const onClick = (event: MouseEvent<HTMLAnchorElement>, value: ProjectSection) => {
@@ -43,7 +55,7 @@ export const ProjectSectionTabs = ({ projectId, section, onChange }: {
     event.preventDefault();
     onChange(value);
   };
-  return <div className="project-section-tabs" role="tablist" aria-label={m.label} aria-orientation={horizontal ? "horizontal" : "vertical"}>
+  return <div ref={scrollerRef} className="project-section-tabs" role="tablist" aria-label={m.label} aria-orientation={horizontal ? "horizontal" : "vertical"}>
     {sections.map((value) => <a key={value} className="project-section-tab" href={projectSectionUrl(projectId, value)} role="tab"
       id={`project-section-tab-${value}`} aria-controls={`project-section-panel-${value}`} aria-selected={section === value}
       tabIndex={section === value ? 0 : -1} onClick={(event) => { onClick(event, value); }} onKeyDown={(event) => { onKeyDown(event, value); }}>

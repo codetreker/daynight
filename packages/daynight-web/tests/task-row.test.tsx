@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClockInputProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { TaskRow, type TaskRowModel } from '../src/features/task-row/TaskRow';
+import { TaskRowStatus } from '../src/features/task-row/TaskRowStatus';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 vi.mock('../src/features/usage/useTaskUsage', () => ({ useTaskUsage: () => ({ summary: null, error: null, pending: true, retry: vi.fn() }) }));
@@ -27,6 +28,24 @@ const tree = (model: TaskRowModel, open = vi.fn(), session = vi.fn(), instanceId
     assignee={<span>Assignee: Unassigned</span>} onOpenTask={open} onOpenSession={session} /></ul></ClockInputProvider>;
 
 describe('shared task row', () => {
+  it('localizes the current alias while preserving machine labels and values', () => {
+    const alias = 'personal-worker (office-linux)';
+    const machine = 'DEVBOX-WIN-JE';
+    const view = renderWithLocale(tree({ ...base, worker: { kind: 'active', name: machine, currentName: alias } }), { locale: 'zh-CN' });
+    expect(screen.getByText(`执行器别名：${alias}`)).toBeVisible();
+    view.setLocale('en');
+    expect(screen.getByText(`Worker: ${alias}`)).toBeVisible();
+    view.setLocale('zh-CN');
+    view.rerender(tree({ ...base, worker: { kind: 'active', name: machine } }));
+    expect(screen.getByText(`认领机器：${machine}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'active', name: machine, currentName: machine } }));
+    expect(screen.getByText(`认领机器：${machine}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'historical', name: machine, currentName: alias } }));
+    expect(screen.getByText(`执行器别名：${alias}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'historical', name: machine } }));
+    expect(screen.getByText(`执行机器记录：${machine}`)).toBeVisible();
+  });
+
   it('distinguishes a current alias from a recorded execution hostname', () => {
     const view = renderWithLocale(tree({ ...base, worker: { kind: 'historical', name: 'worker host', currentName: 'Current office' } }), { locale: 'en' });
     expect(screen.getByText('Worker: Current office')).toBeVisible();
@@ -130,13 +149,26 @@ describe('shared task row', () => {
     expect(row).toHaveTextContent('old machine');
   });
 
+  it('keeps Working as the primary phrase alongside pause, readiness, blocking and overdue warnings', () => {
+    const model = { ...base, status: 'in_progress' as const, startedAt: '2026-10-20T09:00:00Z', paused: true, ready: true, blocked: true,
+      session: { state: 'working' as const, needsAttention: false, canOpen: false } };
+    renderWithLocale(tree(model), { locale: 'en' });
+    const row = screen.getByRole('link', { name: model.title }).closest('.task-row')!;
+    expect(row).toHaveClass('standalone-row-stuck');
+    expect(row).toHaveAttribute('data-task-status', 'in_progress');
+    expect(row.querySelectorAll('.task-row-primary-status')).toHaveLength(1);
+    expect(row.querySelector('.task-row-primary-status')?.firstChild?.textContent).toBe('Working');
+    for (const selector of ['.task-paused-badge', '.task-ready', '.graph-blocked-badge', '.task-stuck-label']) expect(row.querySelector(selector)).toBeVisible();
+    expect(row.querySelector('.task-row-status-lifecycle')).toHaveTextContent('In progress');
+  });
+
   it('distinguishes an unavailable Session from an expired observation without inventing an entry', () => {
     const model = { ...base, status: 'in_progress' as const, session: { state: 'unavailable' as const, needsAttention: null, canOpen: false } };
     const view = renderWithLocale(tree(model), { locale: 'en' });
-    expect(screen.getByText('Session unavailable')).toBeVisible();
+    expect(screen.getByText('Unavailable')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
     view.rerender(tree({ ...model, session: { state: 'expired', needsAttention: null, canOpen: false } }));
-    expect(screen.getByText('Session observation expired')).toBeVisible();
+    expect(screen.getByText('Observation expired')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
   });
 
@@ -147,29 +179,29 @@ describe('shared task row', () => {
     const title = screen.getByRole('link', { name: model.title });
     const row = title.closest('.task-row')!;
     title.focus();
-    expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(row.querySelector('.task-row-primary-status')).toHaveTextContent('进行中');
     expect(row).toHaveTextContent('进行中'); expect(row).toHaveTextContent('worker host');
     view.rerender(tree({ ...model, allowAgents: true }));
-    expect(row).toHaveTextContent('无当前 Session'); expect(title).toHaveFocus();
+    expect(row).toHaveTextContent('无当前会话'); expect(title).toHaveFocus();
     view.setLocale('en');
-    expect(row).toHaveTextContent('No current Session');
+    expect(row).toHaveTextContent('No current session');
     view.rerender(tree(model));
-    expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(row.querySelector('.task-row-primary-status')).toHaveTextContent('In progress');
     view.rerender(tree({ ...model, session: { state: 'working', needsAttention: false, canOpen: true } }));
-    const action = within(row as HTMLElement).getByRole('button', { name: /Session working.*Open Session/ });
+    const action = within(row as HTMLElement).getByRole('button', { name: /Working.*Open Session/ });
     action.focus();
     view.rerender(tree({ ...model, session: { state: null, needsAttention: false, canOpen: true } }));
     expect(action).toHaveFocus();
     view.rerender(tree(model));
-    expect(title).toHaveFocus(); expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(title).toHaveFocus(); expect(row.querySelector('.task-row-primary-status')).toHaveTextContent('In progress');
   });
 
   it('keeps attention and an independently allowed entrance when the empty detail is suppressed', () => {
     const open = vi.fn();
-    const model = { ...base, allowAgents: false, session: { state: 'no_session' as const, needsAttention: true, canOpen: true } };
+    const model = { ...base, status: 'in_progress' as const, allowAgents: false, session: { state: 'no_session' as const, needsAttention: true, canOpen: true } };
     const view = renderWithLocale(tree(model, vi.fn(), open), { locale: 'en' });
     const action = screen.getByRole('button', { name: /Needs attention.*Open Session/ });
-    expect(action).not.toHaveTextContent('No current Session');
+    expect(action).not.toHaveTextContent('No current session');
     fireEvent.click(action); expect(open).toHaveBeenCalledExactlyOnceWith(id, action);
     view.rerender(tree({ ...model, session: { ...model.session, canOpen: false } }));
     expect(screen.getByText('Needs attention')).toBeVisible();
@@ -177,11 +209,11 @@ describe('shared task row', () => {
   });
 
   it.each([
-    ['not_registered', 'Session not registered'], ['pending', 'Session pending'], ['working', 'Session working'],
-    ['notice', 'Session needs a response'], ['warning', 'Session needs checking'], ['unavailable', 'Session unavailable'],
-    ['unobserved', 'Session not observed'], ['expired', 'Session observation expired'],
+    ['not_registered', 'Not registered'], ['pending', 'Pending sync'], ['working', 'Working'],
+    ['notice', 'Needs a response'], ['warning', 'Needs checking'], ['unavailable', 'Unavailable'],
+    ['unobserved', 'Not yet observed'], ['expired', 'Observation expired'],
   ] as const)('retains %s for a manual task', (state, label) => {
-    renderWithLocale(tree({ ...base, allowAgents: false, session: { state, needsAttention: false, canOpen: false } }), { locale: 'en' });
+    renderWithLocale(tree({ ...base, status: 'in_progress', allowAgents: false, session: { state, needsAttention: false, canOpen: false } }), { locale: 'en' });
     expect(screen.getByText(label)).toBeVisible();
     expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
   });
@@ -227,4 +259,59 @@ describe('shared task row', () => {
     expect(document.body).toHaveFocus();
   });
 
+});
+
+
+describe('unified primary task status', () => {
+  const phrases = {
+    en: { no_session: 'No current session', not_registered: 'Not registered', pending: 'Pending sync', working: 'Working', notice: 'Needs a response', warning: 'Needs checking', unavailable: 'Unavailable', unobserved: 'Not yet observed', expired: 'Observation expired' },
+    'zh-CN': { no_session: '无当前会话', not_registered: '会话未注册', pending: '待同步', working: '工作中', notice: '需要响应', warning: '需要检查', unavailable: '会话不可用', unobserved: '会话尚未观测', expired: '会话状态已过期' },
+  } as const;
+  it.each(['en', 'zh-CN'] as const)('selects one visible phrase for every observation and attention combination in %s', locale => {
+    const lifecycle = locale === 'en' ? 'In progress' : '进行中';
+    const attention = locale === 'en' ? 'Needs attention' : '需要关注';
+    const openLabel = locale === 'en' ? 'Open Session' : '打开 Session';
+    const activate = vi.fn();
+    const view = renderWithLocale(<TaskRowStatus title="Example" status="in_progress" observation={null} allowAgents onActivate={activate} />, { locale });
+    for (const state of [...Object.keys(phrases.en), null] as [...(keyof typeof phrases.en)[], null]) {
+      for (const needsAttention of [false, null, true]) for (const canOpen of [false, true]) {
+        const expected = state === 'notice' ? phrases[locale].notice : needsAttention === true ? attention : state === null ? lifecycle : phrases[locale][state];
+        view.rerender(<TaskRowStatus title="Example" status="in_progress" observation={{ state, needsAttention, canOpen }} allowAgents onActivate={activate} />);
+        const status = view.container.querySelector('.task-row-primary-status')!;
+        expect(view.container.querySelectorAll('.task-row-primary-status')).toHaveLength(1);
+        expect(status.firstChild?.textContent).toBe(expected);
+        expect(status.tagName).toBe(canOpen ? 'BUTTON' : 'SPAN');
+        expect(status.getAttribute('data-needs-attention')).toBe(needsAttention === true ? 'true' : null);
+        if (canOpen) {
+          const parts = ['Example', lifecycle, ...(expected === lifecycle ? [] : [expected]), openLabel];
+          expect(status).toHaveAccessibleName(parts.join(locale === 'en' ? ', ' : '，'));
+          expect(status).toHaveAttribute('title', openLabel);
+          expect(status.querySelector('.task-row-status-lifecycle')).toBeNull();
+        } else {
+          expect(status).toHaveTextContent(lifecycle);
+          expect(status.querySelector('.task-row-status-lifecycle') !== null).toBe(expected !== lifecycle);
+          expect(view.container.querySelector('button')).toBeNull();
+        }
+      }
+    }
+  });
+
+  it.each(['proposed', 'todo', 'done', 'cancelled'] as const)('keeps %s lifecycle and excludes stale Session activity and entrance', status => {
+    const view = renderWithLocale(<TaskRowStatus title="Example" status={status} observation={{ state: 'notice', needsAttention: true, canOpen: true }} allowAgents onActivate={vi.fn()} />, { locale: 'en' });
+    const primary = view.container.querySelector('.task-row-primary-status')!;
+    expect(primary).toHaveClass('root-status', 'graph-status-' + status);
+    expect(primary).not.toHaveAttribute('data-needs-attention');
+    expect(primary).not.toHaveAttribute('data-session-state');
+    expect(primary.querySelector('.task-row-status-lifecycle')).toBeNull();
+    expect(primary).not.toHaveTextContent('Needs a response');
+    expect(view.container.querySelector('button')).toBeNull();
+  });
+
+  it('uses lifecycle fallback for no detail and exposes no button without a caller entrance', () => {
+    const view = renderWithLocale(<TaskRowStatus title="Example" status="in_progress" observation={null} allowAgents />, { locale: 'en' });
+    expect(view.container.querySelector('.task-row-primary-status')).toHaveTextContent(/^In progress$/);
+    view.rerender(<TaskRowStatus title="Example" status="in_progress" observation={{ state: null, needsAttention: null, canOpen: true }} allowAgents />);
+    expect(view.container.querySelector('.task-row-primary-status')).toHaveTextContent(/^In progress$/);
+    expect(view.container.querySelector('button')).toBeNull();
+  });
 });

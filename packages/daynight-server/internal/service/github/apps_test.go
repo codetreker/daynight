@@ -17,14 +17,16 @@ import (
 )
 
 type appTestStore struct {
-	outcome    store.TransactionOutcome
-	writeErr   error
-	writeCalls int
-	input      store.GitHubAppCreate
-	readErr    error
-	readCalls  int
-	missing    bool
-	finishErr  error
+	outcome         store.TransactionOutcome
+	writeErr        error
+	writeCalls      int
+	input           store.GitHubAppCreate
+	readErr         error
+	readCalls       int
+	visibilityCalls int
+	getCalls        int
+	missing         bool
+	finishErr       error
 }
 
 func (s *appTestStore) WriteGitHubApp(ctx context.Context, f func(store.GitHubAppWriteDAO) error) (store.Completion, error) {
@@ -51,6 +53,7 @@ func (s *appTestStore) Create(_ context.Context, in store.GitHubAppCreate) (gith
 	return githubpr.AppMetadata{ID: in.ID}, nil
 }
 func (s *appTestStore) Get(_ context.Context, id, actor string) (githubpr.AppMetadata, error) {
+	s.getCalls++
 	if actor == "" {
 		panic("missing actor")
 	}

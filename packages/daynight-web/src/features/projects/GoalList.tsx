@@ -9,10 +9,11 @@ import type { PaginationState } from './usePagination';
 import '../../styles/goal-list.css';
 import { GoalItem } from './GoalItem';
 import { emptyTagFilter, type TagFilterController } from '../task-tags/TagFilter';
+import { goalAcceptanceMessages } from '../goal-acceptance-graph/messages';
 
 type GraphProps = Pick<ComponentProps<typeof ChainList>, 'summaries' | 'openGraphTarget' | 'onCloseChain' | 'onRestoreGraphFocus' | 'onOpenTask' | 'onNavigateExternalTask' | 'renderNested' | 'onGraphRootChange' | 'onOpenSession'>;
 
-export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoalGraph, onOpenGoalGraphTask, graphError, onRefreshGraph, pagination, workerMachines, onOpenListTask, onOpenListChain, summaries, childTagFilter = { value: emptyTagFilter, invalid: false }, openGraphTarget, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, renderNested, onGraphRootChange, onOpenSession }: {
+export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoalGraph, onOpenGoalGraphTask, onOpenAcceptanceGraph, graphError, onRefreshGraph, pagination, workerMachines, onOpenListTask, onOpenListChain, summaries, childTagFilter = { value: emptyTagFilter, invalid: false }, openGraphTarget, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, renderNested, onGraphRootChange, onOpenSession }: {
   readonly projectId: string;
   readonly index: GraphIndex;
   readonly goals: readonly TaskSummary[];
@@ -21,6 +22,7 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
   readonly onOpenGoal: (id: string, trigger: HTMLElement) => void;
   readonly onOpenGoalGraph: (id: string, trigger: HTMLElement) => void;
   readonly onOpenGoalGraphTask: (id: string, trigger: HTMLElement) => void;
+  readonly onOpenAcceptanceGraph?: (trigger: HTMLElement) => void;
   readonly graphError?: unknown;
   readonly onRefreshGraph?: () => void;
   readonly pagination?: PaginationState;
@@ -28,7 +30,7 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
 } & GraphProps) => {
-  const { messages: { workspace: { goals: m }, assignment } } = useI18n();
+  const { locale, messages: { workspace: { goals: m }, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focused = useRef<HTMLElement | null>(null);
   const focusedGoal = useRef<string | null>(null);
@@ -37,7 +39,8 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
       (Array.from(container.current?.querySelectorAll<HTMLElement>('[data-goal-id]') ?? []).find((item) => item.dataset.goalId === focusedGoal.current)?.querySelector<HTMLElement>('.goal-list-toggle') ?? container.current?.querySelector<HTMLElement>('.goal-list-toggle') ?? container.current)?.focus({ preventScroll: true });
   }, [goals, index]);
   return <section id="project-goal-list" data-list-empty={total === 0} ref={container} tabIndex={-1} aria-label={m.list} onFocusCapture={(event) => { focused.current = event.target; focusedGoal.current = event.target.closest<HTMLElement>('[data-goal-id]')?.dataset.goalId ?? null; }}>
-    <div className="task-view-toolbar"><span className="task-view-summary">{m.summary({ shown: pagination?.total ?? goals.length, total })}</span></div>
+    <div className="task-view-toolbar"><span className="task-view-summary">{m.summary({ shown: pagination?.total ?? goals.length, total })}</span>
+      {onOpenAcceptanceGraph !== undefined && <button type="button" className="button secondary" aria-haspopup="dialog" onClick={event => onOpenAcceptanceGraph(event.currentTarget)}>{goalAcceptanceMessages(locale).open}</button>}</div>
     {total === 0 ? <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       : goals.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
         : <ul className="goal-list">{goals.map((goal) => <GoalItem key={goal.id} projectId={projectId} index={index} goal={goal} childTagFilter={childTagFilter} summaries={summaries} workerMachines={workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenListTask={onOpenListTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}

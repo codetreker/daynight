@@ -10,6 +10,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/google/uuid"
@@ -18,6 +19,9 @@ import (
 type modelRequestFunc func(context.Context, model.Principal, string, ro.Request) (ro.Message, error)
 
 func (f modelRequestFunc) Request(ctx context.Context, p model.Principal, w string, r ro.Request) (ro.Message, error) {
+	return f(ctx, p, w, r)
+}
+func (f modelRequestFunc) RequestForOperations(ctx context.Context, p model.Principal, w string, r ro.Request, _ ...scopepolicy.Operation) (ro.Message, error) {
 	return f(ctx, p, w, r)
 }
 func nativeResponse(p model.Principal, worker string, request ro.Request) ro.Message {
@@ -100,7 +104,7 @@ func TestCreationDiscoveryCompletesSnapshotBeforeNetworkAndWrite(t *testing.T) {
 				return base, nil
 			}
 			lost := errors.New("discovery connection lost")
-			f.service.models = modelRequestFunc(func(ctx context.Context, p model.Principal, w string, r ro.Request) (ro.Message, error) {
+			f.service.creationModels = modelRequestFunc(func(ctx context.Context, p model.Principal, w string, r ro.Request) (ro.Message, error) {
 				f.plan.call("network")
 				if !snapshotClosed {
 					t.Fatal("snapshot callback still open")
@@ -256,7 +260,7 @@ func TestNativeCatalogPaginationAndStalePreferenceFallback(t *testing.T) {
 		same(t, selected, (*string)(nil))
 		return expected, nil
 	}}
-	got, err := bots.resolveNative(t.Context(), p, base, model.BotOverrides{}, model.BotNativePreference{Model: pointer("retired"), Efforts: map[string]string{"model-a": "retired"}}, base)
+	got, err := bots.resolveNative(t.Context(), p, bots.models, base, model.BotOverrides{}, model.BotNativePreference{Model: pointer("retired"), Efforts: map[string]string{"model-a": "retired"}}, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +297,7 @@ func TestNativeCatalogPaginationAndStalePreferenceFallback(t *testing.T) {
 				message.Result, _ = json.Marshal(c)
 				return message, nil
 			})
-			_, e := bots.readModels(t.Context(), p, base, nil)
+			_, e := bots.readModels(t.Context(), p, bots.models, base, nil)
 			if e == nil || calls != 2 {
 				t.Fatalf("accepted inconsistent catalog: calls=%d err=%v", calls, e)
 			}
@@ -318,13 +322,13 @@ func TestHistoricalEffortDoesNotBlockNameOnlyUnknownNativeDefault(t *testing.T) 
 		message.Result, _ = json.Marshal(catalog)
 		return message, nil
 	})}
-	got, err := bots.resolveNative(context.Background(), p, base, model.BotOverrides{}, preference, base)
+	got, err := bots.resolveNative(context.Background(), p, bots.models, base, model.BotOverrides{}, preference, base)
 	if err != nil || got.Model != nil || got.ReasoningEffort != nil || got.Selection.ModelSource != "native" {
 		t.Fatalf("history blocked name-only native delegation: %+v %v", got, err)
 	}
 	observedEffort = pointer("high")
 	observedEffortSource = "local"
-	_, err = bots.resolveNative(context.Background(), p, base, model.BotOverrides{}, preference, base)
+	_, err = bots.resolveNative(context.Background(), p, bots.models, base, model.BotOverrides{}, preference, base)
 	requireFault(t, err, "unknown_default")
 	observedEffort = nil
 	observedEffortSource = "unknown"
@@ -334,19 +338,19 @@ func TestHistoricalEffortDoesNotBlockNameOnlyUnknownNativeDefault(t *testing.T) 
 	retired.Selection = &selection
 	retired.Selection.ModelSource = "preference"
 	preference.Model = pointer("retired")
-	got, err = bots.resolveNative(context.Background(), p, retired, model.BotOverrides{}, preference, base)
+	got, err = bots.resolveNative(context.Background(), p, bots.models, retired, model.BotOverrides{}, preference, base)
 	if err != nil || got.Model != nil || got.Selection.ModelSource != "native" {
 		t.Fatalf("retired model blocked native delegation: %+v %v", got, err)
 	}
-	_, err = bots.resolveNative(context.Background(), p, base, model.BotOverrides{ReasoningEffort: pointer("high")}, preference, base)
+	_, err = bots.resolveNative(context.Background(), p, bots.models, base, model.BotOverrides{ReasoningEffort: pointer("high")}, preference, base)
 	requireFault(t, err, "unknown_default")
 	base.ReasoningEffort = pointer("high")
 	base.Selection.ReasoningEffortSource = "cloud"
-	_, err = bots.resolveNative(context.Background(), p, base, model.BotOverrides{}, preference, base)
+	_, err = bots.resolveNative(context.Background(), p, bots.models, base, model.BotOverrides{}, preference, base)
 	requireFault(t, err, "unknown_default")
 	bots.models = modelRequestFunc(func(context.Context, model.Principal, string, ro.Request) (ro.Message, error) {
 		return ro.Message{}, nativeFailure("cleanup_unknown", "Unconfirmed cleanup")
 	})
-	_, err = bots.resolveNative(context.Background(), p, base, model.BotOverrides{}, preference, base)
+	_, err = bots.resolveNative(context.Background(), p, bots.models, base, model.BotOverrides{}, preference, base)
 	requireFault(t, err, "cleanup_unknown")
 }

@@ -112,8 +112,9 @@ describe('full-detail attachment surface', () => {
     expect(window.location.pathname).toBe(attachmentPageUrl(projectId, taskId, 'notes/new.txt'));
     expect(screen.getByRole('link', { name: '下载' })).toHaveAttribute('href', expect.stringContaining('/notes/new.txt'));
     expect(screen.getByLabelText('目标相对路径')).toHaveValue('');
-    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.txt')).not.toBeVisible();
+    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toHaveFocus();
   });
 
   it('reveals only a changed route target while retaining manually closed directories through refresh', async () => {

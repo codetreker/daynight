@@ -1,7 +1,7 @@
-import { createContext, createElement, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { getTaskUsageSummaries, getUsageCapabilities, type UsageSummary } from '../../api/usage';
-import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { useOptionalTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 
 export type TaskUsageCapability = 'pending' | 'available' | 'unsupported' | 'error';
 export type TaskUsageState = { readonly summary: UsageSummary | null; readonly error: unknown; readonly pending: boolean; readonly capability: TaskUsageCapability };
@@ -17,7 +17,13 @@ class UsageStore {
   private running = false;
   private dirty = false;
   private requestAbort: AbortController | null = null;
+  private disconnect: (() => void) | null = null;
   constructor(private readonly scope: TaskCacheScope) {
+    this.connect();
+  }
+  private connect(): void {
+    if (this.disconnect !== null || this.scope.signal.aborted) return;
+    const scope = this.scope;
     const visible = () => {
       if (document.visibilityState === 'hidden') {
         this.requestAbort?.abort();
@@ -38,8 +44,15 @@ class UsageStore {
         }
       }
     });
-    scope.signal.addEventListener('abort', () => { document.removeEventListener('visibilitychange', visible); unsubscribe(); if (this.poll !== null) clearInterval(this.poll); if (this.scheduled !== null) clearTimeout(this.scheduled); this.projects.clear(); }, { once: true });
+    this.disconnect = () => { document.removeEventListener('visibilitychange', visible); unsubscribe(); scope.signal.removeEventListener('abort', this.dispose); };
+    scope.signal.addEventListener('abort', this.dispose, { once: true });
   }
+  dispose = (): void => {
+    this.disconnect?.(); this.disconnect = null;
+    if (this.poll !== null) clearInterval(this.poll); this.poll = null;
+    if (this.scheduled !== null) clearTimeout(this.scheduled); this.scheduled = null;
+    this.requestAbort?.abort(); this.projects.clear();
+  };
   private entry(project: string, task: string): Entry {
     let tasks = this.projects.get(project);
     if (tasks === undefined) { tasks = new Map(); this.projects.set(project, tasks); }
@@ -49,6 +62,7 @@ class UsageStore {
   }
   snapshot = (project: string, task: string): TaskUsageState => this.scope.isInvalidated ? empty : this.entry(project, task).state;
   subscribe = (project: string, task: string, listener: () => void): (() => void) => {
+    this.connect();
     const entry = this.entry(project, task); entry.listeners.add(listener); this.schedule();
     this.startPolling();
     return () => {
@@ -116,15 +130,19 @@ class UsageStore {
   }
 }
 const stores = new WeakMap<TaskCacheScope, UsageStore>();
-export const useTaskUsage = (projectId: string, taskId: string, active = true) => {
+export const useTaskUsage = (projectId: string | null, taskId: string, active = true, isolated = false) => {
   const workspaceActive = useContext(ActivityContext);
   active = active && workspaceActive;
-  const scope = useTaskCacheScope();
-  let store = stores.get(scope);
-  if (store === undefined) { store = new UsageStore(scope); stores.set(scope, store); }
+  const scope = useOptionalTaskCacheScope();
+  if (projectId !== null && scope === null) throw new Error("An authenticated task cache scope is required.");
+  const localStore = useMemo(() => isolated && scope !== null && projectId !== null ? new UsageStore(scope) : undefined, [isolated, scope, projectId]);
+  useEffect(() => () => localStore?.dispose(), [localStore]);
+  let store = isolated ? localStore : scope === null || projectId === null ? undefined : stores.get(scope);
+  if (!isolated && store === undefined && scope !== null && projectId !== null) { store = new UsageStore(scope); stores.set(scope, store); }
   const current = store;
-  const subscribe = useCallback((listener: () => void) => active ? current.subscribe(projectId, taskId, listener) : () => {}, [current, projectId, taskId, active]);
-  const snapshot = useCallback(() => current.snapshot(projectId, taskId), [current, projectId, taskId]);
+  const subscribe = useCallback((listener: () => void) => active && current !== undefined && projectId !== null ? current.subscribe(projectId, taskId, listener) : () => {}, [current, projectId, taskId, active]);
+  const snapshot = useCallback(() => current !== undefined && projectId !== null ? current.snapshot(projectId, taskId) : empty, [current, projectId, taskId]);
   const state = useSyncExternalStore(subscribe, snapshot);
-  return { ...state, retry: current.refresh };
+  const retry = useCallback(() => { current?.refresh(); }, [current]);
+  return { ...state, retry };
 };

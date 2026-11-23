@@ -18,7 +18,7 @@ import (
 
 type PersonalTasksOperation func(context.Context, model.Principal, int, *string) (service.PersonalTaskPage, error)
 
-func PersonalTaskRoutes(mux *http.ServeMux, run PersonalTasksOperation, auth RouteAuthentication, logger *slog.Logger) {
+func PersonalTaskRoutes(mux httpx.RouteRegistrar, run PersonalTasksOperation, auth RouteAuthentication, logger *slog.Logger) {
 	h := personalTaskHandler{run: run, logger: logger}
 	mux.HandleFunc("GET /api/v1/me/in-progress-tasks", auth.Require(h.list))
 	mux.HandleFunc("/api/v1/me/in-progress-tasks", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))

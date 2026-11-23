@@ -24,6 +24,7 @@ const fixture = () => {
     getTask: vi.fn<ApiClient["getTask"]>(async () => ({ ...task, version: 9_007_199_254_740_994n })),
     createTask: vi.fn(async () => task),
     updateTask: vi.fn(async () => ({ ...task, version: 9_007_199_254_740_994n })),
+    updateTaskReceipt: vi.fn(async () => ({ projectId, taskId, version: 9_007_199_254_740_994n })),
     listTasks: vi.fn(async () => [] as Task[]),
     listReadyTasks: vi.fn(async () => [] as Task[]),
     getTaskGraph: vi.fn<ApiClient["getTaskGraph"]>(),
@@ -48,14 +49,15 @@ const fixture = () => {
   return { api, context, dependencies };
 };
 
-it.each(["create", "update"] as const)("prints the returned assignee and exact version after %s", async command => {
+it.each(["create", "update"] as const)("prints the result and exact version after %s", async command => {
   const f = fixture();
   const args = command === "create" ? ["create", "--title", "Task", "--assigned-to", userId] : ["update", taskId, "--assigned-to", userId, "--if-version", "9007199254740993"];
   await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
   const output = f.context.stdout.mock.calls[0]![0];
-  expect(output).toContain(`Assigned to: ${userId}\n`);
+  if (command === "create") expect(output).toContain(`Assigned to: ${userId}\n`);
+  else expect(output).not.toContain("Assigned to:");
   expect(output).toContain(`Version: ${command === "create" ? "1" : "9007199254740994"}\n`);
-  expect(command === "create" ? f.api.createTask : f.api.updateTask).toHaveBeenCalledOnce();
+  expect(command === "create" ? f.api.createTask : f.api.updateTaskReceipt).toHaveBeenCalledOnce();
 });
 
 it("prints both writable PR and read-only worker schemas without project discovery", async () => {
@@ -270,7 +272,7 @@ it("keeps concurrent same-version updates independent and does not retry the ref
   expect(await Promise.all([left.running, right.running])).toEqual([0, 1]);
   expect(mutations).toEqual(expect.arrayContaining([{ title: "left", version: 1n }, { title: "right", version: 1n }]));
   expect(mutations).toHaveLength(2);
-  expect(left.context.stdout.mock.calls[0]![0]).toContain("Title: left\n");
+  expect(left.context.stdout.mock.calls[0]![0]).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: 2\n`);
   expect(right.context.stdout).not.toHaveBeenCalled();
   expect(right.context.stderr.mock.calls.map(([text]) => text).join("")).toContain("right-conflict");
 });

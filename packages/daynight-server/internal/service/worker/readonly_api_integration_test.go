@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
@@ -29,7 +30,7 @@ func TestReadOnlyAPIUsesCurrentFamilyBeforeDeliveryAndReturn(t *testing.T) {
 				t.Fatal(err)
 			}
 			hash := sha256.Sum256([]byte(uuid.NewString()))
-			pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: owner.UserID, Name: "readonly producer", TokenHash: hash[:], CreatedAt: time.Now()}
+			pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: owner.UserID, Name: "readonly producer", TokenHash: hash[:], CreatedAt: time.Now()}
 			if _, err := db.WriteIdentity(ctx, func(s store.IdentityScope) error { return s.IdentityDAO().InsertPAT(ctx, pat) }); err != nil {
 				t.Fatal(err)
 			}

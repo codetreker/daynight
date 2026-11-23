@@ -31,16 +31,25 @@ vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof 
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
 vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
-vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: {
-  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void; pagination?: PaginationState;
+vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onOpenChainUsage, onCloseChain, onOpenTask, onOpenSession, pagination }: {
+  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onOpenChainUsage: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void; pagination?: PaginationState;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
   <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
+  <button onClick={event => onOpenChainUsage(root, event.currentTarget)}>用量 {root}</button>
   {openGraphTarget?.kind === 'chain' && openGraphTarget.rootId === root && <div role="dialog" className="task-chain-dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}{pagination !== undefined && <ListPagination label="任务链列表" {...pagination} />}</div> }));
+const usagePanelLifecycle = vi.hoisted(() => ({ mounted: vi.fn(), cancelled: vi.fn() }));
+vi.mock("../src/features/usage-aggregate/UsageAggregatePanel", () => ({
+  UsageAggregatePanel: ({ scopeId, onOpenTask }: { scopeId: string; onOpenTask: (id: string, trigger: HTMLElement) => void }) => {
+    useEffect(() => { usagePanelLifecycle.mounted(scopeId); return () => { usagePanelLifecycle.cancelled(scopeId); }; }, [scopeId]);
+    return <div data-testid="usage-panel">{scopeId}<button onClick={event => onOpenTask(B, event.currentTarget)}>打开未完整成员</button></div>;
+  },
+  UsageAggregateDisclosure: () => null,
+}));
 vi.mock("../src/features/task-graph/GoalGraphDialog", () => ({ GoalGraphDialog: ({ goalId, onClose, onOpenTask, onRootChange }: { goalId: string; onClose: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onRootChange?: (element: HTMLElement | null) => void }) =>
   <div ref={onRootChange} className="task-chain-dialog" role="dialog" data-testid={`goal-graph-${goalId}`}><button onClick={onClose}>关闭整体图</button><button onClick={event => onOpenTask(goalId, event.currentTarget)}>打开整体图详情</button></div> }));
 vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, navigation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
@@ -146,6 +155,49 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it('restarts chain usage only after the new history snapshot and keeps the selected member when the anchor disappears', async () => {
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    usagePanelLifecycle.mounted.mockClear(); usagePanelLifecycle.cancelled.mockClear();
+    const initial = graph(); graphRequest.mockResolvedValue(initial);
+    const root = document.createElement('div'); root.id = 'root'; document.body.appendChild(root);
+    try {
+      const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope }, container: root, baseElement: document.body });
+      await waitForGraph(); selectTasks();
+      fireEvent.click(await screen.findByRole('button', { name: `用量 ${A}` }));
+      expect(await screen.findByTestId('usage-panel')).toHaveTextContent(A);
+      fireEvent.click(screen.getByRole('button', { name: '打开未完整成员' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(B);
+      const next = deferred<TaskGraph>(); graphRequest.mockReturnValue(next.promise);
+      const requestCount = graphRequest.mock.calls.length;
+      act(() => { for (const listener of listeners) listener({ projectId, historyChanged: true }); });
+      expect(screen.queryByTestId('usage-panel')).toBeNull();
+      expect(screen.getByText('正在确认任务链…')).toBeVisible();
+      expect(usagePanelLifecycle.cancelled).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(graphRequest.mock.calls.length).toBeGreaterThan(requestCount));
+      await act(async () => next.reject(new ApiError('network')));
+      expect(await screen.findByText('无法确认任务链，请重试。')).toBeVisible();
+      expect(screen.queryByTestId('usage-panel')).toBeNull();
+      const retried = deferred<TaskGraph>(); graphRequest.mockReturnValue(retried.promise);
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '重试' }));
+      await act(async () => retried.resolve(graph()));
+      await waitFor(() => expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId('usage-panel')).toHaveTextContent(A);
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      const withoutAnchor = graph([{ id: B, title: '后续任务', status: 'todo', dependsOn: [] }, ...seeds.slice(2)]);
+      graphRequest.mockResolvedValue(resetSnapshot(withoutAnchor));
+      fireEvent.click(detail().getByRole('button', { name: '刷新全图' }));
+      expect(await screen.findByText('此用量范围已不可用。')).toBeVisible();
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(B);
+      expect(usagePanelLifecycle.mounted).toHaveBeenCalledTimes(2);
+      view.unmount();
+    } finally { scope.dispose(); root.remove(); }
+  });
+
   it('opens a linked empty Goal only after the authoritative snapshot, keeps its URL, and removes it on close', async () => {
     history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}#chain=${B}`);
     const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
@@ -1011,7 +1063,7 @@ describe("project dashboard", () => {
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   beforeEach(() => { rememberRoot(A); });
 
-  it("loads a complete graph into six accurate unique-task statistics and opens a chain only on request", async () => {
+  it("loads a complete graph into seven accurate task statistics and opens a chain only on request", async () => {
     window.localStorage.clear();
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(pending.promise);
@@ -1020,9 +1072,10 @@ describe("project dashboard", () => {
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy(); await waitForGraph();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
-    expect(screen.getByText("完成比例 25%")).toBeTruthy();
-    expect(screen.getAllByText("待处理的子集")).toHaveLength(2);
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "0", "3", "0", "2", "1"]);
+    const cards = document.querySelectorAll(".stats .stat");
+    expect(cards).toHaveLength(7);
+    for (const card of cards) expect([...card.children].map(child => child.className)).toEqual(["stat-label", "stat-number"]);
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(screen.getByText("git@github.com:example/project.git")).toBeTruthy();
     expect(screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime")).not.toBe(time);
@@ -1191,8 +1244,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await waitFor(() => expect(number("任务总数")).toBe("0"));
     expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
-    expect(screen.getByText("完成比例 0%")).toBeTruthy();
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0", "0"]);
   });
 
   it.each([

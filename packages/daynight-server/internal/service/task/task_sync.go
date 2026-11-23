@@ -9,15 +9,18 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 )
 
 type TaskSync struct {
-	store   store.SnapshotReader
-	engine  SessionStateReader
-	overlap time.Duration
+	currentAuthorization CurrentReadAuthorization
+	authorization        *model.CredentialAuthorization
+	store                store.SnapshotReader
+	engine               SessionStateReader
+	overlap              time.Duration
 }
 
 type SessionStateReader interface {
@@ -103,6 +106,9 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 			}
 			return err
 		}
+		if err := requireTaskScope(s.authorization, principal, scopepolicy.ProjectRead); err != nil {
+			return err
+		}
 		result.Project, err = snapshot.ProjectDAO().Project(ctx, projectID)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
@@ -118,6 +124,9 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 		tasks, err = snapshot.TaskDAO().TaskSyncActiveTasks(ctx, projectID)
 		if err != nil {
 			return err
+		}
+		if !sessionProjectionAllowed(s.authorization) {
+			return nil
 		}
 		for start := 0; start < len(tasks); start += 200 {
 			batch := tasks[start:min(start+200, len(tasks))]
@@ -143,6 +152,22 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 	}
 	result.TaskObservations = make(map[string]model.TaskSyncObservation, len(tasks))
 	result.Sessions = make(map[string]model.SessionListState)
+	if !sessionProjectionAllowed(s.authorization) {
+		if !syncTimeValid(result.ObservedAt) {
+			return model.TaskSync{}, errors.New("invalid task snapshot time")
+		}
+		for i := range result.Tasks {
+			task := model.Task{Properties: result.Tasks[i].Properties}
+			result.Tasks[i].Properties = taskcore.WithoutSessionProperties(task).Properties
+		}
+		for _, task := range tasks {
+			result.TaskObservations[task.ID] = model.TaskSyncObservation{TaskVersion: task.Version, State: "unavailable"}
+		}
+		result.SessionPartial = true
+		result.ResponseTaskAt = result.ObservedAt.UTC()
+		result.ResponseSessionAt = result.ObservedAt.UTC()
+		return result, nil
+	}
 	for start := 0; start < len(tasks); start += 200 {
 		batch := tasks[start:min(start+200, len(tasks))]
 		sources := make([]store.TaskSessionSource, 0, len(batch))
@@ -182,6 +207,9 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 			return err
 		}
 		if _, err := ops.access(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization, scopepolicy.ProjectRead); err != nil {
 			return err
 		}
 		for start := 0; start < len(tasks); start += 200 {

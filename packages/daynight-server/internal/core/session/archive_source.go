@@ -26,6 +26,9 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 		if r.Owner != op.owner {
 			return conflict()
 		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
 		if e := archiveWriter(op.principal, r, in.Fence, in.ControllerID, in.ControllerInstanceID); e != nil {
 			return e
 		}

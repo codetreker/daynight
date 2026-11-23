@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/google/uuid"
@@ -127,11 +128,11 @@ func canonicalNonzeroID(id string) bool {
 
 // SearchMemberCandidates reauthorizes each page in the caller's snapshot.
 func SearchMemberCandidates(ctx context.Context, dao store.TeamReader, candidates store.UserCandidateReader, p model.Principal, id string, search CandidateSearch) (CandidatePage, error) {
-	t, err := Get(ctx, dao, p, id)
+	t, err := lookupTeam(ctx, dao, p, id)
 	if err != nil {
 		return CandidatePage{}, err
 	}
-	if err := authorizeOrdinaryAdmin(t); err != nil {
+	if err := authorizeOrdinaryAdmin(ctx, p, t, scopepolicy.TeamMembers); err != nil {
 		return CandidatePage{}, err
 	}
 	result := CandidatePage{Items: []model.UserCandidate{}}

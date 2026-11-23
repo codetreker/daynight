@@ -30,6 +30,7 @@ func inquiryBotBarriers(ctx context.Context, dao store.AssistantTaskDAO, task mo
 }
 
 func (m *Module) Ask(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input InquiryInput) (model.AssistantTaskInquiry, error) {
+	actor = actor.requiringBranches("Ask", "default")
 	var result model.AssistantTaskInquiry
 	if actor.BotID == nil {
 		return result, forbidden()
@@ -110,6 +111,7 @@ func (m *Module) Ask(ctx context.Context, dao store.AssistantTaskDAO, actor Acto
 	return result, err
 }
 func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AnswerInput) (model.AssistantTaskInquiry, error) {
+	actor = actor.requiringBranches("Answer", "default")
 	var result model.AssistantTaskInquiry
 	if !strictID(input.ID) || !textValid(input.Answer, true) {
 		return result, invalid("Inquiry identity and answer are required.")
@@ -159,9 +161,16 @@ func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor A
 	return result, nil
 }
 
-// expireInquiries processes a bounded, prefiltered batch. Taking task barriers in
-// ID order prevents two target-event reads from reversing multi-task lock order.
 func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string) error {
+	return m.maintain(ctx, dao, actor, taskID, targetBotID, false, false)
+}
+
+// maintain processes a bounded, prefiltered batch of inquiry timeouts and, for
+// event pulls, periodic retrospectives. When reclaim is set it also reclaims
+// settled inbound material of a bounded set of the owner's tasks. Taking every
+// task barrier once in ID order prevents two reads from reversing multi-task
+// lock order.
+func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, retrospectives, reclaim bool) error {
 	if err := authorize(ctx, dao, actor); err != nil {
 		return err
 	}
@@ -179,9 +188,29 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 	if len(due) > 200 {
 		due = due[:200]
 	}
+	var reviews []string
+	if retrospectives {
+		reviews, err = dao.RetrospectiveTasks(ctx, store.AssistantTaskQuery{OwnerUserID: actor.Principal.UserID, TaskID: taskID, TargetBotID: targetBotID, Limit: 200}, now.Add(-retrospectivePeriod))
+		if err != nil {
+			return err
+		}
+	}
 	ids := map[string]bool{}
 	for _, inquiry := range due {
 		ids[inquiry.TaskID] = true
+	}
+	for _, id := range reviews {
+		ids[id] = true
+	}
+	var reclaimable []string
+	if reclaim {
+		reclaimable, err = dao.InboundReclaimTasks(ctx, actor.Principal.UserID, now.Add(-InboundRetention), InboundReclaimTaskLimit)
+		if err != nil {
+			return err
+		}
+		for _, id := range reclaimable {
+			ids[id] = true
+		}
 	}
 	ordered := make([]string, 0, len(ids))
 	for id := range ids {
@@ -228,6 +257,21 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 			return err
 		}
 		tasks[task.ID] = task
+	}
+	for _, id := range reviews {
+		if task, ok := tasks[id]; ok {
+			if err = m.periodicRetrospective(ctx, dao, task); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range reclaimable {
+		if _, ok := tasks[id]; !ok {
+			continue
+		}
+		if err = ReclaimInbound(ctx, dao, actor.Principal.UserID, id, now); err != nil {
+			return err
+		}
 	}
 	_, err = finish(ctx, dao, actor, nil)
 	return err

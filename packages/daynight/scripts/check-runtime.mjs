@@ -15,9 +15,12 @@ for (const alias of ["daynight", "dn"]) {
   const launcher = path.resolve(installed, "../../.bin", alias);
   assert.equal(execFileSync(launcher, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim(), manifest.version);
 }
-for (const args of [["--help"], ["task", "--help"], ["task", "step", "--help"], ["task", "step", "list", "--help"], ["task", "step", "show", "--help"], ["task", "step", "add", "--help"], ["task", "step", "update", "--help"], ["task", "step", "set-status", "--help"], ["task", "step", "move", "--help"], ["skill", "--help"], ["update", "--help"]]) {
-  assert.match(execFileSync(process.execPath, [entry, ...args], { encoding: "utf8", timeout: 10_000 }), /Usage:/);
+for (const args of [["--help"], ["task", "--help"], ["task", "show", "--help"], ["task", "update", "--help"], ["skill", "--help"], ["update", "--help"]]) {
+  const help = execFileSync(process.execPath, [entry, ...args], { encoding: "utf8", timeout: 10_000 });
+  assert.match(help, /Usage:/);
+  assert.doesNotMatch(help, /task step/);
 }
+
 
 const load = (relative) => import(pathToFileURL(path.join(installed, relative)).href);
 const { detectSkillAgents } = await load("dist/commands/skill/agents.js");

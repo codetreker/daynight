@@ -1,6 +1,6 @@
 import { ApiError } from '../../api/client';
 import type { TaskDependencyState, TaskDetail, TaskSummary } from '../../api/types';
-import { projectSummaries, sameSummary } from '../task-cache/projection';
+import { projectSummaries, sameDetailSummary } from '../task-cache/projection';
 import type { GraphSnapshot } from './useTaskGraph';
 
 export type CommittedTaskProjection = {
@@ -35,14 +35,14 @@ export const projectCommittedTasks = (snapshot: GraphSnapshot, receipts: Readonl
     if (receipt.conflict) return { snapshot, error: new ApiError('protocol') };
     const received = summaryOf(receipt.detail);
     if (current.version === received.version) {
-      if (!sameSummary(current, received)) return { snapshot, error: new ApiError('protocol') };
+      if (!sameDetailSummary(current, received)) return { snapshot, error: new ApiError('protocol') };
       continue;
     }
-    if (current.version === receipt.before.version && !sameSummary(current, summaryOf(receipt.before))) return { snapshot, error: new ApiError('protocol') };
+    if (current.version === receipt.before.version && !sameDetailSummary(current, summaryOf(receipt.before))) return { snapshot, error: new ApiError('protocol') };
     if (current.version > receipt.before.version) continue;
     if (received.type === 'task' && (!snapshot.index.nodes.has(id) || received.parentId !== null && snapshot.summaries.get(received.parentId)?.type !== 'goal')) continue;
     summaries ??= new Map(snapshot.summaries);
-    summaries.set(id, received);
+    summaries.set(id, received.type === 'goal' ? { ...received, dependsOn: current.dependsOn, externalDependsOn: current.externalDependsOn } : received);
     if (received.type === 'task') states.set(id, { taskVersion: received.version, ready: receipt.detail.ready, blockedBy: receipt.detail.blockedBy });
   }
   if (summaries === null) return { snapshot, error: null };

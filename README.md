@@ -31,6 +31,15 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with direct external
   prerequisites, card navigation to their tasks or Goals, task details and
   fullscreen reading.
+- **Inspect Goal acceptance dependencies.** Open the project Goals toolbar's
+  graph to inspect synchronized local prerequisites, direct readable
+  cross-project relationships, terminal prerequisite context and isolated active
+  Goals. Local inspection follows the synchronized Goal relations and states.
+  External cards show their actual Project; first reads show partial context,
+  while complete refreshed traversals replace retained authorized results.
+  Unavailable prerequisites and retries remain explicit; confirmed target withdrawal
+  removes its earlier visible context immediately. The server retains the
+  complete acceptance check; ordinary Task graphs keep their execution scope.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
@@ -70,7 +79,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
-Task Steps have [CLI list/show reads, atomic CLI Add and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
+Task Steps have no REST, MCP, CLI or Web entry points. The [retirement requirements](docs/spec/daynight-task-steps.md) define old-path refusals and the boundary of the remaining internal service and persisted data.
 
 Task creation and general editing use the CLI. The Web app provides project and
 Worker browsing, Worker configuration editing, status and execution-setting
@@ -124,7 +133,7 @@ daynight --skill
 
 This prints the complete standalone product manual, generated from the same
 topic sources installed for coding agents. It covers project and task operations,
-Steps, materials, write safety, Sessions, Webhooks and Worker operations. Reading
+materials, write safety, Sessions, Webhooks and Worker operations. Reading
 requires no login, configuration, installed skill or interactive terminal. Use
 each command's `--help` for exact arguments.
 
@@ -275,18 +284,15 @@ explains version checks, remote-result handling and resource cleanup.
 
 ## Review configuration and startup
 
-PR review requires Git, authenticated GitHub CLI and Copilot CLI on `PATH`:
+PR review requires Git, authenticated GitHub CLI and Copilot CLI on `PATH`.
+Enable review participation for the Worker and run `daynight worker run`. The
+Worker polls its assigned PRs and confirms published reviews on GitHub.
 
-```bash
-daynight review add-repo https://github.com/OWNER/REPO.git
-daynight review run
-```
-
-The reviewer runs in the foreground. Its first observation records the current
-PR boundary; it tracks newly opened eligible PRs after that boundary. Use
-`daynight review list` to inspect persisted local state. The
-[review guide](packages/daynight/README.md#review-configuration-and-startup)
-covers eligibility, reviewer identity, retries, retained sessions and shutdown.
+To switch from the standalone reviewer, stop `daynight review run` first. The
+Worker uses independent state in `~/.daynight/reviewer/` and leaves the old
+state and worktrees in place. Eligible PRs may be reviewed again after switching.
+The [review guide](packages/daynight/README.md#review-configuration-and-startup)
+covers both entry points, eligibility and recovery.
 
 ## Self-hosting
 
@@ -310,6 +316,7 @@ main application and other Tasks. Files within the same Task share an origin.
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
 | [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
+| [`packages/mobile/`](packages/mobile/) | Shared React Native and Expo workspace for iOS and Android | [Mobile guide](packages/mobile/README.md) |
 | [`packages/e2e_tests/`](packages/e2e_tests/) | Isolated normal workflows across compiled CLI, production Web, Server and auth | [Product E2E guide](packages/e2e_tests/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
@@ -359,6 +366,12 @@ and module validation commands. `pnpm e2e:test` separately builds and runs the c
 product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)
 owns its Linux prerequisites, authentication topology and cleanup.
 
+## Mobile development
+
+The mobile package runs independently of the Web app and server. See the
+[Mobile guide](packages/mobile/README.md) for running on iOS and Android,
+type-checking and exporting both platform bundles.
+
 ## Package versions
 
 Ordinary change PRs leave the version in `packages/daynight/package.json`
@@ -398,8 +411,9 @@ preserves the source boundary and normal gates.
 | Go tests, fixtures and validation tooling | Go module, Go server startup & shutdown and Go API integration |
 | Web production source, resources and build inputs | Web, Go API integration and product E2E |
 | Web tests, other Web validation tooling and `deployment/` | Web |
+| `packages/mobile/` source, app configuration, dependencies and tooling | Mobile |
 | `packages/e2e_tests/` code, fixtures, scenarios and configuration | Product E2E |
-| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web, Go API integration and product E2E |
+| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web, Mobile, Go API integration and product E2E |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
 | CI workflow, routing and unclassified paths | Every module, Go API integration and product E2E |
 
@@ -425,13 +439,14 @@ Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected Go module, Go server startup &
 shutdown, API, Web quality and product E2E jobs to succeed. A newer PR run cancels
-its older run. Each main run has an independent concurrency group, including
-repeated runs of the same commit, so later runs do not replace or cancel it;
-runner availability still controls when jobs start.
+its older run. Each workflow has its own main concurrency group: a running main
+run continues, while a newly queued run replaces any older pending run. This can
+skip validation of intermediate commits; runner availability controls job start.
+Manual shell/browser runs on main share that workflow's main group.
 
 The independent [`shell and browser acceptance` workflow](.github/workflows/shell-browser.yml)
-runs real shell completion and the frontend assistant browser suite on every
-`main` push and through `workflow_dispatch`. Ordinary module commands and the
+is triggered by `main` pushes and `workflow_dispatch` to run real shell completion
+and the frontend assistant browser suite. Ordinary module commands and the
 PR `checks` gate do not invoke or depend on these two jobs. Both retain their
 complete suites, fresh source checkout, toolchains and evidence. Product E2E
 keeps its own Chromium installation, path selection and required result. The
@@ -490,7 +505,7 @@ and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 |---|---|
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
-| [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
+| [`docs/ui-design.md`](docs/ui-design.md) | Cross-product UI design principles and links to their owning standards |
 | [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
 | [`docs/daynight-server-database.md`](docs/daynight-server-database.md) | Server database usage rules: business logic, SQL, constraints, concurrency and query costs |
 | [`docs/writing_tests.md`](docs/writing_tests.md) | Test ownership, real dependencies, normal integration flows and CI responsibilities |

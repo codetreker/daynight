@@ -289,6 +289,9 @@ func (d *writeWitnessTaskDAO) VisibleTaskIDs(context.Context, []string) ([]strin
 func (d *writeWitnessTaskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ActiveDependentIDs"))
 }
+func (d *writeWitnessTaskDAO) UnfinishedChildIDs(context.Context, string) ([]string, error) {
+	panic(d.f.unexpected("TaskWriteDAO.UnfinishedChildIDs"))
+}
 func (d *writeWitnessTaskDAO) Reachable(context.Context, string, string, store.DependencyReplacement) (bool, error) {
 	panic(d.f.unexpected("TaskWriteDAO.Reachable"))
 }
@@ -310,25 +313,9 @@ func (d *writeWitnessTaskDAO) DeleteTask(context.Context, string, bool) (model.T
 func (d *writeWitnessTaskDAO) TaskHeader(context.Context, string) (model.TaskHeader, error) {
 	panic(d.f.unexpected("TaskWriteDAO.TaskHeader"))
 }
-func (d *writeWitnessTaskDAO) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	panic(d.f.unexpected("TaskWriteDAO.TaskSteps"))
-}
-func (d *writeWitnessTaskDAO) InsertTaskStep(context.Context, string, model.TaskStep) error {
-	panic(d.f.unexpected("TaskWriteDAO.InsertTaskStep"))
-}
 func (d *writeWitnessTaskDAO) TouchTask(context.Context, string, time.Time) error {
 	panic(d.f.unexpected("TaskWriteDAO.TouchTask"))
 }
-func (d *writeWitnessTaskDAO) UpdateTaskStep(context.Context, string, model.TaskStep) error {
-	panic(d.f.unexpected("TaskWriteDAO.UpdateTaskStep"))
-}
-func (d *writeWitnessTaskDAO) MoveTaskStep(context.Context, string, string, int64, int64) error {
-	panic(d.f.unexpected("TaskWriteDAO.MoveTaskStep"))
-}
-func (d *writeWitnessTaskDAO) DeleteTaskStep(context.Context, string, string, int64, int64) error {
-	panic(d.f.unexpected("TaskWriteDAO.DeleteTaskStep"))
-}
-
 func TestTaskWriteOperationsDefaultBindings(t *testing.T) {
 	operations := NewTasks(nil).writeOperations
 	if reflect.ValueOf(operations.requireProjectWrite).Pointer() != reflect.ValueOf(projectcore.RequireProjectWrite).Pointer() ||
@@ -406,10 +393,30 @@ func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, str
 	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
 }
 
+func (s *writeWitnessScope) BotBarrierDAO() store.BotBarrierDAO {
+	panic(s.f.unexpected("BotBarrierDAO"))
+}
+
 func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
 }
 
 func (s *writeWitnessScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	panic("unexpected Project Goal dependency capability")
+}
+
+func (d *writeWitnessTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) HasTerminalAncestorGoal(context.Context, string) (bool, error) {
+	panic(d.f.unexpected("TaskWriteDAO.HasTerminalAncestorGoal"))
+}
+
+func (d *writeWitnessTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

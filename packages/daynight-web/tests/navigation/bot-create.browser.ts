@@ -67,6 +67,7 @@ for (const locale of ['en', 'zh-CN']) for (const viewport of [{ width: 1440, hei
     await page.setViewportSize(viewport);
     const fixture = await install(page); await page.goto('/bots'); await page.locator('.locale-control select').selectOption(locale);
     await open(page); await page.locator('#bot-name').fill('保留 Draft');
+    await expect(page.locator('#bot-name')).toHaveCSS('font-size', viewport.width <= 800 ? '16px' : '14px');
     const initial = await bounded(page);
     await page.screenshot({ path: info.outputPath('default.png') });
     expect(fixture.reads).toEqual([]);
@@ -89,12 +90,15 @@ for (const locale of ['en', 'zh-CN']) for (const viewport of [{ width: 1440, hei
     const expanded = await bounded(page);
     await page.screenshot({ path: info.outputPath('expanded.png') });
     await page.locator('#bot-cwd').scrollIntoViewIfNeeded();
+    await expect(page.locator('#bot-cwd')).toHaveCSS('font-size', viewport.width <= 800 ? '16px' : '14px');
     if (viewport.width <= 390) {
       expect(await page.locator('#bot-cwd').evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(16);
       expect((await page.locator('#bot-cwd').boundingBox())!.height).toBeGreaterThanOrEqual(44);
     }
     await page.getByRole('button', { name: /^(Browse|浏览)$/ }).click();
     await expect(page.locator('.bot-directory-entry')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: /^(Browse path|浏览路径)$/ })).toHaveCSS('font-size', viewport.width <= 800 ? '16px' : '14px');
+    await expect(page.locator('#bot-directory-filter')).toHaveCSS('font-size', viewport.width <= 800 ? '16px' : '14px');
     await expect(page.locator('.bot-directory-worker')).toHaveText(`${workerAlias} · ${workerName}`);
     const browsing = await bounded(page);
     await page.screenshot({ path: info.outputPath('browse.png') });
@@ -219,6 +223,39 @@ test.describe('coarse pointer at desktop width', () => {
     }
     await bounded(page);
   });
+});
+
+for (const touch of [false, true]) test(`Bot creation text follows root preferences with ${touch ? 'coarse' : 'fine'} pointers`, async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4198', viewport: { width: 960, height: 900 }, hasTouch: touch });
+  try {
+    const page = await context.newPage();
+    const fixture = await install(page); await page.goto('/bots'); await open(page);
+    const name = page.locator('#bot-name'), cwd = page.locator('#bot-cwd');
+    await name.fill('Retained typography draft');
+    await page.locator('.bot-create-advanced > summary').click();
+    await expect(cwd).toHaveValue(directory);
+    for (const width of [960, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const root of [12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        const font = `${touch || width <= 800 ? Math.max(root, 16) : root * 0.875}px`;
+        await expect(name).toHaveCSS('font-size', font); await expect(cwd).toHaveCSS('font-size', font);
+        await cwd.scrollIntoViewIfNeeded(); await expect(cwd).toBeInViewport();
+        await page.getByRole('button', { name: 'Browse', exact: true }).click();
+        const path = page.getByRole('textbox', { name: 'Browse path' });
+        const filter = page.getByRole('searchbox', { name: 'Filter loaded folders' });
+        await expect(path).toHaveCSS('font-size', font); await expect(filter).toHaveCSS('font-size', font);
+        await filter.fill('chosen');
+        await expect(page.locator('.bot-directory-entry')).toHaveCount(1);
+        await page.locator('.bot-directory-entry').scrollIntoViewIfNeeded();
+        await expect(page.locator('.bot-directory-entry')).toBeInViewport();
+        await page.keyboard.press('Escape');
+        await expect(name).toHaveValue('Retained typography draft'); await expect(cwd).toHaveValue(directory);
+        await bounded(page);
+      }
+    }
+    expect(fixture.posts).toHaveLength(0);
+  } finally { await context.close(); }
 });
 
 

@@ -51,8 +51,16 @@ and gives Conversation readers no interruption result.
 ## Consequences
 
 Live projection and native history replay preserve the same cancellation
-identity and tool result. Previously sealed archives remain immutable. Network
-loss, session errors and abort reasons without evidence of user cancellation
-do not become user interruption results. Arbitrarily missing or reordered
-interaction boundaries cannot be reconstructed from timestamps alone; the
-ordered provider history remains the source of interaction ownership.
+identity and tool result. New archives under the execution's `legacy` full-content
+policy retain those entries, including independent Test Sessions using that
+policy. Ordinary Task executions using `task_body` keep interruption diagnostics
+and tool entries only in online details, while their archives retain user and
+assistant messages and referenced images. Projection does not synthesize assistant
+messages to bypass this policy. The [Task history contract](../../../../docs/spec/task-session-history.md#普通-web-task-正文保存)
+and the [Bot recent-history window](../../../../docs/spec/bot-session-view.md#近期历史窗口合同)
+continue to own retention. Previously sealed archives remain immutable.
+
+Network loss, session errors and abort reasons without evidence of user
+cancellation do not become user interruption results. Arbitrarily missing or
+reordered interaction boundaries cannot be reconstructed from timestamps alone;
+the ordered provider history remains the source of interaction ownership.

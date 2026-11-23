@@ -12,7 +12,10 @@ database:
   url: "postgres://daynight:replace-me@postgres/daynight?sslmode=require" # required
 
 storage:
+  backend: "local" # or azure-blob; see README for identity and Azurite configuration
   root: "storage"
+  archive_staging_topology_verified: false
+  archive_upload_v2_enabled: false
 
 monitoring:
   redis_url: ""
@@ -39,6 +42,10 @@ oauth:
 
 webhook:
   enabled: false
+
+session:
+  archive_max_concurrent: 20
+  archive_max_concurrent_per_owner: 5
 
 task_sync:
   overlap: 10s

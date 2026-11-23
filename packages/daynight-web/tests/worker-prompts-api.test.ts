@@ -48,6 +48,37 @@ describe('principal-admitted prompt API', () => {
     expect(JSON.parse(fetch.mock.calls[3]![1].body)).toEqual({ expectedUserId: userId, revision: '0', text: 'line\r\n' });
     expect(gate.onDispatch).toHaveBeenCalledOnce();
   });
+  it('uses reviewer routes for all three scopes for reads and writes', async () => {
+    const targets: PromptTarget[] = [{ scope: 'user', purpose: 'reviewer' }, { scope: 'project', projectId, purpose: 'reviewer' }, { scope: 'worker', workerId, purpose: 'reviewer' }];
+    const resources = [resource(), resource('project', projectId), resource('worker', workerId)];
+    const fetch = vi.fn().mockImplementation(async (url: string, options: RequestInit) => {
+      const index = url.includes('/projects/') ? 1 : url.includes('/workers/') ? 2 : 0;
+      const current = resources[index]!;
+      return response(options.method === 'PUT' ? { ...current, revision: '1', text: 'review', updatedAt: at } : current);
+    });
+    vi.stubGlobal('fetch', fetch);
+    for (const target of targets) {
+      await getWorkerPrompt(target, signal(), admission());
+      await saveWorkerPrompt(target, { expectedUserId: userId, revision: '0', text: 'review' }, signal(), admission());
+    }
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/me/reviewer-prompt', '/api/v1/me/reviewer-prompt',
+      `/api/v1/me/projects/${projectId}/reviewer-prompt`, `/api/v1/me/projects/${projectId}/reviewer-prompt`,
+      `/api/v1/me/workers/${workerId}/reviewer-prompt`, `/api/v1/me/workers/${workerId}/reviewer-prompt`,
+    ]);
+  });
+  it('bounds reviewer raw UTF-8 bytes independently of JSON escaping and worker limits', async () => {
+    const reviewer: PromptTarget = { scope: 'user', purpose: 'reviewer' };
+    const exact = '界'.repeat(10922) + '\n"';
+    const over = exact + 'a';
+    const fetch = vi.fn().mockResolvedValue(response(resource('user', userId, '1', exact, at)));
+    vi.stubGlobal('fetch', fetch);
+    expect(await saveWorkerPrompt(reviewer, { expectedUserId: userId, revision: '0', text: exact }, signal(), admission())).toEqual(resource('user', userId, '1', exact, at));
+    await expect(saveWorkerPrompt(reviewer, { expectedUserId: userId, revision: '0', text: over }, signal(), admission())).rejects.toMatchObject({ code: 'payload_too_large' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(() => parsePromptResource(resource('user', userId, '1', over, at), reviewer, userId)).toThrow();
+    expect(parsePromptResource(resource('user', userId, '1', over, at), user, userId).text).toBe(over);
+  });
   it('waits for identity admission before dispatch and binds the principal on every response', async () => {
     const resume = pauseAuthRequests(), gate = admission(), fetch = vi.fn().mockResolvedValue(response(resource(), 200, projectId));
     vi.stubGlobal('fetch', fetch);

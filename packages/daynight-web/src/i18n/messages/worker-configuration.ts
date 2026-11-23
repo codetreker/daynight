@@ -1,4 +1,5 @@
 export type WorkerConfigurationMessages = {
+  readonly review: Readonly<Record<'title' | 'label' | 'detail' | 'loading' | 'unavailable' | 'readError' | 'saving' | 'saved' | 'rejected' | 'conflict' | 'unknown' | 'checkError', string>>;
   readonly toolPaths: {
     readonly title: string; readonly detail: string; readonly auto: string; readonly awaitingImport: string; readonly reset: string;
     readonly unsupportedService: string; readonly unsupportedWorker: string; readonly invalidPath: string; readonly unsaved: string;
@@ -41,6 +42,7 @@ export type WorkerConfigurationMessages = {
   readonly saved: string;
   readonly reconciled: string;
   readonly notSaved: string;
+  readonly abandonedUnknown: string;
   readonly uncertain: string;
   readonly verifySave: string;
   readonly conflict: string;
@@ -59,11 +61,25 @@ export type WorkerConfigurationMessages = {
   readonly preferPlatformSpecificTasks: string;
   readonly preferPlatformTasks: (values: { platform: string }) => string;
   readonly platformPreferenceDetail: string;
+  readonly platformRule: string;
+  readonly platformCurrent: string;
+  readonly platformAll: string;
+  readonly platformOnly: (values: { platform: string }) => string;
+  readonly platformAllDetail: (values: { platform: string }) => string;
+  readonly platformPreferDetail: (values: { platform: string }) => string;
+  readonly platformOnlyDetail: (values: { platform: string }) => string;
+  readonly platformModeUnsupported: string;
+  readonly platformWorkerUnsupported: string;
   readonly enableSudoCleanup: string;
   readonly enableSudoCleanupDetail: string;
   readonly sudoCleanupUnsupportedService: string;
   readonly sudoCleanupUnsupportedPlatform: string;
   readonly sudoCleanupUnknownPlatform: string;
+  readonly enableWindowsProcessCleanup: string;
+  readonly enableWindowsProcessCleanupDetail: string;
+  readonly windowsProcessCleanupUnsupportedService: string;
+  readonly windowsProcessCleanupUnsupportedPlatform: string;
+  readonly windowsProcessCleanupUnknownPlatform: string;
   readonly archiveSessions: string;
   readonly archiveSessionsDetail: string;
   readonly archiveSessionsUnsupportedService: string;
@@ -133,7 +149,7 @@ export type WorkerConfigurationMessages = {
   readonly localSettingsDetail: string;
   readonly localSettingsItems: readonly string[];
   readonly state: Readonly<Record<'pending' | 'applying' | 'applied' | 'error' | 'unsaved', string>>;
-  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'archiveSessions' | 'enableSudoCleanup' | 'taskTagFilter' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
+  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'platformTaskMode' | 'archiveSessions' | 'enableSudoCleanup' | 'enableWindowsProcessCleanup' | 'taskTagFilter' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
   readonly codes: Readonly<Record<'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_configuration' | 'io_error' | 'unavailable', string>>;
   readonly phases: Readonly<Record<'validate' | 'prepare' | 'apply' | 'stop' | 'persist', string>>;
 };

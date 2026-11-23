@@ -76,6 +76,7 @@ export const createCoordinatorFixtures = (memory: boolean) => {
     let onChecks: ((pr: PullRequestObservation, signal: AbortSignal) => Promise<{ headSha: string; baseRef: string; ready: boolean }>) | undefined;
     const client: GitHubClient = {
       resolveRepository: async (config) => identities[configurations.findIndex((item) => item.name === config.name)]!,
+      resolveRepositoryById: async (identity) => identities.find(item => item.host === identity.host && item.githubId === identity.githubId)!,
       listPullRequestNumbers: async () => [],
       listOpenPullRequests: async (repository) => {
         const index = identities.findIndex((item) => item.githubId === repository.githubId);

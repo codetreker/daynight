@@ -9,11 +9,11 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
-const token: PersonalAccessToken = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", lastUsedAt: null, createdAt: "2026-10-25T08:00:00Z", expiresAt: null };
+const token: PersonalAccessToken = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", description: null, lastUsedAt: null, createdAt: "2026-10-25T08:00:00Z", expiresAt: null };
 const exactExpiry = "2099-10-25T12:34:56.123456789Z";
 const futureInput = "2099-11-26T10:30";
 const mismatch = vi.fn();
-const fixture = (items: readonly PersonalAccessToken[] = [token]) => ({ list: vi.fn<TokenManagementApi["list"]>().mockResolvedValue(items), create: vi.fn<TokenManagementApi["create"]>().mockResolvedValue({ ...token, token: "created-once" }), revoke: vi.fn<TokenManagementApi["revoke"]>().mockResolvedValue(undefined), update: vi.fn<TokenManagementApi["update"]>().mockResolvedValue(token) });
+const fixture = (items: readonly PersonalAccessToken[] = [token]) => ({ list: vi.fn<TokenManagementApi["list"]>().mockResolvedValue(items), create: vi.fn<TokenManagementApi["create"]>().mockResolvedValue({ ...token, token: "created-once" }), revoke: vi.fn<TokenManagementApi["revoke"]>().mockResolvedValue(undefined), update: vi.fn<TokenManagementApi["update"]>().mockResolvedValue(token), describe: vi.fn<TokenManagementApi["describe"]>().mockImplementation(async (id, input) => ({ id, description: input.description })) });
 const page = (transport: TokenManagementApi, currentUser = user) => <TokensPanel user={currentUser} transport={transport} onIdentityMismatch={mismatch} />;
 const ready = async () => { await screen.findByText(token.name); };
 const edit = () => fireEvent.click(screen.getByRole("button", { name: "修改令牌 Daynight CLI 的有效期" }));
@@ -91,7 +91,7 @@ describe("optional token expiration", () => {
     fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Build agent" } });
     fireEvent.submit(document.getElementById("create-token-form")!);
     await screen.findByLabelText("一次性访问令牌");
-    expect(transport.create).toHaveBeenCalledExactlyOnceWith({ name: "Build agent", expiresAt: null }, expect.any(AbortSignal));
+    expect(transport.create).toHaveBeenCalledExactlyOnceWith({ name: "Build agent", expiresAt: null, description: null, expectedUserId: user.id }, expect.any(AbortSignal), mismatch, expect.any(Function));
     expect(transport.list).toHaveBeenCalledWith(expect.any(AbortSignal), user.id, mismatch);
   });
 
@@ -106,7 +106,7 @@ describe("optional token expiration", () => {
     expect(transport.create).not.toHaveBeenCalled();
     date(); fireEvent.submit(document.getElementById("create-token-form")!);
     await screen.findByLabelText("一次性访问令牌");
-    expect(transport.create).toHaveBeenCalledWith({ name: "Build agent", expiresAt: new Date(futureInput).toISOString() }, expect.any(AbortSignal));
+    expect(transport.create).toHaveBeenCalledWith({ name: "Build agent", expiresAt: new Date(futureInput).toISOString(), description: null, expectedUserId: user.id }, expect.any(AbortSignal), mismatch, expect.any(Function));
   });
 
   it("retains the original timestamp precision and never saves an untouched expiration", async () => {

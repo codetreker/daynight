@@ -39,7 +39,7 @@ async function boundTree(root: string): Promise<void> {
 }
 
 /** Unknown builds retain the ordinary provider; internal ABI is opt-in by bytes. */
-export async function prepareCopilotAuthorityArtifacts(executable: string, env: NodeJS.ProcessEnv, diagnostic?: (message: string) => void): Promise<CopilotAuthorityArtifacts | undefined> {
+export async function prepareCopilotAuthorityArtifacts(executable: string, env: NodeJS.ProcessEnv, diagnostic?: (message: string) => void, beforeSpawn?: () => void): Promise<CopilotAuthorityArtifacts | undefined> {
   if (process.platform !== "darwin" || process.arch !== "arm64") return;
   let owned: string | undefined;
   try {
@@ -49,6 +49,7 @@ export async function prepareCopilotAuthorityArtifacts(executable: string, env: 
     if (sdk.version !== "1.0.11" || await digest(executable) !== profile.executable) return;
     owned = await mkdtemp(join(tmpdir(), "daynight-copilot-read-"));
     // The pinned SEA extracts its own distribution. Never touch the user's cache.
+    beforeSpawn?.();
     await new Promise<void>((resolve, reject) => execFile(executable, ["--binary-version"], {
       env: { ...env, COPILOT_PKG_CACHE_HOME: owned, COPILOT_SEA_EXTRACT_ONLY: "1" },
       timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 65_536, windowsHide: true,

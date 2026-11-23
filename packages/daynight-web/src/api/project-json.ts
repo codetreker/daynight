@@ -46,3 +46,12 @@ export const decodeTaskSyncJson = async (response: Response): Promise<TaskSyncJs
   const receivedMonotonic = performance.now();
   return { value: decodeTaskGraphText(text), receivedMonotonic };
 };
+
+export const decodeTaskPageJson = async (response: Response): Promise<unknown> => {
+  const text = await response.text();
+  const parsed: unknown = JSON.parse(text);
+  if (object(parsed) && Array.isArray(parsed.items)) {
+    parsed.items = jsonContainerSources(jsonObjectSources(text).get("items")!).map(parseApiJson);
+  }
+  return parsed;
+};

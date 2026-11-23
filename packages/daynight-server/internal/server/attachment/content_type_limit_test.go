@@ -16,7 +16,7 @@ import (
 
 func TestAttachmentHTTPContentTypeLimit(t *testing.T) {
 	files := attachmentTestFiles(t)
-	f := newAttachmentFixture(t, files, io.Discard)
+	f := newMainAttachmentFixture(t, files, io.Discard)
 	handler, task := f.handler, f.task
 	file := attachmentFilePath(task, "keep")
 	prefix, suffix := `text/plain; name="`, `"`

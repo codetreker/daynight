@@ -25,6 +25,7 @@ type REST struct {
 	ProjectID         string                     `json:"projectId"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
+	ParentTaskID      **string                   `json:"parentTaskId,omitempty"`
 	Title             string                     `json:"title"`
 	Description       string                     `json:"description"`
 	Status            string                     `json:"status"`
@@ -55,6 +56,7 @@ type SyncRecord struct {
 	ID                string                     `json:"id"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
+	ParentTaskID      **string                   `json:"parentTaskId,omitempty"`
 	Title             string                     `json:"title"`
 	TitlePreview      string                     `json:"titlePreview"`
 	TitleTruncated    bool                       `json:"titleTruncated"`
@@ -72,13 +74,14 @@ type SyncRecord struct {
 	CancelledAt       *time.Time                 `json:"cancelledAt"`
 }
 
-func RESTSyncRecord(t model.TaskViewRecord) SyncRecord {
+func RESTSyncRecord(t model.TaskViewRecord, relations ...bool) SyncRecord {
+	parentID, parentTaskID := ParentRelation(t.ParentID, t.ParentType, parentView(relations))
 	var platform *string
 	if t.RequiredPlatform != nil {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	return SyncRecord{Properties: properties(t.Properties, false), Tags: RESTTags(t.Tags), ID: t.ID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
+	return SyncRecord{Properties: properties(t.Properties, false), Tags: RESTTags(t.Tags), ID: t.ID, Type: t.Type, ParentID: parentID, ParentTaskID: parentTaskID, Title: t.Title, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
 		Status: string(t.Status), Version: strconv.FormatInt(t.Version, 10), DependsOn: array(t.DependsOn, false), ExternalDependsOn: array(t.ExternalDependsOn, false),
 		RequiredPlatform: platform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt)}
@@ -95,7 +98,9 @@ func optionalTime(value *time.Time) *time.Time {
 	v := value.UTC()
 	return &v
 }
-func RESTTask(t model.Task, extended bool) (REST, error) { return restTask(t, extended, true) }
+func RESTTask(t model.Task, extended bool, relations ...bool) (REST, error) {
+	return restTask(t, extended, true, parentView(relations))
+}
 func RESTTags(tags []model.TagReference) []RESTTagReference {
 	result := make([]RESTTagReference, len(tags))
 	for i, tag := range tags {
@@ -103,13 +108,14 @@ func RESTTags(tags []model.TagReference) []RESTTagReference {
 	}
 	return result
 }
-func restTask(t model.Task, extended, copyValues bool) (REST, error) {
+func restTask(t model.Task, extended, copyValues, relations bool) (REST, error) {
+	parentID, parentTaskID := ParentRelation(t.ParentID, t.ParentType, relations)
 	var platform *string
 	if t.RequiredPlatform != nil {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Tags: RESTTags(t.Tags), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
+	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: parentID, ParentTaskID: parentTaskID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Tags: RESTTags(t.Tags), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
 	if extended {
 		return result, nil
 	}
@@ -148,11 +154,11 @@ func (v REST) MarshalJSON() ([]byte, error) {
 	return b.Bytes(), err
 }
 
-func EncodeREST(w io.Writer, t model.Task, extended bool, max int64) (int64, error) {
+func EncodeREST(w io.Writer, t model.Task, extended bool, max int64, relations ...bool) (int64, error) {
 	if !extended && int64(len(t.Properties["worker"])) > max {
 		return 0, ErrLegacyWorkerIndeterminate
 	}
-	v, err := restTask(t, extended, false)
+	v, err := restTask(t, extended, false, parentView(relations))
 	if err != nil {
 		return 0, err
 	}
@@ -167,6 +173,7 @@ type MCPFull struct {
 	ProjectID         string                     `json:"projectId"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
+	ParentTaskID      **string                   `json:"parentTaskId,omitempty"`
 	Title             string                     `json:"title"`
 	Description       string                     `json:"description"`
 	Properties        map[string]json.RawMessage `json:"properties"`
@@ -187,7 +194,7 @@ type MCPFull struct {
 }
 
 // MapTaskFull copies each raw property value without rewriting arbitrary JSON numbers.
-func MCPTask(t model.Task) MCPFull { return mcpTask(t, true) }
+func MCPTask(t model.Task, relations ...bool) MCPFull { return mcpTask(t, true, parentView(relations)) }
 
 type MCPSummary struct {
 	Tags             []RESTTagReference  `json:"tags"`
@@ -196,6 +203,7 @@ type MCPSummary struct {
 	ProjectID        string              `json:"projectId"`
 	Type             model.TaskType      `json:"type"`
 	ParentID         *string             `json:"parentId"`
+	ParentTaskID     **string            `json:"parentTaskId,omitempty"`
 	TitlePreview     string              `json:"titlePreview"`
 	TitleTruncated   bool                `json:"titleTruncated"`
 	Status           model.TaskStatus    `json:"status"`
@@ -209,7 +217,8 @@ type MCPSummary struct {
 
 const MCPTitlePreviewBytes = 512
 
-func MCPTaskSummary(t model.Task) MCPSummary {
+func MCPTaskSummary(t model.Task, relations ...bool) MCPSummary {
+	parentID, parentTaskID := ParentRelation(t.ParentID, t.ParentType, parentView(relations))
 	title := t.Title
 	truncated := len(title) > MCPTitlePreviewBytes
 	if truncated {
@@ -219,11 +228,12 @@ func MCPTaskSummary(t model.Task) MCPSummary {
 		}
 		title = title[:end]
 	}
-	return MCPSummary{Tags: RESTTags(t.Tags), Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
+	return MCPSummary{Tags: RESTTags(t.Tags), Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: parentID, ParentTaskID: parentTaskID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
 }
-func mcpTask(t model.Task, copyValues bool) MCPFull {
+func mcpTask(t model.Task, copyValues bool, relations ...bool) MCPFull {
+	parentID, parentTaskID := ParentRelation(t.ParentID, t.ParentType, parentView(relations))
 	properties := properties(t.Properties, copyValues)
-	return MCPFull{Progress: t.Progress, Tags: RESTTags(t.Tags), Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
+	return MCPFull{Progress: t.Progress, Tags: RESTTags(t.Tags), Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: parentID, ParentTaskID: parentTaskID, Title: t.Title, Description: t.Description, Properties: properties,
 		Status: t.Status, Version: strconv.FormatInt(t.Version, 10), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues),
 		ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues),
@@ -236,8 +246,21 @@ type MCPEnvelope struct {
 	Meta *MCPMeta `json:"meta,omitempty"`
 }
 type MCPMeta struct {
-	RequestID string `json:"requestId"`
-	Outcome   string `json:"outcome,omitempty"`
+	WriteOutcome string         `json:"writeOutcome,omitempty"`
+	RequestID    string         `json:"requestId"`
+	Outcome      string         `json:"outcome,omitempty"`
+	Refs         map[string]any `json:"refs,omitempty"`
+}
+
+// MCPReceipt contains only the identity and version established by a write.
+type MCPReceipt struct {
+	ProjectID string `json:"projectId"`
+	TaskID    string `json:"taskId"`
+	Version   string `json:"version"`
+}
+
+func MCPTaskReceipt(t model.Task) MCPReceipt {
+	return MCPReceipt{ProjectID: t.ProjectID, TaskID: t.ID, Version: strconv.FormatInt(t.Version, 10)}
 }
 
 func EncodeMCP(w io.Writer, t model.Task, requestID, outcome string, max int64) (int64, error) {
@@ -252,10 +275,10 @@ func EncodeMCPProjection(w io.Writer, task MCPFull, requestID, outcome string, m
 // EncodeMCPResponse measures the JSON-RPC success object emitted by the SDK.
 // HTML escaping of the RPC ID is conservative: the SDK disables it for the
 // outer envelope, while the structured result uses the default JSON encoding.
-func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern, full bool, max int64) (int64, error) {
-	var data any = MCPTaskSummary(t)
+func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern, full bool, max int64, relations ...bool) (int64, error) {
+	var data any = MCPTaskSummary(t, parentView(relations))
 	if full {
-		data = mcpTask(t, false)
+		data = mcpTask(t, false, parentView(relations))
 	}
 	return EncodeMCPDataResponse(w, data, requestID, outcome, rpcID, modern, max)
 }
@@ -263,6 +286,17 @@ func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpc
 // EncodeMCPDataResponse measures the SDK's complete success response for a
 // protocol data value, including the JSON-RPC ID and version-specific fields.
 func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
+	return encodeMCPDataResponse(w, data, &MCPMeta{RequestID: requestID, Outcome: outcome}, rpcID, modern, max)
+}
+
+// EncodeMCPReceiptResponse measures the full write receipt, including metadata.
+func EncodeMCPReceiptResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
+	receipt := MCPTaskReceipt(t)
+	refs := map[string]any{"projectId": receipt.ProjectID, "taskId": receipt.TaskID, "version": receipt.Version}
+	return encodeMCPDataResponse(w, receipt, &MCPMeta{RequestID: requestID, Outcome: outcome, WriteOutcome: "confirmed", Refs: refs}, rpcID, modern, max)
+}
+
+func encodeMCPDataResponse(w io.Writer, data any, meta *MCPMeta, rpcID any, modern bool, max int64) (int64, error) {
 	type content struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -278,7 +312,7 @@ func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpc
 		ID      any    `json:"id,omitempty"`
 		Result  result `json:"result"`
 	}
-	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}}
+	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: meta}}
 	if modern {
 		r.Meta = map[string]any{"io.modelcontextprotocol/serverInfo": map[string]any{"name": "daynight", "version": "1"}}
 		r.ResultType = "complete"

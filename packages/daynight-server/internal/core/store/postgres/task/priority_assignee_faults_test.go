@@ -58,9 +58,9 @@ func TestTaskPriorityListStorageFailures(t *testing.T) {
 		{name: "fence query", ddl: hideTaskProjection, restore: restoreTaskProjection, state: "42P01"},
 		{name: "list query", ddl: `ALTER TABLE task_dependencies RENAME TO dependencies_source`, restore: `ALTER TABLE dependencies_source RENAME TO task_dependencies`, state: "42P01"},
 		{
-			name: "decode", scanColumn: 7, restore: restoreTaskProjectionView,
+			name: "decode", scanColumn: 8, restore: restoreTaskProjectionView,
 			ddl: `ALTER VIEW task_resource_rows RENAME TO resource_source;
- CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,'bad version'::text AS version,
+ CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,parent_type,title,status,'bad version'::text AS version,
  created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`,
 		},
 		{
@@ -68,7 +68,7 @@ func TestTaskPriorityListStorageFailures(t *testing.T) {
 			ddl: `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$
  BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
  ALTER VIEW task_resource_rows RENAME TO resource_source;
- CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,fail_priority_title() AS title,status,version,
+ CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,parent_type,fail_priority_title() AS title,status,version,
  created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`,
 		},
 	} {

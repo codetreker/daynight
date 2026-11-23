@@ -23,7 +23,7 @@ type goalDependencyHandler struct {
 	logger  *slog.Logger
 }
 
-func GoalDependencyRoutes(mux *http.ServeMux, service GoalDependencyService, auth RouteAuthentication, logger *slog.Logger) {
+func GoalDependencyRoutes(mux httpx.RouteRegistrar, service GoalDependencyService, auth RouteAuthentication, logger *slog.Logger) {
 	h := &goalDependencyHandler{service: service, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies"
 	mux.HandleFunc("GET "+path, auth.Require(h.show))

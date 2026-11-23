@@ -80,8 +80,10 @@ describe("Task tag association commands", () => {
     expect(f.calls()).toHaveLength(1);
     expect(f.calls()[0]!.url.pathname).toBe(endpoint);
     expect(f.calls()[0]!.init.method).toBe("PATCH");
+    expect(new Headers(f.calls()[0]!.init.headers).get("Daynight-Return")).toBe("receipt-v1");
     expect(parseBody(f.calls()[0]!.init)).toEqual({ version: task.version, title: "Renamed", tagIds: ids });
-    expect(f.context.stdout.mock.calls[0]![0]).toContain("Renamed");
+    expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: ${task.version + 1n}\n`);
+    expect(f.context.stdout.mock.calls[0]![0]).not.toMatch(/Renamed|Backend|Urgent/);
   });
 
   it.each([

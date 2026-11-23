@@ -34,7 +34,10 @@ Local transfer leaves remote recovery registration explicitly pending. Runtime
 entry points refuse to use the copied original intent to start or control an
 execution at its old paths. A dedicated reader validates the copied journal
 against the original ticket and exposes retained history without starting a
-Provider. Native recovery material remains separately verified by its Provider;
+Provider. Snapshot and timeline readers accept only validated shipped v16/v17 or
+current v18 schemas through an explicit read-only path. Recovery binding reads
+use the same check. CLI upgrades preserve every protected copied byte and its
+manifest digest; the strict current-writer reader remains unchanged. Native recovery material remains separately verified by its Provider;
 timeline availability never establishes native resume capability.
 
 The [runtime design](../../../../docs/design/worker-bot-runtime.md) owns the
@@ -55,6 +58,11 @@ snapshots retain the original committed state.
 operation removed it. A transactionally bound receipt distinguishes the actual
 migration commit from unrelated deletion or corruption.
 
+**Upgrade a protected copied journal in place.** A numbered schema migration
+changes the copied bytes and invalidates the committed manifest digest. Explicit
+read-only access to the shipped compatible schema preserves both historical
+readability and the original checksum authority.
+
 ## Consequences
 
 Migration retains readable local history and stable identities independently
@@ -62,7 +70,9 @@ of the public Controller directory. It requires downtime and temporarily holds
 both source and copied bytes. Original files are retained as evidence rather
 than removed as an implicit cleanup step.
 
-A completed local migration does not make the assistant runnable: remote
-recovery registration and Provider recovery verification remain required.
+A completed local migration does not make the assistant runnable. The
+[Worker reconciliation](2026-11-20-bot-worker-reconciliation.md) performs remote
+recovery registration while preserving the execution fence; verified Provider
+recovery material and an executable dedicated generation remain required.
 The history reader does not add an offline browser history service. Unknown
 stopping evidence remains a refusal even if all files appear readable.

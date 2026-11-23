@@ -70,14 +70,14 @@ describe('localized task graph presentation', () => {
     const waitingIndex = buildGraphIndex(waitingGraph);
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} summaries={summariesForIndex(waitingIndex)} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
-    const selected = await screen.findByRole('button', { name: '最终验收, To do, not ready, No Goal' });
+    const selected = await screen.findByRole('button', { name: '最终验收, To do, not ready' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
-    expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite, No Goal' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
     view.setLocale('zh-CN');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪, 未归属 Goal' })).toBe(selected);
-    expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置, 未归属 Goal' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);
   });
 
@@ -91,11 +91,11 @@ describe('localized task graph presentation', () => {
     expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 in progress');
     expect(screen.getByText('Chain 3 · External 2 · Tasks 5/5 · Dependencies 4/4')).toBeTruthy();
-    const selected = screen.getByRole('button', { name: '合流实现…, In progress, No Goal' });
+    const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
     fireEvent.click(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, No Goal, outside the selected dependency path' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, No Goal, prerequisite of the selected task' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, successor of the selected task' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, prerequisite of the selected task' })).toBeTruthy();
     const initialTransform = viewport(view.baseElement).style.transform;
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
     await waitFor(() => expect(viewport(view.baseElement).style.transform).not.toBe(initialTransform));
@@ -106,16 +106,20 @@ describe('localized task graph presentation', () => {
     const routes = paths.map((path) => path.getAttribute('d'));
     const rootToggle = view.baseElement.querySelector('#task-root-A');
     const relation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task A → subsequent task C, selected dependency path' });
+    const successorRelation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task C → subsequent task D, successor dependency path' });
+    expect(screen.getByText('Successors', { selector: '.graph-foot *' })).toBeVisible();
     const canvas = view.baseElement.querySelector('.task-graph-canvas');
     expect(within(screen.getByRole('dialog')).queryByRole('combobox')).toBeNull();
     view.setLocale('zh-CN');
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(1);
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
-    expect(screen.getByRole('button', { name: '合流实现…，进行中, 未归属 Goal，已选中' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪, 未归属 Goal，不在所选依赖路径中' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪，所选任务的后继' })).toBeTruthy();
     expect(screen.getByRole('img', { name: '普通依赖：前置任务 A → 后续任务 C，所选依赖路径' })).toBe(relation);
+    expect(screen.getByRole('img', { name: '普通依赖：前置任务 C → 后续任务 D，所选任务的后继依赖路径' })).toBe(successorRelation);
+    expect(screen.getByText('后继', { selector: '.graph-foot *' })).toBeVisible();
     expect(screen.getByRole('group', { name: '任务依赖关系' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '放大' })).toHaveAttribute('title', '放大'));
     expect(screen.getByRole('button', { name: '缩小' })).toBeTruthy();
@@ -188,7 +192,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });

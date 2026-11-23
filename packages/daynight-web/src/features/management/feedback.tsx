@@ -5,9 +5,9 @@ import { ApiError } from '../../api/client';
 import { ManagementDialog } from './ManagementDialog';
 
 export const ManagementError = ({ error, retry }: { readonly error: unknown; readonly retry?: () => void }) => {
-  const { messages: { auth: { management: { common: m } }, common } } = useI18n();
+  const { locale, messages: { auth: { management: { common: m } }, common } } = useI18n();
   return <div className="notice error" role="alert">
-  <p>{error instanceof ApiError && error.status === 401 ? m.unauthenticated
+  <p>{error instanceof ApiError && error.code === "credential_interface_unavailable" ? (locale === "zh-CN" ? "访问凭据接口暂不可用，请稍后重试。" : "Credential management is temporarily unavailable. Try again later.") : error instanceof ApiError && error.status === 401 ? m.unauthenticated
     : error instanceof ApiError && error.status === 404 ? m.notFound
       : m.operationFailed}</p>
   {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}<code>{error.requestId}</code></p>}
@@ -39,7 +39,7 @@ export const DateLabel = ({ value }: { readonly value: string }) => {
   return <time dateTime={value}>{format.dateTime(value)}</time>;
 };
 
-export const SecretDialog = ({ kind, secret, onClose, suspended = false }: { readonly kind: 'token' | 'invitation'; readonly secret: string; readonly onClose: () => void; readonly suspended?: boolean }) => {
+export const SecretDialog = ({ kind, secret, onClose, suspended = false, typography = false }: { readonly typography?: boolean; readonly kind: 'token' | 'invitation'; readonly secret: string; readonly onClose: () => void; readonly suspended?: boolean }) => {
   const { messages: { auth: { management: { secret: m, members } } } } = useI18n();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -58,12 +58,12 @@ export const SecretDialog = ({ kind, secret, onClose, suspended = false }: { rea
       value.current.focus(); value.current.select();
     }
   };
-  return <ManagementDialog title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
+  return <ManagementDialog className={typography ? "management-typography" : ""} title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
     {warning ? <><button className="button" type="button" onClick={() => setWarning(false)}>{m.returnSave}</button><button className="button primary" type="button" onClick={onClose}>{m.confirmClose}</button></>
       : <button className="button primary" type="button" onClick={onClose}>{m.savedClose}</button>}
   </>}>
     <p>{invitation ? m.invitationBody : m.tokenBody}</p>
-    <div className="credential"><textarea ref={value} aria-label={invitation ? m.invitationLabel : m.tokenLabel} readOnly value={secret} rows={3} /><CopyButton label={invitation ? m.copyLink : m.copy} onClick={() => { void copy(); }}>{invitation ? m.copyLink : m.copy}</CopyButton></div>
+    <div className="credential"><textarea ref={value} aria-label={invitation ? m.invitationLabel : m.tokenLabel} data-touch-text={typography ? 'responsive' : undefined} readOnly value={secret} rows={3} /><CopyButton label={invitation ? m.copyLink : m.copy} onClick={() => { void copy(); }}>{invitation ? m.copyLink : m.copy}</CopyButton></div>
     {copied && <p role="status">{m.copied}</p>}
     {failed && <p className="notice" role="status">{m.copyFailed}</p>}
     {invitation && <div className="notice">{members.inviteTerms}</div>}

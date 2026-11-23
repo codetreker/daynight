@@ -17,13 +17,16 @@ type Profile struct {
 	AllowInclusion bool                  `json:"-"`
 }
 
-func ProfileReasons(provider string) []string {
+func ProfileReasons(provider string, profileID ...string) []string {
 	switch provider {
 	case "copilot":
 		return []string{"input_cache_semantics_unknown", "native_recovery_gap"}
 	case "claude":
 		return []string{"subagent_scope_unknown"}
 	case "codex":
+		if len(profileID) == 1 && profileID[0] == "codex-response-0.169.0-v1" {
+			return []string{"native_recovery_gap", "subagent_scope_unknown", "model_unknown"}
+		}
 		return []string{"provider_unsupported"}
 	}
 	return []string{}
@@ -34,6 +37,7 @@ func Profiles() []Profile {
 		profile("copilot", "copilot-event-1.0.11-v1", "native_event", "immutable", "included_per_event", "durable_after_ingress_only", "partial_only", "copilot-event-v1:", []string{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "agentId", "agentType"}, []string{"unknown", "supported", "unknown", "unknown", "optional", "unknown"}),
 		profile("claude", "claude-message-input-0.3.247-v1", "root_message_input", "immutable", "unknown", "native_history_partial", "partial_only", "claude-message-input-v1:", []string{"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}, []string{"supported", "unknown", "supported", "supported", "unknown", "unknown"}),
 		profile("codex", "codex-snapshot-unaccountable-v1", "none", "none", "unknown", "unsupported", "unsupported", "", nil, []string{"unsupported", "unsupported", "unsupported", "unsupported", "unsupported", "unsupported"}),
+		profile("codex", "codex-response-0.169.0-v1", "native_event", "immutable", "unknown", "native_history_partial", "partial_only", "codex-response-v1:", []string{"inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"}, []string{"supported", "supported", "optional", "unknown", "optional", "supported"}),
 	}
 }
 
@@ -45,7 +49,7 @@ func profile(provider, id, plane, revision, subagents, recovery, completion, pre
 		m[k] = metrics[i]
 	}
 	q := "unverified"
-	if provider == "codex" {
+	if id == "codex-snapshot-unaccountable-v1" {
 		q = "unsupported"
 	}
 	return Profile{Provider: provider, ID: id, SourcePrefix: prefix, NativeKeys: keys, DisjointCache: provider == "claude", Capability: model.UsageCapability{ProfileID: id, Qualification: q, MeasurementPlane: plane, RevisionAuthority: revision, Metrics: m, Subagents: subagents, Recovery: recovery, Completion: completion}}
@@ -182,6 +186,44 @@ func ValidateMeasurement(p Profile, e model.UsageEvent) error {
 			}
 		} else if m.Input != nil {
 			return Fault("invalid_measurement")
+		}
+	}
+	if p.ID == "codex-response-0.169.0-v1" {
+		call := strings.TrimPrefix(e.SourceKey, p.SourcePrefix)
+		if len(call) != 64 || e.NativeCallID == nil || *e.NativeCallID != call || e.NativeTurnID == nil || e.Model != nil || m.CacheWrite != nil {
+			return Fault("invalid_measurement")
+		}
+		for _, r := range call {
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+				return Fault("invalid_measurement")
+			}
+		}
+		if !nativeEqual(e.NativeMetrics, "inputTokens", m.Input) || !nativeEqual(e.NativeMetrics, "outputTokens", m.Output) || !nativeEqual(e.NativeMetrics, "totalTokens", m.Total) || !nativeEqual(e.NativeMetrics, "totalTokens", m.ProviderTotal) {
+			return Fault("invalid_measurement")
+		}
+		// Upstream defaults missing detail counters to zero. Only positive values
+		// establish a known cache or reasoning count in this version's profile.
+		for _, detail := range []struct {
+			key    string
+			metric *string
+		}{{"cachedInputTokens", m.CacheRead}, {"reasoningOutputTokens", m.Reasoning}} {
+			native := e.NativeMetrics[detail.key]
+			if native == nil || native == "0" {
+				if detail.metric != nil {
+					return Fault("invalid_measurement")
+				}
+			} else if !nativeEqual(e.NativeMetrics, detail.key, detail.metric) {
+				return Fault("invalid_measurement")
+			}
+		}
+		for _, required := range ProfileReasons(p.Provider, p.ID) {
+			found := false
+			for _, reason := range e.ReasonCodes {
+				found = found || reason == required
+			}
+			if !found {
+				return Fault("invalid_measurement")
+			}
 		}
 	}
 	return nil

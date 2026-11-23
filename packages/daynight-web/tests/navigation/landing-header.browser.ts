@@ -38,7 +38,7 @@ for (const state of ['pending', 'anonymous', 'unavailable', 'authenticated'] as 
           const box = element.getBoundingClientRect(), arrowBox = arrow.getBoundingClientRect();
           return { height: box.height, fontSize: getComputedStyle(element).fontSize, appearance: getComputedStyle(element).appearance, arrowWidth: arrowBox.width, arrowHeight: arrowBox.height, endGap: box.right - arrowBox.right, centerOffset: Math.abs(box.top + box.height / 2 - arrowBox.top - arrowBox.height / 2), localeDecoration: getComputedStyle(element.closest('.locale-control')!, '::after').content };
         });
-        expect(skin).toMatchObject({ height: 32, fontSize: '11px', appearance: 'none', arrowWidth: 10, arrowHeight: 10, localeDecoration: 'none' });
+        expect(skin).toMatchObject({ height: 32, fontSize: '14px', appearance: 'none', arrowWidth: 10, arrowHeight: 10, localeDecoration: 'none' });
         expect(Math.abs(skin.endGap - 12)).toBeLessThanOrEqual(1);
         expect(skin.centerOffset).toBeLessThanOrEqual(1);
       }

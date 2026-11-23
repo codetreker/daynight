@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -14,14 +15,15 @@ const install = async (page: Page) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
     if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send(user);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === '/api/v1/me/tokens') return request.method() === 'POST'
-      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
+    if (path === '/api/v2/me/tokens') return request.method() === 'POST'
+      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
       : send({ items: [] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [] });
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -67,7 +69,7 @@ for (const width of [1280, 320]) {
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 
-    if (width === 320) await page.getByRole('button', { name: 'Expand sidebar' }).click();
+    if (width === 320) await page.getByRole('button', { name: 'Open navigation' }).click();
     await page.locator('.sidebar nav').getByRole('link', { name: 'Projects', exact: true }).click();
     const dialog = page.getByRole('alertdialog');
     await expect(dialog).toBeVisible();
@@ -102,12 +104,47 @@ test('traversing account tabs retains the one-time token owner without replaying
   await expect(tabs.getByRole('link', { name: 'Access credentials' })).toHaveAttribute('aria-current', 'page');
   await expect(secret).toHaveValue('once-only-secret');
   expect(await secret.evaluate(element => element === (window as unknown as { tokenSecretNode: Element }).tokenSecretNode)).toBe(true);
-  expect(writes).toEqual(['POST /api/v1/me/tokens']);
+  expect(writes).toEqual(['POST /api/v2/me/tokens']);
   await page.reload();
   await expect(tabs.getByRole('link', { name: 'Access credentials' })).toHaveAttribute('aria-current', 'page');
   await expect(secret).toHaveCount(0);
-  expect(writes).toEqual(['POST /api/v1/me/tokens']);
+  expect(writes).toEqual(['POST /api/v2/me/tokens']);
 });
+
+for (const hasTouch of [false, true]) {
+  test(`account credentials preserve ordinary sizes at 320px (touch=${hasTouch})`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+    const page = await context.newPage();
+    try {
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+      expect(await page.evaluate(() => matchMedia('(pointer: fine)').matches)).toBe(!hasTouch);
+      const writes = await install(page);
+      await page.goto('/account?tab=tokens');
+      const create = page.getByRole('region', { name: 'Personal access tokens' }).getByRole('button', { name: 'Create token' });
+      await expect(create).toBeEnabled(); await create.click();
+      const dialog = page.getByRole('dialog', { name: 'Create personal access token' });
+      const name = dialog.getByLabel('Token name');
+      const expiry = dialog.getByLabel('Expiration', { exact: true });
+      await expiry.selectOption('custom');
+      const date = dialog.getByLabel('Expiration date and time');
+      for (const rootSize of [16, 12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+        for (const field of [name, expiry, date]) await expect(field).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+      }
+      await expiry.selectOption('never');
+      await name.fill('Device');
+      await dialog.getByRole('button', { name: 'Create token' }).click();
+      const secret = page.getByLabel('One-time access token');
+      await expect(secret).toHaveValue('once-only-secret');
+      await expect(secret).not.toHaveAttribute('data-touch-text');
+      for (const rootSize of [16, 12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+        await expect(secret).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+      }
+      expect(writes).toEqual(['POST /api/v2/me/tokens']);
+    } finally { await context.close(); }
+  });
+}
 
 test('URL owns selection even with stale account history payloads', async ({ page }) => {
   await install(page);
@@ -171,7 +208,7 @@ test('account links open their selected page in a new tab', async ({ page, conte
 
 test('credential-specific setup and device links land on credentials', async ({ page }) => {
   await install(page);
-  await page.route('**/api/v1/auth/device/inspect', route => route.fulfill({ json: { userCode: 'BCDFG-HJKLM', status: 'approved', expiresAt: '2099-10-20T09:00:00Z' }, headers: { 'Daynight-User-ID': userId } }));
+  await page.route('**/api/v2/auth/device/inspect', route => route.fulfill({ json: { userCode: 'BCDFG-HJKLM', status: 'approved', expiresAt: '2099-10-20T09:00:00Z' }, headers: { 'Daynight-User-ID': userId } }));
   await page.goto('/account');
   const enter = async (path: string) => page.evaluate(destination => {
     history.pushState(null, '', destination); dispatchEvent(new PopStateEvent('popstate'));

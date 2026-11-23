@@ -15,7 +15,8 @@ Domain packages own candidate limits and pure admission, with a versioned policy
 catalog for consumers. The original delivery anticipated a historical-data
 inventory; the confirmed scope later removed that prerequisite while retaining
 data integrity and domain-owned admission. Property normalization remains separate from admission;
-Task and Step share text limits. Protocol projections and measurement share the
+Task uses the shared text limits. The [Steps application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
+removes Step admission and its four catalog entries. Protocol projections and measurement share the
 actual response representation without a core dependency on HTTP handlers.
 Typed violations report measurements without retaining the input. The
 [specification](../../../../docs/spec/daynight-api-input-limits.md) records the
@@ -39,4 +40,4 @@ by their respective owners. No offline inventory or unified activation gate is
 required, and existing data must not be silently rewritten. Complete unpaged directories and cumulative storage remain
 unbounded. The existing [Task data ownership decision](2026-11-05-task-data-ownership.md)
 continues to own the distinction between property structure, write permissions,
-and Step/Thread encoding.
+and Thread encoding; its original Step encoding rules are historical.

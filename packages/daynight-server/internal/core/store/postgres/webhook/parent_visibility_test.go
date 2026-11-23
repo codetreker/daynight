@@ -24,7 +24,7 @@ func testParentDeletionHidesWebhookSources(t *testing.T, conn *pgx.Conn) {
 	owner := wm.Owner{Kind: "personal", ID: f.user}
 	before := time.Now().Add(time.Hour)
 	baseline := freshHistoryDisclosure(t, ctx, f.conn, owner, f.endpoint, f.user, before)
-	if _, err := f.conn.Exec(ctx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, goal); err != nil {
+	if _, err := f.conn.Exec(ctx, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal); err != nil {
 		t.Fatal(err)
 	}
 	after := freshHistoryDisclosure(t, ctx, f.conn, owner, f.endpoint, f.user, before)

@@ -123,11 +123,11 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const page = catalog.query === controller.query ? catalog.page : null;
   return <div className="tag-filter-wrap">
     <details ref={popover.rootRef} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={popover.onKeyDown}>
-      <SelectTrigger as="summary" ref={popover.triggerRef} density="filter" touchMode="responsive" focusTone="task" aria-expanded={controller.open} aria-invalid={controller.invalid || controller.error !== null || undefined} pending={controller.open && page === null && catalog.error === null} count={count} onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}</SelectTrigger>
+      <SelectTrigger as="summary" ref={popover.triggerRef} density="filter" touchMode="responsive-target" focusTone="task" aria-expanded={controller.open} aria-invalid={controller.invalid || controller.error !== null || undefined} pending={controller.open && page === null && catalog.error === null} count={count} onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}</SelectTrigger>
       <div ref={popover.panelRef} className="tag-filter-panel">
         <div className="tag-filter-head"><strong>{title}</strong><button className="tag-filter-text" type="button" disabled={count === 0} onClick={clear}>{m.clear}</button></div>
         <div className="tag-filter-search">
-          <input ref={popover.searchRef} type="search" aria-label={`${title}: ${m.search}`} placeholder={`${m.search}…`} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
+          <input ref={popover.searchRef} data-touch-text="coarse" type="search" aria-label={`${title}: ${m.search}`} placeholder={`${m.search}…`} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
           {controller.query && <button className="tag-filter-search-clear" type="button" aria-label={m.clearQuery} onClick={() => { controller.setQuery(''); popover.searchRef.current?.focus(); }}>×</button>}
         </div>
         {catalog.error !== null && <p className="tag-filter-feedback" role="alert">{m.error} <button className="tag-filter-text" type="button" onClick={catalog.refresh}>{m.retry}</button></p>}

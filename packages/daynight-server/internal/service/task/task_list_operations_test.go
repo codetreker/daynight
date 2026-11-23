@@ -297,22 +297,6 @@ func (c *listOperationCapability) TaskHeader(context.Context, string, string) (m
 	return model.TaskHeader{}, c.fail("TaskHeader")
 }
 
-func (c *listOperationCapability) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	return model.TaskStep{}, c.fail("TaskStep")
-}
-
-func (c *listOperationCapability) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	return nil, c.fail("TaskSteps")
-}
-
-func (c *listOperationCapability) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	return nil, c.fail("TaskStepPage")
-}
-
-func (c *listOperationCapability) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	return store.TaskStepProjection{}, c.fail("TaskStepSummary")
-}
-
 func (c *listOperationCapability) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	return model.ThreadMessage{}, c.fail("ThreadMessage")
 }
@@ -337,7 +321,7 @@ func (c *listOperationCapability) TaskWorkGroups(context.Context, string, store.
 	return store.TaskWorkGroups{}, c.fail("TaskWorkGroups")
 }
 
-func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	return store.TaskWorkTargets{}, c.fail("TaskWorkTargets")
 }
 
@@ -347,6 +331,10 @@ func (c *listOperationCapability) TaskCacheEpoch(context.Context, string) (strin
 
 func (c *listOperationCapability) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return nil, c.fail("TaskSyncTasks")
+}
+
+func (c *listOperationCapability) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	return nil, c.fail("TaskSyncGoalDependsOn")
 }
 
 func (c *listOperationCapability) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {

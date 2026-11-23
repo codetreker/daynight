@@ -8,6 +8,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/google/uuid"
@@ -17,11 +18,48 @@ type modelRequester interface {
 	Request(context.Context, model.Principal, string, ro.Request) (ro.Message, error)
 }
 
+type creationModelRequester interface {
+	RequestForOperations(context.Context, model.Principal, string, ro.Request, ...scopepolicy.Operation) (ro.Message, error)
+}
+
+type creationDiscovery struct {
+	requester  creationModelRequester
+	operations []scopepolicy.Operation
+}
+
+func (d creationDiscovery) Request(ctx context.Context, p model.Principal, workerID string, request ro.Request) (ro.Message, error) {
+	return d.requester.RequestForOperations(ctx, p, workerID, request, d.operations...)
+}
+
+type legacyCreationDiscovery struct{ modelRequester }
+
+func (d legacyCreationDiscovery) RequestForOperations(ctx context.Context, p model.Principal, workerID string, request ro.Request, _ ...scopepolicy.Operation) (ro.Message, error) {
+	return d.Request(ctx, p, workerID, request)
+}
+
 // NewWithNativeDiscovery shares the authenticated Worker broker with creation.
 func NewWithNativeDiscovery(database botStore, requester modelRequester) *Bots {
 	service := New(database)
 	service.models = requester
+	if requester != nil {
+		service.creationModels = legacyCreationDiscovery{requester}
+	}
 	return service
+}
+
+// NewScopedWithNativeDiscovery applies the same admission before discovery and
+// again inside the Bot write transaction.
+func NewScopedWithNativeDiscovery(database botStore, requester modelRequester, creationRequester creationModelRequester, authorization DefinitionAuthorizationSource) (*Bots, error) {
+	service, err := NewScoped(database, authorization)
+	if err != nil {
+		return nil, err
+	}
+	if requester == nil || creationRequester == nil {
+		return nil, errors.New("Bot model discovery requesters are required")
+	}
+	service.models = requester
+	service.creationModels = creationRequester
+	return service, nil
 }
 
 func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, input botcore.CreateBot) (*botcore.CreationResolution, error) {
@@ -70,15 +108,20 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	if err != nil {
 		return nil, err
 	}
-	final, err := s.resolveNative(ctx, principal, base, input.Overrides, preference, baseline)
+	operations := definitionProjection(ctx, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)
+	var requester modelRequester
+	if s.creationModels != nil {
+		requester = creationDiscovery{requester: s.creationModels, operations: operations}
+	}
+	final, err := s.resolveNative(ctx, principal, requester, base, input.Overrides, preference, baseline, operations...)
 	if err != nil {
 		return nil, err
 	}
 	return &botcore.CreationResolution{Expected: base, ExpectedBaseline: baseline, ExpectedPreference: preference, Configuration: final}, nil
 }
 
-func (s *Bots) readModels(ctx context.Context, principal model.Principal, base model.BotConfiguration, selected *string) (ro.ModelResult, error) {
-	if s.models == nil {
+func (s *Bots) readModels(ctx context.Context, principal model.Principal, requester modelRequester, base model.BotConfiguration, selected *string, operations ...scopepolicy.Operation) (ro.ModelResult, error) {
+	if requester == nil {
 		return ro.ModelResult{}, nativeFailure("unsupported_native_selection", "Worker native selection discovery is unavailable.")
 	}
 	hidden, limit := true, 100
@@ -87,12 +130,15 @@ func (s *Bots) readModels(ctx context.Context, principal model.Principal, base m
 	var fence ro.Fence
 	seen := map[string]bool{}
 	for page := 0; page < 500; page++ {
+		if err := s.discoveryAdmission(ctx, principal, operations...); err != nil {
+			return catalog, err
+		}
 		raw, err := json.Marshal(input)
 		if err != nil {
 			return catalog, err
 		}
 		requestID := uuid.NewString()
-		response, err := s.models.Request(ctx, principal, base.WorkerID, ro.Request{RequestID: requestID, Operation: "model.list", Input: raw})
+		response, err := requester.Request(ctx, principal, base.WorkerID, ro.Request{RequestID: requestID, Operation: "model.list", Input: raw})
 		if err != nil {
 			return catalog, err
 		}
@@ -138,7 +184,7 @@ func (s *Bots) readModels(ctx context.Context, principal model.Principal, base m
 }
 func nativeFailure(code, message string) error { return &model.Fault{Code: code, Message: message} }
 
-func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, base model.BotConfiguration, overrides model.BotOverrides, preference model.BotNativePreference, baseline model.BotConfiguration) (model.BotConfiguration, error) {
+func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, requester modelRequester, base model.BotConfiguration, overrides model.BotOverrides, preference model.BotNativePreference, baseline model.BotConfiguration, operations ...scopepolicy.Operation) (model.BotConfiguration, error) {
 	ctx, cancel := context.WithTimeout(ctx, ro.ModelRequestTimeout)
 	defer cancel()
 	selected := base.Model
@@ -153,7 +199,7 @@ func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, bas
 	if base.Selection.ModelSource == "preference" {
 		probeModel = nil
 	}
-	catalog, err := s.readModels(ctx, principal, base, probeModel)
+	catalog, err := s.readModels(ctx, principal, requester, base, probeModel, operations...)
 	if err != nil {
 		return base, err
 	}
@@ -161,7 +207,7 @@ func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, bas
 		if botcore.NativeModel(catalog, selected) == nil {
 			selected = nil
 		} else {
-			catalog, err = s.readModels(ctx, principal, base, selected)
+			catalog, err = s.readModels(ctx, principal, requester, base, selected, operations...)
 			if err != nil {
 				return base, err
 			}

@@ -34,7 +34,9 @@ test('Team invitation success remains readable and navigable at 320px in both la
   const open = page.getByRole('link', { name: 'Open Team', exact: true }); await expect(open).toHaveAttribute('href', `/teams/${teamId}`); await expect(open).toBeInViewport({ ratio: 1 });
   expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
   await open.click(); await expect(page).toHaveURL(new RegExp(`/teams/${teamId}$`));
-  await expect(page.getByRole('heading', { name: team.name, exact: true })).toBeVisible();
+  const projectList = page.locator('.project-list-information');
+  await expect(projectList.getByText(team.name, { exact: true })).toBeVisible();
+  await expect(projectList.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(id => localStorage.getItem(`daynight.selectedTeam:${id}`), userId)).toBe(teamId);
   expect(accepts).toBe(1);
 });

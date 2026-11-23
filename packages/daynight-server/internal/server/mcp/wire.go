@@ -125,12 +125,14 @@ func utcTime(value *time.Time) *time.Time {
 }
 
 // MapTaskFull copies each raw property value without rewriting arbitrary JSON numbers.
-func MapTaskFull(t core.Task) TaskFull { return taskprotocol.MCPTask(t) }
+func MapTaskFull(t core.Task, relations ...bool) TaskFull {
+	return taskprotocol.MCPTask(t, relations...)
+}
 
 type TaskSummary = taskprotocol.MCPSummary
 
 const titlePreviewBytes = taskprotocol.MCPTitlePreviewBytes
 
-func MapTaskSummary(t core.Task) TaskSummary {
-	return taskprotocol.MCPTaskSummary(t)
+func MapTaskSummary(t core.Task, relations ...bool) TaskSummary {
+	return taskprotocol.MCPTaskSummary(t, relations...)
 }

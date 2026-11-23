@@ -154,7 +154,7 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'transfer recovery','https://example.test/recovery')`, []any{project}},
 		{`INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, []any{project, team}},
 		{`INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'transfer recovery')`, []any{task, project}},
-		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',now())`, []any{credential, user, hash[:]}},
+		{`INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload'],1,$1,$2,$3,'test',now())`, []any{credential, user, hash[:]}},
 	} {
 		if _, err := db.Pool.Exec(t.Context(), query.sql, query.args...); err != nil {
 			t.Fatal(err)

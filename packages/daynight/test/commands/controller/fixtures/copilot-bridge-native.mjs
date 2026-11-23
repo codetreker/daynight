@@ -41,6 +41,7 @@ const server = createServer(socket => {
         respond(id, {});
       }
       else if (method === "session.options.update" || method === "session.destroy" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
+      else if (method === "session.interruptMainTurn") respond(id, { interrupted: true });
       else if (method === "session.model.getCurrent") respond(id, { modelId: "fixture-model" });
       else if (method === "session.provider.getEndpoint") {
         assert.equal(params.modelId, undefined);

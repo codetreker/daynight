@@ -1,8 +1,14 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+)
 
 type DeviceAuthorization struct {
+	// ApprovedScopes is nil before approval; approved decisions hold explicit IDs.
+	ApprovedScopes      []scopepolicy.ScopeID
 	ID                  string
 	DeviceCodeHash      []byte
 	UserCode            string

@@ -54,10 +54,13 @@ func personalTaskPhase(phase string, err error) error {
 // PersonalTasks selects an account inventory in one snapshot, releases it for
 // live observation, then checks credentials and the complete inventory again.
 func (s *Observations) PersonalTasks(ctx context.Context, principal model.Principal, limit int, cursor *string) (PersonalTaskPage, error) {
+	if err := requireTaskScope(s.authorization, principal); err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
 	if err := model.RequirePrincipal(principal); err != nil {
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
 	}
-	if _, ok := s.observer.(personalSessionRowObserver); !ok {
+	if _, ok := s.observer.(personalSessionRowObserver); !ok && sessionProjectionAllowed(s.authorization) {
 		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("personal task row observer is unavailable"))
 	}
 	selection, err := taskcore.SelectPersonalTasks(principal.UserID, limit, cursor)
@@ -73,6 +76,9 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 	order := []string{}
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.operations.credential(ctx, snapshot.CredentialDAO(), principal); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization); err != nil {
 			return err
 		}
 		reader, ok := snapshot.TaskDAO().(store.PersonalTaskReader)
@@ -140,6 +146,9 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 			result.NextCursor = &value
 		}
 		for _, project := range order {
+			if !sessionProjectionAllowed(s.authorization) {
+				break
+			}
 			selected, err := loadSelectedExecutionSourcesWithPolicy(ctx, snapshot, project, identities[project], true)
 			if err != nil {
 				return err
@@ -182,6 +191,19 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 	})
 	if err != nil {
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if !sessionProjectionAllowed(s.authorization) {
+		result.ResponseTaskAt, err = s.recheckPersonalInventory(ctx, principal, result.InventoryRevision)
+		if err != nil {
+			return PersonalTaskPage{}, err
+		}
+		result.ResponseSessionAt = result.ResponseTaskAt
+		result.SessionPartial = len(result.Items) > 0
+		for i := range result.Items {
+			result.Items[i].Session = taskcore.ScopeUnavailableObservation()
+			result.Items[i].SessionRow = model.TaskSyncObservation{TaskVersion: result.Items[i].Task.Version, State: "unavailable"}
+		}
+		return result, nil
 	}
 	allObservations := map[string]sp.TaskSessionObservation{}
 	rowObservations := map[string]model.TaskSyncObservation{}
@@ -263,6 +285,9 @@ func (s *Observations) recheckPersonalInventory(ctx context.Context, principal m
 	var observed time.Time
 	err := s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.operations.credential(ctx, snapshot.CredentialDAO(), principal); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization); err != nil {
 			return err
 		}
 		reader, ok := snapshot.TaskDAO().(store.PersonalTaskReader)

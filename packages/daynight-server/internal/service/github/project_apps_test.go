@@ -48,12 +48,20 @@ func (s projectAppScopeStub) WriteGitHubProjectApp(ctx context.Context, id, acto
 
 type projectAppDAOStub struct {
 	store.GitHubProjectAppWriteDAO
-	facts  func(context.Context, model.Principal) (store.GitHubProjectAppFacts, error)
-	app    func(context.Context, string, string, string) (store.GitHubProjectApp, error)
-	save   func(context.Context, store.GitHubProjectAppWrite) (bool, error)
-	impact func(context.Context, string) error
+	facts   func(context.Context, model.Principal) (store.GitHubProjectAppFacts, error)
+	access  func(context.Context, model.Principal) (store.GitHubProjectAppAccess, error)
+	version func(context.Context, string, string, string) (int64, error)
+	app     func(context.Context, string, string, string) (store.GitHubProjectApp, error)
+	save    func(context.Context, store.GitHubProjectAppWrite) (bool, error)
+	impact  func(context.Context, string) error
 }
 
+func (d projectAppDAOStub) ProjectAppAccess(ctx context.Context, p model.Principal) (store.GitHubProjectAppAccess, error) {
+	return d.access(ctx, p)
+}
+func (d projectAppDAOStub) ProjectAppVersion(ctx context.Context, a, g, team string) (int64, error) {
+	return d.version(ctx, a, g, team)
+}
 func (d projectAppDAOStub) Facts(ctx context.Context, p model.Principal) (store.GitHubProjectAppFacts, error) {
 	return d.facts(ctx, p)
 }
@@ -78,7 +86,7 @@ func (f projectAppAcquireFunc) Acquire(ctx context.Context, id string, v int64) 
 
 func projectAppServiceFacts() store.GitHubProjectAppFacts {
 	role := model.ProjectAdmin
-	return store.GitHubProjectAppFacts{Project: model.Project{ID: mgmtProject, RepoURL: "https://github.com/owner/repo", Ownership: model.ProjectOwnership{TeamID: projectAppTeamID, Version: 8}}, Access: model.ProjectAccess{Role: role, TeamRole: &role}, Connection: githubpr.DefaultConnection(mgmtProject)}
+	return store.GitHubProjectAppFacts{Project: model.Project{ID: mgmtProject, RepoURL: "https://github.com/owner/repo", Ownership: model.ProjectOwnership{TeamID: projectAppTeamID, Version: 8}}, RepositoryVersion: 1, Access: model.ProjectAccess{Role: role, TeamRole: &role}, Connection: githubpr.DefaultConnection(mgmtProject)}
 }
 func projectAppServiceSelection() core.ProjectAppSelection {
 	return core.ProjectAppSelection{AppResourceID: projectAppResource, GrantID: projectAppGrantID, AppVersion: 2, OwnershipVersion: 8}
@@ -288,6 +296,29 @@ func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
 	}
 }
 
+func TestProjectAppConnectRejectsProofAfterRepositoryReturns(t *testing.T) {
+	client := projectAppRemoteClient(t, func(w http.ResponseWriter, r *http.Request) { projectAppRemoteResponse(t, w, r) })
+	f := projectAppServiceFacts()
+	changed := f
+	changed.RepositoryVersion += 2
+	saves, releases := 0, 0
+	db := projectAppScopeStub{t: t, read: func(_ context.Context, _ string, work func(store.GitHubProjectAppReadDAO) error) error {
+		return work(projectAppReadDAO(t, f))
+	}, write: func(_ context.Context, _, _, _ string, work func(store.GitHubProjectAppWriteDAO) error) (store.Completion, error) {
+		dao := projectAppReadDAO(t, changed)
+		dao.save = func(context.Context, store.GitHubProjectAppWrite) (bool, error) { saves++; return true, nil }
+		return store.Completion{Outcome: store.TransactionNotCommitted}, work(dao)
+	}}
+	provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
+		return client, func() { releases++ }, nil
+	})
+	_, err := NewProjectAppManager(db, provider, slog.Default()).Connect(t.Context(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "github_repository_mismatch" || saves != 0 || releases != 1 {
+		t.Fatalf("stale proof: err=%v saves=%d releases=%d", err, saves, releases)
+	}
+}
+
 func TestProjectAppManagerLocalOperationsUseBoundScope(t *testing.T) {
 	for _, op := range []string{"get", "disconnect", "settings", "sync"} {
 		t.Run(op, func(t *testing.T) {
@@ -366,7 +397,7 @@ func TestProjectAppManagerInvalidRequestsHaveNoExternalWork(t *testing.T) {
 }
 
 func TestProjectAppManagerDiscoveryFailureDoesNotReturnCandidate(t *testing.T) {
-	for _, mode := range []string{"role", "read", "provider", "remote", "second-read", "connection-changed", "repository-changed"} {
+	for _, mode := range []string{"role", "read", "provider", "remote", "second-read", "connection-changed", "repository-changed", "repository-returned"} {
 		t.Run(mode, func(t *testing.T) {
 			cause := errors.New("controlled unavailable dependency")
 			client := projectAppRemoteClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -392,6 +423,9 @@ func TestProjectAppManagerDiscoveryFailureDoesNotReturnCandidate(t *testing.T) {
 					}
 					if mode == "repository-changed" {
 						f.Project.RepoURL = "https://github.com/owner/changed"
+					}
+					if mode == "repository-returned" {
+						f.RepositoryVersion += 2
 					}
 				}
 				return work(projectAppReadDAO(t, f))

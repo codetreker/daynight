@@ -19,8 +19,11 @@ including its file lock, pre-generated secret and receipt-only recovery. A
 pending transfer binds and renews before application work starts. A missing old
 receipt does not block a newer transfer forever: the shared claim state machine
 re-reads the generation and retires only an obsolete possible outcome, retaining
-an unknown operation while its possible generation remains active. Healthy local
-Controller observations gate maintenance; applications receive cancellation and
+an unknown operation while its possible generation remains active. Local Bot candidates survive temporary hosting revalidation. Health waits for
+the original Bot process queue, then checks current hosting readiness and the
+authenticated Controller observation, as defined by the
+[delivery timing decision](../bug-fix/2026-11-21-assistant-delivery-observation.md).
+These observations gate maintenance; applications receive cancellation and
 a guard that verifies the original claim before external effects. Asynchronous
 renewal and health failures retain the original Bot, claim generation and
 application instance; cancellation cannot select a successor from the task map.
@@ -29,7 +32,10 @@ application, including after joining an old instance, so delayed snapshots canno
 replace a newer holder.
 
 Each notification persists its complete command and event set before its only
-submission. Pending or ambiguous outcomes query that original operation.
+submission. Progressing outcomes query that original operation at one-second intervals
+within a ten-second absolute observation budget in the same delivery turn.
+Other ambiguous outcomes retain the minute recovery cadence. The original
+journal survives observation expiry or query failure.
 Provider acceptance precedes event acknowledgment. Definite HTTP admission
 refusals can be reconsidered; a stored receipt permits a new decision only for
 the service's explicit pre-dispatch refusal or expiry. A native rejection does

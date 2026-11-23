@@ -25,6 +25,10 @@ type goalDependencyOperations interface {
 
 // RegisterGoalDependencyTools publishes bounded Goal relationship reads and edits.
 func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations) error {
+	return registerGoalDependencyTools(entry, service, taskToolsAll)
+}
+
+func registerGoalDependencyTools(entry *Entry, service goalDependencyOperations, selection taskToolSelection) error {
 	if entry == nil || service == nil || service == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP Goal dependency tools require an entry and Tasks service")
 	}
@@ -34,6 +38,10 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		read := name == "goal_dependencies_show"
+		if selection == taskToolsRead && !read || selection == taskToolsWrite && read {
+			continue
+		}
 		handler := func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 			return goalDependencyTool(ctx, actor, name, raw, service)
 		}
@@ -49,6 +57,19 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 			return fmt.Errorf("register %s: %w", name, err)
 		}
 	}
+	return nil
+}
+
+// RegisterScopedGoalDependencyWriteTools publishes only Goal relationship edits.
+// Read tools have their own scoped registration.
+func RegisterScopedGoalDependencyWriteTools(entry *Entry, service *taskservice.Tasks) error {
+	if entry == nil || entry.scopedAuth == nil || service == nil {
+		return fmt.Errorf("scoped Goal dependency write dependencies are required")
+	}
+	if err := registerGoalDependencyTools(entry, service, taskToolsWrite); err != nil {
+		return err
+	}
+	entry.scopedTools["goal_dependencies_edit"] = true
 	return nil
 }
 
@@ -90,6 +111,12 @@ func goalDependencyTool(ctx context.Context, actor RequestActor, name string, ra
 	edit, err := protocol.DecodeEdit(body)
 	if err != nil {
 		return ToolResult{Refs: refs}, err
+	}
+	if actor.Authorization != nil {
+		if actor.Authorization.Principal != actor.Principal {
+			return ToolResult{}, fmt.Errorf("Goal authorization identity mismatch")
+		}
+		ctx = taskservice.WithTaskWriteAuthorization(ctx, *actor.Authorization, false)
 	}
 	receipt, err := service.EditGoalDependencies(ctx, actor.Principal, identity.ProjectID, identity.GoalID, edit)
 	if err != nil {

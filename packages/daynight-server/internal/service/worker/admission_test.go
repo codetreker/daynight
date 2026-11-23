@@ -281,7 +281,8 @@ func (f *admissionServiceFixture) SetWorkerConfigurationObservation(context.Cont
 
 func admissionCompatibilityConfiguration() model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		PlatformTaskMode: model.PlatformTaskAll,
+		MaxConcurrent:    3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{},
 	}
@@ -497,4 +498,11 @@ func TestWorkerAdmissionConstructorsBindProductionOperations(t *testing.T) {
 			}
 		}
 	}
+}
+
+func (*admissionServiceFixture) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*admissionServiceFixture) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
 }

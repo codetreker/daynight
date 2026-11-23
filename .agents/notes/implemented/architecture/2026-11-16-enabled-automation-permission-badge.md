@@ -19,8 +19,8 @@ indicates permission alone and does not change task lifecycle, Worker or Session
 presentation. The detail switch retains its independent controls and write
 contract. The [Web requirements](../../../../docs/spec/daynight-web.md#自动执行许可与平台要求)
 and [design](../../../../docs/design/daynight-web.md#自动执行许可与确认) own
-those behaviors, and the [UI standard](../../../../docs/ui-design.md#semantic-color-roles)
-owns the palette.
+those behaviors, and the [Web visual tokens](../../../../docs/design/web-visual-tokens.md#任务状态与交互色)
+own the palette.
 
 This partially supersedes the neutral on/off permission presentation in the
 [shared Task color roles decision](2026-11-13-shared-task-color-roles.md); its

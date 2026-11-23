@@ -81,7 +81,11 @@ backoff steps. A new process starts a new diagnostic history.
 The existing recoverable sink explicitly projects the metadata into JSONL and
 applies credential redaction to every emitted string. Terminal events include a
 compact projection of key, target, source, correlation, certainty and progress;
-full record batches and classifier details stay in JSONL. Its fresh-segment recovery,
+routine `worker-configuration-stage` starts and successes stay in JSONL without
+foreground notification, while discarded stages, failures, summaries, recoveries,
+alignment and application events remain visible. This retains per-sync evidence
+without repeated normal heartbeat output. Full record batches and classifier details
+stay in JSONL. Its fresh-segment recovery,
 unknown append and undispatched omission semantics remain unchanged. Formatting
 and notification failures retain independent error chains and do not rewrite
 application or receipt results. The

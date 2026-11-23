@@ -7,7 +7,7 @@ export const auth: AuthMessages = {
   roles: { admin: "Administrator", member: "Member" },
   shell: {
     sidebar: {
-      expand: "Expand sidebar", collapse: "Collapse sidebar", close: "Close navigation",
+      open: "Open navigation", expand: "Expand sidebar", collapse: "Collapse sidebar", close: "Close navigation",
       readError: "The sidebar preference could not be read. The expanded layout is in use. You can still switch the sidebar and retry saving.",
       invalidError: "The saved sidebar preference is invalid. The expanded layout is in use. Choose a layout and save it again.",
       writeError: "The sidebar preference has not been saved. You can keep using this layout and retry saving.",
@@ -149,7 +149,7 @@ export const auth: AuthMessages = {
       revokeLabel: ({ name }) => `Revoke token ${name}`,
     },
     members: {
-      eyebrow: "PROJECT SETTINGS", title: "Project members", subtitle: ({ projectName }) => `${projectName} · Manage collaborators and invitations`,
+      title: "Project members",
       invitationUnknown: "The invitation change was not confirmed. Read current invitations before making another change. A lost link cannot be recovered.", invitationUnreadable: "Your current access does not permit reading these invitations. The original result is still unknown.", invitationObserved: "Current invitations are shown; the original result is still unknown. Review before changing them.", readCurrentInvitations: "Read current invitations",
       grantUnknown: "The service did not confirm the member change. Read current members before reviewing another change.",
       grantObserved: "Current members have been read. The original write result remains unconfirmed; review the current grant before another change.",

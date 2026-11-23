@@ -11,6 +11,7 @@ import (
 // EnablePreset creates or selects the owner's application singleton and assigns
 // its chosen Bot in the same transaction. The application supplies its manual.
 func (m *Module) EnablePreset(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input CreateInput, target string) (TaskResult, error) {
+	actor = actor.requiringBranches("EnablePreset", "existing")
 	var zero TaskResult
 	if actor.BotID != nil {
 		return zero, forbidden()
@@ -18,14 +19,18 @@ func (m *Module) EnablePreset(ctx context.Context, dao store.AssistantTaskDAO, a
 	if !strictID(input.ID) || !strictID(target) || input.Application == "" {
 		return zero, invalid("Preset identity, application and target Bot are required.")
 	}
-	if err := authorize(ctx, dao, actor); err != nil {
+	if err := authorizeIdentity(ctx, dao, actor); err != nil {
 		return zero, err
 	}
 	if err := botOwner(ctx, dao, actor.Principal.UserID, target); err != nil {
 		return zero, err
 	}
+	if err := scopeAdmission(ctx, dao, actor); err != nil {
+		return zero, err
+	}
 	task, err := dao.ApplicationTask(ctx, actor.Principal.UserID, input.Application)
 	if errors.Is(err, model.ErrNotFound) {
+		actor = actor.requiringBranches("EnablePreset", "existing", "create")
 		created, createErr := m.Create(ctx, dao, actor, input)
 		if createErr == nil {
 			task = created.Task
@@ -78,7 +83,7 @@ func (m *Module) EnablePreset(ctx context.Context, dao store.AssistantTaskDAO, a
 		}
 	}
 	if assign {
-		if err = dao.TransferOpenItems(ctx, task.OwnerUserID, task.ID, task.HolderBotID); err != nil {
+		if err = moveFollowers(ctx, dao, task); err != nil {
 			return zero, err
 		}
 		if _, err = m.systemEvent(ctx, dao, task, target, "transfer", map[string]any{"generation": task.ClaimGeneration, "previousLeaseUntil": previous.LeaseUntil}, now); err != nil {

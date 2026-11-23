@@ -2,21 +2,23 @@ import { randomUUID } from "node:crypto";
 import { chmod, copyFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ManagedCommand } from "../src/command.ts";
-import { markFixtureStopped, prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
+import { markFixtureStopped, prepareFixtureOwnership, registerFixtureBot, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
 import { completeFixtureTask, type WorkerCompletionTask } from "../src/worker-completion.ts";
 import { stopFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
 import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtures.ts";
+import { verifyAssistantInbox, type PeerEvent } from "./assistant-inbox.ts";
 
 type Task = WorkerCompletionTask & { session?: { lifecycle?: string } };
-type PeerEvent = { method: string; threadId: string; text?: string };
+// POSIX single quotes keep every byte literal; an embedded quote closes, escapes and reopens the literal.
+const shellLiteral = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 // The native peer is controlled; Worker, Controller, Server, relay and PostgreSQL are real.
 export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToken: string }): Promise<void> => {
   const checkout = path.resolve(import.meta.dirname, "../../.."), runDirectory = process.env.DAYNIGHT_E2E_RUN_DIRECTORY;
   if (runDirectory === undefined) throw new Error("Fixture requires its original E2E run.");
   const root = await prepareFixtureOwnership(checkout, runDirectory);
-  const repository = path.join(root, "repository"), bare = path.join(root, "remote.git"), peer = path.join(root, "codex.mjs"), log = path.join(root, "peer.jsonl");
+  const repository = path.join(root, "repository"), bare = path.join(root, "remote.git"), peer = path.join(root, "codex.mjs"), log = path.join(root, "peer.jsonl"), launcher = path.join(root, "daynight");
   const git = async (cwd: string, args: string[]) => runOwnedCommand("git", args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
   let worker: ManagedCommand | undefined, exited = false, output = "";
   let scenarioFailure: unknown;
@@ -42,6 +44,7 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     await git(repository, ["push", "origin", "HEAD:main"]);
     await git(root, ["--git-dir", bare, "symbolic-ref", "HEAD", "refs/heads/main"]);
     await copyFile(path.join(import.meta.dirname, "native-worker-peer.mjs"), peer); await chmod(peer, 0o700);
+    await writeFile(launcher, `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(topology.cliEntry)} "$@"\n`, { mode: 0o700 });
     const projectCreation = await cli(["project", "create", `Worker patrol ${randomUUID()}`, "--repo", remote, "--team", "personal", "--confirm"]);
     const projectId = projectCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
     if (!projectId) throw new Error("Worker test Project creation did not return an ID.");
@@ -53,7 +56,7 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     if (task.assignedTo === null) throw new Error("Fixture Task has no assigned user.");
     await cli(["task", "update", taskId, "--project", projectId, "--allow-agents", "true", "--if-version", String(task.version)]);
     workerConfigDirectory = await prepareWorkerFixtureConfiguration(root, { ...server, workerId, repositoryRoot: path.join(root, "repositories"),
-      peer, projectId, remote, repository });
+      peer, projectId, remote, repository, cli: launcher });
     identity = { projectId, taskId, workerId, userId: task.assignedTo, serverOrigin: server.serverUrl, repository };
     await registerFixtureIdentity(checkout, runDirectory, identity);
     const entries = async (): Promise<PeerEvent[]> => {
@@ -63,7 +66,7 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     const start = async () => {
       exited = false;
       worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [topology.cliEntry, "worker", "run"], options: { cwd: root,
-        env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 180_000,
+        env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 420_000,
         onOutput: (_channel, chunk) => { output += chunk; } } });
       void worker.finished.then(() => { exited = true; }, () => { exited = true; });
     };
@@ -110,6 +113,10 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     await expect.poll(async () => (await readTask()).session?.lifecycle, { timeout: 90_000, intervals: [1_000] }).toBe("archived");
     await new Promise(resolve => setTimeout(resolve, 3_000));
     expect((await entries()).filter(event => event.method === "turn/start" && event.text?.includes("periodic check")).length).toBe(completedPings);
+    // The completed Task released the Worker's only execution slot for a hosted Bot.
+    await verifyAssistantInbox({ workerId, root, events, registerBot: async botId => {
+      identity!.botId = botId; await registerFixtureBot(checkout, runDirectory, botId);
+    } });
   } catch (error) { scenarioFailure = error; }
   finally {
     const failures: unknown[] = [];

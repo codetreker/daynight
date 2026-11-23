@@ -38,3 +38,10 @@ export const ensureWorkerIdentity = async (
     return { kind: "write", result: identity, source: document.toString(), ownership: { fields: ["workerId"] } };
   }, signal);
 };
+
+export const readWorkerIdentity = async (paths: ConfigurationPaths, signal?: AbortSignal): Promise<string> => {
+  const current = parseConfigurationDocument(await readConfigurationSource(paths, signal), paths);
+  const identity = configuredWorkerIdentity(current.mapping);
+  if (identity === undefined) throw new Error("The original Worker identity is missing; management cannot create a replacement.");
+  return identity;
+};

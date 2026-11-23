@@ -48,6 +48,10 @@ export const createWorkerDirectoryBrowser = (dependencies: { filesystem?: Direct
   // Node filesystem calls cannot be cancelled in flight. A timed-out syscall
   // retains its slot until it and its directory close settle, bounding backlog.
   let occupied = 0;
+  let closed = false;
+  const actualWork = new Set<Promise<void>>(), cancellation = new Set<() => void>();
+  const unclosed = new Set<Awaited<ReturnType<DirectoryFileSystem["openDirectory"]>>>();
+  const cleanupFailures: unknown[] = [];
   const absolute = (value: unknown): value is string => {
     if (!validText(value, maxPathBytes)) return false;
     if (!windows) return paths.isAbsolute(value);
@@ -72,8 +76,8 @@ export const createWorkerDirectoryBrowser = (dependencies: { filesystem?: Direct
     if (value === null || value.version !== 1 || value.fingerprint !== fingerprint || !validText(value.after, maxNameBytes)) throw new WorkerDirectoryError("invalid_cursor");
     return value.after;
   };
-  return async (input: WorkerDirectoryInput, options: { defaultCwd: string; signal: AbortSignal }): Promise<WorkerDirectoryResult> => {
-    if (options.signal.aborted) throw new WorkerDirectoryError("cancelled");
+  const browse = async (input: WorkerDirectoryInput, options: { defaultCwd: string; signal: AbortSignal }): Promise<WorkerDirectoryResult> => {
+    if (closed || options.signal.aborted) throw new WorkerDirectoryError("cancelled");
     const target = input.path ?? options.defaultCwd, limit = input.limit ?? 100, filter = input.filter ?? "", showHidden = input.showHidden ?? false;
     if (!absolute(target) || input.path === null || !validText(filter, 256, true) || typeof showHidden !== "boolean") throw new WorkerDirectoryError("invalid_path");
     if (!Number.isInteger(limit) || limit < 1 || limit > 100 || occupied >= 4) throw new WorkerDirectoryError("limit_exceeded");
@@ -96,6 +100,7 @@ export const createWorkerDirectoryBrowser = (dependencies: { filesystem?: Direct
       }
       const entries: WorkerDirectoryResult["entries"] = [];
       const directory = await filesystem.openDirectory(resolved);
+      unclosed.add(directory);
       let scanned = 0;
       try {
         check();
@@ -118,7 +123,10 @@ export const createWorkerDirectoryBrowser = (dependencies: { filesystem?: Direct
           entries.splice(index < 0 ? entries.length : index, 0, { name: entry.name, path: entryPath });
           if (entries.length > limit + 1) entries.pop();
         }
-      } finally { await directory.close(); }
+      } finally {
+        try { await directory.close(); unclosed.delete(directory); }
+        catch (error) { cleanupFailures.push(error); throw error; }
+      }
       check();
       const current = await filesystem.stat(resolved); check();
       if (current.identity !== metadata.identity || current.revision !== metadata.revision) throw new WorkerDirectoryError("invalid_cursor");
@@ -136,12 +144,22 @@ export const createWorkerDirectoryBrowser = (dependencies: { filesystem?: Direct
       const stop = (code: "cancelled" | "timeout"): void => { stopped ??= new WorkerDirectoryError(code); reject(stopped); cleanup(); };
       const cancel = (): void => stop("cancelled");
       const timer = setTimeout(() => stop("timeout"), 5_000);
-      const cleanup = (): void => { clearTimeout(timer); options.signal.removeEventListener("abort", cancel); };
+      const cleanup = (): void => { clearTimeout(timer); options.signal.removeEventListener("abort", cancel); cancellation.delete(cancel); };
       options.signal.addEventListener("abort", cancel, { once: true });
-      void perform().then(value => { if (stopped === undefined) resolve(value); }, error => reject(stopped ?? failure(error)))
-        .finally(() => { occupied--; cleanup(); });
+      cancellation.add(cancel);
+      const work = perform().then(value => { if (stopped === undefined) resolve(value); }, error => reject(stopped ?? failure(error)))
+        .finally(() => { occupied--; cleanup(); actualWork.delete(work); });
+      actualWork.add(work);
       if (options.signal.aborted) cancel();
     });
   };
+  return Object.assign(browse, {
+    close: (): void => { closed = true; for (const cancel of [...cancellation]) cancel(); },
+    snapshot: () => ({ closed, occupied, pending: actualWork.size, unclosedDirectories: unclosed.size, cleanupFailures: cleanupFailures.length }),
+    join: async (): Promise<void> => {
+      await Promise.allSettled([...actualWork]);
+      if (cleanupFailures.length || unclosed.size) throw new AggregateError(cleanupFailures, "Worker directory handles could not close; resource responsibility is retained.");
+    },
+  });
 };
 export const browseWorkerDirectory = createWorkerDirectoryBrowser();

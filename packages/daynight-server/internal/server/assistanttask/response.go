@@ -37,8 +37,22 @@ func manualResponse(value model.AssistantTaskManual) api.AssistantTaskManual {
 	return api.AssistantTaskManual{TaskID: value.TaskID, Version: value.Version, Body: value.Body, Rules: value.Rules, Source: value.Source, ProposalID: value.ProposalID, CreatedAt: value.CreatedAt.UTC()}
 }
 func appendixResponse(value model.AssistantTaskAppendix) api.AssistantTaskAppendix {
-	return api.AssistantTaskAppendix{ID: value.ID, TaskID: value.TaskID, Text: value.Text, SourceRecords: append([]string{}, value.SourceRecords...),
+	result := api.AssistantTaskAppendix{ID: value.ID, TaskID: value.TaskID, Text: value.Text, SourceRecords: append([]string{}, value.SourceRecords...),
 		AuthorBotID: value.AuthorBotID, State: value.State, Version: value.Version, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC()}
+	if scope := value.Scope; len(scope.ProjectIDs)+len(scope.EventTypes)+len(scope.ItemCategories) > 0 {
+		result.Scope = &api.AssistantTaskAppendixScope{ProjectIDs: append([]string{}, scope.ProjectIDs...), EventTypes: append([]string{}, scope.EventTypes...), ItemCategories: append([]string{}, scope.ItemCategories...)}
+	}
+	if value.LastValidatedAt != nil {
+		result.Validation = &api.AssistantTaskAppendixValidation{SuccessCount: value.SuccessCount, FailureCount: value.FailureCount, LastValidatedAt: value.LastValidatedAt.UTC()}
+	}
+	return result
+}
+func relatedAppendicesResponse(value model.AssistantTaskRelatedAppendices) api.AssistantTaskRelatedAppendices {
+	result := api.AssistantTaskRelatedAppendices{Items: make([]api.AssistantTaskAppendix, 0, len(value.Items)), ObservedAt: value.ObservedAt.UTC()}
+	for _, item := range value.Items {
+		result.Items = append(result.Items, appendixResponse(item))
+	}
+	return result
 }
 func proposalResponse(value model.AssistantTaskProposal) api.AssistantTaskProposal {
 	return api.AssistantTaskProposal{ID: value.ID, TaskID: value.TaskID, BaseVersion: value.BaseVersion, Body: value.Body, Rules: value.Rules, Reason: value.Reason,
@@ -59,7 +73,17 @@ func itemResponse(value model.AssistantTaskItem) api.AssistantTaskItem {
 		FollowerBotID: value.FollowerBotID, AppState: value.AppState, Version: value.Version, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC()}
 }
 func recordResponse(value model.AssistantTaskRecord) api.AssistantTaskRecord {
-	return api.AssistantTaskRecord{ID: value.ID, TaskID: value.TaskID, ItemID: value.ItemID, Author: value.Author, AuthorBotID: value.AuthorBotID, Kind: value.Kind, Text: value.Text, Refs: value.Refs, CreatedAt: value.CreatedAt.UTC()}
+	return api.AssistantTaskRecord{ID: value.ID, TaskID: value.TaskID, ItemID: value.ItemID, Author: value.Author, AuthorBotID: value.AuthorBotID, Kind: value.Kind, Text: value.Text, Outcome: value.Outcome, ActionRecordID: value.ActionRecordID, Refs: value.Refs, CreatedAt: value.CreatedAt.UTC()}
+}
+func metricsResponse(value model.AssistantTaskMetrics) api.AssistantTaskMetrics {
+	result := api.AssistantTaskMetrics{ObservedAt: value.ObservedAt.UTC(), WindowStart: value.WindowStart.UTC(), WindowEnd: value.WindowEnd.UTC(), ActionCount: value.ActionCount,
+		Outcomes:        api.AssistantTaskOutcomeMetrics{Effective: value.EffectiveCount, Ineffective: value.IneffectiveCount, Inconclusive: value.InconclusiveCount},
+		EscalationCount: value.EscalationCount, ResultUnknownCount: value.ResultUnknownCount, ClosureCount: value.ClosureCount, UntimedClosureCount: value.UntimedClosureCount, RecurringItemCount: value.RecurringItemCount}
+	if value.AverageResolution != nil {
+		average := value.AverageResolution.Milliseconds()
+		result.AverageResolutionMs = &average
+	}
+	return result
 }
 func eventResponse(value model.AssistantTaskEvent) api.AssistantTaskEvent {
 	return api.AssistantTaskEvent{ID: value.ID, TaskID: value.TaskID, TargetBotID: value.TargetBotID, Type: value.Type, Payload: value.Payload, State: value.State,

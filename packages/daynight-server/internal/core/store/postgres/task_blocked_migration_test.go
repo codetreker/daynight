@@ -17,8 +17,9 @@ func taskBlockedMigrationIndex(t *testing.T) int {
 func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	beforeMigrations := schemaMigrations[:taskBlockedMigrationIndex(t)]
-	if err := migrate(ctx, pool, beforeMigrations); err != nil {
+	index := taskBlockedMigrationIndex(t)
+	migrations := schemaMigrations[:index+1]
+	if err := migrate(ctx, pool, migrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -48,7 +49,7 @@ func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 		return value
 	}
 	before := snapshot(true)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	if after := snapshot(false); after != before {
@@ -66,7 +67,7 @@ func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT applied_at::text FROM schema_migrations WHERE version=87`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, migrations); err != nil {
 		t.Fatal(err)
 	}
 	var repeated string
@@ -89,7 +90,9 @@ func TestTaskBlockedMigrationRejectsBadRowsAtomically(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
+			index := taskBlockedMigrationIndex(t)
+			migrations := schemaMigrations[:index+1]
+			if err := migrate(ctx, pool, migrations[:index]); err != nil {
 				t.Fatal(err)
 			}
 			db := &Store{Pool: pool}
@@ -108,14 +111,14 @@ func TestTaskBlockedMigrationRejectsBadRowsAtomically(t *testing.T) {
 			if err := pool.QueryRow(ctx, read).Scan(&before); err != nil {
 				t.Fatal(err)
 			}
-			if err := migrate(ctx, pool, schemaMigrations); err == nil {
+			if err := migrate(ctx, pool, migrations); err == nil {
 				t.Fatal("invalid data was accepted")
 			}
 			if err := pool.QueryRow(ctx, read).Scan(&after); err != nil || before != after {
 				t.Fatalf("failed migration changed rows or ledger: before=%s after=%s err=%v", before, after, err)
 			}
 			mustQueryExec(t, db, `DELETE FROM task_properties WHERE task_id=$1 AND name=$2`, id, tc.property)
-			if err := migrate(ctx, pool, schemaMigrations); err != nil {
+			if err := migrate(ctx, pool, migrations); err != nil {
 				t.Fatalf("repaired migration: %v", err)
 			}
 		})

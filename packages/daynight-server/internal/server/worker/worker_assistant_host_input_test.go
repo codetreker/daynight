@@ -210,7 +210,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	body["assistantHost"] = host
 	wantHost := capacityDecode[api.WorkerAssistantHost](t, host)
 	desired := func() *model.WorkerDesiredConfiguration {
-		return &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue())}
+		return &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: configurationHTTPModel(t, configurationHTTPValue())}
 	}
 	configuration := func() model.WorkerConfigurationResource {
 		return model.WorkerConfigurationResource{Desired: desired(), ObservationRevision: "0"}

@@ -10,10 +10,11 @@ Project 成员通过以下只读 HTTP 接口读取 Daynight 保存的 GitHub 事
 | `GET /pull-request-repositories` | 项目曾验证的 PR 仓库来源目录 |
 | `GET /pull-requests` | 所选来源的摘要页及计数 |
 | `GET /pull-requests/{number}` | 所选来源的完整详情 |
+| `GET /pull-requests/{number}/review-assignment` | 当前账号的长期 Reviewer 归属及 Worker 状态，见[归属设计](pr-review-assignment.md) |
 | `GET /pull-request-authors` | 所选来源的作者目录 |
 | `GET /pull-request-statistics` | 所选来源的每日统计 |
 
-列表、详情、作者和统计接受可选 `repositoryId`，必须是正 int64 规范十进制字符串。显式来源必须属于该项目；不存在或属于其他项目均返回 `not_found`。省略来源始终读取迁移或首次连接时固定的旧来源，不随当前连接变化。没有固定旧来源时返回空集合或详情不存在。项目读取权限、来源归属、连接、计数和页面或详情在同一只读快照内验证与读取。
+列表、详情、归属、作者和统计接受可选 `repositoryId`，必须是正 int64 规范十进制字符串。显式来源必须属于该项目；不存在或属于其他项目均返回 `not_found`。省略来源始终读取迁移或首次连接时固定的旧来源，不随当前连接变化。没有固定旧来源时返回空集合或详情不存在。项目读取权限、来源归属、连接、计数和页面或详情在同一只读快照内验证与读取。
 
 显式来源的列表、作者和统计响应包含 `repository:{repositoryId,fullName}`，即该来源最后验证的身份。省略来源时省略这个字段，保持旧响应结构。PR 摘要及详情的 `base.repositoryId` 与 `base.repositoryFullName` 始终来自记录所属来源。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 

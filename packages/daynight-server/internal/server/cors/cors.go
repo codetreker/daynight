@@ -9,8 +9,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal"
-const exposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
+const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Task-Relations, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal"
+const exposedHeaders = "Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Platform-Task-Mode, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
 
 // Wrap decorates user REST responses before authentication and path validation.
 // Route lookup never runs a handler or authenticates a preflight request.
@@ -76,13 +76,28 @@ func userREST(path string, nativePaths []string) bool {
 	if !strings.HasPrefix(path, "/api/v1/") && !strings.HasPrefix(path, "/api/v2/") {
 		return false
 	}
+	// Account credential management is available only to main-site sessions.
+	if path == "/api/v1/me/credential-scope-catalog" || path == "/api/v2/auth/device/inspect" || path == "/api/v2/auth/device/decision" {
+		return false
+	}
+	const tokens = "/api/v2/me/tokens"
+	if path == tokens {
+		return false
+	}
+	if suffix, ok := strings.CutPrefix(path, tokens+"/"); ok {
+		id, end, found := strings.Cut(suffix, "/")
+		if found && id != "" && (end == "description" || end == "scopes") {
+			return false
+		}
+	}
 	// Public OAuth and native login retain their independent browser policies.
 	for _, native := range append([]string{"/api/v1/auth/login", "/api/v1/auth/providers", "/api/v1/auth/device/code", "/api/v1/auth/device/token", "/api/v1/controller-channel"}, nativePaths...) {
 		if path == native {
 			return false
 		}
 	}
-	for _, prefix := range []string{"/api/v1/oauth/requests/", "/api/v1/oauth/s2s/", "/api/v1/controller-resources/"} {
+	// The public assistant task inbox accepts server-to-server requests only.
+	for _, prefix := range []string{"/api/v1/oauth/requests/", "/api/v1/oauth/s2s/", "/api/v1/controller-resources/", "/api/v1/assistant-task-inbox/"} {
 		if strings.HasPrefix(path, prefix) {
 			return false
 		}
@@ -112,6 +127,8 @@ func producerRoute(method, pattern string) bool {
 	case "/archive/prepare":
 		return method == "GET" || method == "HEAD" || method == "POST"
 	case "/archive/source-tail", "/archive/seal":
+		return method == "POST"
+	case "/archive/prepare/history/{fileId}/complete", "/archive/prepare/history/{fileId}/restart", "/archive/files/{fileId}/complete", "/archive/files/{fileId}/restart":
 		return method == "POST"
 	case "/archive/content", "/archive/prepare/history/{fileId}", "/archive/files/{fileId}":
 		return method == "PUT"

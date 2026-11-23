@@ -35,6 +35,7 @@ type TaskSearchPosition struct {
 
 type TaskSearchQuery struct {
 	Type               model.TaskType
+	ParentTask         *string
 	Parent             *string
 	Expression         *tasksearch.Node
 	TagFilter          TagFilter
@@ -50,6 +51,7 @@ type TaskSearchRow struct {
 	Tags                   []model.TagReference
 	Type                   model.TaskType
 	ParentID               *string
+	ParentType             model.TaskType
 	ID, Title, Description string
 	Status                 model.TaskStatus
 	AssignedTo             *string

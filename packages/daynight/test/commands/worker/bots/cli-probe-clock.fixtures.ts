@@ -1,13 +1,13 @@
 import { vi } from "vitest";
-import type { ProcessProof } from "../../../../src/commands/controller/process-proof.js";
+import type { stopControllerProcesses } from "../../../../src/commands/controller/process-proof.js";
 
 type ExecObserver = (target: (...args: any[]) => unknown, receiver: unknown, args: any[]) => unknown;
 export type ExecHook = { observe: ExecObserver | undefined };
 
 // The observer wraps the original callback and never substitutes an inventory.
 export const withProbeGrace = async (
-  stop: (proof: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: any) => Promise<void>,
-  args: [ProcessProof, readonly ProcessProof[], number, any?],
+  stop: typeof stopControllerProcesses,
+  args: Parameters<typeof stopControllerProcesses>,
   hook: ExecHook,
   recordFailure: (failure: Error) => void,
 ): Promise<void> => {

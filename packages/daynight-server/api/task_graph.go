@@ -6,6 +6,7 @@ type GraphTask struct {
 	ID                string     `json:"id"`
 	Type              string     `json:"type"`
 	ParentID          *string    `json:"parentId"`
+	ParentTaskID      **string   `json:"parentTaskId,omitempty"`
 	TitlePreview      string     `json:"titlePreview"`
 	TitleTruncated    bool       `json:"titleTruncated"`
 	Status            string     `json:"status"`

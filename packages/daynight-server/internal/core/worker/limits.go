@@ -26,7 +26,7 @@ const (
 	MaxNativeArgBytes         = 4 << 10
 	MaxProjects               = 128
 	MaxInventoryClaims        = 256
-	MaxObservationItems       = 1029
+	MaxObservationItems       = 1030
 	MaxTelemetryJSONBytes     = 4 << 20
 	MaxConfigurationJSONBytes = 4 << 20
 	MaxWorkerJSONBytes        = 4 << 20
@@ -208,7 +208,12 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			continue
 		}
 		switch item.Key.Kind {
-		case "preferPlatformSpecificTasks", "enableSudoCleanup", "archiveSessions":
+		case "platformTaskMode":
+			var mode model.WorkerPlatformTaskMode
+			if err := configurationDecode(item.AppliedValue, &mode); err != nil || !mode.Valid() {
+				return invalidInput("Worker platform task mode must be all, prefer or only.")
+			}
+		case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 			var enabled bool
 			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {
 				return err

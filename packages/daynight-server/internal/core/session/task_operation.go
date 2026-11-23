@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -34,6 +35,18 @@ func (op *Operation) lockOAuthCredential(ctx context.Context, scope store.Sessio
 		return fault("unauthenticated", "Credential expired or was revoked.")
 	}
 	return err
+}
+
+// TaskBotSessionRefusal is the result of addressing a Bot-bound Session
+// through a Task route. Bot-bound Sessions are always independent Test
+// Sessions, which every Task binding rejects; Task Message access reports the
+// same forbidden result as BindTaskPurpose and other purposes report the
+// identity conflict of the Task bindings.
+func TaskBotSessionRefusal(purpose BrowserPurpose) error {
+	if purpose == TaskMessageAccess {
+		return denied()
+	}
+	return conflict()
 }
 
 // LoadTaskReceipt reads durable identity without attaching or discarding live state.
@@ -93,6 +106,9 @@ func (s *Execution) TaskOperation(ctx context.Context, p model.Principal, projec
 		return out, conflict()
 	}
 	err := s.browserRun(ctx, p, project, taskID, id, TaskReceiptAccess, func(a *Access) error {
+		if err := s.admitCommand(ctx, a.tx, p, scopepolicy.SessionRead); err != nil {
+			return err
+		}
 		operation, err := a.tx.dao.SessionOperation(ctx, id, operationID)
 		if err != nil {
 			return err

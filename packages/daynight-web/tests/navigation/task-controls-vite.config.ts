@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import base from './team-preference-vite.config';
 
 export default mergeConfig(base, defineConfig({
-  plugins: [{ name: 'summary-detail-fixture', configurePreviewServer(server) {
+  plugins: [{ name: 'goal-reading-input', enforce: 'pre', transformIndexHtml: { order: 'pre', handler: html => html.replace('/src/main.tsx', '/tests/navigation/goal-reading-host.ts') } }, { name: 'summary-detail-fixture', configurePreviewServer(server) {
     server.middlewares.use((request: IncomingMessage, _response, next) => {
       if (request.url?.split('?')[0] === '/summary-detail-fixture') request.url = '/tests/navigation/summary-detail.html';
       next();

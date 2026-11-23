@@ -382,6 +382,14 @@ describe("Webhook fixed intent controller", () => {
     const intent = controller(), first = await intent.submit(patch()), later = await intent.reconcile();
     expect(later.phase).toBe("confirmed"); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ kind: "protocol" });
   });
+  it("sends a valid creation key only with a create", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => { bodies.push(JSON.parse(String(options.body)) as Record<string, unknown>); return response({ operation: await submittedReceipt(options, { kind: "endpoint.create" }), endpoint: endpoint("1") }); }));
+    const create = (clientKey: unknown) => ({ kind: "endpoint.create" as const, body: { clientKey, name: "Created", enabled: true, destination: { kind: "http" as const, adapterVersion: "1" as const, configuration: { url: "https://receiver.example/hooks" } }, subscriptions: [] } as never });
+    for (const clientKey of ["", "a b", "x".repeat(201), 7]) expect(() => controller().submit(create(clientKey))).toThrow();
+    expect((await controller().submit(create("assistant-task-inbox:1"))).phase).toBe("confirmed");
+    expect(bodies).toHaveLength(1); expect(bodies[0]).toMatchObject({ clientKey: "assistant-task-inbox:1" });
+  });
   it("does not replace a confirmed creation endpoint ID with another canonical ID", async () => {
     let original!: WebhookReceipt;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
@@ -450,7 +458,7 @@ describe("Webhook fixed intent controller", () => {
     expect(() => controller().submit({ ...patch(), body: { name: "汉".repeat(87382) } })).toThrow(); expect(fetch).not.toHaveBeenCalled();
   });
   it.each([
-    { body: { enabled: null } }, { body: { subscriptions: null } }, { body: { operationId: uuid(7) } }, { body: { name: "\ud800" } }, { ifVersion: "01" },
+    { body: { enabled: null } }, { body: { subscriptions: null } }, { body: { operationId: uuid(7) } }, { body: { name: "\ud800" } }, { ifVersion: "01" }, { body: { clientKey: "immutable" } },
     { body: { subscriptions: [{ id: null, projectId: uuid(7), eventTypes: ["task.paused", "task.paused"] }] } },
   ])("rejects malformed input or reserved metadata before dispatch %#", override => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch); expect(() => controller().submit({ ...patch(), ...override } as WebhookIntentInput)).toThrow(); expect(fetch).not.toHaveBeenCalled();
@@ -537,11 +545,11 @@ describe("Webhook fixed redelivery intents", () => {
     const fetch = vi.fn(async (_url: string, options: RequestInit) => { await barrier; return response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202); }); vi.stubGlobal("fetch", fetch);
     const intent = controller(), first = intent.submit(redeliveryInput()), second = intent.submit(redeliveryInput()); expect(second).toBe(first); release(); await first; expect(fetch).toHaveBeenCalledOnce();
   });
-  it.each([[409, "generation_conflict"], [409, "version_conflict"], [409, "delivery_busy"], [409, "target_changed"], [409, "delivery_stopped"], [403, "forbidden"], [410, "payload_expired"]] as const)("keeps explicit %i %s refusal without new generation or automatic reads", async (status, code) => {
+  it.each([[409, "generation_conflict"], [409, "version_conflict"], [409, "delivery_busy"], [409, "target_changed"], [409, "delivery_stopped"], [403, "forbidden"], [410, "payload_expired"], [503, "webhooks_unavailable"]] as const)("keeps explicit %i %s refusal without new generation or automatic reads", async (status, code) => {
     const fetch = vi.fn().mockResolvedValue(failure(status, code)); vi.stubGlobal("fetch", fetch);
     const rejected = await controller().submit(redeliveryInput()); expect(rejected.phase).toBe("rejected"); expect(rejected.error).toMatchObject({ status, code }); expect(rejected.result).toBeNull(); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(0);
   });
-  it.each(["dependency_unavailable", "write_outcome_unknown", "webhooks_unavailable"])("uses only receipt GET after an ambiguous 503 %s", async code => {
+  it.each(["dependency_unavailable", "write_outcome_unknown"])("uses only receipt GET after an ambiguous 503 %s", async code => {
     const fetch = vi.fn().mockResolvedValueOnce(failure(503, code)).mockResolvedValue(failure()); vi.stubGlobal("fetch", fetch);
     const unknown = await controller().submit(redeliveryInput()); expect(unknown.phase).toBe("unknown"); expect(unknown.prepared?.deliveryId).toBe(deliveryId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
   });

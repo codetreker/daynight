@@ -1,18 +1,20 @@
-import { useWorkerNames } from '../worker-names/useWorkerNames';
 import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
-import { useBotMessages } from './messages';
+import type { BotObservationRead } from './useBotObservations';
+import { useBotObservationMessages } from './observation-messages';
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 
-export function BotStatus({ bot, worker, stale, showWorkerName = true, compact = false }: { readonly bot: BotDefinition; readonly worker: BotWorkerDefaults | undefined; readonly stale: boolean; readonly showWorkerName?: boolean; readonly compact?: boolean }) {
-  const m = useBotMessages();
-  const names = useWorkerNames(!compact && showWorkerName ? [{ userId: bot.ownerUserId, workerId: bot.workerId }] : []);
-  const currentWorker = worker?.workerId === bot.workerId ? worker : undefined;
-  if (compact) return <span className="bot-status bot-status-compact">
-    <span className={`bot-startup-${bot.startupResult.state}`}>{m[bot.startupResult.state]}</span>
-    {stale || currentWorker === undefined ? <span>{m.workerUnknown}</span> : currentWorker.state !== 'available' ? <span>{m.workerStates[currentWorker.state]}</span> : null}
-  </span>;
-  return <span className={`bot-status bot-status-${bot.startupResult.state}`}>
-    <span>{m[bot.startupResult.state]}</span>
-    {bot.startupResult.code !== null ? <span>{m.reason(bot.startupResult.code)}</span> : null}
-    <span>{stale || currentWorker === undefined ? m.unavailable : currentWorker.state === 'available' ? showWorkerName ? names.name(bot.ownerUserId, bot.workerId, currentWorker.machine.name, true) : m.workerOnline : m.reason(currentWorker.reason ?? currentWorker.state)}</span>
+export function BotStatus({ bot, observation, showWorkerName = true, compact = false }: {
+  readonly bot: BotDefinition; readonly observation?: BotObservationRead | undefined;
+  readonly worker?: BotWorkerDefaults | undefined; readonly stale?: boolean;
+  readonly showWorkerName?: boolean; readonly compact?: boolean;
+}) {
+  const m = useBotObservationMessages();
+  const value = observation?.value?.botId === bot.id ? observation.value : null;
+  const names = useWorkerNames(value && showWorkerName ? [{ userId: bot.ownerUserId, workerId: value.workerId }] : []);
+  const state = value && !observation?.stale ? value.state : 'unknown';
+  return <span className={`bot-status bot-observation-${state}${compact ? ' bot-status-compact' : ''}`}>
+    <span>{value && observation?.stale ? m.expired : m.states[state]}</span>
+    {showWorkerName && <bdi className="bot-observation-machine">{value ? names.name(bot.ownerUserId, value.workerId, value.machine?.name ?? m.machineUnknown, true) : m.machineUnknown}</bdi>}
+    {value && observation?.stale && <time dateTime={value.observedAt}>{m.observed}: {new Date(value.observedAt).toLocaleString()}</time>}
   </span>;
 }

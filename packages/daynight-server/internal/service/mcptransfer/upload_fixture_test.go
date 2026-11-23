@@ -260,10 +260,18 @@ func (h uploadHarness) seed(r model.PrivateTransfer, parts ...[]byte) []model.Up
 }
 
 type uploadScope struct {
-	t      *testing.T
-	id     string
-	chunks []model.UploadChunk
-	calls  int
+	t          *testing.T
+	id         string
+	chunks     []model.UploadChunk
+	calls      int
+	credential func(context.Context, model.Principal, string, string, string, string) (model.CredentialAuthorization, error)
+}
+
+func (s *uploadScope) CurrentTransferAttachmentAuthorization(ctx context.Context, p model.Principal, kind, id, project, task string) (model.CredentialAuthorization, error) {
+	if s.credential == nil {
+		s.t.Fatal("unconfigured transfer credential read")
+	}
+	return s.credential(ctx, p, kind, id, project, task)
 }
 
 func (s *uploadScope) UploadChunkAt(ctx context.Context, id string, offset int64) (model.UploadChunk, error) {
@@ -288,6 +296,7 @@ type uploadAdmission struct {
 	created      bool
 	err          error
 	effect       func(context.Context, []byte)
+	authorize    func(context.Context, store.AttachmentMutationScope) error
 	closes, puts int
 }
 
@@ -295,6 +304,11 @@ func (a *uploadAdmission) PutFromWithLease(ctx context.Context, l io.Closer, sou
 	a.puts++
 	if a.puts != 1 || l != a.lease || a.lease.count() != 0 {
 		a.t.Errorf("admission reused or lease not held")
+	}
+	if a.authorize != nil {
+		if err := a.authorize(ctx, a.scope); err != nil {
+			return model.Attachment{}, false, err
+		}
 	}
 	reader, err := source(a.scope)
 	if err != nil {

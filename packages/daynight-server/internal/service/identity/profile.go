@@ -6,12 +6,21 @@ import (
 	"net/url"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 // strict runs account writes without the device polling runner's refusal commits.
 func (s *Identity) strict(ctx context.Context, operation func(store.IdentityScope) error) error {
 	completion, err := s.writer.WriteIdentity(ctx, operation)
+	if completion.Outcome == store.TransactionUnknown {
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return err
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: err}
+	}
 	if err != nil {
 		return err
 	}
@@ -57,6 +66,41 @@ func (s *Identity) EnsureUser(ctx context.Context, input model.User) (model.User
 }
 
 func (s *Identity) PatchUser(ctx context.Context, p model.Principal, patch model.UserProfilePatch) (model.User, error) {
+	return s.patchUser(ctx, p, patch, nil)
+}
+
+// ProfileScopeRecheck reads the current policy within the same identity transaction.
+// Scoped profiles must provide it at each existing credential recheck boundary.
+type ProfileScopeRecheck func(context.Context, store.IdentityScope, model.Principal) (model.CredentialAuthorization, error)
+
+// PatchUserAuthorized is the policy-aware entry point for scoped assembly.
+func (s *Identity) PatchUserAuthorized(ctx context.Context, authorization model.CredentialAuthorization, patch model.UserProfilePatch, recheck ProfileScopeRecheck) (model.User, error) {
+	if err := authorization.Validate(); err != nil {
+		return model.User{}, err
+	}
+	if (authorization.Profile == model.ScopedPATProfile || authorization.Profile == model.ScopedMCPProfile) && recheck == nil {
+		return model.User{}, errors.New("profile scope recheck is required")
+	}
+	check := func(ctx context.Context, scope store.IdentityScope) error {
+		if err := scopeadmission.Require(authorization, scopepolicy.AccountWrite); err != nil {
+			return err
+		}
+		if authorization.Profile == model.ScopedPATProfile || authorization.Profile == model.ScopedMCPProfile {
+			current, err := recheck(ctx, scope, authorization.Principal)
+			if err != nil {
+				return err
+			}
+			if current.Principal != authorization.Principal || current.Profile != authorization.Profile {
+				return errors.New("profile scope recheck identity changed")
+			}
+			return scopeadmission.Require(current, scopepolicy.AccountWrite)
+		}
+		return nil
+	}
+	return s.patchUser(ctx, authorization.Principal, patch, check)
+}
+
+func (s *Identity) patchUser(ctx context.Context, p model.Principal, patch model.UserProfilePatch, recheck func(context.Context, store.IdentityScope) error) (model.User, error) {
 	if err := s.ops.validateProfilePatch(patch); err != nil {
 		return model.User{}, err
 	}
@@ -71,7 +115,13 @@ func (s *Identity) PatchUser(ctx context.Context, p model.Principal, patch model
 			resource = callback.Scheme + "://" + callback.Host + "/api/v1"
 		}
 		lock := func() error {
-			return s.ops.lockProfileCredential(ctx, scope.IdentityDAO(), scope.CredentialFamilyDAO(), p, resource, s.now().UTC())
+			if err := s.ops.lockProfileCredential(ctx, scope.IdentityDAO(), scope.CredentialFamilyDAO(), p, resource, s.now().UTC()); err != nil {
+				return err
+			}
+			if recheck != nil {
+				return recheck(ctx, scope)
+			}
+			return nil
 		}
 		if err := lock(); err != nil {
 			return err

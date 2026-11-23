@@ -82,6 +82,9 @@ type faultSourceStore struct {
 func (s faultSourceStore) WriteProject(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 	return s.Store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error { return work(faultProjectScope{scope, s.phase}) })
 }
+func (s faultSourceStore) WriteProjectTransfer(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+	return s.Store.WriteProjectTransfer(ctx, id, func(scope store.ProjectWriteScope) error { return work(faultProjectScope{scope, s.phase}) })
+}
 func (s faultSourceStore) WriteProjectDeletion(ctx context.Context, id string, work func(store.ProjectDeletionScope) error) (store.Completion, error) {
 	return s.Store.WriteProjectDeletion(ctx, id, func(scope store.ProjectDeletionScope) error { return work(faultDeletionScope{scope, s.phase}) })
 }

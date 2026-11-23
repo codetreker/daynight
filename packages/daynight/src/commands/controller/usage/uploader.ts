@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { UsageAck, UsagePayload, UsageQueuedEvent, UsageState, UsageStore } from "./types.js";
 
 import { usageProfileId } from "./profiles.js";
@@ -29,14 +30,27 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
   const blocked = new Set<string>();
   const diagnose = (message: string) => options.onDiagnostic?.(message);
   const capability = (state: UsageState): UsagePayload | null => {
-    const profile = profiles?.find(item => item.id === usageProfileId(state.provider) && item.provider === state.provider);
+    const profile = profiles?.find(item => item.id === usageProfileId(state.provider, state.profileId) && item.provider === state.provider);
     const exact = (Array.isArray(profile?.qualifiedVersions) ? profile.qualifiedVersions : []).map(object).find(item => item.providerVersion === state.providerVersion);
     const value = object(exact?.capability ?? profile?.capability);
-    if (value.profileId !== usageProfileId(state.provider) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
+    if (value.profileId !== usageProfileId(state.provider, state.profileId) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
     if (!exact && value.qualification === "verified") return { ...value, qualification: "unverified" };
     return value;
   };
   const qualified = (state: UsageState): boolean => capability(state)?.qualification === "verified";
+  const pendingUpload = (state: UsageState, limit: number) => {
+    const current = capability(state), kind = qualified(state) ? undefined : "execution_state";
+    // Eligibility changes with the advertised profile. Keep the original event
+    // untouched so a later matching capability can admit its original seal.
+    return store.pending(state.stateId, limit, kind, item => item.payload.kind !== "execution_state" || current !== null && isDeepStrictEqual(item.payload.capability, current));
+  };
+  /** A failed capability read remains retryable; a known refusal or profile filter does not. */
+  const canReplay = (state: UsageState): boolean => {
+    if (disabled || blocked.has(state.stateId)) return false;
+    if (profiles === null) return !state.stopped || store.pending(state.stateId, 1).length > 0;
+    if (capability(state) === null) return false;
+    return !state.stopped || pendingUpload(state, 1).length > 0;
+  };
   const delay = (retryAfter?: string | null) => {
     failures++;
     const seconds = retryAfter !== undefined && retryAfter !== null && /^\d+$/.test(retryAfter) ? Math.min(300, Math.max(1, Number(retryAfter))) : null;
@@ -67,7 +81,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     if (response.status === 429 || response.status >= 500) { delay(response.headers.get("retry-after")); return true; }
     return false;
   };
-  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === usageProfileId(state.provider) && value.provider === state.provider && sequence(value.rowVersion);
+  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === usageProfileId(state.provider, state.profileId) && value.provider === state.provider && sequence(value.rowVersion);
   const saveReceipt = (state: UsageState, value: Record<string, unknown>): boolean => {
     const remote = object(value.state), grant = object(value.grant);
     if (!validState(state, remote) || typeof grant.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(grant.token) || typeof grant.expiresAt !== "string" || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()) return false;
@@ -91,7 +105,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
       const result = await request("/api/usage/v1/registrations", token, {
         protocol: PROTOCOL, stateId: state.stateId, registrationId: state.registrationId,
         ...options.identity, connectionEpoch: connection.connectionEpoch, nativeSessionId: state.nativeSessionId,
-        profileId: usageProfileId(state.provider), providerVersion: state.providerVersion,
+        profileId: usageProfileId(state.provider, state.profileId), providerVersion: state.providerVersion,
       });
       if (result.response.status === 429) store.clearRegistrationAttempted(state.stateId);
       if (refusal(state, result.response)) return false;
@@ -140,7 +154,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     });
   };
   const upload = async (state: UsageState) => {
-    let flight = store.pending(state.stateId, 100, qualified(state) ? undefined : "execution_state");
+    let flight = pendingUpload(state, 100);
     while (flight.length && Buffer.byteLength(JSON.stringify({ protocol: PROTOCOL, batchId: "00000000-0000-0000-0000-000000000000", events: flight.map(item => item.payload) })) > 262_144) flight.pop();
     if (!flight.length) return;
     const batchId = randomUUID();
@@ -188,7 +202,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     const active = run().finally(() => { if (work === active) work = null; }); work = active; return active;
   };
   return {
-    tick, capability, qualified,
+    tick, capability, qualified, canReplay,
     /** Admit a final drain without extending native shutdown beyond five seconds. */
     close: async (): Promise<void> => {
       if (closed || draining) return;

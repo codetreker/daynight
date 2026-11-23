@@ -223,6 +223,7 @@ func TestGoalDeleteProtectsIncomingAndRetainsRevision(t *testing.T) {
 }
 
 func TestGoalTeamLockTimeoutReleasesProjectAndConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -393,6 +394,7 @@ func (s *goalPoolAdmissionBarrier) ReadSnapshot(ctx context.Context, work func(s
 }
 
 func TestGoalWritePoolWaitHasBranchDeadline(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"status", "delete"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newGoalLifecycleFixture(t, model.TaskDone, model.TaskTodo)

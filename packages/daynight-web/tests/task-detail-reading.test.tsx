@@ -30,19 +30,15 @@ const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概�
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
-  it('shares Task-root Markdown and the existing attachment controller with Steps', async () => {
+  it('opens Task-root Markdown attachments through the existing attachment controller', async () => {
     const api = fixture([file('docs/result.md')]);
-    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md)"
-      overview={(content) => content} steps={(_active, markdown) => markdown('[Step result](docs/result.md) ![Step image](images/chart.png)')} />);
-    expect(screen.getByRole('link', { name: 'Overview result' }).closest('.description-card')).not.toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: '步骤' }));
-    expect(screen.getByRole('img', { name: 'Step image' })).toHaveAttribute('src', `${root}images/chart.png`);
-    const link = screen.getByRole('link', { name: 'Step result' });
-    expect(link.closest('.description-card')).toBeNull();
+    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md) ![Overview image](images/chart.png)" overview={(content) => content} />);
+    expect(screen.getByRole('img', { name: 'Overview image' })).toHaveAttribute('src', `${root}images/chart.png`);
+    const link = screen.getByRole('link', { name: 'Overview result' });
+    expect(link.closest('.description-card')).not.toBeNull();
     expect(link).toHaveAttribute('href', `${root}docs/result.md`);
     fireEvent.click(link);
     await screen.findByRole('heading', { name: 'Preview docs/result.md' });
-    expect(screen.getByRole('heading', { name: 'Preview docs/result.md' }).closest('.description-card')).toBeNull();
     expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
     expect(api.list).toHaveBeenCalledTimes(1);
     expect(api.readText).toHaveBeenCalledTimes(1);
@@ -116,7 +112,7 @@ describe('task description reading', () => {
     expect(other).not.toHaveAttribute('open');
   });
 
-  it('does not treat the controlled route update after an upload as an external reveal', async () => {
+  it('reveals and focuses a successful upload through its controlled route update', async () => {
     const items: Attachment[] = [];
     const api = { ...fixture(), list: vi.fn(async () => ({ items: [...items], nextCursor: null })), put: vi.fn(async (_project: string, _task: string, path: string) => { const item = file(path); items.push(item); return item; }) };
     const Content = () => {
@@ -130,9 +126,9 @@ describe('task description reading', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '目标相对路径' }), { target: { value: 'docs/design/new.md' } });
     fireEvent.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'Preview docs/design/new.md' });
-    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.md', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.md/ })).toHaveFocus();
   });
 
   it('renders Markdown structure, root images, original raw HTML and the existing URL policy', async () => {
@@ -376,4 +372,21 @@ describe('task description reading', () => {
     showOverview();
     expect(screen.getByRole('heading', { name: '用户 Markdown' })).toBeVisible();
   });
+  it('keeps an attachment draft hidden and inactive while its task is revalidated', async () => {
+    const api = fixture();
+    const content = (available: boolean) => <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="" selection={{ tab: 'attachments', path: null }} overview={value => value} available={available} retainDraftsWhileUnavailable />;
+    const { rerender } = render(content(true));
+    await waitFor(() => expect(api.list).toHaveBeenCalledOnce());
+    const disclosure = screen.getByText('上传文件', { selector: 'summary' }).parentElement!;
+    disclosure.setAttribute('open', '');
+    const input = screen.getByRole('textbox', { name: '目标相对路径' });
+    fireEvent.change(input, { target: { value: 'draft/unsent.md' } });
+    rerender(content(false));
+    expect(input).not.toBeVisible();
+    expect(input).toHaveValue('draft/unsent.md');
+    rerender(content(true));
+    expect(screen.getByRole('textbox', { name: '目标相对路径' })).toBe(input);
+    expect(input).toHaveValue('draft/unsent.md');
+  });
+
 });

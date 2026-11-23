@@ -406,7 +406,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 
 func cancellationMigrationRows(t *testing.T, database *Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id')::text FROM tasks t ORDER BY id`)
+	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id'-'ancestor_deleted_at')::text FROM tasks t ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 	t.Helper()
 	facts := statusMigrationRelatedFacts(t, database)
 	for name, query := range map[string]string{
-		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
+		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"properties": `SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name)::text FROM task_properties p`,
 		"ledger":     `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<46`,
 	} {
@@ -463,6 +463,10 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 	}
 	if !reflect.DeepEqual(cancellationMigrationRows(t, database), before) || !reflect.DeepEqual(cancellationMigrationFacts(t, database), related) {
 		t.Fatal("cancellation migration changed existing task data or related resources")
+	}
+	var repositoryVersion int64
+	if err := pool.QueryRow(t.Context(), `SELECT repository_version FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
+		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
 	}
 	var nonnull int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM tasks WHERE cancelled_at IS NOT NULL`).Scan(&nonnull); err != nil || nonnull != 0 {

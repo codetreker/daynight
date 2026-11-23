@@ -3,6 +3,8 @@ import Database from "better-sqlite3";
 import sharp from "sharp";
 import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
@@ -67,10 +69,10 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
 };
-const fixture = async ({ finalizeStop = true, failedMarkdown = false, historyPolicy = "legacy" }: { finalizeStop?: boolean; failedMarkdown?: boolean; historyPolicy?: "legacy" | "task_body" } = {}) => {
+const fixture = async ({ finalizeStop = true, failedMarkdown = false, historyPolicy = "legacy", serverOrigin = "https://daynight.example" }: { finalizeStop?: boolean; failedMarkdown?: boolean; historyPolicy?: "legacy" | "task_body"; serverOrigin?: string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin, projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const journalPath = path.join(home, "journal.sqlite");
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, historyPolicy });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
@@ -92,6 +94,11 @@ const migrate = (db: Database.Database): void => {
   } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+const advancingArchiveClock = () => {
+  let now = Date.parse("2026-01-01T00:00:00Z");
+  const waits: number[] = [];
+  return { waits, runtime: { now: () => now, random: () => 0.5, wait: async (ms: number, signal: AbortSignal) => { signal.throwIfAborted(); waits.push(ms); now += ms; } } };
+};
 
 test.each(["none", "lease", "backup"])("Task body archive excludes tool resources and retires online content with retryable cleanup (%s)", async fault => {
   const f = await fixture({ finalizeStop: false, historyPolicy: "task_body" });
@@ -231,20 +238,23 @@ test.each(fixturePlatforms)("retries confirmed archive busy responses with the s
     previous.count++;
     return receiver.request(input, init);
   };
-  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).state).toBe("ready");
+  const clock = advancingArchiveClock();
+  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request, retryRuntime: clock.runtime })).state).toBe("ready");
   expect(bodies).toHaveLength(1);
   expect([...attempts.keys()]).toEqual(expect.arrayContaining([
     expect.stringContaining("POST "), expect.stringContaining("/source-tail"), expect.stringContaining("/prepare"),
     expect.stringContaining("/seal"), expect.stringContaining("PUT "), expect.stringContaining("/content"),
   ]));
   expect([...attempts.values()].every(value => value.count >= 2)).toBe(true);
+  expect(clock.waits).toEqual(Array.from({ length: attempts.size }, () => 1000));
 });
 
 test.each([[429, "resource_busy", 9], [429, "rate_limited", 1], [503, "resource_busy", 1], [403, "forbidden", 1]] as const)(
   "bounds archive retries and preserves HTTP %s / %s", async (status, code, count) => {
     const f = await fixture();
+    const clock = advancingArchiveClock();
     const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code } }, { status, headers: { "Retry-After": "0" } }));
-    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ status, code });
+    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request, retryRuntime: clock.runtime })).rejects.toMatchObject({ status, code });
     expect(request).toHaveBeenCalledTimes(count);
   },
 );
@@ -261,8 +271,9 @@ const archiveClock = () => {
 };
 
 test.each([
-  { retryAfter: null, random: 0, expectedMs: 500 },
-  { retryAfter: "invalid", random: 0.99999, expectedMs: 5000 },
+  { retryAfter: null, random: 0, expectedMs: 800 },
+  { retryAfter: "invalid", random: 1, expectedMs: 1200 },
+  { retryAfter: "0", random: 0, expectedMs: 800 },
   { retryAfter: "7", random: 0, expectedMs: 7000 },
   { retryAfter: "Thu, 01 Jan 2026 00:00:09 GMT", random: 0, expectedMs: 9000 },
 ])("archive busy waits for Retry-After or bounded jitter: $retryAfter / $expectedMs", async ({ retryAfter, random, expectedMs }) => {
@@ -287,7 +298,7 @@ test.each([
   } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
-test("archive busy keeps its error identity when the shared 60 second budget expires", async () => {
+test("archive busy retains its capacity error when Retry-After exceeds the 12 second limit", async () => {
   const f = await fixture();
   archiveClock();
   const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "120" } }));
@@ -295,9 +306,6 @@ test("archive busy keeps its error identity when the shared 60 second budget exp
   const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
   const joined = Promise.allSettled([result, failed]);
   try {
-    await vi.advanceTimersByTimeAsync(59_999);
-    expect(request).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1);
     await failed;
     expect(request).toHaveBeenCalledOnce();
   } finally { await vi.runAllTimersAsync(); await joined; }
@@ -322,6 +330,7 @@ test("cancelling an archive busy wait prevents another request", async () => {
 
 test.each(["history", "content"])("exhausted %s busy retries retain the original error without a reconciliation request", async stage => {
   const f = await fixture(), receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
+  const clock = advancingArchiveClock();
   let busyAttempts = 0;
   const request: typeof fetch = async (input, init) => {
     if (init?.method === "PUT" && (stage === "history" ? String(input).includes("/prepare/history/") : String(input).endsWith("/content"))) {
@@ -331,30 +340,99 @@ test.each(["history", "content"])("exhausted %s busy retries retain the original
     if (busyAttempts === 9) throw new Error("An explicit busy response has no unknown result to reconcile.");
     return receiver.request(input, init);
   };
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request, retryRuntime: clock.runtime })).rejects.toMatchObject({ status: 429, code: "resource_busy" });
   expect(busyAttempts).toBe(9);
 });
 
 test("archive requests share the same round deadline across upload stages", async () => {
   const f = await fixture(), receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
-  archiveClock();
-  const refused = new Set<string>();
+  const clock = advancingArchiveClock();
+  const refused = new Map<string, number>();
   const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
     const url = String(input);
-    if (!refused.has(url) && (url.endsWith("/archive") || url.endsWith("/source-tail"))) {
-      refused.add(url);
-      return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "40" } });
+    const count = refused.get(url) ?? 0;
+    if (count < 2) {
+      refused.set(url, count + 1);
+      return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "11" } });
     }
     return receiver.request(input, init);
   });
-  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
-  const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
-  const joined = Promise.allSettled([result, failed]);
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request, retryRuntime: clock.runtime })).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+  expect(clock.waits).toEqual([11000, 11000, 11000, 11000, 11000]);
+  expect(request).toHaveBeenCalledTimes(8);
+});
+
+test("Task body terminal upload retries headerless busy responses after partial prepare/seal and reconciles a lost content receipt over HTTP", async () => {
+  let receiver!: ReturnType<typeof archiveTestReceiver>, serverFailure: unknown;
+  const partialRequests = new Map<string, { body: Buffer; headers: Record<string, string | string[] | undefined>; count: number }>();
+  let lostContentReceipt = false;
+  const server = createServer(async (incoming, outgoing) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks), url = new URL(incoming.url!, "http://127.0.0.1");
+      const init: RequestInit = { method: incoming.method!, headers: incoming.headers as Record<string, string>, ...(body.length ? { body: incoming.headers["content-type"] === "application/json" ? body.toString("utf8") : Uint8Array.from(body) } : {}) };
+      expect(incoming.headers["authorization"]).toBe("Bearer test-secret");
+      expect(incoming.headers["daynight-task-body-history-version"]).toBe("1");
+      let response: Response;
+      if (url.pathname.endsWith("/prepare") || url.pathname.endsWith("/seal")) {
+        const previous = partialRequests.get(url.pathname);
+        if (!previous) {
+          // The controlled service commits its settling/sealed state before refusing capacity.
+          await receiver.request(url.toString(), init);
+          partialRequests.set(url.pathname, { body, headers: incoming.headers, count: 1 });
+          response = Response.json({ error: { code: "resource_busy", message: "private-server-detail" } }, { status: 429, headers: { "X-Request-ID": "capacity-1" } });
+        } else {
+          expect(body).toEqual(previous.body);
+          expect(incoming.headers["authorization"]).toEqual(previous.headers["authorization"]);
+          expect(incoming.headers["daynight-task-body-history-version"]).toEqual(previous.headers["daynight-task-body-history-version"]);
+          previous.count++;
+          response = await receiver.request(url.toString(), init);
+          response.headers.set("Daynight-Task-Body-History-Version", "1");
+        }
+      } else {
+        response = await receiver.request(url.toString(), init);
+        if (incoming.method === "PUT" && url.pathname.endsWith("/content") && !lostContentReceipt) {
+          lostContentReceipt = true;
+          outgoing.destroy(); return;
+        }
+        response.headers.set("Daynight-Task-Body-History-Version", "1");
+      }
+      outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+      outgoing.end(Buffer.from(await response.arrayBuffer()));
+    } catch (error) { serverFailure = error; outgoing.writeHead(500); outgoing.end("Fixture failed."); }
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("HTTP fixture has no port.");
+  const clock = advancingArchiveClock();
+  const events: unknown[] = [], bodies: string[] = [];
   try {
-    await vi.advanceTimersByTimeAsync(60_000);
-    await failed;
-    expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
-  } finally { await vi.runAllTimersAsync(); await joined; }
+    const f = await fixture({ historyPolicy: "task_body", serverOrigin: `http://127.0.0.1:${address.port}` });
+    receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
+    const result = await uploadStoppedControllerArchive({ ...f, serverToken: "test-secret", retryRuntime: clock.runtime, onRetry: event => events.push(event) });
+    expect(serverFailure).toBeUndefined();
+    expect(result).toMatchObject({ state: "ready", schemaVersion: 3 });
+    expect(lostContentReceipt).toBe(true);
+    expect(bodies).toHaveLength(1);
+    expect([...partialRequests.values()].map(value => value.count)).toEqual([2, 2]);
+    expect(clock.waits).toEqual([1000, 1000]);
+    expect(events).toEqual(Array.from({ length: 2 }, () => ({ phase: "waiting", retry: 1, delayMs: 1000, classification: "resource_busy", requestId: "capacity-1", sessionId: f.ticket.sessionId })));
+    expect(JSON.stringify(events)).not.toContain("test-secret");
+    expect(JSON.stringify(events)).not.toContain("private-server-detail");
+    expect(JSON.parse(await readFile(`${f.journalPath}.archive-receipt-1.json`, "utf8"))).toEqual(result);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}, 15000);
+
+test("Task body busy retry still rejects a later success without the required version header", async () => {
+  const f = await fixture({ historyPolicy: "task_body" }), clock = advancingArchiveClock();
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: { code: "resource_busy" } }, { status: 429 })).mockResolvedValueOnce(Response.json({ archive: emptyStatus }));
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request, retryRuntime: clock.runtime })).rejects.toThrow("upgrade_required");
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(clock.waits).toEqual([1000]);
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before reading pending content and preserves source bytes", async code => {
@@ -431,6 +509,30 @@ test("uploads a schema3 manifest and separately hashed timeline without a native
  await rm(`${f.journalPath}.pending-content`,{recursive:true});
  const count=calls.length;await uploadStoppedControllerArchive(options);expect(calls.slice(count)).toEqual([expect.stringContaining("GET ")]);
 });
+test("an old in-flight v1 history and a new v2 timeline retain their individual versions", async () => {
+  const f = await fixture(), bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
+  let first = true, v2File = "", v2Bytes = Buffer.alloc(0), v2Hash = "", completed = false;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input)), method = init?.method ?? "GET", headers = new Headers(init?.headers);
+    if (first && method === "POST" && url.pathname.endsWith("/seal")) throw new Error("stop after v1 history");
+    if (!first && method === "POST" && url.pathname.endsWith("/prepare")) { const response = await receiver.request(input, init); response.headers.set("Daynight-Archive-Upload-Version", "2"); return response; }
+    if (!first && method === "PUT" && /\/files\/[^/]+$/.test(url.pathname)) {
+      expect(headers.get("Daynight-Archive-Upload-Version")).toBe("2"); expect(headers.get("Daynight-Chunk-SHA256")).toBeNull();
+      v2File = url.pathname.split("/").at(-1)!; v2Bytes = Buffer.from(await new Response(init?.body as ConstructorParameters<typeof Response>[0]).arrayBuffer()); v2Hash = headers.get("Daynight-File-SHA256")!; receiver.files.set(v2File, v2Bytes);
+      return Response.json({ fileId: v2File, state: "receiving", acceptedOffset: String(v2Bytes.length), byteLength: String(v2Bytes.length), sha256: v2Hash, error: null }, { headers: { "Daynight-Archive-Upload-Version": "2" } });
+    }
+    if (!first && method === "POST" && url.pathname.endsWith(`/files/${v2File}/complete`)) { completed = true; return Response.json({ fileId: v2File, state: "complete", acceptedOffset: String(v2Bytes.length), byteLength: String(v2Bytes.length), sha256: v2Hash, error: null }, { headers: { "Daynight-Archive-Upload-Version": "2" } }); }
+    return receiver.request(input, init);
+  };
+  const options = { ...f, serverToken: "test", request };
+  await expect(uploadStoppedControllerArchive(options)).rejects.toThrow("stop after v1 history");
+  const intentPath = `${f.journalPath}.archive-intent-${f.ticket.executionGeneration}.json`, intent = JSON.parse(await readFile(intentPath, "utf8"));
+  await unlink(`${intentPath}.transfer.json`); first = false;
+  expect((await uploadStoppedControllerArchive(options)).state).toBe("ready");
+  const selection = JSON.parse(await readFile(`${intentPath}.transfer.json`, "utf8"));
+  expect(selection.versions).toMatchObject({ [intent.history.fileId]: 1, [intent.timeline.fileId]: 2 });
+  expect(completed).toBe(true); expect(JSON.parse(bodies[0]!).timeline.fileId).toBe(v2File);
+});
 test("a committed schema3 archive with a lost local receipt recovers through its unchanged durable intent", async () => {
   const f = await fixture(), bodies: string[] = [], calls: { method: string; path: string }[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough, onRequest: (method, path) => calls.push({ method, path }) });
@@ -506,7 +608,7 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   const original = content.timeline.get(f.entry.entryId)!;
   const db = new Database(f.journalPath); readers.push(db);
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE timeline_source_revisions; ALTER TABLE execution DROP COLUMN online_mode; DROP TABLE stopped_generations; DROP TABLE worker_lifecycle_bindings; DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
   migrate(db);
@@ -523,7 +625,7 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   const f = await fixture(); const db = new Database(f.journalPath); readers.push(db); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.timeline.get(f.entry.entryId)!;
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE timeline_source_revisions; ALTER TABLE execution DROP COLUMN online_mode; DROP TABLE stopped_generations; DROP TABLE worker_lifecycle_bindings; DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
   let migrationError: unknown;

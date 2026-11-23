@@ -211,6 +211,8 @@ func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.
 	b := standaloneListRow(uuid.NewString(), "codex", "active", "connected", now.Add(-time.Hour), now.Add(-time.Hour))
 	edge := now.Add(-HeartbeatTimeout)
 	a.LastSeen, b.LastSeen = &now, &edge
+	expiry := now.Add(time.Hour)
+	a.ConnectionExpiry, b.ConnectionExpiry = &expiry, &expiry
 	s := standaloneListExecution(t, now, standaloneListCall{actor: actor, limit: 1, online: true, items: []store.TestSessionListItem{a, b}}, standaloneListCall{actor: actor, limit: 1, online: true, cursor: &a.UpdatedAt, id: a.Snapshot.SessionID, items: []store.TestSessionListItem{b}}, standaloneListCall{actor: actor, limit: 1, items: []store.TestSessionListItem{a, b}}, standaloneListCall{actor: actor, limit: 50, online: true, items: []store.TestSessionListItem{}}, standaloneListCall{actor: actor, limit: 50, items: []store.TestSessionListItem{a, b}})
 	page, err := s.ListTest(ctx, actor, "", 1, true)
 	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != a.Snapshot.SessionID || page.Items[0].ConnectionState != "connected" || page.NextCursor == nil {
@@ -237,5 +239,31 @@ func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.
 	history, err := s.ListTest(ctx, actor, "", 50, false)
 	if err != nil || len(history.Items) != 2 {
 		t.Fatal("readable history", history, err)
+	}
+}
+
+func TestListTestSessionsProjectsDurableConnectionLease(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	actor := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	valid, expired := now.Add(time.Second), now.Add(-time.Second)
+	for _, test := range []struct {
+		name   string
+		expiry *time.Time
+		want   string
+	}{
+		{"missing", nil, "disconnected"},
+		{"expired", &expired, "disconnected"},
+		{"at deadline", &now, "disconnected"},
+		{"valid", &valid, "connected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			row := standaloneListRow(uuid.NewString(), "codex", "active", "connected", now.Add(-time.Hour), now)
+			row.LastSeen, row.ConnectionExpiry = &now, test.expiry
+			execution := standaloneListExecution(t, now, standaloneListCall{actor: actor, limit: 50, online: true, items: []store.TestSessionListItem{row}})
+			page, err := execution.ListTest(t.Context(), actor, "", 50, true)
+			if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != row.Snapshot.SessionID || page.Items[0].ConnectionState != test.want {
+				t.Fatalf("lease projection: %+v %v", page, err)
+			}
+		})
 	}
 }

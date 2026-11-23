@@ -9,14 +9,19 @@ import (
 
 // ParseWorkerConfigurationProtocol enforces the negotiated configuration fields.
 func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerprotocol.Capabilities) (model.WorkerConfiguration, error) {
-	keys := []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"}
+	keys := []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "native", "projects"}
+	if capabilities.PlatformTaskMode {
+		keys = append(keys, "platformTaskMode")
+	} else {
+		keys = append(keys, "preferPlatformSpecificTasks")
+	}
 	if capabilities.ToolPaths {
 		keys = append(keys, "toolPaths")
 	}
 	if capabilities.ArchiveSessions {
 		keys = append(keys, "archiveSessions")
 	}
-	fields, err := configurationObject(raw, "configuration", true, append(keys, "enableSudoCleanup", "taskTagFilter")...)
+	fields, err := configurationObject(raw, "configuration", true, append(keys, "enableSudoCleanup", "enableWindowsProcessCleanup", "taskTagFilter")...)
 	if err != nil {
 		return model.WorkerConfiguration{}, err
 	}
@@ -30,11 +35,18 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 			return model.WorkerConfiguration{}, err
 		}
 	}
-	value, err := ParseWorkerConfiguration(raw)
+	var value model.WorkerConfiguration
+	if capabilities.PlatformTaskMode {
+		value, err = ParseWorkerConfiguration(raw)
+	} else {
+		value, err = parseLegacyPlatformConfiguration(raw)
+	}
 	value.PreserveToolPaths = !capabilities.ToolPaths
 	value.PreserveArchiveSessions = !capabilities.ArchiveSessions
 	_, present := fields["enableSudoCleanup"]
 	value.PreserveSudoCleanup = !present
+	_, present = fields["enableWindowsProcessCleanup"]
+	value.PreserveWindowsProcessCleanup = !present
 	_, present = fields["taskTagFilter"]
 	value.PreserveTaskTagFilter = !present
 	return value, err
@@ -50,7 +62,9 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 		return nil, err
 	}
 	if !configurationNull(fields["bootstrap"]) {
-		value, err := ParseWorkerConfigurationProtocol(fields["bootstrap"], capabilities)
+		bootstrapCapabilities := capabilities
+		bootstrapCapabilities.PlatformTaskMode = false
+		value, err := ParseWorkerConfigurationProtocol(fields["bootstrap"], bootstrapCapabilities)
 		if err != nil {
 			return nil, err
 		}
@@ -63,6 +77,30 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 			return nil, err
 		}
 	}
+	if !configurationNull(fields["bootstrap"]) {
+		var bootstrap map[string]json.RawMessage
+		if err := json.Unmarshal(fields["bootstrap"], &bootstrap); err != nil {
+			return nil, err
+		}
+		var prefer bool
+		if err := configurationDecode(bootstrap["preferPlatformSpecificTasks"], &prefer); err != nil {
+			return nil, err
+		}
+		mode := model.PlatformTaskAll
+		if prefer {
+			mode = model.PlatformTaskPrefer
+		}
+		delete(bootstrap, "preferPlatformSpecificTasks")
+		bootstrap["platformTaskMode"], _ = json.Marshal(mode)
+		fields["bootstrap"], err = json.Marshal(bootstrap)
+		if err != nil {
+			return nil, err
+		}
+		raw, err = json.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+	}
 	exchange, err := ParseWorkerConfigurationExchange(raw)
 	if err != nil {
 		return nil, err
@@ -70,15 +108,19 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 	if exchange.Observation != nil {
 		legacyItems := 0
 		for _, item := range exchange.Observation.Items {
+			if item.Key.Kind == "platformTaskMode" && !capabilities.PlatformTaskMode {
+				return nil, invalidInput("Platform task mode observations require the platform task mode capability.")
+			}
+
 			if item.Key.Kind == "archiveSessions" {
 				if !capabilities.ArchiveSessions {
 					return nil, invalidInput("Archive sessions observations require the archive sessions capability.")
 				}
-			} else if item.Key.Kind != "enableSudoCleanup" && item.Key.Kind != "taskTagFilter" {
+			} else if item.Key.Kind != "enableSudoCleanup" && item.Key.Kind != "enableWindowsProcessCleanup" && item.Key.Kind != "taskTagFilter" {
 				legacyItems++
 			}
 		}
-		if err := upper("observation.items", int64(legacyItems), MaxObservationItems-4, "items"); err != nil {
+		if err := upper("observation.items", int64(legacyItems), MaxObservationItems-5, "items"); err != nil {
 			return nil, InputLimit(err)
 		}
 	}

@@ -25,7 +25,10 @@ attention and send permission remain independent. Sources are lightweight,
 selected in batches of at most 200, and never load message or control content.
 The original database snapshot closes before live sampling and a fresh snapshot
 reauthorizes and rechecks the selected binding. Work target batches also check a
-stable Task graph fence, with a final check before publication.
+stable Task graph fence, with a final check before publication. The
+[Work target selection decision](../architecture/2026-11-23-work-snapshot-targets.md)
+defines the first-snapshot membership and request-local target keys; subsequent
+batches read those keys without expanding dependencies.
 
 Work groups select by assignee but aggregate every accessible ongoing member.
 External prerequisites remain references rather than members. Group and target

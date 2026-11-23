@@ -10,6 +10,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -37,18 +38,33 @@ import (
 
 // IdentityOperations is the identity output consumed by protocol adapters.
 type IdentityOperations interface {
+	DeviceScopeCatalog() (scopepolicy.CatalogSnapshot, bool)
+	ListScopedPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	CreateScopedPAT(context.Context, model.Principal, string, identitycore.CreatePAT, *string, string, []scopepolicy.ScopeID) (identitycore.MintedPAT, error)
+	UpdateScopedPAT(context.Context, model.Principal, string, string, int64, string, []scopepolicy.ScopeID) (model.PersonalAccessToken, error)
+	InspectDeviceV2(context.Context, model.Principal, string) (identitycore.DeviceInspectionV2, error)
+	DecideDeviceV2(context.Context, model.Principal, string, string, string, string, []scopepolicy.ScopeID) error
+	PatchUserAuthorized(context.Context, model.CredentialAuthorization, model.UserProfilePatch, identity.ProfileScopeRecheck) (model.User, error)
+
 	CallbackURL() string
 	PreviewSSO() *identity.PreviewSSO
 	ValidateLogin(string, string) error
 	StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error)
-	CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	CompleteLogin(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error)
 	Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error)
+	AuthenticateBrowserActivity(context.Context, string, string) (model.Principal, error)
 	User(context.Context, model.Principal) (model.User, error)
 	PatchUser(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
 	EnsureUser(context.Context, model.User) (model.User, error)
 	Logout(context.Context, model.Principal) error
 	CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
+	ListBrowserSessions(context.Context, model.Principal, string, int) (identitycore.BrowserSessionPage, error)
+	GetBrowserSession(context.Context, model.Principal, string) (model.Session, error)
+	RevokeBrowserSession(context.Context, model.Principal, string, string, string) error
 	ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	CreatePATV2(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error)
+	ListPATsV2(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	UpdatePATDescription(context.Context, model.Principal, string, string, *string, *string) (string, *string, error)
 	RevokePAT(context.Context, model.Principal, string) error
 	UpdatePATExpiry(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
 	Providers(context.Context) ([]string, error)
@@ -70,22 +86,10 @@ type TaskObservationOperations interface {
 	WorkList(context.Context, model.Principal, string, taskcore.WorkRequest) (taskwork.Page, error)
 }
 
-// TaskStepsOperations is the task step output consumed by protocol adapters.
-type TaskStepsOperations interface {
-	ListPage(context.Context, model.Principal, string, string, int64, int, *int64, bool) (task.StepsPage, error)
-	GetSummary(context.Context, model.Principal, string, string, string) (task.StepSummary, error)
-	List(context.Context, model.Principal, string, string) (task.StepsDocument, error)
-	Get(context.Context, model.Principal, string, string, string) (task.StepDocument, error)
-	Add(context.Context, model.Principal, string, string, task.AddTaskStep) (task.StepsWriteResult, error)
-	Update(context.Context, model.Principal, string, string, string, task.UpdateTaskStep) (task.StepsWriteResult, error)
-	SetStatus(context.Context, model.Principal, string, string, string, task.SetTaskStepStatus) (task.StepsWriteResult, error)
-	Move(context.Context, model.Principal, string, string, string, task.MoveTaskStep) (task.StepsWriteResult, error)
-	Delete(context.Context, model.Principal, string, string, string, task.DeleteTaskStep) (task.StepsWriteResult, error)
-}
-
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
+	Scoped           *Scoped
 	Usage            *usageapp.Service
 	CredentialUsage  *credentialusage.Recorder
 	Identity         IdentityOperations
@@ -107,7 +111,6 @@ type Application struct {
 	TaskHistory      *session.History
 	HistoryDirectory *session.GroupDirectory
 	TaskSearch       store.TaskSearchReader
-	TaskSteps        TaskStepsOperations
 	TaskThreads      *task.TaskThreads
 	TaskSync         *task.TaskSync
 	Attachments      *attachment.Attachments
@@ -119,16 +122,21 @@ type Application struct {
 }
 
 type constructors struct {
+	archiveLimits    *sessioncore.ArchiveLimits
 	identity         func(store.IdentityWriter, *uniauth.Client, string, *identity.PreviewSSO) *identity.Identity
 	taskObservations func(store.SnapshotReader, task.SessionObserver) *task.Observations
 	projects         func(store.Transactions, *sessioncore.Engine) *project.AppProjects
 	tasks            func(store.Transactions, task.Capturer) *task.Tasks
-	taskSteps        func(task.StepsStore, ...task.Capturer) *task.TaskSteps
 	attachments      func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
 }
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, capture ...task.Capturer) *Application {
+	return newWithArchiveLimits(database, files, client, callbackURL, preview, overlap, nil, capture...)
+}
+
+func newWithArchiveLimits(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, limits *sessioncore.ArchiveLimits, capture ...task.Capturer) *Application {
 	return assemble(database, files, client, callbackURL, preview, overlap, constructors{
+		archiveLimits:    limits,
 		identity:         identity.NewWithPreviewSSO,
 		taskObservations: task.NewObservations,
 		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
@@ -137,7 +145,6 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		tasks: func(database store.Transactions, capturer task.Capturer) *task.Tasks {
 			return task.NewTasks(database, capturer)
 		},
-		taskSteps:   task.NewTaskSteps,
 		attachments: attachment.NewAttachments,
 	}, capture...)
 }
@@ -147,7 +154,12 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	if len(capture) != 0 && capture[0] != nil {
 		capturer = capture[0]
 	}
-	engine := sessioncore.NewEngine(files)
+	var engine *sessioncore.Engine
+	if construct.archiveLimits == nil {
+		engine = sessioncore.NewEngine(files)
+	} else {
+		engine = sessioncore.NewEngine(files, *construct.archiveLimits)
+	}
 	oauthAuthenticator := oauth.NewAuthenticator(database)
 	workerReadOnly := worker.NewReadOnly(database, oauthAuthenticator.RecheckAPIAccess)
 	sessions := session.New(database, engine)
@@ -163,7 +175,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		Prompts:          prompt.New(database),
 		WorkerReadOnly:   workerReadOnly,
 		AssistantTasks:   assistanttask.New(database),
-		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
+		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly).WithSessionObserver(engine),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tags:             tag.New(database),
 		Tasks:            construct.tasks(database, capturer),
@@ -172,7 +184,6 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		TaskHistory:      session.NewHistory(inspection, sessions),
 		HistoryDirectory: session.NewGroupDirectory(database),
 		TaskSearch:       database,
-		TaskSteps:        construct.taskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),
 		TaskSync:         task.NewTaskSync(database, engine, overlap),
 		Attachments:      construct.attachments(database, database, files),

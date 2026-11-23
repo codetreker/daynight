@@ -1,10 +1,10 @@
 # 公共 Markdown 渲染设计
 
-[要求](../spec/shared-markdown.md)拥有公共渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供 document 和 chat 资源模式；Task、Goal、Steps 和附件通过 `MarkdownContent` 适配，Discussion、Session、PR 描述和提案通过同目录的 `ChatMarkdown` 薄适配器使用公共内核。
+[要求](../spec/shared-markdown.md)拥有公共渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供 document 和 chat 资源模式；Task、Goal 和附件通过 `MarkdownContent` 适配，Discussion、Session、PR 描述和提案通过同目录的 `ChatMarkdown` 薄适配器使用公共内核。
 
 ## 模块与资源
 
-`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，场景通过 `--markdown-*` 参数保留密度和字体差异；描述卡片、消息气泡及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
+`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，场景通过 `--markdown-*` 参数保留间距、颜色和字重差异。正文、标题、代码、表格及 Daynight 控制的 Mermaid 字号遵循[公共字号标准](../spec/web-typography.md)；描述卡片、消息气泡及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
 
 调用者提供 document 资源模式：`paused`、`resolveUrl(sourceUrl)`、可选 `onLinkClick(sourceUrl, event)` 与 `renderImage({sourceUrl, url, alt, title})`。`sourceUrl` 是解析器 URI normalize 后、业务转换前的值；转换结果再经过 `defaultUrlTransform`，拒绝结果不能由来源地址恢复为图片加载地址。每次处理使用 WeakMap 将原 HAST 节点与来源关联，避免从预览地址反推附件路径。公共层不读取业务数据、权限或凭据。
 
@@ -23,6 +23,14 @@
 Dagre，显式 `flowchart-elk` 使用 SDK 内置布局，其他类型使用各自布局。
 
 SDK 初始化、类型判定、语义预检和绘制共享一个串行队列，避免全局配置互相覆盖。
+独立 Blob SVG 不继承页面字号。组件在页面内但脱离阅读区布局的位置测量 `xs`、
+`sm` 和 `lg` 的 1em 探针，并观察其变化；每次请求在进入队列前携带实测值。
+适配器在绘制前将字号提供给主题和各图型配置，并按文字尺寸与宽度为 Packet
+计算几何。Sequence 根据编号与标题的实测尺寸留出标记和布局空间。固定版本的
+Mermaid 补丁在 XY 折线有点标签时测量文字并为轴范围及画布留出空间，标签使用
+同一实测正文档位；重合标签在绘制前避让，所需宽度或高度超过 16,384 CSS px 时
+作为局部复杂度错误拒绝。没有点标签的图保持原有布局。图型专属样式在布局前生效，
+源码样式仍可覆盖默认值。
 配置固定 `strict`、应用主题和关闭可配置 HTML labels；拒绝来源中的配置指令及
 frontmatter。源码上限为 50,000 个 UTF-16 代码单元。固定版本的 parser DB 提供
 语义预算，每项上限 500：流程图、类图、状态图、ER 和需求图分别计节点及边；
@@ -57,8 +65,9 @@ DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留
 临时绘图 DOM、自定义样式资源和普通 Markdown 外部图片仍可能产生网络请求，该
 机制不提供网络隔离。
 
-图块拥有当前语言的状态、源码和图片资源。异步结果绑定来源与挂载生命周期；内容
-变化立即停止呈现旧结果，晚到事件不能改写当前图块，替换和卸载时释放对象 URL。
+图块拥有当前语言的状态、源码和图片资源。异步结果绑定来源、字号与挂载生命周期；
+内容变化立即停止呈现旧结果，同源字号变化保留旧图直到新图成功换入，晚到事件不能
+改写当前图块。取消未提交的结果、替换和卸载分别释放所属对象 URL。
 模块级 renderer 身份稳定，父组件更新不会重建整个阅读树。可聚焦且具备可访问
 名称的局部滚动区域保留自然尺寸和键盘阅读；320px 下不撑宽整体页面，概览及附件
 正文保留纵向滚动所有权。标签、关系及数据的最终绘制须由真实浏览器验证。原有

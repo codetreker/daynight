@@ -114,6 +114,13 @@ describe("webhook input and private files", () => {
     for (const input of inputs) expect(() => parseWebhookInput(Buffer.from(input), "update")).toThrow();
   });
 
+  it("passes a valid creation key through create input only", () => {
+    const create = { clientKey: "assistant-task-inbox:1", name: "x", enabled: false, destination: { kind: "http", adapterVersion: "1", configuration: { url: "https://example.test/" } }, subscriptions: [] };
+    expect(parseWebhookInput(Buffer.from(JSON.stringify(create)), "create")).toEqual(create);
+    for (const clientKey of ["", "a b", "x".repeat(201), null, 1]) expect(() => parseWebhookInput(Buffer.from(JSON.stringify({ ...create, clientKey })), "create")).toThrow();
+    expect(() => parseWebhookInput(Buffer.from('{"clientKey":"inbox","name":"x"}'), "update")).toThrow();
+  });
+
   it("retains distinct subscriptions and refuses repeated IDs, event keys or unknown events", () => {
     const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const item = { id, projectId: user, eventTypes: ["task.created"] };

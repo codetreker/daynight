@@ -17,6 +17,7 @@ import { toolPathActual, toolPathObservation, toolPathTelemetry } from './helper
 import { WORKER_USER, workerResponse } from './helpers/workers';
 
 vi.mock('../src/features/workers/useWorkers', () => ({ useWorkers: vi.fn() }));
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
 vi.mock('../src/features/workers/useWorker', () => ({ useWorker: vi.fn() }));
 vi.mock('../src/features/workers/useWorkerMonitoring', () => { const state = { snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }; return { useWorkerMonitoring: vi.fn(), useWorkerMonitoringSummaries: () => state }; });
 const id = (n: number) => `0000000${n}-1111-4111-8111-111111111111`;

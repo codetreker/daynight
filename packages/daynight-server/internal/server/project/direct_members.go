@@ -26,7 +26,7 @@ type directMemberHandler struct {
 }
 
 // RegisterDirectMemberRoute mounts the existing-account Project member operation.
-func RegisterDirectMemberRoute(mux *http.ServeMux, members DirectMemberOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterDirectMemberRoute(mux httpx.RouteRegistrar, members DirectMemberOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &directMemberHandler{members: members, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/members/{userId}", auth.Require(h.add))
 }

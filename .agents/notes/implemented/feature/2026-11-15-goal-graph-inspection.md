@@ -12,14 +12,15 @@ chains also makes the same visual control behave differently across graphs.
 ## Decision
 
 Goal and chain cards share native body inspection and an independent sibling
-Details button. Goal cards retain their 220×96 geometry, existing status and
+Details button. Goal cards use shared compact geometry, scaling with larger root fonts, and retain status and
 execution presentation, and separate room for Details. They retain the complete
 Parent projection and provide no progressive expansion or external navigation.
 
-`GoalTaskGraph` owns selection for its Goal and derives complete upstream H from
-the project index through `tracePrerequisites`. Shared inspection Context and
-node/edge presentation highlight only visible H nodes and real visible edges
-whose endpoints both belong to H. Hidden upstream Tasks are counted outside the
+`GoalTaskGraph` owns selection for its Goal and derives complete upstream H and
+downstream D from the project index through `tracePrerequisites` and
+`traceSuccessors`. Shared inspection Context classifies visible nodes and real
+edges independently for each direction, as defined by the
+[successor inspection decision](2026-11-20-graph-successor-inspection.md). Hidden upstream Tasks are counted outside the
 current projection, including ancestors beyond its one-layer prerequisite scope.
 A still-visible selection survives same-Goal snapshots and is recomputed against
 the current index; removal or a different Goal clears it. Direction changes,
@@ -53,6 +54,6 @@ resource. Shared inspection and Details do not require either policy change.
 Readers can inspect visible prerequisites before opening a Task, with the same
 keyboard and selection semantics in both graph types. Complete ancestry can
 extend beyond the Goal projection, so the hidden count describes Tasks that the
-view deliberately does not add. Reusing the 96px card requires explicit space
+view deliberately does not add. The card reserves explicit space
 for Details beside existing metadata. Selection must stay independent of layout
 and details so that inspection cannot move the reader's graph position.

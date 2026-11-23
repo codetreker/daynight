@@ -56,6 +56,10 @@ func TestCompleteLoginCanonicalizesMicrosoftIdentityBeforePersistence(t *testing
 				return actual, store.PersonalTeamFacts{ID: "existing-team", MemberCount: 1, OwnerAdminCount: 1}, nil
 			}
 			f.identity.ops.validatePersonalTeam = func(facts store.PersonalTeamFacts) error { return nil }
+			f.identity.ops.sessionTime = func(ctx context.Context, dao store.IdentityDAO) (time.Time, error) {
+				f.bound(ctx, dao)
+				return f.now, nil
+			}
 			f.identity.ops.createSession = func(ctx context.Context, dao store.IdentityDAO, session model.Session) error {
 				f.hit("session")
 				f.bound(ctx, dao)
@@ -64,7 +68,7 @@ func TestCompleteLoginCanonicalizesMicrosoftIdentityBeforePersistence(t *testing
 				}
 				return nil
 			}
-			result, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			result, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			if err != nil || result.User.ID != "existing-user" || result.User.UniAuthID != "msft:object@tenant" || result.User.PersonalTeam.ID != "existing-team" || result.Session.UserID != "existing-user" {
 				t.Fatalf("login result = %+v, %v", result, err)
 			}
@@ -85,7 +89,7 @@ func TestCompleteLoginRejectsMalformedMicrosoftIdentityBeforeUserTransaction(t *
 			f.plan = []string{"validate-callback", "write", "consume", "finish"}
 			f.identity.ops.validateProvider = core.ValidateProvider
 			f.identity.ops.admitProfileFields = core.AdmitProfileFields
-			result, err := f.identity.CompleteLogin(f.ctx, query, binding)
+			result, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 			var cause *model.IdentityProviderError
 			if !errors.As(err, &cause) || cause.Code != "identity_unavailable" || cause.Cause == nil {
 				t.Fatalf("malformed upstream identity error = %v", err)

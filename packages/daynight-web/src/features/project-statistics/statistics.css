@@ -1,16 +1,15 @@
 .statistics-stack { display:grid; gap:22px; }
 .statistics-card { border:1px solid var(--line); background:white; border-radius:9px; overflow:hidden; min-width:0; }
-.statistics-header { padding:17px 20px; display:flex; align-items:center; justify-content:space-between; gap:14px; min-height:67px; }
-.statistics-header h2 { font-size:16px; font-weight:650; margin:0; }
-.statistics-total { display:flex; align-items:baseline; gap:9px; color:#556176; white-space:nowrap; font-size:12px; }
-.statistics-total strong { color:var(--ink); font-size:27px; font-weight:650; line-height:1.15; font-variant-numeric:tabular-nums; }
+.statistics-header { padding:17px 20px; display:flex; align-items:center; justify-content:space-between; gap:14px; min-height:67px; flex-wrap:wrap; }
+.statistics-header h2 { font-size:var(--text-lg); font-weight:650; margin:0; }
+.statistics-total { display:flex; align-items:baseline; gap:9px; color:#556176; min-width:0; flex-wrap:wrap; overflow-wrap:anywhere; font-size:var(--text-sm); }
+.statistics-total strong { color:var(--ink); font-size:var(--text-2xl); font-weight:650; line-height:1.15; font-variant-numeric:tabular-nums; }
 .statistics-chart { padding:14px 20px 16px; border-top:1px solid var(--line); min-width:0; }
 .statistics-chart-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
-.statistics-chart-heading h3 { color:#344258; font-size:13px; font-weight:650; margin:0; }
-.statistics-state { border-top:1px solid var(--line); padding:21px 20px; color:#556176; font-size:13px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.statistics-chart-heading h3 { color:#344258; font-size:var(--text-sm); font-weight:650; margin:0; }
+.statistics-state { border-top:1px solid var(--line); padding:21px 20px; color:#556176; font-size:var(--text-sm); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
 .statistics-state.error { background:#fff0ef; color:#a3322b; }
 @media (max-width:740px) { .statistics-stack { gap:16px; } .statistics-chart,.statistics-header,.statistics-state { padding-left:12px; padding-right:12px; } .statistics-header { min-height:58px; } }
-@media (max-width:480px) { .statistics-header h2 { font-size:15px; } .statistics-total strong { font-size:23px; } }
 @media (max-width:480px) {
   .statistics-chart-heading { flex-wrap:wrap; }
   .statistics-chart-heading h3 { flex:1 0 100%; }

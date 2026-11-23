@@ -26,6 +26,32 @@ server for single-origin delivery. The [localhost deployment](../../deployment/l
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
 provides an isolated instance of the same production build.
 
+The project Goals toolbar opens a separate Goal acceptance graph from the
+existing committed TaskSync baseline. It first displays active isolated Goals
+and their direct local prerequisites, including completed and cancelled context,
+then reads direct cross-project relationships through the existing Goal API.
+The graph session limits concurrent sources and follows each source's downstream
+pages sequentially. First reads publish verified partial results; repeated reads
+stage a complete replacement while retaining the prior still-authorized legal
+contribution. Failed, conflicting or unsupported replacement reads retain that
+contribution with their explicit phase while it remains authorized and legal;
+trusted withdrawal removes affected content immediately. A newly hidden prerequisite
+with a stable edge ID matching a prior readable target immediately removes that
+target from retained cards and inspection, even before replacement completes or
+if it later fails. It preserves the source and other targets; unmatched hidden
+edges do not identify a target. Inspection takes local relations, titles and states
+from full synchronized Goal indexes, combining raw external context without
+overwriting newer local facts or growing the canvas. The session exposes retries,
+unsupported reads and inaccessible prerequisites. External cards use their
+actual Project and lifecycle data without invented summary versions or progress.
+Graph sessions have no polling loop and do not change TaskSync requests or
+watermarks. Trusted withdrawal and identity/history fences clear affected data;
+conflicting external reads cannot introduce a cycle into the retained local
+graph. Existing Task and Goal-child execution graphs retain their own projection
+and navigation. The
+[Goal relationship design](../../docs/design/goal-dependencies.md#项目-goal-验收图)
+owns the acceptance projection, reading layer and update continuity.
+
 Goal detail shows read-only acceptance dependencies before its general information.
 Prerequisites retain the service's hidden-target projection; dependent Goals use
 cursor pages, and external links open the actual Project/Goal resource with draft
@@ -69,6 +95,15 @@ retains loopback-only listening. Task-specific preview origins preserve ordinary
 iframe and relative-resource behavior.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
+
+The production authorization pages and account credential panels use the shared
+permission selector for CLI device approval, MCP consent, PAT creation and PAT
+or MCP grant edits. They bind edits to the account, catalog and observed scope
+version, preserve drafts through conflicts, and require a current read after an
+unknown outcome. Scope, expiry and usage observations remain independent. The
+Server and Web are activated together after old writers are drained; the
+[scope design](../../docs/design/credential-scope-internal.md) owns migration
+and recovery requirements.
 
 ## Webhook management and delivery diagnostics
 
@@ -313,7 +348,7 @@ and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
 gate. The expanded selector displays an avatar, a single-line name and an arrow,
 with no type row or reserved blank line; its accessible name and title retain the
-full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The rail hides the name and arrow. Project list headings and document titles use
+full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The desktop rail hides the name and arrow. Project list headings and document titles use
 Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
 not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
@@ -388,17 +423,35 @@ retain the browser's appearance choice. Read, invalid-value and write failures
 have localized visible feedback while the current in-memory choice remains
 usable. Retry saves that choice, and only a successful write clears the issue.
 
-At 740px and below, navigation uses a 60px rail and a 220px modal overlay. Its
-open state is temporary and never overwrites the desktop choice. The overlay
-contains keyboard focus, isolates the background and shares the reference-counted
-body scroll lock with the graph and task detail. Escape and backdrop dismissal
-restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, actual identity loss and unmount close
-the overlay and release its isolation and lock. Account-change waiting keeps it
-open with its focus containment and scroll lock.
+At 740px and below, workspace content occupies the first and only grid column;
+closed navigation has no rail, layout allocation or reachable links. One
+`WorkspaceNavigation` serves desktop and the 220px modal drawer without mounting
+another data consumer. A dedicated 44×44px hamburger button precedes the
+breadcrumbs in the authenticated topbar, with the sidebar's dark background,
+white icon, 8px corners and a light shadow. It exposes localized Open navigation,
+`aria-controls` and `aria-expanded`. The narrow document topbar stays sticky;
+assistant and Test session pages retain their existing visible header within
+their independent scrolling shell. The button, breadcrumbs and account/language
+actions remain reachable without overlap on narrow and short viewports.
+
+Workspace owns `useWorkspaceDrawer` and passes temporary drawer state, the opener
+reference and close reasons to `WorkspaceSidebar` independently of the stored desktop choice. The
+drawer header has a 44×44px Close navigation icon button. Opening moves focus
+inside; the drawer contains Tab focus, isolates the background and shares the
+reference-counted body scroll lock with the graph and task detail. Close-button,
+Escape and backdrop dismissal restore the visible opener after background inert
+is released. Ordinary navigation closes the drawer and uses target content
+focus; modified clicks and new tabs retain native link behavior. The Team
+popover handles Escape first and retains its creation-dialog focus handoff.
+Route changes, crossing the breakpoint, actual identity blocking or account
+changes, and unmount release the drawer's isolation and lock without focusing
+hidden controls. Returning to desktop recovers its saved width. Account-change
+waiting and unchanged-account background checks keep the drawer open with its
+focus containment and scroll lock.
 Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
-[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries; the
+[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries;
+the [mobile navigation button decision](../../.agents/notes/implemented/feature/2026-11-19-mobile-navigation-button.md) owns the narrow-screen entry and focus ordering; the
 [account menu decision](../../.agents/notes/archived/feature/2026-11-04-topbar-account-menu.md) records the rationale for account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
@@ -592,11 +645,21 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Runtime monitoring shows scheduling and admission, actual capacity, parallel
-activities, current failures and the latest recovery. System monitoring separately
-shows host resources, environment and software. Task
-associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
+Runtime monitoring shows scheduling and admission, actual capacity and its
+reported active/retained breakdown, and tasks in cleanup. The cleanup section
+retains only permission-projected activities with `kind === 'cleanup'` and
+`scope.kind === 'claim'`, in observation order. It retains phases, activity
+states, waits, retry times and task links, including ID labels when names are
+omitted. An empty filtered section remains visible: complete observations show
+“No tasks in cleanup.”; partial or restricted observations show “No visible
+cleanup tasks in this observation.” The same rule applies to an unexpired retained
+observation after a failed refresh. Execution, maintenance and non-task cleanup
+activities remain part of the monitoring protocol without appearing in this
+section. System monitoring separately shows host resources, environment and
+software. Cleanup and admission task associations open the existing task detail;
+known retry times are displayed without inventing external waits or deadlines.
+Current failures, recent recovery and monitoring delivery have no panels or
+replacement entries in the Web view.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and
@@ -1171,55 +1234,18 @@ distinct; the server owns matching, ordering and context. The
 [requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
 [design](../../docs/design/daynight-web.md) own the interaction and lifecycle.
 
-## Steps reading and writing
+## Task detail navigation
 
-Task details always expose Steps after Overview, in both the dialog and standalone
-page. `tab=steps` preserves the tab through direct access, reload and browser
-history, including details without a Session. Reading shows the ordered title,
-four-state status and task-local ID; multiple expanded rows render Task-root
-Markdown and timestamps through the same attachment controller as Overview.
-
-`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
-parent-detail and confirmed mutation versions invalidate it; identity, cache
-generation and version admission fence late responses. An ahead summary-backed resource waits for summary admission and requests parent/project refresh. Direct Steps use the current live parent version and bounded parent/collection rereads; stale responses
-are reread against the highest verified floor, including pending parent details.
-Refresh and reader release retain that scalar floor within the same cache
-generation. Confirmed parent deletion fences in-flight reads and asynchronous
-admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
-retained-content errors remain distinct and retryable. A Steps 404 checks the
-parent before retiring access; 403 remains a refusal, and parent 410 uses the
-existing deleted-task presentation. Retirement and the last active reader's
-unsubscribe release complete collections, including pending admission, unless a Steps write operation still needs them. Steps never
-enter the TaskDetail LRU or IndexedDB.
-
-The list mounts at most 100 rows per page, with global numbering, previous/next
-buttons and a numeric page input. Paging makes no API requests; expansion remains
-bound to IDs across pages, same-task tabs and refresh reordering. Both languages
-and the 320px layout retain reading and recovery controls. The four-state menu
-submits through the same owner as Task writes and retains the confirmed state
-until the response is validated. The owner reconciles the Steps resource, parent
-detail and authorized summary before allowing another write. Conflicts and
-unknown outcomes expose recovery without replaying the operation; a failed
-readback keeps the submission gate closed. Position controls move up, down, to
-either end or relative to a selected Step. The picker filters the complete
-collection by name or ID, mounts at most 100 candidates and retains selection
-across filtering and pages. Confirmed moves locate the actual page and preserve
-expansion and focus by ID. The add form appends or inserts before or after a
-selected Step, using the same bounded picker and preserving its anchor by ID.
-A missing anchor or a changed creation time leaves the draft intact and requires
-a new position decision.
-The shared owner validates the complete response, and an unknown result retains
-the original ID for read-only reconciliation. Confirmed additions locate and
-focus the new row. Existing Steps can be edited in the same draft workspace;
-identity and creation time prevent an old draft from updating a replacement.
-Deletion requires confirmation and preserves unrelated Steps and references; a
-deleted edited item requires an explicit draft decision. At heights up to 500px,
-a single scrollable tab row reserves
-reading space; the tab owner reveals its target after focus, selection styling
-and locale updates. At heights up to 600px, pagination scrolls with the list so
-its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
-and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
-own the complete resource lifecycle and the remaining write architecture.
+Ordinary Task details provide Overview and Attachments in both dialogs and
+standalone pages, followed by Discussion, Session and Usage when available.
+The tab row supports keyboard navigation and reveals the selected tab when its
+labels or container change. At heights up to 500px, a single scrollable row
+preserves reading space. Old `tab=steps` addresses and saved navigation states
+use the default selection: Overview for an ordinary Task, or Attachments when
+an attachment path is present. Access checks and attachment selection continue
+through their existing owners. The [navigation requirements](../../docs/spec/daynight-task-steps.md#web-导航)
+and [detail design](../../docs/design/daynight-task-inspection.md#独立完整任务详情)
+define the corresponding behavior.
 
 ## Session display
 
@@ -1281,7 +1307,10 @@ permissions and provide read-only terminal playback. Reading does not connect to
 Herdr or the old Worker, acquire a control lease, send input or resume recording.
 Existing Herdr tasks, processes and resources remain the user's responsibility.
 Task completion does not imply archive readiness: pending, failed and unavailable
-archives retain their status and recovery action. Opening, refreshing or
+archives retain their status and recovery action. Archive content reads retry
+capacity refusals within a bounded loading budget; exhaustion retains the existing
+load failure and refresh action. Cancellation or an account change stops retries.
+Opening, refreshing or
 reconnecting the page does not launch a native conversation or resend input.
 
 With no claim, the tab may show the latest actual Session as read-only history.
@@ -1319,7 +1348,7 @@ historical identity, archive verification and read-only playback behavior.
 
 ## Task discussions
 
-Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
+Ordinary Task details provide Overview, Attachments and Discussion tabs, followed
 by Session while its existence is being resolved or actual execution history is
 available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
@@ -1421,9 +1450,7 @@ its title and `aria-describedby` provide exact endpoints, elapsed duration and
 saved threshold. Button names stay
 stable across ticks, and no live region announces every update.
 
-The renderer preserves 220×96/136 cards, independent Details/inspection/expansion
-controls, external context borders and selected/prerequisite
-outlines. A 42px bottom reserve keeps English Details clear of elapsed text.
+The renderer uses 300×124 cards and a 60px action footer where needed, with independent Details/inspection/expansion controls, external context borders and selected/prerequisite outlines. Graph duration uses at most two adjacent units; the canvas exposes the complete reading on hover, keyboard focus or touch while preserving inspection.
 Standalone visual timing is excluded from button-name calculation while its
 accessible description retains the warning meaning. Goal child rows reuse
 `useTaskExecution` and `TaskExecutionDuration` after their title, with a clock icon
@@ -1497,7 +1524,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
+features retain their own asynchronous flows. See the [shared copy button design](../../docs/design/web-copy-button.md)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -1520,11 +1547,19 @@ width, and explicit focus, pending and touch presentation. Consumer
 combinations. Their CSS may control external width, margins and flex/grid
 placement; internal skin, arrow and touch sizing belong to the common owners.
 SelectTrigger similarly exposes static `layoutClassName` and element-specific
-refs, events and ARIA while excluding arbitrary className/style. Task Assignee,
-Status and both Tag entries use filter/responsive/task presentation: 32px/11px
-above 800px with a fine pointer, and 44px/16px at smaller widths or coarse pointers.
-Search retains NativeSelect single selection with the same explicit presentation.
-Tag panel typography, positioning and menu state remain feature-owned.
+refs, events and ARIA while excluding arbitrary className/style. Project task
+assignee, status, platform and both tag entries use filter/responsive-target/task
+presentation. Within the ordinary `.project-task-filters` toolbar, visible labels,
+closed values and entry counts select `--text-xs` for fine and coarse pointers:
+12px at a 16px root and 18px at a 24px root. The public selection stylesheet owns
+that scoped trigger choice; native selects inherit it from their wrapper. The
+32px height above 800px in noncompact layouts and at least 44px height and hit
+width on small or coarse-pointer layouts remain unchanged. Expression search
+retains native single selection, scalable `sm` text for fine pointers and `base`
+text with a 16 CSS px minimum for coarse pointers. Expanded panels, tag search
+input minimums, external selected chips and errors retain their own typography.
+Tag panel positioning and menu state remain feature-owned. The [compact filter
+size decision](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-filter-xs.md) records the scope and trade-off.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
 request or Provider dependency.
@@ -1674,12 +1709,17 @@ cache, index or refresh loop. Task details remain outside either section panel.
 Inactive inner-category contents unmount while their associated tabpanel IDs
 remain stable.
 
-The Task list heading's nonzero pause badge opens a native popover containing
-exactly the assignee-scoped eligible ordinary tasks counted by the badge. Rows
+The Overview and Task list headings share a nonzero pause badge and native
+popover, including when only one task is eligible. Overview lists all eligible
+ordinary project tasks; Task list applies its assignee filter. Each badge counts
+exactly its menu's ordered, deduplicated tasks, including cancelled tasks and
+Goal children while excluding done tasks and Goals. Rows
 show title previews, truncation, short IDs and lifecycle labels; selection opens
 the exact task through the existing detail history while retaining list state.
-The badge is the focus return target, with the visible tab or project heading as
-a fallback if it disappears. Unchanged snapshot checks preserve the open menu,
+The originating badge is the focus return target for detail close and history
+return. If it disappears, Overview falls back to its visible section tab and then
+the project heading; Task list retains its category and section fallbacks. An
+empty open menu uses the same source fallback. Leaving its section closes the menu. Unchanged snapshot checks preserve the open menu,
 focus and scroll; eligibility changes update it without an extra detail read or
 polling loop. The [pause-list decision](../../.agents/notes/implemented/feature/2026-11-14-project-paused-task-list.md)
 records the navigation and data-scope trade-offs.
@@ -1965,10 +2005,7 @@ controls adding at most twenty hidden direct neighbors in P, with exact new-task
 new-induced-edge and remaining counts. Manual expansion has no edge cap. Every
 real edge with both endpoints in S appears, without shortcuts or aggregate cards.
 
-Ordinary member cards are 220 by 96 pixels without hidden direct neighbors, using a 94px body
-and two border pixels with no footer or separator. Cards with expansion controls
-are 220 by 136, including a 40px two-column footer; an unused direction retains
-its column. External cards remain 220 by 136 with an independent Expand footer.
+Ordinary member cards are 300 by 124 pixels without hidden direct neighbors. Cards with expansion controls are 300 by 184, including a 60px two-column footer; an unused direction retains its column. External chain cards retain the independent Expand footer. Cards show up to three title lines and no Goal ownership; external context has a short label.
 Each visible snapshot derives expansion data once. Layout, React
 Flow, route ports, viewport fitting and keyboard reveal share actual dimensions.
 The canvas separates native body inspection from sibling Details
@@ -2168,8 +2205,8 @@ owns its content scrolling and pairs a reading column with a 265px
 metadata/relationship column (225px at 850px and below); at 600px and below it
 stacks into one column. Attachments fills the panel with adjacent file and
 preview panes at every supported width, including 320px. Its parent body and
-panels do not scroll. Short viewports, including 844×390, use compact heading
-and control spacing to retain usable content without a second outer scrollbar.
+panels do not scroll in ordinary viewports. Short viewports use compact heading
+and control spacing; when space is insufficient, the detail body can scroll.
 The dialog locks background focus and scrolling, supports its close button,
 backdrop, Escape and Tab, and restores a surviving original trigger or a
 visible control in the active task view on close. Focusable controls are
@@ -2213,7 +2250,7 @@ current interface language. Markdown and localized messages do not change the
 stored string or CLI/API output. Wide tables and code scroll within their local
 regions, and long words wrap inside the Overview reading column at 320px.
 Nonempty Task and Goal descriptions have the same bordered reading container in
-page, dialog and fullscreen modes; empty descriptions, Steps and attachments keep
+page, dialog and fullscreen modes; empty descriptions and attachments keep
 their existing presentation.
 
 Description-relative links and images resolve from the task attachment root.
@@ -2323,12 +2360,11 @@ seconds and semantic `time` values. It retains known metadata during refresh,
 preview errors and remote-operation pauses; confirmed removal or absence clears it.
 On desktop, file information sizes to content up to 240px, followed by timestamps with a 16px gap and right-aligned actions. Both timestamp values share a left edge. Narrow screens wrap the groups; compact short screens retain aligned timestamps and accessible actions.
 
-The right preview has one vertical scroll owner. Markdown, text/JSON/source and
+The preview content has one vertical scroll owner. Markdown, text/JSON/source and
 large images use `attachment-preview-body`; their renderers have no nested
 vertical height limits. Tables and code can scroll horizontally. For ready
 HTML/PDF, the body and fitted frame wrapper hide overflow and the embedded
-document or native reader owns scrolling. The preview header never scrolls
-independently, exposes the complete path and keeps Download and Open in new tab reachable. File-row menus and confirmation controls remain accessible at narrow widths.
+document or native reader owns scrolling. The preview header exposes the complete path and keeps Download and Open in new tab reachable. In short viewports it can scroll independently; the outer detail can also scroll when needed, with keyboard access to both regions. File-row menus and confirmation controls remain accessible at narrow widths.
 Left-pane scrolling does not move right-side content or its reading position.
 The standalone complete details reuse this panel, rendering and sizing; their
 outer composition integrates task, tab and file navigation with URL and history.
@@ -2410,8 +2446,9 @@ exit and return controls remain available.
 Description for Goals. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
-`tab=overview|description|attachments|steps|discussion|session` enters shared
-navigation. A Goal presents Description, Attachments and Discussion in that
+`tab=overview|description|attachments|discussion|session|usage` enters shared
+navigation. A legacy `tab=steps` uses the default selection while retaining an
+attachment path. A Goal presents Description, Attachments and Discussion in that
 order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
@@ -2498,8 +2535,15 @@ attachment guard runs before ServeMux normalization; file endpoints keep their
 existing scope and authorization checks.
 
 The full-page detail allocates remaining height after its actual heading and
-tabs. Shared attachment panes stay adjacent at narrow widths and own their scroll
-independently. Markdown/text/images use the preview body; fitted HTML/PDF frames
+tabs. Shared attachment browsing panes stay adjacent at narrow widths and own their
+scroll independently. Opening upload below 560 CSS px of attachment content width
+temporarily fills the panel with one retained form; Back or Escape restores file
+browsing, and draft/native input identity survives layout and tab changes. Entering
+the narrow upload view dismisses file action menus and transfers their focus to
+upload controls; delete confirmations retain their top-layer focus ownership and
+restore focus into upload when their original trigger is unavailable. Wider
+containers keep the sidebar disclosure. The [attachment design](../../docs/design/daynight-task-attachments.md#web-文件树与预览)
+owns focus, successful-file reveal and scroll behavior. Markdown/text/images use the preview body; fitted HTML/PDF frames
 use their documents' scrolling, without another vertical wrapper. No fixed
 heading-height subtraction, extra renderer, metadata API or preview credential
 is introduced. The [full-reader decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)
@@ -2530,7 +2574,7 @@ and reports both causes if rollback also fails.
 The shared decorative `BrandMark` uses the actual light or dark surface palette;
 its parent owns its name and navigation. The matching favicon is emitted as a
 hashed SVG in `/assets/` and adapts to the browser color scheme. See the
-[brand rules](../../docs/ui-design.md#brand-mark).
+[brand specification](../../docs/design/web-visual-tokens.md#品牌标志).
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean production server builds require this explicit build first.
 The Go module check uses its own unit-test Web resource overlay; see the
@@ -2538,7 +2582,7 @@ The Go module check uses its own unit-test Web resource overlay; see the
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-its Node tooling tests, including native select ownership, the coverage checker
+its Node tooling tests, including native select and typography ownership, the coverage checker
 and asset publication. `scripts/native-select-policy.test.mts` exercises the
 real policy against controlled valid and invalid trees and the complete production
 `src/` tree. It verifies native JSX and React creation, import aliases, static
@@ -2550,6 +2594,58 @@ ASTs and the explicit `css-tree` dependency parse all production TS/TSX and CSS,
 including unreferenced inputs; failures include relative paths and line numbers.
 No legacy exemption list is used. Static ownership does not establish rendered
 geometry or system-menu behavior.
+
+### Typography validation
+
+The [Web typography specification](../../docs/spec/web-typography.md) owns the
+allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
+`src/styles/typography.css` owns the six numeric scale values. Terminal recording
+output selects `sm` and multiplies it by its unitless user zoom. Surrounding
+controls, timestamps and errors use ordinary shared sizes independently of that
+zoom. Session fields use the shared coarse-pointer adjustment, and Bot creation
+and directory inputs use the responsive adjustment. The [Session and Bot typography decision](../../.agents/notes/implemented/architecture/2026-11-20-session-bot-typography.md)
+records these renderer and input responsibilities.
+
+The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
+TSX file under `src/`, including unreferenced sources. Run the scan independently:
+
+```bash
+pnpm --filter @codetreker/daynight-web test:typography-policy
+```
+
+Strict rules accept the six shared sizes and inheritance, reject fixed sizes,
+fallbacks, retired names, unauthorized aliases, local overrides and invalid font
+shorthands, and inspect declarations even when later rules supersede them. Shared
+rendering adjustments are restricted to their owning stylesheet. CSS AST
+inspection tracks retired identifiers in every declaration, including geometry.
+TypeScript AST inspection covers statically recognizable constants, strings, JSX,
+DOM style assignments, `setProperty`, `cssText`, `setAttribute` and renderer
+configuration. Mermaid font settings and theme CSS use the measured-size adapter's
+supported paths. No legacy exemption baseline is used. The [migration decision](../../.agents/notes/implemented/architecture/2026-11-20-web-typography-migration-policy.md)
+records the former bounded compatibility window. Static analysis cannot execute
+arbitrary runtime code; browser checks remain responsible for actual font sizes,
+renderer output, resizing, reflow, clipping and interaction continuity.
+The `typography-ownership-playwright.config.ts` configuration exercises remaining
+shared notices, task controls, attachment metadata and Bot creation against the
+production shell, with controlled API responses. It checks English and Chinese,
+desktop and 320px layouts, larger browser fonts, draft selection, dialog focus and
+readable metadata. Its generated reports and captures belong to
+`.tmp/typography-j/`; they are not product resources.
+
+The `worker-settings-typography-playwright.config.ts` configuration checks Worker
+configuration, project settings and repository dialogs, and the shared project and
+personal Prompt editor. It measures the selected sizes at 12px and 24px roots,
+responsive and coarse-pointer input minimums, retained editing focus and selection,
+and long paths in narrow desktop containers. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/worker-settings-typography-playwright.config.ts`.
+Its reports and captures belong to `.tmp/typography-h/`.
+
+Team, GitHub management and Webhook browser fixtures exercise the shared size
+scale at their actual routes. They cover responsive member and configuration
+inputs, Team invitation secrets, request IDs, narrow layouts and Webhook tab
+navigation with controlled API responses. The responsive field rule takes precedence over generic field typography for marked inputs.
+
+### Workspace quality checks
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
@@ -2621,20 +2717,12 @@ HTTP cases check decoder admission and protocol classification. The
 [API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
 owns that separation and its limits.
 
-State-only waits in the platform, pause, status, assignment,
-direct-observation and Steps session suites use `tests/helpers/waitForState.ts`.
-It delegates to Testing Library with a 5ms default polling interval, preserving
-immediate checks, timeouts, errors and explicit options. The mixed Steps session
-suite retains Testing Library's default wait for DOM predicates. Production
-polling remains unchanged.
-
-Readiness must describe the operation being observed. Retired Step parent-check
-tests settle the reopened parent and Steps collection before arming their fault
-responses. Steps history-replacement tests flush pending React work, then jointly
-require fresh parent and Steps versions, the rendered row and the retained draft.
-The [direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
-and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
-record these readiness and reader-lifetime requirements.
+State-only waits in the platform, pause, status, assignment and
+direct-observation suites use `tests/helpers/waitForState.ts`. It delegates to
+Testing Library with a 5ms default polling interval, preserving immediate checks,
+timeouts, errors and explicit options. Production polling remains unchanged. The
+[direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
+records the readiness and reader-lifetime requirements.
 
 Catalogue-only direct-observation cases mount the real detail hook, session and
 cache without the detail surface. They bind injected cache verification outcomes
@@ -2721,15 +2809,17 @@ actual controller/UI publication before interaction. The full graph expansion
 and keyboard fixtures remain intact; the [project/graph query decision](../../.agents/notes/implemented/testing/2026-11-07-project-graph-query-owners.md)
 owns those query and receipt boundaries.
 
-The task controls browser suite exercises the project pause list using native
-popover behavior, including keyboard and focus restoration, history, dynamic
-snapshot updates and narrow viewports. Run `pnpm --filter
+The task controls browser suite exercises both project pause menus using native
+popover behavior, including exact task selection, retained filters, keyboard and
+touch input, detail errors, source focus and history, dynamic snapshots, unchanged
+refreshes, bilingual long titles and desktop/320px/390px layouts. Menu opening and
+selection must perform no business writes. Run `pnpm --filter
 @codetreker/daynight-web exec playwright test --config
 tests/navigation/task-controls-playwright.config.ts` after installing Chromium.
 
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
-admission independently of Steps forms and HTTP writes, including indexed
+admission without business HTTP writes, including indexed
 history traversal, retirement, beforeunload, keyboard focus and both languages at
 320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/playwright.config.ts` after installing Chromium. Results and
@@ -2838,6 +2928,14 @@ attachments are under `.tmp/native-select-browser/results/`. The
 [main/manual browser workflow](../../.github/workflows/shell-browser.yml) invokes
 this same configuration and uploads its report and captures. Ordinary PR quality
 does not execute the browser fixture.
+
+The public/auth typography browser configuration exercises the production landing,
+Setup, login, device authorization and OAuth consent pages with controlled API
+responses. It checks shared font roles, English and Chinese, narrow layouts,
+coarse pointers, enlarged text, long identities and accessible actions during
+loading, error and disabled states. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/public-auth-typography-playwright.config.ts`.
+Its captures belong to `.tmp/public-auth-typography-results/`.
 
 The setup and landing-header browser configurations separately exercise real
 independent-page consumers, including language and client selection. These
@@ -2978,8 +3076,8 @@ ordinary component. Progress and aggregate chain status count main members only,
 and each task has one ordinary-component membership. Complete ancestry remains
 available to inspection through the full project index. The Dagre
 adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
-220px-wide visible cards with 96px compact or 136px action-footer heights.
-External cards retain the 136px footer for their independent Expand action. The
+300px-wide visible cards with 124px bodies or 184px action-footer heights.
+External chain cards retain the footer for their independent Expand action. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
@@ -3006,7 +3104,7 @@ leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
 Goal graphs use a separate compact component and rank-grid layout, with a
 readable initial viewport and an explicit full overview. Their complete projection
 contains every direct member and its accessible direct prerequisites outside the
-Goal. Every 220×96 card has a native inspection body and a sibling Details button;
+Goal. Every 300×124 card has a native inspection body and a sibling Details button;
 Goal cards provide no expansion or external navigation. Complete project ancestry
 drives the shared selection, prerequisite, real-edge and arrow styles, while the
 current projection determines visible highlights and the deduplicated hidden

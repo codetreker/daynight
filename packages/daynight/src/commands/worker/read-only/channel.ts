@@ -138,6 +138,7 @@ export const createWorkerReadOnlyChannel = (options: {
   connect();
   return {
     connected: (): boolean => fence !== undefined,
+    join: async (): Promise<void> => { await Promise.allSettled([...executing]); },
     close: (): void => { if (stopped) return; stopped = true; clearInterval(timer); detach(); },
   };
 };

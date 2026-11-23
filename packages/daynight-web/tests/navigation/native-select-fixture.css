@@ -16,3 +16,5 @@ fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .container-case.wide { width: 700px; }
 .container-case.narrow { width: 560px; }
 .inner-container { container: unrelated / inline-size; }
+.text-inputs { font-size: var(--text-sm); }
+input { font: inherit; }
