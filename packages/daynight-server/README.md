@@ -610,14 +610,14 @@ validation and recovery contract.
 
 ### Browser session activity upgrade
 
-Migration 116 follows the published history policy and frozen Worker index
-migrations without changing their SQL, transform source or checksums. It adds
+Migration 117 follows the published history policy, frozen Worker index and
+archive upload migrations without changing their SQL, transform source or checksums. It adds
 nullable `sessions.last_used_at` without backfilling activity or changing existing
 expiry. Current authentication writers require this column. Drain older writers
 before switching the main site and previews to their shared database-clock
 renewal contract; routine responses retain the original credentials and Cookies.
 An initialized database follows the complete ordered ledger, while an empty
-namespace receives the equivalent version-116 snapshot and checksums atomically.
+namespace receives the equivalent version-117 snapshot and checksums atomically.
 The [authentication design](../../docs/design/daynight-auth.md#数据与并发) owns
 session validity, concurrent renewal and recovery requirements.
 

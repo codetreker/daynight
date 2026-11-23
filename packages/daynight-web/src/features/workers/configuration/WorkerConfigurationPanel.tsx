@@ -20,6 +20,8 @@ import { configurationFieldChanges, configurationNumberRanges, emptyProjectDraft
 import { useConfigurationProjects } from './useConfigurationProjects';
 import { TaskCacheError } from '../../task-cache/database';
 import { useWorkerConfiguration } from './useWorkerConfiguration';
+import { useWorkerReviewParticipation } from './useWorkerReviewParticipation';
+import { WorkerReviewParticipation } from './WorkerReviewParticipation';
 import { useConfigurationFormScroll } from './useConfigurationFormScroll';
 import { useTaskTagFilterObservation, type TaskTagDigest } from './useTaskTagFilterObservation';
 import './configuration.css';
@@ -96,7 +98,7 @@ const ConfigurationError = ({ error, write, retained }: { readonly error: unknow
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 
-export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnabled, online, tasks, toolPaths, onRevealToolPaths, state, confirming }: {
+export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnabled, online, tasks, toolPaths, onRevealToolPaths, state, review, confirming }: {
   readonly onRevealToolPaths?: () => void;
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
@@ -106,6 +108,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   readonly tasks: readonly WorkerTaskSnapshot[];
   readonly toolPaths?: ToolPathTelemetry;
   readonly state: ReturnType<typeof useWorkerConfiguration>;
+  readonly review: ReturnType<typeof useWorkerReviewParticipation>;
   readonly confirming: boolean;
 }) => {
   const toolPathsEditable = toolPaths !== undefined;
@@ -125,9 +128,10 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   const actionsDisabled = !readEnabled || disabled;
   const metadata = new Map(choices.items.map(project => [project.id, project]));
   const shell = (content: ReactNode) => <div className="worker-configuration">{content}</div>;
-  if (state.unavailable) return shell(<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section>);
-  if (resource === null) return shell(<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section>);
-  if (resource.desired === null || draft === null) return shell(<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section>);
+  const reviewPanel = <WorkerReviewParticipation state={review} enabled={review.readEnabled && !confirming} />;
+  if (state.unavailable) return shell(<>{reviewPanel}<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section></>);
+  if (resource === null) return shell(<>{reviewPanel}<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section></>);
+  if (resource.desired === null || draft === null) return shell(<>{reviewPanel}<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section></>);
   const source = workerConfigurationBaseline(resource)?.valueSource;
   const desired = resource.desired, parsed = parseConfigurationDraft(draft, resource.controlModeSupported === true, { toolPathsSupported: resource.toolPathsSupported === true && toolPathsEditable, ...(platform === undefined ? {} : { platform }) }), changed = configurationFieldChanges(draft, state.comparisonValue ?? desired.value, parsed.errors);
   const tagInvalid = parsed.errors.taskTagFilter !== undefined;
@@ -148,6 +152,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   return shell(<>
     {state.unsupportedFields.length > 0 && <div className="notice warning configuration-notice" role="status"><p className="notice-heading">{m.unsupportedFields}</p><p>{m.unsupportedFieldsDetail}</p><p>{state.unsupportedFields.map((field, index) => <span key={field}>{index > 0 && ', '}<code>{field}</code></span>)}</p></div>}
     {source !== undefined && <details className="configuration-source"><summary>{m.savedSource}</summary><p>{m.sourceProjection}</p><pre>{source}</pre></details>}
+    {reviewPanel}
     {online === false && <div className="notice warning configuration-notice" role="status">{m.offlineNotice}</div>}
     {state.conflict || state.notice === 'conflict' ? <div className="notice warning configuration-notice" role="alert"><p className="notice-heading">{m.conflict}</p><p>{m.retainedDraft}</p>{state.conflict && source !== undefined && <details><summary>{m.viewLatest}</summary><p>{m.sourceProjection}</p><pre>{source}</pre></details>}<div className="notice-actions"><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' && !state.conflict} onClick={() => { setTagError(false); state.loadLatest(); }}>{m.loadLatest}</button></div></div> : null}
     {state.uncertain && <div className="notice warning configuration-notice" role="alert"><p>{m.uncertain}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{m.verifySave}</button></div>}

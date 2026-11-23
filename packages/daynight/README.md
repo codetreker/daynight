@@ -2947,15 +2947,40 @@ conflicting ownership can make capacity unknown. An online heartbeat or zero rem
 tasks does not establish that local capacity is available.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
-terminal cleanup, and joins them before directly stopping agents and closing
-their workspaces. Process exit sends no cleanup prompt, does not wait for a
-cleanup turn or retry backoff, and does not repeat archive upload or worktree
-removal. It preserves claims, worktrees, native session IDs, unfinished
-active/pending rows and existing terminal cleanup schedules, including ended
-claims. The next run restores each saved responsibility and original deadline, then
-verifies remaining resources. External temporary resources may remain after direct interruption. Historical
-Herdr claims and resources remain the user's responsibility and are not
-recovered, stopped or cleaned by the coordinator.
+terminal cleanup, and joins their original Task writers. It sends no cleanup
+prompt and waits for no agent cleanup turn or retry backoff. A claim confirmed
+absent from current ownership, with usable Web execution state, enters the same
+immediate terminal cleanup used by polling: stop the original processes, remove
+its worktree and settle its local responsibility. Claims still owned by this
+Worker, unknown ownership and insufficient Web state retain their existing
+stop and preservation rules. Before the first poll and in management-only mode,
+bounded current Task reads classify original claims after the same remote client
+verifies the Worker account. Candidates include original pending claim
+reservations; each Task awaits its own reconciliation before classifying ownership
+or stopping, without making independent Tasks await that request. Matching
+Controller lifecycle checks follow the Task stop attempt and retain unresolved
+Task records. After original native stopping, management-only terminal file cleanup
+checks that the retained repository directory exists, validates its repository and
+worktree format, and prepares the current Git manager before inspecting or removing
+the original worktree. A missing directory does not trigger a clone; format
+preparation does not query Session registration or start business execution. An
+existing on-disk format does not prepare a fresh manager. Preparation failures
+retain that Task's visible, retryable responsibility while independent stopping
+continues; they do not establish recovery readiness. A
+timed-out native stop keeps its original owner rather than dispatching another
+stop. The repository owner waits for that shared Task stop before closing its
+Git manager. Unconfirmed Task stopping retains the manager for the original
+terminal writer; later reconciliation closes it only after complete Task closure.
+Active terminal jobs can admit exact-claim cleanup commands through a separate
+durable reservation path while business admission stays closed. They retain the
+original Worker, management instance, scope and command journal proof; stale
+instance or scope bindings are refused. Native inventory also reconciles commands created during
+Task stopping and synchronizes their proven stop receipts into the lifecycle
+ledger. Management-only commands retain their existing command path.
+Unfinished responsibility and its original deadline survive for the next
+reconciliation. External temporary resources may remain after direct interruption.
+Historical Herdr claims and resources remain the user’s responsibility and are
+not recovered, stopped or cleaned by the coordinator.
 
 The diagnostic file sink uses fresh
 `worker-YYYY-MM-DD-<32hex run id>-<segment>.jsonl` files for each run and recovery;
@@ -3163,13 +3188,19 @@ pause. It is separate from `task.properties.blocked`, which controls automatic
 input as described above.
 
 Normal Web terminal cleanup keeps its original cleanup operation identity and
-deadline. Every attempt reads its operation receipt from the original Controller
-journal, checks original process instances against the OS, reconciles the IPC
-endpoint and remaining Git resources, and uses the resulting current observations
-to determine completion. A recorded done status never suppresses these checks.
-Native stop and backend closure precede safe worktree removal; archive success is
-maintained separately. Worker shutdown stops
-owned processes while preserving unfinished claims, worktrees and native history.
+deadline. For usable Web execution state, successful current-ownership
+observation that the original claim has ended selects immediate stopping, both
+during polling and exit. Current or historical Session registration and a
+successor Session do not authorize or gate this decision. Every attempt reads
+its operation receipt from the original Controller journal, checks original
+process instances against the OS, reconciles the IPC endpoint and remaining Git
+resources, and uses current observations to determine completion. The serialized terminal job retains its existing
+failure and retry policy; a settled Promise is insufficient unless the original
+cleanup target has also been cleared. A recorded done status never suppresses
+these checks. Native stop and backend closure precede
+safe worktree removal; archive success is maintained separately. Shutdown
+preserves claims, worktrees and native history for still-owned or unknown
+execution; insufficient local Web state keeps its existing failure handling.
 The [session design](../../docs/design/task-session-protocol.md) owns stopping,
 recovery and relay details. Web terminal cleanup retains its original deadline
 and retry policy in the independent schedule, without resource-completion flags.

@@ -40,28 +40,32 @@ func (tx *DAO) SaveSessionArchiveBundle(ctx context.Context, v store.ArchiveBund
 }
 func (tx *DAO) SessionArchiveFile(ctx context.Context, session, id string) (store.ArchiveBundleFile, error) {
 	v := store.ArchiveBundleFile{SessionID: session, FileID: id}
-	err := tx.tx.QueryRow(ctx, `SELECT purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released FROM session_archive_files WHERE session_id=$1 AND file_id=$2 FOR UPDATE`, session, id).Scan(&v.Purpose, &v.SHA256, &v.ByteLength, &v.AcceptedOffset, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased)
+	var version int
+	err := tx.tx.QueryRow(ctx, `SELECT purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,upload_version FROM session_archive_files WHERE session_id=$1 AND file_id=$2 FOR UPDATE`, session, id).Scan(&v.Purpose, &v.SHA256, &v.ByteLength, &v.AcceptedOffset, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased, &version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, model.ErrNotFound
+	}
+	if err == nil && version != 1 {
+		return v, errors.New("unsupported archive upload version")
 	}
 	return v, err
 }
 func (tx *DAO) SaveSessionArchiveFile(ctx context.Context, v store.ArchiveBundleFile) error {
-	result, err := tx.tx.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(session_id,file_id) DO UPDATE SET accepted_offset=excluded.accepted_offset,state=excluded.state,staging_released=excluded.staging_released WHERE session_archive_files.purpose=excluded.purpose AND session_archive_files.sha256=excluded.sha256 AND session_archive_files.byte_length=excluded.byte_length AND session_archive_files.object_path=excluded.object_path AND session_archive_files.resource=excluded.resource AND session_archive_files.timeline_revision=excluded.timeline_revision`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.AcceptedOffset, v.State, v.Path, archiveFileResource(v.Resource), archiveFileRevision(v.TimelineRevision), v.StagingReleased)
+	result, err := tx.tx.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(session_id,file_id) DO UPDATE SET accepted_offset=excluded.accepted_offset,state=excluded.state,staging_released=excluded.staging_released WHERE session_archive_files.upload_version=1 AND session_archive_files.purpose=excluded.purpose AND session_archive_files.sha256=excluded.sha256 AND session_archive_files.byte_length=excluded.byte_length AND session_archive_files.object_path=excluded.object_path AND session_archive_files.resource=excluded.resource AND session_archive_files.timeline_revision=excluded.timeline_revision`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.AcceptedOffset, v.State, v.Path, archiveFileResource(v.Resource), archiveFileRevision(v.TimelineRevision), v.StagingReleased)
 	if err == nil && result.RowsAffected() != 1 {
 		return errors.New("archive identity conflict")
 	}
 	return err
 }
 func (tx *DAO) FailSessionArchiveFile(ctx context.Context, v store.ArchiveBundleFile, resource json.RawMessage) error {
-	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET state='failed',resource=$12 WHERE session_id=$1 AND file_id=$2 AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND accepted_offset=$6 AND state='receiving' AND object_path=$8 AND resource=$9 AND timeline_revision=$10 AND staging_released=$11 AND $7='receiving'`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.AcceptedOffset, v.State, v.Path, archiveFileResource(v.Resource), archiveFileRevision(v.TimelineRevision), v.StagingReleased, resource)
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET state='failed',resource=$12 WHERE session_id=$1 AND file_id=$2 AND upload_version=1 AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND accepted_offset=$6 AND state='receiving' AND object_path=$8 AND resource=$9 AND timeline_revision=$10 AND staging_released=$11 AND $7='receiving'`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.AcceptedOffset, v.State, v.Path, archiveFileResource(v.Resource), archiveFileRevision(v.TimelineRevision), v.StagingReleased, resource)
 	if err == nil && result.RowsAffected() != 1 {
 		return errors.New("archive identity conflict")
 	}
 	return err
 }
 func (tx *DAO) SessionArchiveFiles(ctx context.Context, id string) ([]store.ArchiveBundleFile, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released FROM session_archive_files WHERE session_id=$1 ORDER BY file_id`, id)
+	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,upload_version FROM session_archive_files WHERE session_id=$1 ORDER BY file_id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +73,12 @@ func (tx *DAO) SessionArchiveFiles(ctx context.Context, id string) ([]store.Arch
 	out := []store.ArchiveBundleFile{}
 	for rows.Next() {
 		v := store.ArchiveBundleFile{SessionID: id}
-		if err := rows.Scan(&v.FileID, &v.Purpose, &v.SHA256, &v.ByteLength, &v.AcceptedOffset, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased); err != nil {
+		var version int
+		if err := rows.Scan(&v.FileID, &v.Purpose, &v.SHA256, &v.ByteLength, &v.AcceptedOffset, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased, &version); err != nil {
 			return nil, err
+		}
+		if version != 1 {
+			return nil, errors.New("unsupported archive upload version")
 		}
 		out = append(out, v)
 	}

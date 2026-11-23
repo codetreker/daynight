@@ -38,19 +38,19 @@ type TaskWorkGroup struct {
 type TaskWorkGroups struct {
 	Items   []TaskWorkGroup
 	HasMore bool
+	Targets []TaskWorkTargetPosition
 }
 type TaskWorkTarget struct {
 	GroupID string
 	Task    model.Task
 }
 type TaskWorkTargets struct {
-	Items   []TaskWorkTarget
-	HasMore bool
+	Items []TaskWorkTarget
 }
 
-// Work queries select ordinary connected components and their count-bounded
-// members inside the caller's authorized repeatable-read snapshot.
+// The first snapshot selects groups and all their ordered ongoing target keys.
+// Later snapshots read at most 200 exact keys without expanding the graph.
 type TaskWorkReader interface {
 	TaskWorkGroups(context.Context, string, TaskWorkQuery) (TaskWorkGroups, error)
-	TaskWorkTargets(context.Context, string, []string, *TaskWorkTargetPosition, int) (TaskWorkTargets, error)
+	TaskWorkTargets(context.Context, string, []TaskWorkTargetPosition) (TaskWorkTargets, error)
 }

@@ -55,9 +55,9 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, c
 	reportHeaders.Set("Daynight-Worker-Configuration", "1")
 	stamp := time.Now().UTC().Format(time.RFC3339Nano)
 	probe := func(value any) any { return map[string]any{"state": "ok", "checkedAt": stamp, "value": value} }
-	paths := map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}}
+	paths := map[string]any{"codex": map[string]any{"kind": "path", "path": commits.root + "/codex.mjs"}, "copilot": map[string]any{"kind": "auto"}}
 	bootstrap := map[string]any{
-		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3,
+		"maxConcurrent": 1, "pollIntervalMs": 5000, "recoveryLimit": 3,
 		"preferPlatformSpecificTasks": false, "enableSudoCleanup": false, "archiveSessions": true,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []string{}},
 		"projects": []any{map[string]any{"projectId": projectID, "nativeOverrides": map[string]any{}}}, "toolPaths": paths,
@@ -162,7 +162,12 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, c
 		t.Fatalf("assignment differs: %+v", assigned)
 	}
 	assertCandidates(workerID, true, "1")
-	serverAPIReviewerWorkerFlow(t, f, projectID, workerID, commits)
+	enabled.Version = serverAPIReviewerWorkerFlow(t, f, projectID, workerID, enabled.Version, commits)
+	// The live Worker exercise includes two minute-interval polls. Start a new
+	// bounded reconciliation window for the remaining assignment scenarios.
+	cancel()
+	ctx, cancel = context.WithTimeout(f.context, 120*time.Second)
+	defer cancel()
 
 	reviewassignment.New(db, nil).Batch(f.context, 64)
 	var firstCount, secondCount int
@@ -181,7 +186,7 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, c
 	// Retain the first assignment while enabling only the second Worker for the
 	// next PR. The second fixture PR is a Draft and becomes eligible on retarget.
 	disabled := requestJSON[participation](t, f, http.MethodPut, workerBase+"/review-participation", map[string]any{"enabled": false, "expectedVersion": enabled.Version}, http.StatusOK)
-	if disabled.Enabled || disabled.Version != "3" {
+	if disabled.Enabled || disabled.Version != "5" {
 		t.Fatalf("disabled participation: %+v", disabled)
 	}
 	assertCandidates(workerID, false)
@@ -225,7 +230,7 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, c
 	}
 	assertCandidates(worker2, true, "2")
 	reenabled := requestJSON[participation](t, f, http.MethodPut, workerBase+"/review-participation", map[string]any{"enabled": true, "expectedVersion": disabled.Version}, http.StatusOK)
-	if !reenabled.Enabled || reenabled.Version != "4" {
+	if !reenabled.Enabled || reenabled.Version != "6" {
 		t.Fatalf("reenabled participation: %+v", reenabled)
 	}
 	assertCandidates(workerID, true, "1")
