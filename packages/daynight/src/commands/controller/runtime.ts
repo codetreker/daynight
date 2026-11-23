@@ -280,6 +280,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     nativeReadPolicy: () => nativeReadPolicy,
     acquireExternalPolicy: externalImages.acquire,
     onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onNativeReceipt: (request, receipt) => accountingBoundary(() => journal.applyNativeImageReceipt(request, receipt)),
     onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
   });
   const stopMarkdownCaptures = own(() => markdownCaptures.stop());
@@ -754,6 +755,8 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
+      stageNativeImageCapture: (request, signal) => markdownCaptures.stageNative(request, signal),
+      recoverNativeImageCapture: request => markdownCaptures.recoverNative(request),
       imageRuntime: {
         publishNativeInputAssociation: request => {
           const result = accountingBoundary(() => journal.publishNativeInputAssociation(request));

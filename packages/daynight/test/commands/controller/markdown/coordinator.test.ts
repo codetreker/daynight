@@ -19,6 +19,7 @@ import { createExternalImagePolicyProducer, type ExternalImagePolicyLease } from
 import * as externalSource from "../../../../src/commands/controller/markdown/external-source.js";
 import { sourceImageDecoder } from "../../../fixtures/image-decoder.js";
 import type { ImageDecoder } from "../../../../src/commands/controller/media/image-decoder.js";
+import { nativeEntryId } from "../../../../src/commands/controller/native-identity.js";
 
 const cleanupFaults = vi.hoisted(() => ({ beforeSourceOpen: null as null | ((filename: string) => void) }));
 vi.mock("node:fs", async original => {
@@ -117,6 +118,150 @@ const directFixture = async (onRead?: () => void) => {
   });
   return { ...f, acquireExternalPolicy, setSource: (bytes: Buffer) => { source = bytes; } };
 };
+
+const registerNative = (f: Awaited<ReturnType<typeof fixture>>, contextId?: string) => {
+  const nativeSessionId = f.journal.getSnapshot().nativeSessionId!, entryId = randomUUID(), imageId = randomUUID();
+  const nativeSource = { provider: "codex" as const, nativeSessionId, nativeMessageId: "message", nativePartId: "image" };
+  const occurrence = { imageId, entryId, partId: null, sourceRevision: null, sourceTextSha256: null, container: "content" as const, callId: null, sourceKey: "native-image" };
+  f.journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "image", error: { code: "capture_pending", message: "Waiting" } }] });
+  f.journal.registerImageOccurrence(occurrence, nativeSource); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const request: ImageCaptureRequest = { captureId: randomUUID(), attemptId: randomUUID(), occurrence, nativeSource, locator: { kind: "local", path: "original.png", contextId: contextId ?? nativeEntryId(nativeSessionId, `source-context:${f.ticket.cwd}`) } };
+  f.journal.registerImageCaptureRequest(request); return request;
+};
+
+test("native local sources retain their original admission for reads and recovery", async () => {
+  const stages: string[] = [], f = await fixture(checkpoint => { stages.push(checkpoint.stage); });
+  const request = registerNative(f);
+  const result = await f.coordinator.stageNative(request, new AbortController().signal);
+  expect(stages).toContain("final");
+  expect(f.coordinator.get(request.occurrence.imageId)?.sourceAdmission).toMatchObject({ attemptId: request.attemptId, validated: result });
+  const chunk = await f.journal.media().readCapture({ captureId: request.captureId, attemptId: request.attemptId, sha256: result.sha256, byteLength: result.byteLength, offset: "0", limit: 1024 }, f.coordinator.acquireReadPolicy);
+  expect(Buffer.from(chunk.data, "base64")).toEqual(f.bytes);
+  await rm(path.join(f.home, "original.png"));
+  expect(await f.coordinator.recoverNative(request)).toEqual(result);
+  expect(await f.coordinator.stageNative(request, new AbortController().signal)).toEqual(result);
+  f.revokeScope();
+  await expect(f.journal.media().readCapture({ captureId: request.captureId, attemptId: request.attemptId, sha256: result.sha256, byteLength: result.byteLength, offset: "0", limit: 1024 }, f.coordinator.acquireReadPolicy)).rejects.toMatchObject({ code: "policy_restricted" });
+});
+
+test("native recovery joins original source cleanup before returning admitted bytes", async () => {
+  const f = await fixture(), request = registerNative(f), fault = releaseFault(f);
+  await expect(f.coordinator.stageNative(request, new AbortController().signal)).rejects.toThrow();
+  expect(f.coordinator.get(request.occurrence.imageId)?.sourceAdmission).toBeTruthy();
+  await expect(f.coordinator.recoverNative(request)).rejects.toThrow();
+  fault.recover();
+  const result = await f.coordinator.recoverNative(request);
+  expect(result).toEqual(f.coordinator.get(request.occurrence.imageId)?.sourceAdmission?.validated);
+  expect(f.coordinator.get(request.occurrence.imageId)?.sourceCleanup?.pending).toBe(false);
+});
+
+test("native source refuses a forged context and revoked source authority before opening", async () => {
+  let checkpoints = 0;
+  const f = await fixture(() => { checkpoints++; });
+  const forged = registerNative(f, randomUUID());
+  await expect(f.coordinator.stageNative(forged, new AbortController().signal)).rejects.toMatchObject({ code: "context_unavailable" });
+  const denied = registerNative(f); f.revoke();
+  await expect(f.coordinator.stageNative(denied, new AbortController().signal)).rejects.toMatchObject({ code: "policy_restricted" });
+  expect(checkpoints).toBe(0);
+  expect(f.coordinator.get(forged.occurrence.imageId)).toBeNull();
+});
+
+test("native source requires its position ACK on the current relay connection", async () => {
+  let checks = 0, ack = "0";
+  const f = await fixture(() => { checks++; });
+  const request = registerNative(f);
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const bridge = createControllerCaptureBridge({ journal: f.journal, beforeCapture: async () => {}, provider: () => null, writable: () => true, capture: f.capture, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => ack, sourceEpoch: f.ticket.executionId });
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal: f.journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: f.policy, onReceipt() {} });
+  try {
+    ack = f.journal.getLastSourceSequence(); await bridge.providerOptions.prepareImageCapture!(request);
+    f.journal.projectTimeline({ entryId: request.occurrence.entryId, revision: "2", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId: request.occurrence.imageId, label: "updated", error: { code: "capture_pending", message: "Waiting" } }] });
+    f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+    await expect(coordinator.stageNative(request, new AbortController().signal)).rejects.toThrow("current connection ACK");
+    expect(checks).toBe(0);
+    ack = f.journal.getLastSourceSequence(); f.journal.acknowledgeEvents(ack);
+    await coordinator.stageNative(request, new AbortController().signal);
+    expect(checks).toBeGreaterThan(0);
+  } finally { await coordinator.stop(); }
+});
+
+test("a new timeline revision waits for ACK inside an active local source checkpoint", async () => {
+  let releaseCheckpoint!: () => void, entered!: () => void;
+  const checkpoint = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { releaseCheckpoint = resolve; });
+  let changed = false;
+  const f = await fixture(async () => { if (!changed) { changed = true; entered(); await gate; } });
+  const request = registerNative(f);
+  let ack = f.journal.getLastSourceSequence();
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const bridge = createControllerCaptureBridge({ journal: f.journal, beforeCapture: async () => {}, provider: () => null, writable: () => true, capture: f.capture, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => ack, sourceEpoch: f.ticket.executionId });
+  let waiting = 0; const verify = bridge.providerOptions.verifyImageCapture!;
+  bridge.providerOptions.verifyImageCapture = (captureId, attemptId) => { try { verify(captureId, attemptId); } catch (error) { waiting++; throw error; } };
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal: f.journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: f.policy, onReceipt() {} });
+  try {
+    const work = coordinator.stageNative(request, new AbortController().signal);
+    await checkpoint;
+    f.journal.projectTimeline({ entryId: request.occurrence.entryId, revision: "2", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId: request.occurrence.imageId, label: "updated", error: { code: "capture_pending", message: "Waiting" } }] });
+    releaseCheckpoint();
+    await vi.waitFor(() => expect(waiting).toBeGreaterThan(0));
+    await new Promise(resolve => setTimeout(resolve, 5100));
+    expect(coordinator.get(request.occurrence.imageId)?.sourceAdmission).toBeUndefined();
+    ack = f.journal.getLastSourceSequence(); f.journal.acknowledgeEvents(ack);
+    const result = await work;
+    expect(coordinator.get(request.occurrence.imageId)?.sourceAdmission?.validated).toEqual(result);
+  } finally { releaseCheckpoint(); await coordinator.stop(); }
+}, 15_000);
+
+test("native retry admits only the current original request and never rereads an interrupted attempt", async () => {
+  let reads = 0;
+  const f = await fixture(() => { reads++; });
+  const request = registerNative(f);
+  await f.coordinator.stageNative(request, new AbortController().signal);
+  const before = reads, attemptId = randomUUID(), retry = f.journal.retryImageCaptureRequest(request.captureId, attemptId);
+  await expect(f.coordinator.retry({ ...retry, locator: { kind: "local", path: "different.png", contextId: "wrong" } }, new AbortController().signal)).rejects.toMatchObject({ code: "context_unavailable" });
+  const result = await f.coordinator.retry(retry, new AbortController().signal);
+  expect(reads).toBeGreaterThan(before);
+  expect(f.coordinator.get(request.occurrence.imageId)?.sourceAdmission).toMatchObject({ attemptId, validated: result });
+  await expect(f.coordinator.stageNative(request, new AbortController().signal)).rejects.toThrow("attempt conflict");
+});
+
+test("native source cancellation joins the authorized writer and recovery never reopens it", async () => {
+  let entered!: () => void, release!: () => void, checks = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async () => { checks++; entered(); await gate; });
+  const request = registerNative(f);
+  const work = f.coordinator.stageNative(request, new AbortController().signal);
+  await started;
+  let stopped = false;
+  const stop = f.coordinator.stop().then(() => { stopped = true; });
+  await Promise.resolve(); expect(stopped).toBe(false);
+  release(); await expect(work).rejects.toThrow(); await stop;
+  expect(f.coordinator.get(request.occurrence.imageId)?.sourceCleanup?.pending).toBe(false);
+  expect(f.journal.media().captureStatus(request.captureId, request.attemptId)).toBeNull();
+  const reopened = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal: f.journal, bridge: f.bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: f.policy, onReceipt() {} });
+  try {
+    expect(await reopened.recoverNative(request)).toBeNull();
+    await expect(reopened.stageNative(request, new AbortController().signal)).rejects.toMatchObject({ code: "source_unavailable" });
+    expect(checks).toBe(1);
+  } finally { await reopened.stop(); }
+});
+
+test("native capture waits for capacity and retains its original attempt", async () => {
+  let release!: () => void, both!: () => void, entered = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { both = resolve; });
+  const f = await fixture(async () => { if (++entered === 2) both(); await gate; });
+  const first = registerNative(f), second = registerNative(f), third = registerNative(f), signal = new AbortController().signal;
+  const a = f.coordinator.stageNative(first, signal), b = f.coordinator.stageNative(second, signal);
+  try {
+    await started;
+    await expect(f.coordinator.stageNative(third, signal)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+    expect(f.coordinator.get(third.occurrence.imageId)).toBeNull();
+    release(); await Promise.all([a, b]);
+    const result = await f.coordinator.stageNative(third, signal);
+    expect(f.coordinator.get(third.occurrence.imageId)?.sourceAdmission).toMatchObject({ attemptId: third.attemptId, validated: result });
+  } finally { release(); await Promise.allSettled([a, b]); }
+});
 
 const reopenCoordinator = async (f: Awaited<ReturnType<typeof directFixture>>, migrate = false) => {
   await f.close();

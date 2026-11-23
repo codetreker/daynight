@@ -8,6 +8,7 @@ import { connect as connectTls, checkServerIdentity } from "node:tls";
 import { performance } from "node:perf_hooks";
 import { parseImageNetworkAddress as addressBits } from "../../../config/external-images.js";
 import type { DisplayMime } from "../../../session/image-values.js";
+import { isRetryableCaptureRefusal } from "../media/capture-error.js";
 
 export type ExternalImageSourceErrorCode = "policy_restricted" | "source_forbidden" | "source_unavailable" | "source_not_found" | "permission_denied" | "source_rate_limited" | "source_busy" | "source_timeout" | "source_cancelled" | "source_too_large" | "invalid_image" | "unsupported_media_type";
 export class ExternalImageSourceError extends Error {
@@ -65,13 +66,14 @@ async function awaitAdmission(action: () => void | Promise<void>, signal: AbortS
   try { await Promise.race([Promise.resolve().then(() => { checkSignal(signal); return action(); }), cancelled]); checkSignal(signal); }
   finally { signal.removeEventListener("abort", abort); }
 }
-export async function resolveExternalImageAddresses(hostname: string, signal: AbortSignal, resolver: ExternalImageDnsResolver = new Resolver({ timeout: 3000, tries: 1 }), assertTarget?: (target: ExternalImageTarget) => void | Promise<void>): Promise<string[]> {
+export async function resolveExternalImageAddresses(hostname: string, signal: AbortSignal, resolver: ExternalImageDnsResolver = new Resolver({ timeout: 3000, tries: 1 }), assertTarget?: (target: ExternalImageTarget) => void | Promise<void>, policy?: ExternalImagePolicyOptions, onStart?: () => void): Promise<string[]> {
   await awaitAdmission(() => assertTarget?.({ hostname }), signal);
   if (isIP(hostname)) { if (!isPublicImageAddress(hostname)) throw failure("source_forbidden"); await awaitAdmission(() => assertTarget?.({ hostname, address: hostname }), signal); return [hostname]; }
   assertHostname(hostname); checkSignal(signal);
   const controller = new AbortController(), stop = () => controller.abort(signal.reason ?? failure("source_cancelled"));
   signal.addEventListener("abort", stop, { once: true });
-  const timer = setTimeout(() => controller.abort(failure("source_timeout")), 3000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let dnsRemaining = 3000, dnsStarted = 0;
   const cancel = () => resolver.cancel(); controller.signal.addEventListener("abort", cancel, { once: true });
   const results: string[] = [], seen = new Set<string>(); let current = hostname;
   try {
@@ -79,7 +81,9 @@ export async function resolveExternalImageAddresses(hostname: string, signal: Ab
       checkSignal(controller.signal); assertHostname(current); await awaitAdmission(() => assertTarget?.({ hostname: current }), controller.signal);
       if (seen.has(current)) throw failure("source_forbidden"); seen.add(current);
       // All families and the alias query must settle before a socket can be opened.
-      const answers = await Promise.allSettled([resolver.resolve4(current), resolver.resolve6(current), resolver.resolveCname(current)]);
+      const answers = await authorized(policy, controller.signal, () => { onStart?.(); dnsStarted = performance.now(); timer = setTimeout(() => controller.abort(failure("source_timeout")), Math.max(1, dnsRemaining)); return Promise.allSettled([resolver.resolve4(current), resolver.resolve6(current), resolver.resolveCname(current)]); });
+      clearTimeout(timer); timer = undefined; dnsRemaining -= performance.now() - dnsStarted;
+      if (dnsRemaining <= 0) throw failure("source_timeout");
       checkSignal(controller.signal);
       const values = answers.map(answer => {
         if (answer.status === "fulfilled") return answer.value;
@@ -110,24 +114,33 @@ export interface ExternalImageControlledNetworkBoundary {
 export type ExternalImageTarget = { hostname: string; address?: string };
 export interface ExternalImagePolicyOptions {
   /** Rechecks this fixed generation and the current Daynight authorization. */
-  assertEgressPolicy(): void | Promise<void>;
+  assertEgressPolicy(signal?: AbortSignal): void | Promise<void>;
+  waitCapture?(signal: AbortSignal): Promise<void>;
   assertCapture?(): void;
   /** Production checks every alias, DNS candidate, selected address and actual peer. */
   assertTarget?(target: ExternalImageTarget): void | Promise<void>;
   /** Revocation must also interrupt operations waiting without new body blocks. */
   signal?: AbortSignal;
   /** Must durably charge every hop and address retry before any connection starts. */
-  beforeRequest(input: { hostname: string }): void | Promise<void>;
+  beforeRequest(input: { hostname: string }, signal?: AbortSignal): void | Promise<void>;
   controlledNetworkBoundary?: ExternalImageControlledNetworkBoundary;
 }
 const policies = new WeakMap<object, ExternalImagePolicyOptions>();
+async function authorized<T>(policy: ExternalImagePolicyOptions | undefined, signal: AbortSignal, action: () => T): Promise<T> {
+  for (;;) {
+    checkSignal(signal); await policy?.waitCapture?.(signal); checkSignal(signal);
+    try { policy?.assertCapture?.(); }
+    catch (error) { if (policy?.waitCapture && isRetryableCaptureRefusal(error)) continue; throw error; }
+    return action();
+  }
+}
 export interface ExternalImagePolicy { readonly addressPolicyRevision: string }
 /** Internal capability issued by the trusted runtime, never by locator data or an environment flag. */
 export function createExternalImagePolicy(options: ExternalImagePolicyOptions): ExternalImagePolicy {
   const policy = Object.freeze({ addressPolicyRevision: EXTERNAL_IMAGE_ADDRESS_POLICY_REVISION }); policies.set(policy, options); return policy;
 }
 async function assertPolicy(policy: ExternalImagePolicyOptions, signal: AbortSignal): Promise<void> {
-  checkSignal(signal); try { await awaitAdmission(() => policy.assertEgressPolicy(), signal); } catch { checkSignal(signal); throw failure("policy_restricted"); } checkSignal(signal);
+  checkSignal(signal); try { await awaitAdmission(() => policy.assertEgressPolicy(signal), signal); } catch { checkSignal(signal); throw failure("policy_restricted"); } checkSignal(signal);
 }
 function controlledBoundary(url: URL, policy: ExternalImagePolicyOptions): ExternalImageControlledNetworkBoundary | null {
   const b = policy.controlledNetworkBoundary;
@@ -141,14 +154,12 @@ export function assertExternalImageSocketPeer(socket: Socket, selectedAddress: s
   const actual = socket.remoteAddress;
   if (!actual || !sameAddress(actual, selectedAddress) || !(isPublicImageAddress(actual) || controlledAddress !== undefined && sameAddress(actual, controlledAddress))) throw failure("source_forbidden");
 }
-async function openVerifiedSocket(url: URL, address: string, policy: ExternalImagePolicyOptions, signal: AbortSignal): Promise<Socket> {
+async function openVerifiedSocket(url: URL, address: string, policy: ExternalImagePolicyOptions, signal: AbortSignal, onStart: () => void): Promise<Socket> {
   const boundary = controlledBoundary(url, policy), host = url.hostname.replace(/^\[|\]$/g, ""), port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   const approved = (candidate: string) => isPublicImageAddress(candidate) || !!boundary && sameAddress(candidate, boundary.address);
   if (!approved(address)) throw failure("source_forbidden");
   await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address }), signal);
-  policy.assertCapture?.();
-  const socket = connect({ host: address, port, family: isIP(address) === 6 ? 6 : 4, autoSelectFamily: false });
-  socket.on("error", () => {});
+  const socket = await authorized(policy, signal, () => { onStart(); const socket = connect({ host: address, port, family: isIP(address) === 6 ? 6 : 4, autoSelectFamily: false }); socket.on("error", () => {}); return socket; });
   let current: Socket = socket;
   const abort = () => current.destroy(signal.reason instanceof Error ? signal.reason : failure("source_cancelled"));
   signal.addEventListener("abort", abort, { once: true });
@@ -164,9 +175,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
     await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), signal);
     await assertPolicy(policy, signal);
     if (url.protocol === "https:") {
-      policy.assertCapture?.();
-      const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) });
-      tls.on("error", () => {}); current = tls;
+      const tls = await authorized(policy, signal, () => { const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) }); tls.on("error", () => {}); current = tls; return tls; });
       await connected(tls, "secureConnect");
       if (tls.readableHighWaterMark > 65536 || tls.writableHighWaterMark > 65536) throw failure("policy_restricted");
       if (!tls.authorized || (tls.alpnProtocol && tls.alpnProtocol !== "http/1.1")) throw failure("source_forbidden");
@@ -197,10 +206,9 @@ function validateResponseHeaders(response: IncomingMessage): { length: number | 
   const contentType = response.headers["content-type"] ?? null;
   return { length, contentType };
 }
-async function readBodyBlock(response: IncomingMessage, assertCapture?: () => void): Promise<Buffer | null> {
+async function readBodyBlock(response: IncomingMessage, signal: AbortSignal, policy: ExternalImagePolicyOptions): Promise<Buffer | null> {
   for (;;) {
-    assertCapture?.();
-    const block: unknown = response.readableLength > 0 ? response.read(Math.min(65536, response.readableLength)) : null;
+    const block: unknown = await authorized(policy, signal, () => response.readableLength > 0 ? response.read(Math.min(65536, response.readableLength)) : null);
     if (Buffer.isBuffer(block)) return block;
     if (response.readableEnded) return null;
     if (response.destroyed) throw failure("source_unavailable");
@@ -219,12 +227,18 @@ function retryAfter(value: string | string[] | undefined): number {
   const date = Date.parse(value); return Number.isFinite(date) ? Math.min(300, Math.max(0, Math.ceil((date - Date.now()) / 1000))) : 30;
 }
 export async function copyExternalImage(input: { url: string; outputPath: string; signal?: AbortSignal; policy?: ExternalImagePolicy }): Promise<{ inputPath: string; byteLength: string; sha256: string; declaredMediaType: DisplayMime | null }> {
-  const policy = input.policy && policies.get(input.policy); if (!policy) throw failure("policy_restricted");
+  const originalPolicy = input.policy && policies.get(input.policy); if (!originalPolicy) throw failure("policy_restricted");
+  let pauseIdle = () => {}, resumeIdle = () => {};
+  const policy: ExternalImagePolicyOptions = { ...originalPolicy,
+    assertEgressPolicy: async signal => { pauseIdle(); try { await originalPolicy.assertEgressPolicy(signal); } finally { resumeIdle(); } },
+    ...(originalPolicy.waitCapture ? { waitCapture: async (signal: AbortSignal) => { pauseIdle(); try { await originalPolicy.waitCapture!(signal); } finally { resumeIdle(); } } } : {}),
+  };
   const controller = new AbortController(), outerAbort = () => controller.abort(failure("source_cancelled"));
   const policyAbort = () => controller.abort(failure("policy_restricted"));
   policy.signal?.addEventListener("abort", policyAbort, { once: true }); if (policy.signal?.aborted) policyAbort();
   input.signal?.addEventListener("abort", outerAbort, { once: true }); if (input.signal?.aborted) outerAbort();
-  const signal = controller.signal, started = performance.now(), totalTimeout = setTimeout(() => controller.abort(failure("source_timeout")), 30000);
+  const signal = controller.signal; let started: number | undefined, totalTimeout: ReturnType<typeof setTimeout> | undefined;
+  const startNetwork = () => { if (started === undefined) { started = performance.now(); totalTimeout = setTimeout(() => controller.abort(failure("source_timeout")), 30000); } };
   let active: Socket | null = null, handle: Awaited<ReturnType<typeof open>> | null = null;
   const abort = () => active?.destroy(signal.reason instanceof Error ? signal.reason : failure("source_cancelled")); signal.addEventListener("abort", abort);
   try {
@@ -241,11 +255,11 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       if (visited.has(key.href)) throw failure("source_forbidden"); visited.add(key.href);
       const boundary = controlledBoundary(url, policy), hostname = url.hostname.replace(/^\[|\]$/g, "");
       await awaitAdmission(() => policy.assertTarget?.({ hostname }), signal);
-      const addresses = boundary ? [boundary.address] : await resolveExternalImageAddresses(hostname, signal, undefined, policy.assertTarget);
+      const addresses = boundary ? [boundary.address] : await resolveExternalImageAddresses(hostname, signal, undefined, policy.assertTarget, policy, startNetwork);
       let lastError: unknown;
       for (const address of addresses.slice(0, 2)) {
-        await assertPolicy(policy, signal); await policy.beforeRequest({ hostname }); checkSignal(signal);
-        try { active = await openVerifiedSocket(url, address, policy, signal); break; }
+        await assertPolicy(policy, signal); await policy.beforeRequest({ hostname }, signal); checkSignal(signal);
+        try { active = await openVerifiedSocket(url, address, policy, signal, startNetwork); break; }
         catch (error) { lastError = error; if (error instanceof ExternalImageSourceError && error.code !== "source_timeout") throw error; }
       }
       if (!active) throw lastError ?? failure("source_unavailable");
@@ -255,17 +269,16 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       let response: IncomingMessage | null = null;
       try {
         await assertPolicy(policy, signal);
-        policy.assertCapture?.();
-        response = await new Promise<IncomingMessage>((resolve, reject) => {
+        response = await authorized(policy, signal, () => new Promise<IncomingMessage>((resolve, reject) => {
           const req = request({ protocol: "http:", hostname, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), path: url.pathname + url.search, method: "GET", agent, maxHeaderSize: 32768, insecureHTTPParser: false, headers: { Host: url.host, Accept: "image/png,image/jpeg,image/webp,image/gif,image/avif", "Accept-Encoding": "identity", "User-Agent": "Daynight-Image-Source/1", Connection: "close" }, signal });
           req.maxHeadersCount = 0;
-          const timeout = setTimeout(() => req.destroy(failure("source_timeout")), Math.min(8000, Math.max(1, 30000 - (performance.now() - started))));
+          const timeout = setTimeout(() => req.destroy(failure("source_timeout")), Math.min(8000, Math.max(1, 30000 - (performance.now() - started!))));
           req.once("response", incoming => { clearTimeout(timeout); resolve(incoming); });
           req.once("error", error => { clearTimeout(timeout); reject(error); });
           req.once("upgrade", incoming => { clearTimeout(timeout); incoming.destroy(); req.destroy(failure("source_unavailable")); reject(failure("source_unavailable")); });
           req.once("connect", incoming => { clearTimeout(timeout); incoming.destroy(); reject(failure("source_unavailable")); });
           req.end();
-        });
+        }));
         const { length, contentType } = validateResponseHeaders(response), status = response.statusCode;
         if ([301, 302, 303, 307, 308].includes(status ?? 0)) {
           if (hop === 5 || typeof response.headers.location !== "string" || !response.headers.location || /[\u0000-\u0020\u007f\\]/u.test(response.headers.location)) throw failure("source_forbidden");
@@ -279,22 +292,25 @@ export async function copyExternalImage(input: { url: string; outputPath: string
         const mime = contentType?.match(/^(image\/(?:png|jpeg|webp|gif|avif)|application\/octet-stream)(?: *; *[!#$%&'*+.^_`|~0-9A-Za-z-]+ *= *(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[ !#-\[\]-~]|\\[ -~])*"))* *$/i);
         if (contentType !== null && !mime) throw failure("unsupported_media_type");
         const declaredMediaType = mime?.[1]?.toLowerCase().startsWith("image/") ? mime[1].toLowerCase() as DisplayMime : null;
-        let bytes = 0, idle: ReturnType<typeof setTimeout>;
-        const progress = () => { clearTimeout(idle); idle = setTimeout(() => controller.abort(failure("source_timeout")), 5000); }; progress();
+        let bytes = 0, idle: ReturnType<typeof setTimeout>, idlePaused = 0;
+        const progress = () => { clearTimeout(idle); if (!idlePaused) idle = setTimeout(() => controller.abort(failure("source_timeout")), 5000); };
+        pauseIdle = () => { idlePaused++; clearTimeout(idle); };
+        resumeIdle = () => { if (--idlePaused === 0) progress(); };
+        progress();
         const hash = createHash("sha256");
         try {
           if (response.readableHighWaterMark > 65536) throw failure("source_unavailable");
           // Socket, response queue and the current block each have a 64 KiB bound.
           socket.on("data", progress);
           for (;;) {
-            const block = await readBodyBlock(response, policy.assertCapture); if (block === null) break;
-            progress(); await assertPolicy(policy, signal); policy.assertCapture?.();
+            const block = await readBodyBlock(response, signal, policy); if (block === null) break;
+            progress(); await assertPolicy(policy, signal);
             if (block.length > 65536 || bytes + block.length > MAX_BYTES) throw failure("source_too_large");
             let written = 0;
-            while (written < block.length) { const result = await handle.write(block, written, block.length - written, bytes + written); if (!result.bytesWritten) throw failure("source_unavailable"); written += result.bytesWritten; }
+            while (written < block.length) { const result = await authorized(policy, signal, () => handle!.write(block, written, block.length - written, bytes + written)); if (!result.bytesWritten) throw failure("source_unavailable"); written += result.bytesWritten; }
             hash.update(block); bytes += block.length;
           }
-        } finally { clearTimeout(idle!); socket.removeListener("data", progress); }
+        } finally { clearTimeout(idle!); socket.removeListener("data", progress); pauseIdle = () => {}; resumeIdle = () => {}; }
         checkSignal(signal);
         if (!response.complete || length !== null && bytes !== length) throw failure("source_unavailable");
         await assertPolicy(policy, signal);

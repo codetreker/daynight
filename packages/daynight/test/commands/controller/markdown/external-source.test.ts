@@ -6,6 +6,7 @@ import { createServer as createRawServer, connect, type Server, type Socket } fr
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertExternalImageSocketPeer, copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, resolveExternalImageAddresses, type ExternalImageDnsResolver, type ExternalImagePolicy, type ExternalImageTarget } from "../../../../src/commands/controller/markdown/external-source.js";
+import { ImageCaptureNotDispatchedError } from "../../../../src/commands/controller/media/capture-error.js";
 
 const roots: string[] = [], servers: Server[] = [], sockets = new Set<Socket>();
 afterEach(async () => {
@@ -31,6 +32,20 @@ async function fixture(handler: RequestListener, extra: { tls?: boolean; assertE
   return { url: `${extra.tls ? "https" : "http"}://fixture.example:${port}/original?token=source#fragment`, policy, charges };
 }
 const start = async (url: string, policy: ExternalImagePolicy, signal?: AbortSignal) => copyExternalImage({ url, outputPath: await output(), policy, ...(signal ? { signal } : {}) });
+
+test("the final capture check waits before opening an external connection", async () => {
+  let requests = 0, checks = 0, resume!: () => void, blocked!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; }), waiting = new Promise<void>(resolve => { blocked = resolve; });
+  const server = createServer((_req, res) => { requests++; res.end("bytes"); }), port = await listen(server);
+  const policy = createExternalImagePolicy({ assertEgressPolicy() {}, beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
+    waitCapture: async () => { if (checks) { blocked(); await gate; } },
+    assertCapture() { if (checks++ === 0) throw new ImageCaptureNotDispatchedError("Waiting for current ACK."); },
+  });
+  const work = start(`http://fixture.example:${port}/original`, policy);
+  await waiting; expect(requests).toBe(0); expect(sockets.size).toBe(0);
+  resume(); const result = await work;
+  expect(requests).toBe(1); expect(await readFile(result.inputPath, "utf8")).toBe("bytes");
+});
 
 test("dedicated transport preserves origin path and Host while omitting environment credentials and cookies across a fresh redirect socket", async () => {
   const requests: { method: string | undefined; url: string | undefined; headers: Record<string, unknown>; port: number | undefined }[] = [];

@@ -2,7 +2,9 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { endianness } from "node:os";
+import { performance } from "node:perf_hooks";
 import { createLocalImageProofSequence, type LocalImageCheckpoint } from "./local-source-proof.js";
+import { isRetryableCaptureRefusal } from "../media/capture-error.js";
 
 export class LocalImageSourceError extends Error {
   readonly code: string;
@@ -79,7 +81,7 @@ export async function createLocalImageContext(options: { cwd: string; platform?:
   contexts.set(context, internal); return context;
 }
 
-export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: (checkpoint: LocalImageCheckpoint) => void | Promise<void>; assertCapture?(): void }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
+export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: (checkpoint: LocalImageCheckpoint) => void | Promise<void>; waitCapture?(): Promise<void>; assertCapture?(): void }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
   const internal = contexts.get(options.context);
   if (!internal || internal.dead) refuse("context_unavailable");
   if (internal.busy) refuse("source_busy");
@@ -90,6 +92,13 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
   try {
     return await new Promise((resolve, reject) => {
       let finishing = false, checking = false;
+      let timer: ReturnType<typeof setTimeout> | undefined, openTimer: ReturnType<typeof setTimeout> | undefined;
+      let opened = false, openRemaining = 5000, openStarted = 0;
+      const resumeOpenTimer = () => {
+        if (opened) return;
+        openStarted = performance.now();
+        openTimer = setTimeout(() => { void finish(new LocalImageSourceError("source_timeout"), undefined, true); }, Math.max(1, openRemaining));
+      };
       const finish = async (error?: unknown, result?: { byteLength: number; sha256: string }, terminate = false): Promise<void> => {
         if (finishing) return; finishing = true; clearTimeout(timer); clearTimeout(openTimer);
         options.signal?.removeEventListener("abort", onAbort); internal.child.off("message", onMessage); internal.child.off("close", onClose);
@@ -97,17 +106,31 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
         else resolve({ inputPath: options.outputPath, ...result! });
       };
       const onAbort = (): void => { void finish(new LocalImageSourceError("source_cancelled"), undefined, true); };
-      const timer = setTimeout(() => { void finish(new LocalImageSourceError("source_timeout"), undefined, true); }, 30_000);
-      const openTimer = setTimeout(() => { void finish(new LocalImageSourceError("source_timeout"), undefined, true); }, 5000);
+      const sendAuthorized = async (message: Parameters<typeof send>[1], start = false): Promise<void> => {
+        for (;;) {
+          await options.waitCapture?.();
+          if (finishing) return;
+          try { options.assertCapture?.(); }
+          catch (error) { if (isRetryableCaptureRefusal(error) && options.waitCapture) continue; throw error; }
+          send(internal.child, message);
+          if (start) {
+            timer = setTimeout(() => { void finish(new LocalImageSourceError("source_timeout"), undefined, true); }, 30_000);
+          }
+          resumeOpenTimer();
+          return;
+        }
+      };
       const onClose = (): void => { void finish(new LocalImageSourceError("context_unavailable")); };
       const onMessage = (message: HelperMessage): void => {
         if (message.type === "checkpoint") {
           let checkpoint: LocalImageCheckpoint;
           try { if (checking) refuse(); checkpoint = proofSequence.accept({ stage: message.stage, proof: message.proof }); }
           catch (error) { void finish(error, undefined, true); return; }
-          if (checkpoint.stage === "opened") clearTimeout(openTimer);
+          if (openTimer) { clearTimeout(openTimer); openTimer = undefined; openRemaining -= performance.now() - openStarted; }
+          if (!opened && openRemaining <= 0) { void finish(new LocalImageSourceError("source_timeout"), undefined, true); return; }
+          if (checkpoint.stage === "opened") opened = true;
           checking = true;
-          void Promise.resolve().then(() => { if (!finishing) return options.checkPolicy(checkpoint); }).then(() => { checking = false; if (!finishing) { options.assertCapture?.(); send(internal.child, { type: "continue" }); } }).catch(error => finish(error, undefined, true));
+          void Promise.resolve().then(() => { if (!finishing) return options.checkPolicy(checkpoint); }).then(() => sendAuthorized({ type: "continue" })).then(() => { checking = false; }).catch(error => finish(error, undefined, true));
         } else if (message.type === "error") { void finish(new LocalImageSourceError(message.code ?? "source_unavailable")); }
         else if (message.type === "result") {
           try { if (checking) refuse(); proofSequence.complete(); } catch (error) { void finish(error, undefined, true); return; }
@@ -116,8 +139,7 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
         }
       };
       internal.child.on("message", onMessage); internal.child.once("close", onClose); options.signal?.addEventListener("abort", onAbort, { once: true });
-      try { options.assertCapture?.(); send(internal.child, { type: "copy", locator: options.path, path: parsed, outputPath: options.outputPath }); }
-      catch (error) { void finish(error, undefined, true); }
+      void sendAuthorized({ type: "copy", locator: options.path, path: parsed, outputPath: options.outputPath }, true).catch(error => finish(error, undefined, true));
     });
   } finally { internal.busy = false; }
 }

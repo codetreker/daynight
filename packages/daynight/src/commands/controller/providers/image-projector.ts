@@ -26,6 +26,7 @@ type Pending = { saved: Saved; slot: NativeImageSlot; key: string; released: boo
 
 const pendingPart = (imageId: string, label: string, error: ImageError = { code: "capture_pending", message: "The original image is being saved." }): ImageUnavailablePart => ({ type: "image_unavailable", imageId, label, error });
 const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.output : entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : null;
+class StaleNativeImageStateError extends Error {}
 
 /** Native positions and capture share the existing journal, ACK and resource pipeline. */
 export class ProviderImageProjector {
@@ -183,7 +184,11 @@ export class ProviderImageProjector {
     }).finally(() => { this.scheduled = false; });
   }
 
-  private save(pending: Pending): void { this.options.imageRuntime?.writeState(pending.key, pending.saved); }
+  private assertCurrent(pending: Pending, expectedAttempt = pending.saved.attemptId): void {
+    const current = this.options.imageRuntime?.readState(pending.key) as Saved | null | undefined;
+    if (current && (current.attemptId !== expectedAttempt || current.phase === "settled" && (pending.saved.phase !== "settled" || canonicalImageJson(current.part) !== canonicalImageJson(pending.saved.part)))) throw new StaleNativeImageStateError("Native image attempt changed.");
+  }
+  private save(pending: Pending, expectedAttempt = pending.saved.attemptId): void { this.assertCurrent(pending, expectedAttempt); this.options.imageRuntime?.writeState(pending.key, pending.saved); }
   private retainProjection(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void {
     // The journal patch owns the current body. Standalone projection retains a
     // shared body only while an image capture still needs its callback.
@@ -198,6 +203,7 @@ export class ProviderImageProjector {
     saved.waitingForSource = false; this.save(pending);
   }
   private emitPart(pending: Pending): void {
+    this.assertCurrent(pending);
     const { occurrence } = pending.saved.request, patch = this.options.imageRuntime?.patchNativeImagePart;
     if (patch) {
       patch(occurrence, pending.saved.part); return;
@@ -239,8 +245,8 @@ export class ProviderImageProjector {
     } else if (receipt.state === "failed") {
       if (!receipt.error) throw new Error("Native image capture has no failure result.");
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, receipt.error);
-    } else { this.save(pending); return false; }
-    pending.saved.phase = "settled"; delete pending.saved.resumeReserved; this.save(pending);
+    } else { this.save(pending, attemptId); return false; }
+    pending.saved.phase = "settled"; delete pending.saved.resumeReserved; this.save(pending, attemptId);
     this.emitPart(pending); this.retire(pending); return true;
   }
   private freeze(pending: Pending, outcome: DirectCaptureSubmission["outcome"]): void {
@@ -269,6 +275,16 @@ export class ProviderImageProjector {
     saved.phase = "preparing"; this.save(pending);
     let payload = pending.slot.payload;
     if (payload.kind === "resource") { this.freeze(pending, { kind: "resource" }); return; }
+    if (payload.kind === "source" && options.stageNativeImageCapture) {
+      try {
+        const validated = await options.stageNativeImageCapture(saved.request, this.controller.signal);
+        if (!this.stopped) this.freeze(pending, { kind: "validated", validated });
+      } catch (error) {
+        if (isRetryableCaptureRefusal(error)) { saved.phase = "new"; this.save(pending); throw error; }
+        if (!this.stopped) this.sourceFailure(pending, error, { code: "source_unavailable", message: "The original native image source could not be read." });
+      }
+      return;
+    }
     if (payload.kind === "deferred" || payload.kind === "source") {
       try {
         if (payload.kind === "deferred") payload = await payload.read(this.controller.signal);
@@ -300,7 +316,7 @@ export class ProviderImageProjector {
     const { options } = this, { saved } = pending, { request } = saved;
     if (saved.phase === "settled") {
       try { this.save(pending); this.emitPart(pending); this.retire(pending); }
-      catch { this.scheduleQuery(); }
+      catch (error) { if (error instanceof StaleNativeImageStateError) this.retire(pending); else this.scheduleQuery(); }
       return;
     }
     if (saved.waitingForSource && saved.phase === "new") return;
@@ -330,7 +346,11 @@ export class ProviderImageProjector {
         }
       }
       if (saved.phase === "new") await this.prepare(pending);
-      else if (saved.phase === "preparing") this.freeze(pending, { kind: "failed", error: { code: "source_unavailable", message: "The original native image source read was interrupted." } });
+      else if (saved.phase === "preparing") {
+        const staged = await options.recoverNativeImageCapture?.({ ...request, attemptId: saved.attemptId });
+        if (this.stopped) return;
+        this.freeze(pending, staged ? { kind: "validated", validated: staged } : { kind: "failed", error: { code: "source_unavailable", message: "The original native image source read was interrupted." } });
+      }
       if (this.stopped) return;
       if (saved.phase === "submit") {
         const submission = saved.submission;
@@ -345,6 +365,7 @@ export class ProviderImageProjector {
       }
       this.scheduleQuery();
     } catch (error) {
+      if (error instanceof StaleNativeImageStateError) { this.retire(pending); return; }
       if ((saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
       if (isRetryableCaptureRefusal(error)) {
         if (dispatching) saved.phase = "submit";

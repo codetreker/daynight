@@ -3,6 +3,8 @@ import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-fil
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { openUsageStore } from "./usage/store.js";
 import { createNativeInputPublication } from "./media/native-publication.js";
+import type { NativeImageProjectionState } from "./media/native-publication-types.js";
+import { nativeEntryId } from "./native-identity.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
 import { createMarkdownSourceStore } from "./markdown/store.js";
 import type { MarkdownProjectionState } from "./markdown/projection.js";
@@ -12,7 +14,7 @@ import { openControllerMediaStore, type ControllerMediaStore } from "./media/pre
 import type { ImageDecoder } from "./media/image-decoder.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
+import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type ImageCaptureRequest, type ImageCaptureReceipt, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
 import { parseStoredTimelineEntry, type SessionCommand, type TimelineEntry } from "../../session/protocol.js";
 import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
@@ -311,6 +313,17 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     return result;
   });
+  const patchNativeImagePart = (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
+    const occurrence = parseImageOccurrence(input);
+    const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
+    if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
+    const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
+    const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
+    if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
+    const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
+    projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
+    return sessionContent.onlineTimeline.get(entry.entryId)!;
+  });
   return {
     usage,
     markdownStore,
@@ -326,16 +339,31 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
-    patchNativeImagePart: (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
-      const occurrence = parseImageOccurrence(input);
-      const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
-      if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
-      const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
-      const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
-      if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
-      const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
-      projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
-      return sessionContent.onlineTimeline.get(entry.entryId)!;
+    patchNativeImagePart,
+    applyNativeImageReceipt: (request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void => atomic(() => {
+      const source = request.nativeSource, occurrence = request.occurrence;
+      if (!source || occurrence.partId !== null || receipt.captureId !== request.captureId || canonicalImageJson(receipt.occurrence) !== canonicalImageJson(occurrence)) throw new Error("Native image receipt differs from its original occurrence.");
+      const captureRow = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture:${request.captureId}`) as { value: string } | undefined;
+      if (!captureRow) throw new Error("Native image receipt has no original capture.");
+      const capture = JSON.parse(captureRow.value) as { request: ImageCaptureRequest; attemptId: string; receipt: ImageCaptureReceipt | null };
+      if (capture.attemptId !== receipt.attemptId || canonicalImageJson(capture.receipt) !== canonicalImageJson(receipt)) return;
+      const key = `native_provider:image-slot:${nativeEntryId(source.nativeSessionId, occurrence.sourceKey)}`;
+      const stateRow = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
+      if (!stateRow) throw new Error("Native image receipt has no original projection state.");
+      const state = JSON.parse(stateRow.value) as NativeImageProjectionState;
+      if (canonicalImageJson(state.request) !== canonicalImageJson(capture.request) || canonicalImageJson({ ...request, attemptId: state.request.attemptId }) !== canonicalImageJson(state.request)) throw new Error("Native image receipt changed its original request.");
+      if (!Number.isSafeInteger(state.index) || state.index < 0) throw new Error("Native image projection position is corrupt.");
+      const current = sessionContent.onlineTimeline.get(occurrence.entryId);
+      const parts = current?.kind === "user_message" || current?.kind === "assistant_message" ? current.content : current?.kind === "tool_call" ? current.output : null;
+      const existing = parts?.[state.index];
+      if (!existing || (existing.type !== "image" && existing.type !== "image_unavailable") || existing.imageId !== occurrence.imageId) throw new Error("Native image receipt lost its original slot.");
+      if (receipt.state !== "committed" && receipt.state !== "failed") throw new Error("Native image receipt is not settled.");
+      const label = state.part.label;
+      const part: ImagePart | ImageUnavailablePart = receipt.state === "committed" && receipt.resourceId ? { type: "image", imageId: occurrence.imageId, resourceId: receipt.resourceId, label } : receipt.state === "failed" && receipt.error ? { type: "image_unavailable", imageId: occurrence.imageId, label, error: receipt.error } : (() => { throw new Error("Native image receipt has no terminal result."); })();
+      const updated: NativeImageProjectionState = { ...state, attemptId: receipt.attemptId, phase: "settled", part, submission: null };
+      delete updated.resumeReserved; delete updated.submissionRefusal;
+      patchNativeImagePart(occurrence, part);
+      db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(JSON.stringify(updated), key);
     }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;

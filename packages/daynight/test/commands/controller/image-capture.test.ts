@@ -51,6 +51,50 @@ const fixture = async (contentOwnedLocally = false) => {
 };
 const bridge = (journal: ReturnType<typeof openControllerLifecycleStore>, capture: ReturnType<typeof createControllerRelay>["capture"], provider: NativeProvider | null = null) => createControllerCaptureBridge({ journal, capture, beforeCapture: async () => {}, provider: () => provider, writable: () => true });
 
+test("native retry updates the original slot durably and an older pending failure cannot replace it", async () => {
+  const f = await fixture(), entryId = randomUUID(), attemptId = randomUUID(), resourceId = randomUUID();
+  let stateKey = "", failPatch = true;
+  const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => {
+    if (action !== "submit" || !("request" in body)) throw new Error("Unexpected capture operation.");
+    return { captureId: body.request.captureId, attemptId: body.attemptId, revision: "1", occurrence: body.request.occurrence, state: "failed", resourceId: null, resource: null, error: { code: "source_unavailable", message: "Original attempt failed." } };
+  };
+  const consumer = bridge(f.journal, capture);
+  const options = { ...consumer.providerOptions,
+    onTimeline: (entry: ProviderEntry) => f.journal.projectTimeline(entry),
+    onImageOccurrence: (occurrence: ImageOccurrence, native: NativeImageSource | null) => f.journal.registerImageOccurrence(occurrence, native).acknowledged,
+    imageOccurrenceAcknowledged: (id: string) => f.journal.imageOccurrenceAcknowledged(id),
+    imageRuntime: { readState: (key: string) => f.journal.readNativeImageState(key), writeState: (key: string, value: unknown) => { stateKey = key; f.journal.writeNativeImageState(key, value); }, patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => { if (failPatch) { failPatch = false; throw new Error("injected timeline failure"); } return f.journal.patchNativeImagePart(occurrence, part); } },
+  } as unknown as ProviderOptions;
+  const projector = new ProviderImageProjector(options);
+  const native = { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "message", nativePartId: "0" };
+  try {
+    projector.publish({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text: "image" }] }, [{ index: 0, label: "original", native, payload: { kind: "source", locator: { kind: "local", path: "/original/unchanged.png", contextId: randomUUID() } } }]);
+    f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); projector.acknowledged(); await projector.settled();
+    const first = f.journal.readNativeImageState(stateKey) as NativeImageProjectionState;
+    expect(first).toMatchObject({ phase: "settled", part: { type: "image_unavailable", error: { code: "source_unavailable" } } });
+    const retry = f.journal.retryImageCaptureRequest(first.request.captureId, attemptId);
+    const resource = { resourceId, revision: "1", status: "available" as const, name: "saved.png", mediaType: "image/png" as const, byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1, error: null };
+    const committed: ImageCaptureReceipt = { captureId: first.request.captureId, attemptId, revision: "3", occurrence: first.request.occurrence, state: "committed", resourceId, resource, error: null };
+    f.journal.observeImageCaptureReceipt(committed);
+    const originalEntry = f.journal.getTimelineEntry(entryId)!;
+    f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "2", content: [{ type: "text", text: "Position temporarily unavailable" }] });
+    expect(() => f.journal.applyNativeImageReceipt(retry, committed)).toThrow("original slot");
+    expect(f.journal.readNativeImageState(stateKey)).toMatchObject({ attemptId: first.attemptId, phase: "settled" });
+    f.journal.projectTimeline(originalEntry);
+    f.journal.applyNativeImageReceipt(retry, committed);
+    projector.acknowledged(); await projector.settled();
+    expect(f.journal.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", imageId: first.request.occurrence.imageId, resourceId }] });
+    expect(f.journal.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", attemptId, part: { type: "image", resourceId } });
+    f.journal.applyNativeImageReceipt(first.request, { ...committed, attemptId: first.attemptId, revision: "1", state: "failed", resourceId: null, resource: null, error: { code: "source_unavailable", message: "Original attempt failed." } });
+    expect(f.journal.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", resourceId }] });
+  } finally { await projector.close(); await f.journal.stopMedia(); f.journal.close(); }
+  const reopened = openControllerLifecycleStore(f.file, f.ticket, f.options);
+  try {
+    expect(reopened.getTimelineEntry(entryId)).toMatchObject({ content: [{ type: "image", resourceId }] });
+    expect(reopened.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", attemptId, part: { type: "image", resourceId } });
+  } finally { await reopened.stopMedia(); reopened.close(); }
+});
+
 test("relay captures require the original acknowledged position on the current connection", async () => {
   const f = await fixture(), entryId = randomUUID(), imageId = randomUUID();
   const occurrence = { ...f.request.occurrence, entryId, imageId, sourceKey: "relay-position" };

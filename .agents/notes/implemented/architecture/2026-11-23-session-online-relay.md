@@ -51,4 +51,6 @@ the combined final archive can still fail while retaining the original source.
 The Controller persists the negotiated mode before using it. Existing journals
 retain legacy mode, while reconnects and new generations check the original
 decision. A peer that cannot support an already-bound mode cannot silently
-downgrade it.
+downgrade it. Native source capture uses the same bounded source owner and
+per-checkpoint authorization as Markdown capture; successful retry receipts
+update the original native slot without allowing an older attempt to overwrite it.
