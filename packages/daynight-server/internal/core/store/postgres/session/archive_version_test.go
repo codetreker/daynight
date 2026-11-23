@@ -21,8 +21,8 @@ func TestLegacyArchiveDAOCannotChangeNewUpload(t *testing.T) {
 		if _, err := dao.SessionArchiveFile(ctx, id, file.FileID); err == nil {
 			t.Fatal("legacy lookup accepted v2")
 		}
-		if _, err := dao.SessionArchiveFiles(ctx, id); err == nil {
-			t.Fatal("legacy enumeration accepted v2")
+		if files, err := dao.SessionArchiveFiles(ctx, id); err != nil || len(files) != 0 {
+			t.Fatalf("legacy enumeration included v2: files=%v err=%v", files, err)
 		}
 		changed := file
 		changed.AcceptedOffset = 8

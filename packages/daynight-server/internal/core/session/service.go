@@ -29,6 +29,7 @@ type Engine struct {
 	archiveSlots          chan struct{}
 	archivePreflightSlots chan struct{}
 	archiveOwnerLimit     int
+	archiveV2RegistrationEnabled bool
 	Origin                string
 	files                 filestorage.Storage
 	imageDecoder          ImageDecoder
@@ -45,6 +46,13 @@ type Engine struct {
 	idle                  chan struct{}
 	stopping              chan struct{}
 	workCanceled          bool
+}
+
+// SetArchiveV2RegistrationEnabled controls creation of new streaming uploads.
+// Existing registrations remain available for recovery and completion.
+// Configure it before publishing the engine to concurrent callers.
+func (s *Engine) SetArchiveV2RegistrationEnabled(enabled bool) {
+	s.archiveV2RegistrationEnabled = enabled
 }
 
 // ArchiveLimits bounds archive operations per instance and original owner.

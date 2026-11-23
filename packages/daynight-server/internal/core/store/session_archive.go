@@ -18,6 +18,9 @@ type ArchiveBundleFile struct {
 	TimelineRevision                                int64
 	StagingReleased                                 bool
 	Resource                                        json.RawMessage
+	UploadVersion                                   int
+	SuccessorFileID                                 string
+	TerminalError                                   json.RawMessage
 }
 type ArchiveMigration struct {
 	SessionID, MigrationID, SourcePath, SourceHash, TargetPath, TargetHash, Phase string
@@ -74,6 +77,7 @@ type ArchiveStagingRecord struct {
 // A false conditional write means the caller must read the original identity.
 type SessionArchiveStagingDAO interface {
 	ArchiveStagingRecord(context.Context, string, string) (ArchiveStagingRecord, error)
+	ArchiveStagingRecords(context.Context, string) ([]ArchiveStagingRecord, error)
 	InsertArchiveStaging(context.Context, ArchiveStagingRecord) (bool, error)
 	FinishArchiveStaging(context.Context, ArchiveStagingRecord, string, int64, json.RawMessage) (bool, error)
 	SetArchiveStagingSuccessor(context.Context, ArchiveStagingRecord, string) (bool, error)

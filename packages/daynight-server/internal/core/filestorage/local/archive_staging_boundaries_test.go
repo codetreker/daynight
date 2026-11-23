@@ -77,7 +77,7 @@ func TestArchiveStagingRejectsInvalidAndCanceledOperations(t *testing.T) {
 			t.Fatalf("invalid append %+v: %v", bad, err)
 		}
 	}
-	if _, err := h.Append(t.Context(), uuid.NewString(), 4, 0, []byte("data")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := h.Append(t.Context(), uuid.NewString(), 4, 0, []byte("data")); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
 		t.Fatalf("missing append: %v", err)
 	}
 	if _, err := h.Append(t.Context(), id, 4, 0, []byte("data")); err != nil {
@@ -332,7 +332,7 @@ func TestArchivePublicationFailureAfterRenameReportsPublished(t *testing.T) {
 func TestArchivePublicationRequiresCompleteExistingStaging(t *testing.T) {
 	_, h, n, id, _ := stagingBoundaryFixture(t)
 	target := n.Directory() + "/files/" + id + "/content"
-	if _, err := h.Publish(t.Context(), id, 4, sessionarchive.Bucket, target); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := h.Publish(t.Context(), id, 4, sessionarchive.Bucket, target); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
 		t.Fatalf("missing staging: %v", err)
 	}
 	if err := h.Create(t.Context(), id); err != nil {

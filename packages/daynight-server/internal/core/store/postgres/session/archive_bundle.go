@@ -65,7 +65,7 @@ func (tx *DAO) FailSessionArchiveFile(ctx context.Context, v store.ArchiveBundle
 	return err
 }
 func (tx *DAO) SessionArchiveFiles(ctx context.Context, id string) ([]store.ArchiveBundleFile, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,upload_version FROM session_archive_files WHERE session_id=$1 ORDER BY file_id`, id)
+	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,upload_version FROM session_archive_files WHERE session_id=$1 AND upload_version=1 ORDER BY file_id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +154,23 @@ func (tx *DAO) ArchiveStagingRecord(ctx context.Context, session, id string) (st
 		return v, model.ErrNotFound
 	}
 	return v, err
+}
+
+func (tx *DAO) ArchiveStagingRecords(ctx context.Context, session string) ([]store.ArchiveStagingRecord, error) {
+	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,state,object_path,resource,timeline_revision,staging_released,accepted_offset,coalesce(successor_file_id::text,''),terminal_error FROM session_archive_files WHERE session_id=$1 AND upload_version=2 ORDER BY file_id FOR UPDATE`, session)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []store.ArchiveStagingRecord
+	for rows.Next() {
+		v := store.ArchiveStagingRecord{SessionID: session}
+		if err := rows.Scan(&v.FileID, &v.Purpose, &v.SHA256, &v.ByteLength, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased, &v.TerminalOffset, &v.SuccessorFileID, &v.TerminalError); err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+	return result, rows.Err()
 }
 
 func (tx *DAO) InsertArchiveStaging(ctx context.Context, v store.ArchiveStagingRecord) (bool, error) {

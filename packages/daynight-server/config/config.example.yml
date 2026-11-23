@@ -13,6 +13,8 @@ database:
 
 storage:
   root: "storage"
+  archive_staging_topology_verified: false
+  archive_upload_v2_enabled: false
 
 monitoring:
   redis_url: ""

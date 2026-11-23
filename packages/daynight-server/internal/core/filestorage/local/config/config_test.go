@@ -42,3 +42,20 @@ func TestResolvePathsPreservesTraversal(t *testing.T) {
 		t.Fatalf("absolute: %q %v", c.Root, err)
 	}
 }
+
+func TestArchiveStagingConfiguration(t *testing.T) {
+	c := DefaultConfig()
+	values := map[string]string{"DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED": "true"}
+	lookup := func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+	if err := c.ApplyEnvironment(lookup, nil); err != nil || c.Validate() == nil {
+		t.Fatalf("unverified topology accepted: %+v %v", c, err)
+	}
+	values["DAYNIGHT_STORAGE_ARCHIVE_STAGING_TOPOLOGY_VERIFIED"] = "true"
+	if err := c.ApplyEnvironment(lookup, nil); err != nil || c.Validate() != nil {
+		t.Fatalf("verified topology rejected: %+v %v", c, err)
+	}
+	values["DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED"] = "invalid"
+	if c.ApplyEnvironment(lookup, nil) == nil {
+		t.Fatal("invalid boolean accepted")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,19 @@ type DeadlineBody struct {
 	readContext  context.Context
 	source       io.ReadCloser
 	timeout      time.Duration
+	idleTimeout  time.Duration
 	deadline     time.Time
 	stop         func() bool
 	callbackDone chan struct{}
 	finished     bool
+	deadlineMu   sync.Mutex
+}
+
+// NewStreamingDeadlineBody bounds both an entire transfer and each idle read.
+func NewStreamingDeadlineBody(w http.ResponseWriter, r *http.Request, idle, total time.Duration) *DeadlineBody {
+	b := NewDeadlineBody(w, r, total)
+	b.idleTimeout = idle
+	return b
 }
 
 func NewDeadlineBody(w http.ResponseWriter, r *http.Request, timeout time.Duration) *DeadlineBody {
@@ -56,13 +66,40 @@ func (b *DeadlineBody) Read(p []byte) (int, error) {
 	controller := http.NewResponseController(b.w)
 	if b.stop == nil {
 		b.deadline = time.Now().Add(b.timeout)
-		if err := controller.SetReadDeadline(b.deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		if b.idleTimeout == 0 {
+			if err := controller.SetReadDeadline(b.deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				b.finish()
+				CloseUnreadBody(b.w, b.request)
+				return 0, &BodyReadError{Cause: err, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
+			}
+		}
+		b.callbackDone = make(chan struct{})
+		b.stop = context.AfterFunc(b.readContext, func() {
+			b.deadlineMu.Lock()
+			_ = controller.SetReadDeadline(time.Now())
+			b.deadlineMu.Unlock()
+			close(b.callbackDone)
+		})
+	}
+	if b.idleTimeout > 0 {
+		b.deadlineMu.Lock()
+		if err := b.readContext.Err(); err != nil {
+			b.deadlineMu.Unlock()
 			b.finish()
 			CloseUnreadBody(b.w, b.request)
 			return 0, &BodyReadError{Cause: err, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
 		}
-		b.callbackDone = make(chan struct{})
-		b.stop = context.AfterFunc(b.readContext, func() { _ = controller.SetReadDeadline(time.Now()); close(b.callbackDone) })
+		deadline := time.Now().Add(b.idleTimeout)
+		if deadline.After(b.deadline) {
+			deadline = b.deadline
+		}
+		err := controller.SetReadDeadline(deadline)
+		b.deadlineMu.Unlock()
+		if err != nil && !errors.Is(err, http.ErrNotSupported) {
+			b.finish()
+			CloseUnreadBody(b.w, b.request)
+			return 0, &BodyReadError{Cause: err, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
+		}
 	}
 	n, err := b.source.Read(p)
 	if err == nil {

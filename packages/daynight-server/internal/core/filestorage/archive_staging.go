@@ -10,6 +10,11 @@ import (
 )
 
 var ErrArchiveStagingCorrupt = errors.New("archive staging corrupt")
+
+// ErrArchiveStagingMissing reports an absent staging namespace or object
+// observed under the relevant storage exclusion, after checking the volume.
+// Path identity changes and storage availability errors are not absence proof.
+var ErrArchiveStagingMissing = errors.New("archive staging missing")
 var ErrArchiveStagingOffset = errors.New("archive staging offset mismatch")
 
 // ArchiveStaging is an exclusive Session-scoped capability. A caller must
