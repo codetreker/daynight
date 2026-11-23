@@ -9,7 +9,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestHistoryDirectoryGraphPagesAndOriginalClaims(t *testing.T) {
@@ -337,6 +340,135 @@ func TestHistoryDirectoryComponentsFollowVisibleGraphChanges(t *testing.T) {
 		return check(scope.HistoryDirectoryDAO(), map[string]int{queryID(10): 2, queryID(12): 3, queryID(30): 1}, queryID(21), []string{queryID(12), queryID(20), queryID(21)})
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHistoryDirectoryGroupsCancellationWhileReadingGraph(t *testing.T) {
+	db := isolatedStore(t)
+	project := queryProject(t, db, 1)
+	queryTask(t, db, project.ID, 10, model.TaskTodo)
+	for _, scenario := range []struct{ name, table, query, phase string }{
+		{"vertices", "tasks", "SELECT id::text FROM task_resource_rows%", "read history directory vertices"},
+		{"edges", "task_dependencies", "SELECT d.task_id::text,d.depends_on_task_id::text%", "read history directory edges"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			bounded, stop := context.WithTimeout(t.Context(), 10*time.Second)
+			defer stop()
+			holder, err := db.Pool.Begin(bounded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rollbackSessionTestTransaction(t, holder)
+			if _, err := holder.Exec(bounded, "LOCK TABLE "+scenario.table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(bounded)
+			type outcome struct{ operation, snapshot error }
+			finished := make(chan outcome, 1)
+			go func() {
+				var operation error
+				snapshot := db.ReadHistoryDirectory(ctx, func(scope store.HistoryDirectoryScope) error {
+					_, operation = scope.HistoryDirectoryDAO().Groups(ctx, project.ID, nil, 2)
+					return operation
+				})
+				finished <- outcome{operation, snapshot}
+			}()
+			drained := false
+			defer func() {
+				cancel()
+				if !drained {
+					rollbackSessionTestTransaction(t, holder)
+					select {
+					case <-finished:
+					case <-time.After(5 * time.Second):
+						t.Error("history directory query did not stop during cleanup")
+					}
+				}
+			}()
+			var reader int32
+			for reader == 0 {
+				err := db.Pool.QueryRow(bounded, `SELECT coalesce((SELECT pid FROM pg_stat_activity
+ WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE $1 AND $2::integer=ANY(pg_blocking_pids(pid)) LIMIT 1),0)`,
+					scenario.query, holder.Conn().PgConn().PID()).Scan(&reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reader == 0 {
+					if err := testutil.WaitThreadClock(bounded); err != nil {
+						t.Fatalf("%s query did not wait for its lock: %v", scenario.name, err)
+					}
+				}
+			}
+			// Observing the edge query also proves the vertex read completed.
+			cancel()
+			select {
+			case result := <-finished:
+				drained = true
+				var queryError *store.Error
+				if !errors.Is(result.snapshot, context.Canceled) || !errors.Is(result.operation, context.Canceled) || !errors.As(result.operation, &queryError) || queryError.Phase != scenario.phase {
+					t.Fatalf("%s cancellation lost its phase or cause: operation=%v snapshot=%v", scenario.name, result.operation, result.snapshot)
+				}
+			case <-bounded.Done():
+				t.Fatal("canceled history directory query did not return")
+			}
+			for {
+				var active bool
+				if err := db.Pool.QueryRow(bounded, `SELECT coalesce((SELECT state='active' OR xact_start IS NOT NULL FROM pg_stat_activity WHERE pid=$1),false)`, reader).Scan(&active); err != nil {
+					t.Fatal(err)
+				}
+				if !active && db.Pool.Stat().AcquiredConns() == 1 {
+					break
+				}
+				if err := testutil.WaitThreadClock(bounded); err != nil {
+					t.Fatalf("canceled %s query retained its connection: %v", scenario.name, err)
+				}
+			}
+		})
+	}
+}
+
+type cancelAfterHistoryEdgesTx struct {
+	pgx.Tx
+	queries int
+	closed  bool
+	cancel  context.CancelFunc
+}
+
+func (tx *cancelAfterHistoryEdgesTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := tx.Tx.Query(ctx, sql, args...)
+	tx.queries++
+	if err != nil || tx.queries != 2 {
+		return rows, err
+	}
+	return &cancelAfterHistoryEdgesRows{Rows: rows, tx: tx}, nil
+}
+
+type cancelAfterHistoryEdgesRows struct {
+	pgx.Rows
+	tx *cancelAfterHistoryEdgesTx
+}
+
+func (rows *cancelAfterHistoryEdgesRows) Close() {
+	rows.Rows.Close()
+	rows.tx.closed = true
+	rows.tx.cancel()
+}
+
+func TestHistoryDirectoryGroupsCancellationAfterReadingGraph(t *testing.T) {
+	db := isolatedStore(t)
+	project := queryProject(t, db, 1)
+	queryTask(t, db, project.ID, 10, model.TaskTodo)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackSessionTestTransaction(t, tx)
+	wrapped := &cancelAfterHistoryEdgesTx{Tx: tx, cancel: cancel}
+	_, err = pgsession.NewHistoryDirectory(wrapped).Groups(ctx, project.ID, nil, 2)
+	if !wrapped.closed || wrapped.queries != 2 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("graph cancellation: closed=%t queries=%d err=%v", wrapped.closed, wrapped.queries, err)
 	}
 }
 
