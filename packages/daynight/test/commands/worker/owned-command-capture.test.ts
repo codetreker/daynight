@@ -1,5 +1,5 @@
-import type { EventEmitter } from "node:events";
 import * as childProcesses from "node:child_process";
+import { setImmediate as yieldNative } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -7,17 +7,21 @@ import * as suspendedChildren from "../../../src/commands/worker/suspended-node-
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 
 vi.mock("node:child_process", { spy: true });
 afterEach(() => vi.restoreAllMocks());
 
-const observeLauncher = async () => {
+type Launcher = childProcesses.ChildProcess | suspendedChildren.GatedNodeChild;
+const observeLauncher = async (observe: (child: Launcher) => void = () => {}) => {
   const native = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  let child: EventEmitter | undefined;
-  vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof native.spawn>) => child = native.spawn(...args));
+  let child: Launcher | undefined;
+  vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof native.spawn>) => {
+    child = native.spawn(...args); observe(child); return child;
+  });
   const suspend = suspendedChildren.createSuspendedNodeChild;
   vi.spyOn(suspendedChildren, "createSuspendedNodeChild").mockImplementationOnce(async options => {
-    const result = await suspend(options); child = result.child; return result;
+    const result = await suspend(options); child = result.child; observe(child); return result;
   });
   return () => child!;
 };
@@ -81,32 +85,110 @@ it.each([
 }, 35_000);
 
 it.each(["writer", "helper", "spawn", "malformed"] as const)("keeps a late %s capture failure on the original error after cleanup reconciliation", async source => {
-  const child = await observeLauncher();
+  let nativeClosed = false, consumerHeld = false;
+  let dispatchedRuns: (() => number) | undefined;
+  const child = await observeLauncher(launcher => {
+    launcher.once("close", () => { nativeClosed = true; });
+    const dispatch = vi.spyOn(launcher, "send");
+    dispatchedRuns = () => dispatch.mock.calls.filter(([message]) => typeof message === "object" && message !== null && "kind" in message && message.kind === "run").length;
+  });
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   const captured = new Error("The final captured output could not be persisted.");
   const events: OwnedCommandLifecycleEvent[] = [], sink = async (event: OwnedCommandLifecycleEvent) => { events.push(event); };
-  const operation = createOperation({ limits: { totalMs: 3000, requestMs: 3000 } });
+  const operationBudget = 30_000;
+  const operation = createOperation({ limits: { totalMs: operationBudget, requestMs: operationBudget } });
+  const confirmStopped = processProof.confirmControllerProcessesStopped;
+  let nativeConfirmations = 0, nativeStopped = false, cleanupDeadline: number | undefined;
+  const confirmation = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (...args: Parameters<typeof confirmStopped>) => {
+    const stopped = await confirmStopped(...args);
+    nativeConfirmations++;
+    if (nativeConfirmations === 2) { nativeStopped = stopped; cleanupDeadline = args[2]; }
+    return stopped;
+  });
+  type JoinTimer = ReturnType<typeof captureSynchronousDeadline<NodeJS.Timeout>>;
+  const registered = Promise.withResolvers<{ at: number | undefined; before: number; after: number; timer: JoinTimer }>();
+  const schedule = globalThis.setTimeout;
+  let timer: JoinTimer | undefined, capturing = false;
+  const now = Date.now;
+  let outputJoinAt: number | undefined;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => {
+    const value = now();
+    if (!capturing && timer === undefined && consumerHeld && nativeClosed && nativeStopped) outputJoinAt = value;
+    return value;
+  });
+  // Native proof helpers keep their real clocks. Only the next registration after
+  // both closure observations and the held writer belongs to the output join.
+  const scheduling = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, milliseconds?: number, ...args: any[]) => {
+    if (capturing || timer !== undefined || !consumerHeld || !nativeClosed || !nativeStopped) return schedule(callback, milliseconds, ...args);
+    // The argument is computed before setTimeout is entered. Retain that real
+    // clock read so a millisecond tick during registration cannot alter the proof.
+    const at = outputJoinAt;
+    const before = now();
+    capturing = true;
+    try { timer = captureSynchronousDeadline(() => setTimeout(callback, milliseconds, ...args)); }
+    finally { capturing = false; }
+    registered.resolve({ at, before, after: now(), timer });
+    return timer.result;
+  }) as typeof globalThis.setTimeout);
   const outcome = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('retained');"], environment: process.env }, operation, sink,
     { cleanupWithinDeadline: true, onStdout: async () => {
-      entered.resolve(); await release.promise;
+      consumerHeld = true; entered.resolve(); await release.promise;
+      consumerHeld = false;
       if (source === "writer") throw captured;
       child().emit("message", helperFailures[source].message);
     } }).catch(error => error);
+  let settled = false;
+  void outcome.then(() => { settled = true; });
   try {
     await Promise.race([entered.promise, outcome.then(error => { throw error; })]);
+    const join = await Promise.race([registered.promise, outcome.then(error => { throw error; })]);
+    expect(join.timer.count).toBe(1);
+    expect(join.at).toBeTypeOf("number");
+    expect(join.at).toBeLessThanOrEqual(join.before);
+    expect(join.before).toBeLessThanOrEqual(join.after);
+    expect(Number.isSafeInteger(cleanupDeadline)).toBe(true);
+    expect(join.at).toBeLessThan(cleanupDeadline!);
+    expect(join.timer.requested).toBe(Math.max(1, cleanupDeadline! - join.at!));
+    expect(nativeConfirmations).toBe(2);
+    expect(nativeClosed).toBe(true);
+    expect(nativeStopped).toBe(true);
+    await yieldNative();
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound"]);
+    expect(settled).toBe(false);
+    join.timer.markReady();
+    await join.timer.expire();
     const error = await outcome;
+    timer!.restore(); timer = undefined;
+    scheduling.mockRestore();
+    clock.mockRestore();
+    confirmation.mockRestore();
+    expect(operation.signal.aborted).toBe(false);
+    operation.check();
     expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+    expect(error.cause).toMatchObject({ message: "Owned command output consumers did not join." });
     expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+    const resourceId = events[0]!.resourceId, proof = events[1]!.proof;
+    expect(events).toEqual([
+      { resourceId, sequence: 1, stage: "prepared", proof: null },
+      { resourceId, sequence: 2, stage: "bound", proof },
+      { resourceId, sequence: 3, stage: "unknown", proof },
+    ]);
+    expect(retainedOwnedCommandBoundaries()).toContainEqual({ resourceId, proof });
+    expect(dispatchedRuns!()).toBe(1);
     const expected = source !== "writer" ? expect.objectContaining(helperFailures[source].expected) : captured;
     expect(error.errors).not.toContainEqual(expected);
     release.resolve();
-    await reconcileOwnedCommandBoundary(events[0]!.resourceId, sink, Date.now() + 5000);
+    await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 5000);
     expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
     expect(error.errors).toContainEqual(expected);
-    expect(events.at(-1)?.stage).toBe("stopped");
+    expect(events.at(-1)).toEqual({ resourceId, sequence: 4, stage: "stopped", proof });
+    expect(await processProof.inspectProcessProof(proof!)).toBe("stopped");
+    expect(retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)).toBe(false);
+    expect(dispatchedRuns!()).toBe(1);
   } finally {
+    timer?.restore(); scheduling.mockRestore(); clock.mockRestore(); confirmation.mockRestore();
     release.resolve(); await outcome; operation.dispose();
     const resourceId = events[0]?.resourceId;
     if (resourceId && retainedOwnedCommandBoundaries().some(value => value.resourceId === resourceId)) await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 5000);
   }
-}, 15_000);
+}, 35_000);
