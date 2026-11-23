@@ -5,6 +5,7 @@ import { ControllerIpcFrameLimitError, ControllerIpcOutcomeUnknownError, encodeC
 import type { ControllerOperation, ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { appendWorkerPrompts, workerPingPrompt } from "../prompts.js";
 import type { WorkerPromptSource } from "../prompt-source.js";
+import { matchesInitialOperation, preservesControllerEvidence } from "./orchestration.js";
 import type { LocalTask } from "./web-types.js";
 
 export type WebAutomaticInputWait = "task_paused" | "claim_invalid" | "native_input" | "prompt_unknown" | "prompt_too_large";
@@ -23,6 +24,7 @@ export type WebInputEvent = { purpose: Purpose; operationId: string | null; exec
 export type WebInputOptions = {
   current: (task: LocalTask) => LocalTask;
   currentSnapshot: (task: LocalTask, ticket: ControllerLaunchTicket) => ControllerSnapshot | null;
+  initialSnapshot: (task: LocalTask, ticket: ControllerLaunchTicket) => ControllerSnapshot | null;
   buildPrompt: (task: LocalTask) => string;
   promptSource?: Pick<WorkerPromptSource, "current">;
   preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>;
@@ -70,6 +72,12 @@ export const createWebInput = (options: WebInputOptions) => {
   const validate = (operation: ControllerOperation, pending: Pending, ticket: ControllerLaunchTicket): void => {
     const kind = pending.purpose === "initial" ? "initial" : "worker_input";
     const payload = kind === "initial" ? { text: pending.prompt } : { content: [{ type: "text", text: pending.prompt }], expectedTurnId: null, origin: "daynight" };
+    if (kind === "initial") {
+      if (!matchesInitialOperation(operation, ticket, false)
+        && !(BigInt(ticket.executionGeneration) > 1n && matchesInitialOperation(operation, ticket, true)))
+        throw new Error("The original automatic input operation conflicts with its execution or content.");
+      return;
+    }
     if (operation.operationId !== pending.operationId || operation.executionGeneration !== ticket.executionGeneration || operation.kind !== kind
       || operation.payloadHash !== controllerPayloadHash({ kind, payload }) || controllerPayloadHash(operation.payload) !== controllerPayloadHash(payload)) {
       throw new Error("The original automatic input operation conflicts with its execution or content.");
@@ -77,9 +85,10 @@ export const createWebInput = (options: WebInputOptions) => {
   };
   const resolve = (task: LocalTask, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot, state: Progress, operation: ControllerOperation | null): WebAutomaticInputResult | null => {
     const pending = state.pending!;
+    const inheritedInitial = pending.purpose === "initial" && BigInt(ticket.executionGeneration) > 1n;
     if (operation === null) {
       if (options.now() <= pending.deadline) {
-        if (pending.purpose === "initial" && options.now() > pending.startedAt + 70_000) throw new Error("The original initial input cannot yet be reconciled.");
+        if (pending.purpose === "initial" && !inheritedInitial && options.now() > pending.startedAt + 70_000) throw new Error("The original initial input cannot yet be reconciled.");
         return wait(snapshot, "native_input");
       }
       state.pending = null;
@@ -88,10 +97,17 @@ export const createWebInput = (options: WebInputOptions) => {
     validate(operation, pending, ticket);
     emit(task, ticket, pending, operation.state);
     if (["accepted", "offered", "dispatching"].includes(operation.state)) {
-      if (options.now() > pending.startedAt + 70_000) throw new Error("The original automatic input did not settle within its expected deadline.");
+      if (!inheritedInitial && options.now() > pending.startedAt + 70_000) throw new Error("The original automatic input did not settle within its expected deadline.");
       return wait(snapshot, "native_input");
     }
     if (operation.state === "provider_accepted" || operation.state === "confirmed") {
+      if (inheritedInitial) {
+        const latest = options.initialSnapshot(task, ticket);
+        if (latest === null || !matches(options.current(task), ticket, latest)
+          || !["provider_accepted", "confirmed"].includes(latest.initialInputState)) return wait(snapshot, "native_input");
+        if (!preservesControllerEvidence(snapshot, latest, ticket.launchId)) throw new Error("The initial input receipt snapshot conflicts with the original controller evidence.");
+        snapshot = latest;
+      }
       state.pending = null;
       if (pending.purpose === "assignment" || pending.purpose === "initial" && state.initialOwned) state.assignmentAccepted = true;
       return { kind: "observed", snapshot };

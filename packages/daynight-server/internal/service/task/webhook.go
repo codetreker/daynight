@@ -19,7 +19,7 @@ type Capturer interface {
 
 type declaredBotKey struct{}
 
-// WithDeclaredBot attaches the Bot identity that a Task, Step or Thread write
+// WithDeclaredBot attaches the Bot identity that a Task or Thread write
 // request declares for its authenticated user. The declaration is a
 // cooperation signal within one user, not a security boundary: it changes
 // only the stored event actor after the write transaction verifies it.
@@ -33,8 +33,8 @@ func DeclaredBot(ctx context.Context) (string, bool) {
 	return botID, declared
 }
 
-// sourceActor records the authenticated credential owner of a Task, Step or
-// Thread write, or the declared Bot after verifying it under the shared Bot
+// sourceActor records the authenticated credential owner of a Task or Thread
+// write, or the declared Bot after verifying it under the shared Bot
 // deletion barrier. Callers run it after their Project admission and before
 // any Task Session lock: Bot deletion locks the Bot before its Sessions.
 func sourceActor(ctx context.Context, scope interface{ BotBarrierDAO() store.BotBarrierDAO }, principal model.Principal) (wm.Actor, error) {

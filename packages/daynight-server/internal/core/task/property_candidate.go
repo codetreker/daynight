@@ -49,10 +49,3 @@ func CheckPropertiesForType(typ model.TaskType, values model.TaskProperties) err
 	}
 	return nil
 }
-
-func CheckStepsForType(typ model.TaskType) error {
-	if typ == model.TaskTypeGoal {
-		return invalidInput("Goal does not support steps.")
-	}
-	return nil
-}

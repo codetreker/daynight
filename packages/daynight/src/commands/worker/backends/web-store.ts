@@ -7,11 +7,11 @@ import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
-import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import type { ControllerOperation, ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, recoveringInitialGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingOriginalGeneration, healthyOriginalGeneration, recoveringInitialGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -71,7 +71,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       return getOrchestrationBlocker(identity)!;
     }),
     // The caller verifies the matching journal and stopped predecessor before supplying recoveredInitial.
-    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport, recoveredInitial?: ControllerSnapshot): LocalTask => atomic(() => {
+    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport, initialOperation?: ControllerOperation | null, recoveredInitial?: ControllerSnapshot): LocalTask => atomic(() => {
       const task = getTask(identity);
       if (task === null || task.status !== "active") throw new Error("The original active orchestration is missing.");
       requireOrdinary(task);
@@ -80,7 +80,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const stoppedRecovery = observed !== null && stoppedOriginalGeneration(task, observed)
         && (task.recovery.retryAuthorized || (expected.source !== "legacy_worktree" && task.recovery.pauseReason === null));
       const correctLegacyLatch = expected.source === "legacy_worktree" && !stoppedRecovery;
-      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && (continuingInitialGeneration(task, observed)
+      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && (continuingOriginalGeneration(task, observed, initialOperation)
         || recoveredInitial !== undefined && recoveringInitialGeneration(task, recoveredInitial) && recoveringInitialGeneration(task, observed)
           && preservesControllerEvidence(recoveredInitial, observed, execution!.launchId));
       if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && !initialContinuation && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");

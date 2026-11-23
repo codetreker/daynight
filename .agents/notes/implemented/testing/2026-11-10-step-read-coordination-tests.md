@@ -12,16 +12,20 @@ setup while retaining that lower business path.
 
 ## Decision
 
-`NewTaskSteps` binds Project read authorization per instance. The four public
-read methods execute the service's actual snapshot callback, parent admission,
-DAO queries, paging, projection and JSON encoding with controlled authorization
-and scope capabilities. Tests check capability identity, context, canonical IDs,
-order, absence of later calls on refusal, and the complete returned resources.
-They control callback and snapshot completion independently, including cleanup
-failure and suppression of results after completion fails.
+The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md) removes the Step
+service and its dedicated coordination tests. This record preserves the original
+test ownership and alternatives; PostgreSQL retains its physical proofs.
 
-The Step service owns these queries and pure output mechanisms; they are not
-forwarded through Core merely to make them mockable. Ordinary Step reads retain
+The original `NewTaskSteps` bound Project read authorization per instance. The four public
+read methods executed the service's actual snapshot callback, parent admission,
+DAO queries, paging, projection and JSON encoding with controlled authorization
+and scope capabilities. Tests checked capability identity, context, canonical IDs,
+order, absence of later calls on refusal, and the complete returned resources.
+They controlled callback and snapshot completion independently, including cleanup
+failure and suppression of results after completion failed.
+
+The Step service owned these queries and pure output mechanisms; they were not
+forwarded through Core merely to make them mockable. Ordinary Step reads retained
 complete content without the separate Task Session Work overview response budget.
 
 ## Alternatives
@@ -35,7 +39,7 @@ or add a forwarding layer without an independent responsibility.
 
 ## Consequences
 
-The service tests isolate the directly invoked business operation while retaining
+The service tests isolated the directly invoked business operation while retaining
 the existing read inputs and failure paths. A controlled scope proves callback
 coordination and error propagation, not a physical PostgreSQL snapshot or
 durability. The Project operation and store retain their own rule and physical

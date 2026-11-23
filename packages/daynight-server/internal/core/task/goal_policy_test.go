@@ -151,9 +151,6 @@ func TestGoalCapabilitiesAndParent(t *testing.T) {
 			t.Fatalf("accepted %+v", in)
 		}
 	}
-	if err := CheckStepsForType(goal.Type); err == nil {
-		t.Fatal("Goal steps accepted")
-	}
 	if err := CheckPropertyForType(goal.Type, "paused"); err == nil {
 		t.Fatal("Goal paused accepted")
 	}

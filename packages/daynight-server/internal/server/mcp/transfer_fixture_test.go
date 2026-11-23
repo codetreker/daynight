@@ -511,6 +511,11 @@ func (d *mcpAttachmentTaskReader) TaskSyncTasks(p0 context.Context, p1 string, p
 	panic("unreachable")
 }
 
+func (d *mcpAttachmentTaskReader) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncGoalDependsOn")
+	panic("unreachable")
+}
+
 func (d *mcpAttachmentTaskReader) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncActiveTasks")
 	panic("unreachable")

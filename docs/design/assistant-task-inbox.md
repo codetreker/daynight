@@ -74,7 +74,7 @@ service 在 ReadCommitted 事务中按以下顺序处理。锁顺序为负责 Bo
 
 ## 事件操作者
 
-Task、Step 和 Thread 的写入路由解析可选的 `X-Daynight-Bot-Id`，在写入事务内按助手任务相同的规则核验归属与删除状态，然后把操作者传给 Webhook 捕获并写入事实行。没有 Bot 身份的用户凭据记为 `user`；GitHub 同步等服务端内部写入记为 `system`。出站渲染保持现有 wire 格式，不输出操作者，因此现有严格校验的接收方不受影响。
+Task 和 Thread 的写入路由解析可选的 `X-Daynight-Bot-Id`，在写入事务内按助手任务相同的规则核验归属与删除状态，然后把操作者传给 Webhook 捕获并写入事实行。没有 Bot 身份的用户凭据记为 `user`；GitHub 同步等服务端内部写入记为 `system`。出站渲染保持现有 wire 格式，不输出操作者，因此现有严格校验的接收方不受影响。
 
 CLI 在设置了 `DAYNIGHT_BOT_ID` 的环境中，为 Task 和 Thread 写命令附加该请求头。Worker 已为每个助手设置该环境变量。
 

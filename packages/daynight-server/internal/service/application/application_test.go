@@ -293,10 +293,6 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		if !ok || observations == nil {
 			t.Fatalf("production TaskObservations = %#v", app.TaskObservations)
 		}
-		steps, ok := app.TaskSteps.(*task.TaskSteps)
-		if !ok || steps == nil {
-			t.Fatalf("production TaskSteps = %#v", app.TaskSteps)
-		}
 		verifySharedEngine(t, app)
 	})
 	t.Run("constructor dependencies", func(t *testing.T) {
@@ -315,11 +311,10 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		capturer := &assemblyCapturer{t: t}
 		var projects *project.AppProjects
 		var tasks *task.Tasks
-		var steps *task.TaskSteps
 		var attachments *attachment.Attachments
 		var projectEngine *sessioncore.Engine
 		var observer task.SessionObserver
-		projectCalls, taskCalls, stepCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0, 0
+		projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0
 		app := assemble(database, files, client, callbackURL, preview, time.Second, constructors{
 			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string, actualPreview *identity.PreviewSSO) *identity.Identity {
 				identityCalls++
@@ -353,14 +348,6 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				tasks = task.NewTasks(actual, capture)
 				return tasks
 			},
-			taskSteps: func(actual task.StepsStore, captures ...task.Capturer) *task.TaskSteps {
-				stepCalls++
-				if actual != database || len(captures) != 1 || captures[0] != capturer {
-					t.Error("TaskSteps received another business store or Capturer")
-				}
-				steps = task.NewTaskSteps(actual, captures...)
-				return steps
-			},
 			attachments: func(reader store.SnapshotReader, writer store.AttachmentMutationWriter, storage filestorage.Storage) *attachment.Attachments {
 				attachmentCalls++
 				if reader != database || writer != database || storage != files {
@@ -370,10 +357,10 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				return attachments
 			},
 		}, capturer)
-		if projectCalls != 1 || taskCalls != 1 || stepCalls != 1 || attachmentCalls != 1 || identityCalls != 1 || observationCalls != 1 {
-			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d TaskSteps=%d Attachments=%d Identity=%d Observations=%d", projectCalls, taskCalls, stepCalls, attachmentCalls, identityCalls, observationCalls)
+		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 || identityCalls != 1 || observationCalls != 1 {
+			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d Identity=%d Observations=%d", projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls)
 		}
-		if app.Identity != marker || app.TaskObservations != observationMarker || observer != app.Engine || app.TaskSteps != steps || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
+		if app.Identity != marker || app.TaskObservations != observationMarker || observer != app.Engine || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
 			t.Fatal("application replaced a constructor result or shared dependency")
 		}
 		verifySharedEngine(t, app)
@@ -390,9 +377,7 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			database, files := borrowedDependencies(t)
 			var taskCapture task.Capturer
-			var stepCapture task.Capturer
-			var steps *task.TaskSteps
-			taskCalls, stepCalls := 0, 0
+			taskCalls := 0
 			app := assemble(database, files, nil, "", nil, time.Second, constructors{
 				identity:         identity.NewWithPreviewSSO,
 				taskObservations: task.NewObservations,
@@ -407,24 +392,14 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 					taskCapture = capture
 					return task.NewTasks(actual, capture)
 				},
-				taskSteps: func(actual task.StepsStore, captures ...task.Capturer) *task.TaskSteps {
-					stepCalls++
-					if actual != database || len(captures) != 1 {
-						t.Error("TaskSteps received another business store or Capturer count")
-					} else {
-						stepCapture = captures[0]
-					}
-					steps = task.NewTaskSteps(actual, captures...)
-					return steps
-				},
 				attachments: attachment.NewAttachments,
 			}, tc.capture...)
 			selected, ok := taskCapture.(*webhook.Capturer)
-			if !ok || selected == nil || stepCapture != taskCapture {
-				t.Error("Tasks and TaskSteps did not receive the same default Capturer")
+			if !ok || selected == nil {
+				t.Error("Tasks did not receive the default Capturer")
 			}
-			if taskCalls != 1 || stepCalls != 1 || steps == nil || app.TaskSteps != steps {
-				t.Fatalf("constructor results differ: Tasks calls=%d TaskSteps calls=%d result=%p output=%v", taskCalls, stepCalls, steps, app.TaskSteps)
+			if taskCalls != 1 || app.Tasks == nil {
+				t.Fatalf("constructor results differ: Tasks calls=%d output=%v", taskCalls, app.Tasks)
 			}
 			verifySharedEngine(t, app)
 		})

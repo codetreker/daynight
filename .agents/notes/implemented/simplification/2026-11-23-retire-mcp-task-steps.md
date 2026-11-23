@@ -19,7 +19,9 @@ tool. Their adapters, schemas, scoped tool inventory and dedicated
 the existing unknown-tool error path. Surviving manuals retain their exact
 published-byte metadata and contain no link to the removed resource.
 
-The shared application Steps service remains internal after the [REST retirement](2026-11-23-retire-rest-task-steps.md) removes its routes. Credential
+The [REST retirement](2026-11-23-retire-rest-task-steps.md) removes the remaining
+public consumer; the [application retirement](2026-11-23-retire-task-steps-application.md) then removes
+the shared Steps service, domain candidates and codec. Credential
 scope choices and saved grant policies keep their existing rules; removing a
 consumer does not rewrite credentials or imply Task permissions. Mixed grants
 retain their other authorizations. Surviving MCP tools retain authentication,
@@ -45,7 +47,7 @@ interfaces and break the remaining HTTP resource.
 Discovery and guidance expose only supported MCP operations. Clients invoking old
 names receive an explicit failure. REST retires under its own decision.
 The retired tool matrices and MCP-specific capacity stress witness leave with
-their implementation; Service, Core and Store tests retain the
-shared behavior they own. Real HTTP MCP sessions verify production discovery,
+their implementation. Steps Service, Core and codec tests leave with application
+retirement; Store tests retain their persistence behavior. Real HTTP MCP sessions verify production discovery,
 unknown names, surviving manuals and ordinary authorized operations. Those
 protocol observations do not establish database persistence or runtime release.

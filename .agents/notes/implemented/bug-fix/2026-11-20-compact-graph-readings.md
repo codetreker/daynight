@@ -18,7 +18,9 @@ activation expose that hint; touch also preserves dependency inspection. The
 [inspection design](../../../../docs/design/daynight-task-inspection.md) owns
 geometry and interaction details. This replaces the earlier
 [compact card decision](2026-11-20-compact-graph-cards.md) while preserving its
-shared dimensions, typography roles and proportional scaling rationale.
+shared dimensions, typography roles and proportional scaling rationale. The
+[card typography decision](2026-11-23-graph-card-typography.md) refines the
+auxiliary text hierarchy.
 
 ## Alternatives
 

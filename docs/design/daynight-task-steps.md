@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，内部应用服务、领域模型、codec、DAO 和表仍保留。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
+状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，Steps 应用服务、专用领域逻辑、codec 和输入策略已移除；存储合同、模型、DAO 和表仍保留。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
 
 ## 目标与边界
 
@@ -13,13 +13,11 @@
 | 位置 | 尚存职责 |
 |---|---|
 | `internal/core/model/task_steps.go` | Step、状态、父任务头和有序集合领域值。 |
-| `internal/core/task/codec` | 内部 Steps 资源投影及精确写入编码；共享 Thread codec 保持独立职责。 |
-| `internal/core/task/steps/` | 不可变候选与顺序变更规则。 |
+| `internal/core/store` | PostgreSQL 签名仍依赖的 Steps reader/writer 合同及投影类型。 |
+| `internal/core/task/codec` | 独立的 Thread 资源编码，不包含 Steps 投影或候选容量编码。 |
 | `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_steps.go` | 父任务头锁定、快照读取、差异写入、只更新父版本和时间。 |
-| `internal/service/task/task_steps*.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
-| `internal/service/application` | 保留内部 Steps 服务及 scoped 装配，不向 REST 或 MCP 注册入口。 |
 
-Service、Core 与 Store 仍具有各自测试，保留其业务和持久化证明。HTTP DTO 与 handler 已移除，中性 codec 不依赖 HTTP；Thread 的共同编码能力不因 Steps 入口退出而删除。
+生产 `Application` 与 scoped 装配均没有 Steps 字段、端口或构造器。任务服务及 Core 不提供 Steps 用例或候选规则，输入策略目录没有 `step.*` 项。专用业务与协调测试随这些实现移除；PostgreSQL 测试继续证明尚存存储实现。共享 Thread 编码、普通 Task 文字准入和共享错误保留。
 
 ## 存储选择
 
@@ -27,25 +25,11 @@ Service、Core 与 Store 仍具有各自测试，保留其业务和持久化证�
 
 Step 以 `(task_id,id)` 定位，ID 为 Task 内唯一的八位十六进制值，位置稠密。Task 软删除保留现存行。排序使用普通 INSERT/UPDATE，延迟唯一约束只检查最终排列，不充当 `ON CONFLICT` 仲裁器。
 
-## 内部读取与写事务
+## 应用装配与存储边界
 
-内部读使用同一授权快照检查 Project 与父 Task 墓碑，再读取集合或单项，使用纯 `ProjectCollection`/`ProjectItem` 投影。读取不重复候选文字、结构或编码容量检查；正常扫描与编码错误保持原错误链。
+应用层没有 Steps 读取、写入或 scoped 准入调用链。存储接口仍可表达父任务头、集合、单项和投影读取，以及差异写入、区间移动和删除；这些能力仅随尚存 DAO 保留，不再由生产应用服务装配。后续存储代码清理可独立删除这些方法及专用模型，普通 Task 仍依赖的 `TaskHeader`、`TouchTask` 和共享错误保持原职责。
 
-内部写先完成 Project 授权，在项目事务中锁父任务头，检查墓碑和精确版本，再解析 Task 内目标及锚点。真实变化前检查版本耗尽，取得数据库 UTC 微秒时间，计算完整候选并执行容量准入，然后差异写入并只 touch 父版本及更新时间一次。no-op 保留全部时间和版本，不采样时钟、不 UPDATE 或 touch；陈旧版本仍冲突。
-
-Add 平移插入点之后的位置并添加一行。Change 只更新目标文字或状态及其内容时间。Move 只改受影响区间的最终稠密位置，所有 Step 时间保持。Delete 删除目标并压紧后续位置，保留其他行及引用材料。所有内部操作保留父 Task 的其他业务字段、属性、依赖、计时及 Worker/Session 归属，不冻结 Session。
-
-### 精确容量与时间
-
-标题和说明采用共享文字准入，分别限制为 1024 和 65536 UTF-8 字节。内部完整写候选使用确定性 codec，计入转义、末尾 LF 和十九位父版本预留，总量上限为 67,108,864 字节。编码中的 UTC 微秒时间就是将持久化的时间。候选一旦通过，协调层不再改变字段。
-
-写入仍为 O(n + B) 编码和容量工作，B 为字节数；排序对受影响行有 O(n) 上界。最大合法集合的候选和编码缓冲具有显著内存成本。内部 codec 的保留不构成公开 HTTP 响应承诺。
-
-### 错误与事务完成
-
-候选拒绝发生在修改前；写后错误从事务回调传播。共享事务所有者保留 operation、commit、cleanup 阶段及 errors.Is/As 错误链。确认 Commit 为 committed，确认回滚为 not_committed，无法确认的 Commit 为 unknown；后续 cleanup 不能把 unknown 改成已回滚。内部或 cleanup 故障优先于嵌套业务拒绝。
-
-REST 已无 Steps writer、错误映射、提交日志或未知写入恢复 GET。退役路径只使用通用未知 API 响应及请求日志；旧请求的 request ID 可用于诊断，不能作为业务写入、回滚或数据清理的证明。
+共享事务所有者继续区分 operation、commit、cleanup 阶段及 committed、not_committed、unknown 完成结果；cleanup 不能把未知提交改成已回滚。普通 Task、Thread、Webhook 和同步继续使用各自现有合同。退役 REST 路径只使用通用未知 API 响应及请求日志；旧请求的 request ID 不能作为业务写入、回滚或数据清理的证明。
 
 ## CLI 与 MCP 入口退役
 
@@ -77,7 +61,7 @@ Web 不展示 Steps 集合。旧 `tab=steps` 地址和已保存的该选项按�
 
 ## 凭据、迁移与部署
 
-PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。内部服务及数据清理分别由其所有者处理。
+PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。存储代码及数据清理分别由其所有者处理。
 
 服务迁移仍严格验证顺序和 checksum；入口退役不增加数据迁移，也不证明生产制品已部署。生产发布、数据库清理和旧进程停机遵循各自的授权及验收要求。原始存储与协议取舍见[REST 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)及其前置记录。
 
@@ -85,6 +69,6 @@ PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision �
 
 真实候选服务验证旧集合、单项及两个 PUT 子资源的原有方法、HEAD、CORS 预检与 SPA 隔离。严格依赖观察证明请求未调用 Steps 用例或存储；持久化及版本观察证明没有父 Task 改写。普通 Task、Thread 和附件继续验证成功及认证、scope、项目权限拒绝，普通软删除回归使用自身 fixture。
 
-内部 Service、Core、codec 与 PostgreSQL 测试继续拥有仍存实现的规则、精确编码、事务、SQL、并发及回滚证明。退役 HTTP 的容量和写入矩阵随 handler 移除，不作为活跃测试命令保留。真实 MCP HTTP session、打包 CLI 与 Web 测试各自验证入口退役及普通操作。
+应用装配测试执行没有 Steps 服务的生产构造，并保留普通 Task、Thread、共享 Capturer、身份和观察能力的绑定证明。Task、Thread 与同步测试继续验证各自业务、编码和事务行为。PostgreSQL 测试继续拥有尚存 DAO 的 SQL、锁、快照、提交及回滚证明。Steps 专用 Service、Core 和 codec 测试随其实现移除。真实 MCP HTTP session、打包 CLI 与 Web 测试各自验证入口退役及普通操作。
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有当前命令，实际源码、产物、环境、状态码和版本组合记录在对应交付证据中。
