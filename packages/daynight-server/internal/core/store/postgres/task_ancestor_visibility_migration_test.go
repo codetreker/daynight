@@ -163,7 +163,9 @@ func TestTaskAncestorVisibilityMigrationLedgerFailureRollsBackAndRecovers(t *tes
  CREATE TRIGGER reject_ancestor_visibility_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_ancestor_visibility_ledger()`); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(t.Context(), pool, schemaMigrations); err == nil || !strings.Contains(err.Error(), "injected ancestor visibility ledger failure") {
+	err := migrate(t.Context(), pool, schemaMigrations)
+	var failure *pgconn.PgError
+	if !errors.As(err, &failure) || !strings.Contains(failure.Message, "injected ancestor visibility ledger failure") {
 		t.Fatalf("migration lost injected ledger failure: %v", err)
 	}
 	assertAncestorMigrationRolledBack(t, pool, before, view)
