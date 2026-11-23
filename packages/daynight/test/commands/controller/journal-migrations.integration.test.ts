@@ -138,7 +138,8 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
 test.each([17, 18] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v19", async version => {
   const f = await windowsStopFixture();
   const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
-  const old = new Database(f.file); restoreControllerJournalVersion(old, version); old.close();
+  const old = new Database(f.file); restoreControllerJournalVersion(old, version);
+  if (version === 18) expect(old.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: null }); old.close();
   const original = await readFile(f.file);
   expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
   expect(await readFile(f.file)).toEqual(original);
@@ -149,7 +150,7 @@ test.each([17, 18] as const)("reads a shipped v%s stop receipt without mutation 
   const upgraded = new Database(f.file, { readonly: true });
   try {
     expect(upgraded.pragma("user_version", { simple: true })).toBe(19);
-    expect(upgraded.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: "legacy" });
+    expect(upgraded.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: version === 17 ? "legacy" : null });
     expect(upgraded.prepare("SELECT ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual({ ticket_hash: controllerPayloadHash(f.ticket) });
   } finally { upgraded.close(); }
   expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
