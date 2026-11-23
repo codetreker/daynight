@@ -100,7 +100,7 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 `deletion-coordinator.ts` 按账号 scope 复用单个协调器。每个目标保存名称、Session/Worker 身份、原删除请求、最小阶段结果及错误，不保留配置或对话正文。提交前同步 `blockBot` 并保存请求；同一协调器按已知 Session 身份向独立入口提供准入状态。初始 Session 尚未注册时，后续经 owner/Worker 校验的 active 读取补齐其身份，但不能用不同 Session 替换已知绑定。`BotDeletionUnknown` 保留已 dispatch 的不确定性。失败后的 GET 不将一次瞬时 active 观察当成撤销原请求的证明；原请求曾未知时，后续重试被拒绝也不能清除该不确定性。明确拒绝且权威 active 才解除对应 Bot 与独立 Session 的屏障，后续新请求仍需用户确认。
 
-权威删除按精确版本单调接纳，同一删除身份的旧阶段不得覆盖新结果；不同 Worker 响应不能影响目标。两个 cleanup 均 completed 才完成。协调器在接纳删除或权威拒绝访问时，直接按账号和 Bot 清理草稿、回执及对应 Session 显示偏好，再通知已挂载缓存通过 `invalidateBot` 清理内存与阅读状态。浏览器存储清理不依赖页面挂载，因此离开助手页后到达的删除结果仍完成定向清理。即使原响应来自另一删除身份，也不重开对话。请求重试由用户显式触发，先 GET 再沿用权威 deletionId/requestedVersion；自动轮询只读。scope abort 取消准入并清记录，提交结果未知不重放。
+权威删除按精确版本单调接纳，同一删除身份的旧阶段不得覆盖新结果；不同 Worker 响应不能影响目标。两个 cleanup 均 completed 才是正常完成；接受本地未核实后的独立 `settled` 结果与之分开。协调器在接纳删除或权威拒绝访问时，直接按账号和 Bot 清理草稿、回执及对应 Session 显示偏好，再通知已挂载缓存通过 `invalidateBot` 清理内存与阅读状态。浏览器存储清理不依赖页面挂载，因此离开助手页后到达的删除结果仍完成定向清理。即使原响应来自另一删除身份，也不重开对话。请求重试由用户显式触发，先 GET 再沿用权威 deletionId/requestedVersion；自动轮询只读。scope abort 取消准入并清记录，提交结果未知不重放。
 
 WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身份和删除状态供重载恢复；存储失败保留内存。每次操作为准备和准入等待持有可取消信号，暂停取消未派发的准备并结束原 promise 与 busy；确认零派发时解除该次屏障，已派发的未知结果继续保留原身份。派发后临时暂停不丢弃同一有效 scope 的可信响应分类，暂停后的操作不自动读取或重放。active 读取尚未通过发布准入时结束原操作，后续核对仍需新的获准操作；明确拒绝的证据保留到同账号恢复后再查询权威状态。每次收尾检查操作身份；观察到另一删除身份时取消并解除旧操作，新操作不受旧结果或 busy 收尾影响，重试只处理开始时的原请求。真正的 scope 失效丢弃响应与记录。`BotsPage` 订阅协调器与缓存的 guard revision，以完整删除事实过滤列表和详情，因此删除前发出的迟到读取不能绕过屏障。页面卸载解绑缓存，账号 scope 继续结算在途删除提交及其内部确认；新页面重新绑定时先恢复对应屏障。侧栏和选中区共用过滤 completed 的反馈投影，未决状态继续展示实际阶段；完成记录仍供屏障和标题使用。选中完成的旧地址显示已有删除空态，名称未知时使用通用标题。完整页面刷新不是删除完成依据。
 
@@ -109,6 +109,16 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 `useBotDeletionChecks` 为每个可见且准入的页面周期持有 controller，供自动和手动核对共用。它对 unknown、pending、failed 且非 busy 的记录立即及每五秒读取，只在新增待核对目标时额外立即读取；记录的 busy、错误或结果变化不重建 owner。无自动目标时不保留 timer。隐藏、停用、scope 失效和卸载先撤入口及 timer，再取消 owner；恢复时创建新 controller。`BotsPage` 使用当前 scope 的全部记录，独立 `TestSessionPage` 只使用对应 Session 的记录，并由 shell 提供读取准入。
 
 取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)及[独立核对生命周期决策](../../.agents/notes/implemented/architecture/2026-11-17-bot-deletion-check-lifetime.md)。
+
+### 证据缺失恢复
+
+`api/bot-deletion-recovery.ts` 独立校验恢复资源，保留旧 `api/bots.ts` 的严格字段与三态 cleanup。账号、Bot、原 deletionId、请求版本及当前版本共同约束接纳；绑定与决定不能因迟到普通 Bot 投影而被覆盖。页面首次进入 `/bots`，及其后每五秒的可见、已准入周期，读取 `/api/v1/me/bot-deletion-recoveries` 全部分页，发现当前 owner 的证据缺失及已有决定记录，再进入同一协调器。该发现不依赖 sessionStorage 或已知 Bot ID，普通 Bot 列表继续隐藏已删除定义。已有证据缺失或恢复记录在原 Bot 状态核对后继续读取单项恢复资源；独立决定中原 Worker 与当前承载 Worker 分别保留，不能将后者替换旧 DTO 的 workerId。
+
+协调器在同账号 sessionStorage 中保留恢复请求的完整 operationId、依据版本、原因和明确 acknowledgement，存储失败时保留内存。派发前固定身份，响应未知后自动只读取原决定；“重试原收尾请求”必须由用户明确选择，重放完整原 `accept_unverified` 或 `retry_cleanup`，不分配替代身份或刷新依据版本。确认精确重放只读已有决定，清理重试重放由 CAS 防止重复执行。未知确认之后读到另一设备的不可变决定时，接纳它作为当前权威结果并允许明确重试其清理，不声称原操作成功。恢复读取沿现有账号和页面准入规则进行；自动核对不发送确认或清理重试。`settled` 只有在权威决定存在且 `serverCleanup=completed` 时成立，始终保留 `workerCleanup` 的失败。普通 completed 继续从反馈列表消失；settled 显示“服务端删除完成，本机未核实”及决定记录，并停止普通等待。
+
+`BotRecoveryDialog` 使用现有原生模态、焦点和滚动锁机制。`BotDeletionStatus` 对 `execution_evidence_missing` 显示恢复入口，先说明原机器 `daynight bot deletion inspect` 检查，再提供填写原因与接受本地未核实的确认控件；两者未满足时确认禁用。提交的是独立 `accept_unverified`，不是重放原 DELETE。原决定已接受但服务端清理失败或未完成时，使用独立 `retry_cleanup` 并绑定新观察版本；未知结果保留核对操作，不自动生成替代决定。
+
+恢复资源不支持时保留已有删除事实与升级指引，普通读取错误保留具体失败；均不推导完成。scope 失效清除本地状态，但下次同账号进入可再次从服务端发现决定。浏览器本地记录只用于原请求恢复与删除屏障，服务端独立资源拥有跨设备结果。协议和清理责任见[服务端恢复设计](assistant.md#独立删除恢复资源)，取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
 
 ## 详情、焦点与全屏边界
 

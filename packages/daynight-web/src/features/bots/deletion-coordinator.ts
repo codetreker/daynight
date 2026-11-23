@@ -1,6 +1,7 @@
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause } from '../../api/client';
 import { canonicalId } from '../../api/parse';
 import { BotDeletionUnknown, deleteBot, getBot, parseBot, type BotDefinition, type DeletedBot, type DeleteBotInput } from '../../api/bots';
+import { BotRecoveryUnknown, getBotDeletionRecovery, parseBotDeletionRecovery, parseBotRecoveryInput, submitBotDeletionRecovery, type BotDeletionRecovery, type BotRecoveryInput } from '../../api/bot-deletion-recovery';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { clearBotStoredSessionState, type BotSessionCache } from './session-cache';
 import { getBotDisplaySnapshotCoordinator, type BotDisplaySnapshotCoordinator } from './display-snapshot-coordinator';
@@ -12,9 +13,15 @@ export type BotDeletionRecord = {
   readonly workerId: string | null;
   readonly request: DeleteBotInput | null;
   readonly result: DeletedBot | null;
-  readonly phase: 'submitting' | 'unknown' | 'pending' | 'failed' | 'completed' | 'rejected' | 'unavailable';
+  readonly phase: 'submitting' | 'unknown' | 'pending' | 'failed' | 'completed' | 'settled' | 'rejected' | 'unavailable';
+  readonly recovery?: BotRecoveryState;
   readonly busy: boolean;
   readonly error: unknown;
+};
+export type BotRecoveryState = {
+  readonly value: BotDeletionRecovery | null;
+  readonly request: BotRecoveryInput | null;
+  readonly phase: 'ready' | 'submitting' | 'unknown' | 'rejected' | 'unsupported';
 };
 type Cache = Pick<BotSessionCache, 'blockBot' | 'unblockBot' | 'invalidateBot'>;
 type Saved = { readonly record: BotDeletionRecord; readonly rejected: boolean };
@@ -27,6 +34,8 @@ const storageKey = (userId: string) => `daynight.bot.deletions:${userId}`;
 const decimal = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n;
 const unavailable = (error: unknown) => error instanceof ApiError && error.kind === 'server' && [403, 404, 410].includes(error.status ?? 0);
 const phase = (bot: DeletedBot): BotDeletionRecord['phase'] => bot.deletion.workerCleanup.state === 'completed' && bot.deletion.serverCleanup.state === 'completed' ? 'completed' : bot.deletion.workerCleanup.state === 'failed' || bot.deletion.serverCleanup.state === 'failed' ? 'failed' : 'pending';
+const settled = (value: BotDeletionRecovery | null | undefined) => value?.decision !== null && value?.decision !== undefined && value.serverCleanup.state === 'completed';
+const evidenceMissing = (bot: DeletedBot | null) => bot?.deletion.workerCleanup.code === 'execution_evidence_missing';
 
 /** Account cleanup also removes cold requests before the Bot page has mounted. */
 export function clearPendingBotDeletions(userId: string): void {
@@ -95,7 +104,7 @@ export class BotDeletionCoordinator {
   private persist(): void {
     cleared.delete(this.scope.userId);
     try {
-      const values = [...this.records.values()].map(({ record, rejected }) => ({ id: record.id, name: record.name, sessionId: record.sessionId, workerId: record.workerId, request: record.request, result: record.result, phase: record.phase === 'submitting' ? 'unknown' : record.phase, rejected }));
+      const values = [...this.records.values()].map(({ record, rejected }) => ({ id: record.id, name: record.name, sessionId: record.sessionId, workerId: record.workerId, request: record.request, result: record.result, phase: record.phase === 'submitting' ? 'unknown' : record.phase, rejected, ...(record.recovery ? { recovery: { ...record.recovery, phase: record.recovery.phase === 'submitting' ? 'unknown' : record.recovery.phase } } : {}) }));
       window.sessionStorage.setItem(storageKey(this.scope.userId), JSON.stringify(values));
     } catch { /* Memory preserves the original request even when storage is unavailable. */ }
   }
@@ -105,17 +114,26 @@ export class BotDeletionCoordinator {
       if (!Array.isArray(raw)) return;
       const restored = new Map<string, Saved>();
       for (const value of raw) {
-        if (!value || typeof value !== 'object' || Object.keys(value).some(key => !['id', 'name', 'sessionId', 'workerId', 'request', 'result', 'phase', 'rejected'].includes(key))) return;
+        if (!value || typeof value !== 'object' || Object.keys(value).some(key => !['id', 'name', 'sessionId', 'workerId', 'request', 'result', 'phase', 'rejected', 'recovery'].includes(key))) return;
         if (canonicalId(value.id ?? '') !== value.id || typeof value.name !== 'string' || [...value.name].length > 40 || /\p{Cc}/u.test(value.name) || typeof value.rejected !== 'boolean') return;
         if (value.sessionId !== null && canonicalId(value.sessionId ?? '') !== value.sessionId || value.workerId !== null && canonicalId(value.workerId ?? '') !== value.workerId || restored.has(value.id)) return;
         const request = value.request;
         if (request !== null && (!request || typeof request !== 'object' || Object.keys(request).length !== 2 || !decimal(request.ifVersion) || canonicalId(request.deletionId ?? '') !== request.deletionId)) return;
         const result = value.result === null ? null : parseBot(value.result, this.scope.userId, value.id);
         if (result?.deletion === null || result && value.workerId !== null && result.workerId !== value.workerId) return;
-        if (!['unknown', 'pending', 'failed', 'completed', 'rejected', 'unavailable'].includes(value.phase)) return;
-        if (result === null && ['pending', 'failed', 'completed'].includes(value.phase) || result && phase(result) !== value.phase && value.phase !== 'unavailable') return;
+        let recovery: BotRecoveryState | undefined;
+        if (value.recovery !== undefined) {
+          const saved = value.recovery;
+          if (!saved || typeof saved !== 'object' || Object.keys(saved).length !== 3 || !['ready', 'unknown', 'rejected', 'unsupported'].includes(saved.phase)) return;
+          const resource = saved.value === null ? null : parseBotDeletionRecovery(saved.value, value.id, this.scope.userId);
+          const request = saved.request === null ? null : parseBotRecoveryInput(saved.request);
+          if (!result || resource && (resource.deletionId !== result.deletion.deletionId || resource.workerId !== result.workerId) || request && request.deletionId !== result.deletion.deletionId || saved.phase === 'unknown' && request === null) return;
+          recovery = { value: resource, request, phase: saved.phase };
+        }
+        if (!['unknown', 'pending', 'failed', 'completed', 'settled', 'rejected', 'unavailable'].includes(value.phase)) return;
+        if (result === null && ['pending', 'failed', 'completed', 'settled'].includes(value.phase) || result && (settled(recovery?.value) ? 'settled' : phase(result)) !== value.phase && value.phase !== 'unavailable') return;
         if (value.phase === 'rejected' && !value.rejected || result === null && value.phase === 'unknown' && request === null) return;
-        restored.set(value.id, { record: { id: value.id, name: value.name, sessionId: value.sessionId, workerId: value.workerId, request, result, phase: value.phase, busy: false, error: null }, rejected: value.rejected });
+        restored.set(value.id, { record: { id: value.id, name: value.name, sessionId: value.sessionId, workerId: value.workerId, request, result, phase: value.phase, busy: false, error: null, ...(recovery ? { recovery } : {}) }, rejected: value.rejected });
       }
       for (const [id, value] of restored) this.records.set(id, value);
       this.view = [...this.records.values()].map(value => value.record);
@@ -173,6 +191,11 @@ export class BotDeletionCoordinator {
   observe = (bot: DeletedBot): void => {
     this.retainDeletion(bot);
   };
+  observeRecovery = (value: BotDeletionRecovery): void => {
+    if (this.scope.isInvalidated) return;
+    if (!this.records.has(value.botId)) this.retainDeletion({ id: value.botId, workerId: value.workerId, version: value.version, deletion: { deletionId: value.deletionId, requestedVersion: value.requestedVersion, workerCleanup: value.workerCleanup, serverCleanup: value.serverCleanup } });
+    this.retainRecovery(value.botId, value);
+  };
   /** An authenticated response remains authoritative during temporary identity verification. */
   private retainDeletion(bot: DeletedBot): void {
     if (this.scope.isInvalidated) return;
@@ -189,7 +212,7 @@ export class BotDeletionCoordinator {
       if (operation.kind === 'check') operation.owner.removeEventListener('abort', operation.onAbort);
       operation.controller.abort(new DOMException('Deletion operation superseded.', 'AbortError'));
     }
-    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request, result: bot, phase: phase(bot), busy: superseded ? this.operations.has(bot.id) : previous?.busy ?? false, error: null }, false);
+    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request, result: bot, phase: settled(previous?.recovery?.value) ? 'settled' : phase(bot), busy: superseded ? this.operations.has(bot.id) : previous?.busy ?? false, error: null, ...(previous?.recovery ? { recovery: previous.recovery } : {}) }, false);
   }
   /** A rejected replay cannot settle an earlier request whose response was lost. */
   private async submit(id: string, request: DeleteBotInput, operation: Operation, earlierUnknown = false): Promise<void> {
@@ -230,7 +253,11 @@ export class BotDeletionCoordinator {
       if (!this.current(id, operation)) return false;
       const expectedWorker = this.records.get(id)?.record.workerId;
       if (expectedWorker !== null && expectedWorker !== undefined && expectedWorker !== bot.workerId) throw new ApiError('protocol');
-      if (bot.deletion !== null) { this.retainDeletion(bot); return true; }
+      if (bot.deletion !== null) {
+        this.retainDeletion(bot);
+        if (evidenceMissing(bot) || this.records.get(id)?.record.recovery) await this.readRecovery(id, operation);
+        return true;
+      }
       // An active observation may release input only after identity is verified.
       await this.prepare(operation, signal => this.scope.ready(signal));
       if (!this.current(id, operation) || !this.uninterrupted(operation)) return false;
@@ -243,7 +270,7 @@ export class BotDeletionCoordinator {
     } catch (error) {
       if (!this.current(id, operation)) return false;
       const latest = this.records.get(id)?.record;
-      if (latest && (this.uninterrupted(operation) || unavailable(error))) this.save({ ...latest, phase: latest.phase === 'completed' ? 'completed' : unavailable(error) ? 'unavailable' : latest.phase, error });
+      if (latest && (this.uninterrupted(operation) || unavailable(error))) this.save({ ...latest, phase: ['completed', 'settled'].includes(latest.phase) ? latest.phase : unavailable(error) ? 'unavailable' : latest.phase, error });
       return false;
     }
   }
@@ -282,15 +309,88 @@ export class BotDeletionCoordinator {
   retry = (id: string): Promise<void> => this.run(id, this.records.get(id)?.record.request ?? null, async operation => {
     if (!this.current(id, operation)) return;
     const current = this.records.get(id)?.record;
-    if (!current || ['completed', 'unavailable', 'rejected'].includes(current.phase)) return;
+    if (!current || evidenceMissing(current.result) || current.recovery?.value?.decision || ['completed', 'settled', 'unavailable', 'rejected'].includes(current.phase)) return;
     this.save({ ...current, busy: true });
     try {
       if (!await this.read(id, operation) || !this.current(id, operation) || !this.uninterrupted(operation)) return;
       const latest = this.records.get(id)?.record;
-      if (!latest || latest.request === null || !sameRequest(latest.request, operation.request) || ['completed', 'unavailable', 'rejected'].includes(latest.phase)) return;
+      if (!latest || evidenceMissing(latest.result) || latest.recovery?.value?.decision || latest.request === null || !sameRequest(latest.request, operation.request) || ['completed', 'settled', 'unavailable', 'rejected'].includes(latest.phase)) return;
       await this.submit(id, latest.request, operation, latest.phase === 'unknown');
     } finally {
       if (this.current(id, operation)) { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
     }
   });
+
+  private retainRecovery(id: string, value: BotDeletionRecovery): void {
+    const current = this.records.get(id)?.record;
+    if (!current?.result || value.deletionId !== current.result.deletion.deletionId || value.requestedVersion !== current.result.deletion.requestedVersion || value.workerId !== current.workerId) throw new ApiError('protocol');
+    if (BigInt(value.version) < BigInt(current.result.version)) return;
+    const previous = current.recovery;
+    if (previous?.value && BigInt(value.version) < BigInt(previous.value.version)) return;
+    if (settled(previous?.value) && !settled(value)) return;
+    const request = previous?.request ?? null;
+    const matches = request?.action === 'accept_unverified' ? value.decision?.operationId === request.operationId && value.decision.requestedVersion === request.ifVersion && value.decision.reason === request.reason : request !== null && value.decision?.operationId === request.operationId && BigInt(value.version) > BigInt(request.ifVersion);
+    // An immutable decision for this deletion excludes a still-running accept
+    // with another operation ID. Its result remains distinct from our receipt.
+    const supersededAccept = request?.action === 'accept_unverified' && value.decision !== null;
+    const recovery: BotRecoveryState = { value, request, phase: previous?.phase === 'unknown' && !matches && !supersededAccept && !settled(value) ? 'unknown' : 'ready' };
+    const result: DeletedBot = { id, workerId: value.workerId, version: value.version, deletion: { deletionId: value.deletionId, requestedVersion: value.requestedVersion, workerCleanup: value.workerCleanup, serverCleanup: value.serverCleanup } };
+    this.save({ ...current, result, recovery: previous?.phase === 'rejected' && !value.decision ? { ...recovery, phase: 'rejected' } : recovery, phase: settled(value) ? 'settled' : phase(result), error: null });
+  }
+  private async readRecovery(id: string, operation: Operation): Promise<void> {
+    if (!this.current(id, operation) || !this.uninterrupted(operation)) return;
+    try {
+      const value = await this.prepare(operation, async (signal, releasePreparation) => {
+        await this.scope.ready(signal); signal.throwIfAborted();
+        return getBotDeletionRecovery(id, signal, this.admission(), releasePreparation);
+      });
+      if (this.current(id, operation)) this.retainRecovery(id, value);
+    } catch (error) {
+      const current = this.records.get(id)?.record;
+      if (!current || !this.current(id, operation) || !this.uninterrupted(operation)) return;
+      const unsupported = error instanceof ApiError && error.kind === 'server' && error.status === 404;
+      this.save({ ...current, recovery: { value: current.recovery?.value ?? null, request: current.recovery?.request ?? null, phase: unsupported && !current.recovery?.value ? 'unsupported' : current.recovery?.phase ?? 'ready' }, error });
+    }
+  }
+  resolveRecovery = (id: string, reason: string, ifVersion: string): Promise<void> => {
+    const current = this.records.get(id)?.record, value = current?.recovery?.value;
+    if (!value?.recoveryRequired || current?.recovery?.phase === 'unknown') return Promise.resolve();
+    const request: BotRecoveryInput = { action: 'accept_unverified', ifVersion, deletionId: value.deletionId, operationId: crypto.randomUUID(), acknowledgeLocalUnverified: true, reason };
+    return this.recoveryMutation(id, request);
+  };
+  retryRecovery = (id: string): Promise<void> => {
+    const current = this.records.get(id)?.record, value = current?.recovery?.value;
+    if (current?.recovery?.phase === 'unknown') {
+      const original = current.recovery.request;
+      return original ? this.recoveryMutation(id, original) : Promise.resolve();
+    }
+    if (!value?.decision || value.serverCleanup.state === 'completed') return Promise.resolve();
+    return this.recoveryMutation(id, { action: 'retry_cleanup', ifVersion: value.version, deletionId: value.deletionId, operationId: value.decision.operationId });
+  };
+  private recoveryMutation(id: string, request: BotRecoveryInput): Promise<void> {
+    const current = this.records.get(id)?.record;
+    if (!current?.result || !this.admitted() || this.operations.has(id) || current.phase === 'settled') return Promise.resolve();
+    const earlierUnknown = current.recovery?.phase === 'unknown';
+    try { request = Object.freeze(parseBotRecoveryInput(request)); } catch { return Promise.resolve(); }
+    const promise = this.run(id, current.request, async operation => {
+      let dispatched = false;
+      try {
+        const value = await this.prepare(operation, async (signal, releasePreparation) => {
+          await this.scope.ready(signal); signal.throwIfAborted();
+          return submitBotDeletionRecovery(id, request, signal, this.admission(), () => { dispatched = true; releasePreparation(); });
+        });
+        if (this.current(id, operation)) this.retainRecovery(id, value);
+      } catch (error) {
+        const latest = this.records.get(id)?.record;
+        if (!latest || !this.current(id, operation)) return;
+        this.save({ ...latest, recovery: { value: latest.recovery?.value ?? null, request, phase: earlierUnknown || error instanceof BotRecoveryUnknown || dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500) ? 'unknown' : 'rejected' }, error });
+        if (this.uninterrupted(operation)) await this.readRecovery(id, operation);
+      } finally {
+        const latest = this.records.get(id)?.record;
+        if (latest && this.current(id, operation)) this.save({ ...latest, busy: false });
+      }
+    });
+    this.save({ ...current, recovery: { value: current.recovery?.value ?? null, request, phase: 'submitting' }, busy: true, error: null });
+    return promise;
+  }
 }

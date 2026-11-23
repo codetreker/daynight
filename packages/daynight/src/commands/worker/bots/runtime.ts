@@ -130,13 +130,14 @@ export const createManagedAssistantRuntime = (options: {
       const previous = jobs.get(botId);
       if (previous !== undefined) { scheduled.push(previous); continue; }
       if (record.observed.deletion === null && record.intent === null && !options.canAdmitNewExecution()) continue;
-      const work = record.migration !== undefined ? (async () => {
+      const work = record.observed.deletion !== null
+        ? (async () => { await options.assistantTasks?.stopBot(botId); await options.deletion.advance(record, signal); })().then(() => { errors.delete(botId); }, cause => { if (!signal.aborted) error(botId, cause); })
+        : record.migration !== undefined ? (async () => {
         try {
           await options.sessionApi.registerRecovery(record, signal);
           error(botId, new Error("recovery_material_missing: Bot migration registration is confirmed, but no verified Provider recovery point and executable dedicated generation are available."));
         } catch (cause) { if (!signal.aborted) error(botId, cause); }
-      })() : record.observed.deletion === null ? advance(record, signal)
-        : (async () => { await options.assistantTasks?.stopBot(botId); await options.deletion.advance(record, signal); })().then(() => { errors.delete(botId); }, cause => { if (!signal.aborted) error(botId, cause); });
+      })() : advance(record, signal);
       const job = work.finally(() => { if (jobs.get(botId) === job) jobs.delete(botId); });
       jobs.set(botId, job); scheduled.push(job);
     }

@@ -167,7 +167,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 	if completion.Outcome != store.TransactionCommitted {
 		return model.Bot{}, errors.New("Bot deletion commit was not confirmed")
 	}
-	if botcore.NeedsServerCleanup(out) {
+	if out.Deletion.Recovery == nil && botcore.NeedsServerCleanup(out) {
 		cleaned, err := s.clean(ctx, p, id, input.DeletionID)
 		if err != nil {
 			return model.Bot{}, &DeletionCleanupError{Cause: err}

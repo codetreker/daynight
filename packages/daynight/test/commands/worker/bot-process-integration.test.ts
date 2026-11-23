@@ -902,7 +902,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   // Native credentials and command aliases are fixture-owned; the host, stores,
   // HTTP adapters, Controller, journal, IPC, provider adapter and deletion run unchanged.
   vi.spyOn(botEnvironment, "prepareBotEnvironment").mockImplementation(f.prepareEnvironment);
-  let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null;
+  let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null, serverController: string | null = null;
   const parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
   f.http!.on("request", (request, response) => {
     void (async () => {
@@ -918,10 +918,21 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
       }
       if (request.method === "GET" && pathname.endsWith(`/workers/${f.owner.workerId}/bots`)) return send({ items: [deleted ?? f.getBot()], nextCursor: null });
       if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}`)) return send(deleted ?? f.getBot());
+      if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}/deletion-recovery`)) {
+        expect(deleted).not.toBeNull();
+        const needsProof = deleted!.deletion.serverCleanup.state !== "completed";
+        const originalBinding = needsProof ? { sessionId: f.getBot().sessionId, testExecutionId: f.getBot().testExecutionId,
+          executionGeneration: serverGeneration, controllerId: serverController, controllerInstanceId: serverInstance } : null;
+        return send({ schemaVersion: 1, botId: deleted!.id, workerId: deleted!.workerId, hostingWorkerId: f.owner.workerId,
+          version: deleted!.version, deletionId: deleted!.deletion.deletionId, requestedVersion: deleted!.deletion.requestedVersion,
+          requiresStopProof: needsProof, recoveryRequired: false, originalBinding, decision: null,
+          workerCleanup: deleted!.deletion.workerCleanup, serverCleanup: deleted!.deletion.serverCleanup });
+      }
       if (request.method === "POST" && pathname.endsWith("/register")) {
         expect(body.registration).toEqual(f.current().intent!.registration);
         expect(body.roleConfiguration).toEqual(f.current().intent!.roleConfiguration);
         const registered = await f.api.register(f.current()); serverInstance = registered.snapshot.identity.controllerInstanceId;
+        serverController = registered.snapshot.identity.controllerId;
         return send({ bot: registered.bot, session: registered.snapshot });
       }
       if (request.method === "GET" && pathname.startsWith("/api/v1/test-sessions/")) {
@@ -980,6 +991,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   expect(await readFile(sentinel, "utf8")).toBe("user data");
   expect(calls.filter(call => call.path.endsWith("/register"))).toHaveLength(1);
   expect(calls.filter(call => call.path.endsWith("/deletion-complete"))).toHaveLength(1);
+  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/deletion-recovery"))).toBe(true);
   expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
   expect((await f.requests()).filter(request => request.method === "thread/resume")).toHaveLength(1);
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);

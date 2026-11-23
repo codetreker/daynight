@@ -106,7 +106,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     /** The caller holds the per-Bot execution serializer and has proved the writer stopped. */
     prepareDeletion: (input: BotRecord, stop: BotDeletionStop | null, targets: BotDeletionTarget[]): BotRecord => atomic(() => {
       const record = deleting(input), deletion = record.observed.deletion!;
-      if (record.cleanup !== undefined) throw new Error("Bot cleanup responsibility has already been prepared.");
+      if (record.cleanup !== undefined && (record.cleanup.stop !== null || stop === null || record.intent === null || record.cleanup.targets.length !== 0)) throw new Error("Bot cleanup responsibility has already been prepared.");
       const intent = record.intent;
       if (stop !== null && (intent === null || stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
         || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId

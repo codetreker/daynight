@@ -106,6 +106,21 @@
 .bot-deletion-status dd { margin: 0; }
 .bot-deletion-status .button { margin: 4px 6px 0 0; }
 .bot-selected-deletion { display: block; }
+.bot-recovery-dialog { width: 560px; max-width: calc(100vw - 24px); }
+.bot-recovery-dialog .dialog-body { display: grid; gap: 16px; }
+.bot-recovery-dialog label { display: grid; gap: 8px; }
+.bot-recovery-dialog textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); font: inherit; }
+.bot-recovery-dialog .bot-recovery-acknowledgement { display: flex; align-items: flex-start; gap: 10px; }
+.bot-recovery-acknowledgement input { margin-top: 5px; }
+.bot-recovery-dialog code { overflow-wrap: anywhere; }
+.bot-recovery-dialog .button { min-height: 44px; }
+.bot-recovery-dialog .close-button { width: 44px; height: 44px; }
+.bot-recovery-details { margin: 12px 0; }
+.bot-recovery-details dd { overflow-wrap: anywhere; white-space: pre-wrap; }
+.bot-deletion-status:has(.bot-recovery-details) dl { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.bot-deletions .bot-deletion-status dl { display: block; }
+.bot-deletions .bot-deletion-status dt { margin-top: 8px; font-weight: 600; }
+.bot-deletions .bot-deletion-status dd { margin-top: 2px; }
 
 @container bots-workspace (width < 676px) {
   .bot-create, .bot-refresh { width: 44px; height: 44px; }

@@ -144,11 +144,11 @@ Bot 命令拥有参数、业务请求身份、资源解析和显示；共享服�
 
 已派发写入的传输失败、未知服务结果或无效成功响应保留原业务 ID 和未确认结果。错误投影仅公开操作、资源和请求身份、阶段、HTTP 状态、错误码和白名单内的可操作原因；不转储传输 cause、认证配置或服务端错误正文。显式 show 读取当前资源用于核对，CLI 本身不自动重发写入、更新版本或生成替代请求。创建的业务请求 ID 是 botId，删除的是 deletionId；HTTP 关联 ID 单独保留，避免把日志关联误作幂等依据。
 
-列表以每页 100 项按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。`runBotCommand` 仅为 `list` 向共享 runtime 传入 `operationLimits.responseBytes=DEFAULT_OPERATION_LIMITS.totalBytes`，即 256 MiB；累计 `totalBytes` 仍为 256 MiB。这样一个普通条数页可使用剩余累计传输预算，全部分页继续共同计量。`show/create/delete` 保留默认 128 MiB 单响应上限，所有命令沿用原累计额度、总期限、请求期限和取消规则。[共享客户端设计](daynight-project-task.md#服务地址与-http-客户端)拥有默认计量机制，[Worker 库存设计](worker-bot-inventory.md#权威读取与对账)拥有托管清单的独立 64 MiB 传输额度。Bot 输出只包含公开 DTO，删除对象整体省略定义；删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。
+列表以每页 100 项按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。`runBotCommand` 仅为 `list` 向共享 runtime 传入 `operationLimits.responseBytes=DEFAULT_OPERATION_LIMITS.totalBytes`，即 256 MiB；累计 `totalBytes` 仍为 256 MiB。这样一个普通条数页可使用剩余累计传输预算，全部分页继续共同计量。`show/create/delete` 保留默认 128 MiB 单响应上限，所有命令沿用原累计额度、总期限、请求期限和取消规则。[共享客户端设计](daynight-project-task.md#服务地址与-http-客户端)拥有默认计量机制，[Worker 库存设计](worker-bot-inventory.md#权威读取与对账)拥有托管清单的独立 64 MiB 传输额度。普通 Bot 输出只包含公开 DTO，删除对象整体省略定义；正常删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。删除恢复命令另外消费独立决定，明确区分服务端已收尾与本机已核实。
 
 Worker 列表保留服务端 observedAt 与完整 items，详情保留 observedAt 与 worker。人类显示从服务端时间计算 120 秒在线阈值，库存 observed/stale/unavailable 独立显示；null 库存不转为零，资源探测错误不转为可用。assistantHost 缺失表示没有托管观测。此读取与 Worker 运行、调度及能力广告无副作用联系，普通远端查询沿用服务端 72 小时窗口。
 
-CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最终 completed 结果；停证由绑定 Worker 提供，服务端拥有删除屏障与历史清理，命令自身不生成停证或清理历史。命令与错误用法见 [CLI 手册](../../packages/daynight/README.md#bot-management)，选择理由见 [CLI 观测决策](../../.agents/notes/archived/architecture/2026-11-04-bot-cli-observation.md)。
+CLI 消费[删除与清理事务](#删除与清理事务)的真实阶段。普通 `bot delete` 只提交删除意图；`bot deletion inspect` 组合服务端独立恢复读取与原配置目录的本机检查，`--server-only` 不打开本地 Worker 存储；`bot deletion recover` 在取得原机器的必要锁后调用既有 Worker 删除机制，停证仍由原执行身份和实际停止校验生成。`resolve` 与 `retry-cleanup` 只通过公开恢复接口提交明确决定，服务端拥有历史清理。命令用法由[删除恢复手册](../../packages/daynight/src/commands/skill/skills/using-daynight/references/bot-deletion.md)拥有；普通管理选择理由见[CLI 观测决策](../../.agents/notes/archived/architecture/2026-11-04-bot-cli-observation.md)。
 
 ## 删除与清理事务
 
@@ -156,15 +156,31 @@ CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最
 
 屏障事务单独提交，不与物理删除同生共死。提交后丢弃本实例的 live cache 和 pending content；其它实例在下一次权威读取观察 deletion 或 Session 已不存在时也丢弃对应内容。Controller 的 scope 预查询发生在共享 load 之前，因此该预查询确认 Session 不存在时也清除缓存与等待正文，覆盖只有 Poll 或 Disconnect 到达的旧连接；数据库查询失败本身不等于持久删除。异步正文返回前的二次准入阻止删除后交付迟到内容。进程缓存只服务当前连接，不能恢复持久删除记录。
 
-Worker 完成接口要求有效 PAT、owner、绑定 Worker 和原 deletionId，直接核验原 Session 的 fence、Controller 身份及停证。已连接或曾提交 source/native 身份的执行不能声明 `never_started`。成功回执的规范化 SHA-256 存在 `deletion.receiptDigest` 中，与 Worker completed 结果一起提交。该内部字段不进入管理 DTO；Session 行清理后仍能精确核对重复回执。相同 failed state/code 在验证身份后返回原结果，不推进版本；错误码改变可记录新的失败。失败回执可由有效 completed 回执推进，但 completed 不能被不同回执覆盖。
+Worker 完成接口要求有效 PAT、owner、绑定 Worker 和原 deletionId，直接核验原 Session 的 fence、Controller 身份及停证。已连接或曾提交 source/native 身份的执行不能声明 `never_started`。成功回执的规范化 SHA-256 存在 `deletion.receiptDigest` 中，与 Worker completed 结果一起提交。该内部字段不进入管理 DTO；Session 行清理后仍能精确核对重复回执。未形成独立收尾决定时，相同 failed state/code 在验证身份后返回原结果，不推进版本；错误码改变可记录新的失败。失败回执可由有效 completed 回执推进，但 completed 不能被不同回执覆盖。独立收尾决定的检查先于原 Session 是否存在的判断，防止清理后的迟到空停证被当作未绑定执行接受。
 
 服务端清理使用新事务，持有 Bot 和所有实际关联 Session 行锁。按 `bot_id` 查齐关联，而非仅相信 `bots.session_id`。逐行核对 owner、独立 scope 和 web backend，再由原 owner 与 Session 的规范化非零 UUID 构造 `sessionarchive.Namespace`，调用 `Storage.DeleteSessionArchives` 清理固定 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/`。清理覆盖当前目录中未提交 metadata 的孤立对象，不接受任意 bucket 或前缀；同用户、同分片下其它 Session 保留。逐级目录句柄、文件身份核对和符号链接拒绝保护其它命名空间。既有旧布局归档不转换，也不在当前命名空间的物理清理范围内；旧目录存在不阻止当前清理完成。部分删除、取消或同步失败保持错误，可按相同命名空间重试；不存在也执行目录持久化屏障。地址及清理范围见[共享归档设计](task-session-protocol.md#服务端归档布局)。
 
-SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_operations`、`session_resources`、`session_archives`、`session_recording_evidence`，最后删除 `task_sessions`。前四表没有级联，后两表没有 Session 外键，不能依赖父行删除隐式清理。完成后清空 Bot 的 Session 引用、角色、配置和名字等非责任数据，仅保留 owner/Worker、请求指纹、删除身份及两方结果。各实际阶段变化推进版本，int64 上限拒绝继续递增。
+SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_operations`、`session_resources`、`session_archives`、`session_recording_evidence`，最后删除 `task_sessions`。前四表没有级联，后两表没有 Session 外键，不能依赖父行删除隐式清理。完成后清空 Bot 的 Session 引用、角色、配置和名字等非责任数据，仅保留 owner/Worker、请求指纹、删除身份、两方结果及存在的独立收尾决定与原绑定。各实际阶段变化推进版本，int64 上限拒绝继续递增。
 
 文件删除无法随 SQL 回滚。文件或 SQL 失败时数据库事务回滚，独立事务记录 `server_cleanup_failed`，保留已经提交的屏障与 Worker 回执。再次清理可接受文件已不存在；不得把失败状态覆盖到并发重试已提交的 completed。提交结果未知仍按原身份查询，不把网络失败当作失败确认或新请求授权。
 
-该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/archived/architecture/2026-11-04-bot-history-deletion.md)。
+该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围正常完成；独立收尾只证明服务端清理已完成，本地仍未核实。两者均不提供服务端对远端进程的独立测量或 Provider 全局历史擦除。普通删除的取舍见[删除清理决策](../../.agents/notes/archived/architecture/2026-11-04-bot-history-deletion.md)。
+
+### 独立删除恢复资源
+
+`api/bot_deletion_recovery.go` 与 `/api/v1/me/bots/{botId}/deletion-recovery` 拥有独立 `schemaVersion=1` 投影，既有 Bot DTO、cleanup 三态和严格旧 reader 保持兼容。GET 在同一读取快照核验 owner、当前凭据与 `bot:read`，从原 Session 取得最小绑定，或在 Session 清理后使用持久决定保留的绑定。绑定字段为 `sessionId`、`testExecutionId`、字符串 `executionGeneration`、`controllerId`、`controllerInstanceId`；它们只标识需验证的执行，不构成停证。
+
+响应另外包含 `botId`、当前字符串 `version`、`deletionId`、原字符串 `requestedVersion`、原 `workerId`、当前承载 `hostingWorkerId`、`requiresStopProof`、`recoveryRequired`、`workerCleanup`、`serverCleanup` 与可空的 `decision`。原 Worker 保持与普通 DTO 及本地记录一致，当前承载 Worker 从 Bot 恢复身份或已保存删除决定取得。`requiresStopProof` 根据原绑定产生；`recoveryRequired` 仅在 Worker 为 `failed/execution_evidence_missing`、尚无决定且服务端未完成时成立。未删除的 Bot 返回资源冲突，不把活跃状态投影成待恢复删除。
+
+`GET /api/v1/me/bot-deletion-recoveries` 在 owner 和 `bot:read` 准入后，按 `(created_at,id)` 升序读取 `limit+1` 个匹配项：Worker 为 `failed/execution_evidence_missing` 且服务端未完成，或内部决定已存在。`limit` 范围 1–100、默认 50；独立 `bot-deletion-recoveries` 游标绑定 owner，不能与普通 Bot 游标混用。响应为完整恢复资源的 `items` 数组和可空 `nextCursor`，已完成服务端清理的决定仍可发现。列表路径位于 `/bots/{botId}` 之外，避免旧服务端将功能名作为非法 Bot ID 处理。独立列表不改变旧普通列表或 Worker DTO，用于新设备冷启动时重建可核对的恢复事实。
+
+`model.BotDeletion.Recovery` 是保存在现有 deletion JSON 中的可选内部责任，包含决定时的托管 Worker、原绑定及决定。决定保留 `operationId`、确认依据的 `requestedVersion`、`actorUserId`、UTC `acknowledgedAt`、原 `reason` 和固定 `localDisposition="unverified"`。它不进入旧管理投影，也不含会话正文或凭据；原绑定在 SQL 清理后仍用于解释义务和拒绝迟到回执。
+
+`ResolveDeletion` 先验证输入，再按凭据 → Bot → Session 锁序核验当前 owner、读取与删除作用域、原 deletionId 和版本；在原 Session 锁下固定绑定。`accept_unverified` 要求明确 acknowledgement 和 1–1000 个 Unicode 字符的理由，不能用空白、NUL 或非法 Unicode。核验、决定和版本推进同事务保存，事务结束前再次核验凭据；之后才进入既有 `clean`。有效决定为服务端清理提供独立准入，但保留 Worker 原失败，不生成完成回执或 receipt digest。
+
+`accept_unverified` 精确重放仅返回已保存决定，不再次执行文件清理；不同 operationId、原版本或理由均不能覆盖它。`retry_cleanup` 引用已有决定的 operationId，要求当前 Bot 版本且服务端未完成，先持久化 pending 并推进版本，再执行同一清理流程。未知提交通过 GET 核对原决定与真实阶段，不自动重发；文件或 SQL 失败继续使用原失败记录机制，不能覆盖并发已经完成的结果。普通 Worker 回执和明确决定共用 Bot 锁，正常完成先提交后会拒绝过期确认；决定先提交后则拒绝迟到回执，不能因 Session 引用清空而制造虚假本地完成。
+
+机制取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
 
 ## 扩展约束
 

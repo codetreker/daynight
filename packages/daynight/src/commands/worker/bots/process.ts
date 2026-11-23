@@ -1,6 +1,7 @@
 import { assertWorkerLifecycleAdmission, currentLifecycleBinding } from "../lifecycle-context.js";
 import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
@@ -37,6 +38,12 @@ export class BotAdmissionBlockedError extends Error {
   constructor(options?: ErrorOptions) {
     super("Bot initialization is waiting for Worker configuration.", options);
     this.name = "BotAdmissionBlockedError";
+  }
+}
+export class BotExecutionEvidenceMissingError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(`execution_evidence_missing: The original Bot execution submission or stop evidence is unavailable.${options?.cause instanceof Error ? ` ${options.cause.message}` : ""}`, options);
+    this.name = "BotExecutionEvidenceMissingError";
   }
 }
 
@@ -571,7 +578,7 @@ export const createBotProcess = (options: {
     record = deletionRecord(input);
     const intent = record.intent;
     if (intent === null) {
-      if (record.definition?.sessionId != null) throw new Error("Bot deletion lost the original execution evidence for its registered Session.");
+      if (record.definition?.sessionId != null) throw new BotExecutionEvidenceMissingError();
       // Preflight can own aliases before launch intent exists. A failed release
       // retains this handle; registered execution aliases use the durable plan.
       const prepared = environments.get(record.botId);
@@ -580,7 +587,10 @@ export const createBotProcess = (options: {
       return null;
     }
     const execution = options.executions.get(record);
-    const unsubmitted = execution === null || execution.launchSubmission === "not-submitted";
+    // A missing row cannot distinguish an interrupted preparation from lost
+    // history. Only a persisted submission state can prove never-started.
+    if (execution === null) throw new BotExecutionEvidenceMissingError();
+    const unsubmitted = execution.launchSubmission === "not-submitted";
     const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
       && execution.controllerProcess === null && execution.snapshot === null;
     if (unsubmitted || rejected) {
@@ -593,7 +603,11 @@ export const createBotProcess = (options: {
         executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
         stopProof: { kind: "never_started", recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: new Date(now()).toISOString() } };
     }
-    await shutdown(record, signal);
+    try { await shutdown(record, signal); }
+    catch (cause) {
+      if (!signal.aborted && !existsSync(intent.journalPath)) throw new BotExecutionEvidenceMissingError({ cause });
+      throw cause;
+    }
     record = deletionRecord(input);
     const stopped = options.executions.get(record)?.snapshot;
     if (stopped?.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.controllerProcess === null || intent.sessionId === null) {

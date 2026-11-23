@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -82,6 +83,9 @@ func PrepareWorkerCleanup(bot model.Bot, workerID, deletionID string, result mod
 	if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID {
 		return false, false, deletionConflict()
 	}
+	if bot.Deletion.Recovery != nil {
+		return false, false, deletionRecoveryConflict("Bot deletion recovery decision is final; read deletion recovery.")
+	}
 	if bot.Deletion.WorkerCleanup.State == "completed" {
 		if bot.Deletion.ReceiptDigest != digest {
 			return false, false, deletionConflict()
@@ -103,12 +107,15 @@ func ApplyWorkerCleanup(bot *model.Bot, result model.BotCleanupResult, digest st
 }
 
 func NeedsServerCleanup(bot model.Bot) bool {
-	return bot.Deletion.WorkerCleanup.State == "completed" && bot.Deletion.ServerCleanup.State != "completed"
+	return (bot.Deletion.WorkerCleanup.State == "completed" || bot.Deletion.Recovery != nil) && bot.Deletion.ServerCleanup.State != "completed"
 }
 
 func PrepareServerCleanup(bot model.Bot, deletionID string) (bool, error) {
-	if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID || bot.Deletion.WorkerCleanup.State != "completed" {
+	if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID || bot.Deletion.WorkerCleanup.State != "completed" && bot.Deletion.Recovery == nil {
 		return false, deletionConflict()
+	}
+	if bot.Deletion.Recovery != nil && !deletionRecoveryValid(bot) {
+		return false, errors.New("Stored Bot deletion recovery decision is invalid")
 	}
 	return bot.Deletion.ServerCleanup.State != "completed", nil
 }

@@ -20,6 +20,20 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 删除投影保留停止与精确清理所需的原责任，只有本地私有清理完成后才裁剪定义和执行资料。Task 表、maxConcurrent、收尾期限和容量计算不读取 Bot 执行行；保留的私有路径也不授予删除普通 cwd 或共享 native home 的权限。
 
+### 删除证据恢复
+
+`bots/delete.ts` 每次推进先刷新同一原删除，并通过 `BotRemote` 读取[独立恢复资源](assistant.md#独立删除恢复资源)。远端已保存 `failed/execution_evidence_missing` 时，普通调度只对账，不再次停止、删除文件或提交同一完成回执；这一事实已保存在现有 `observed.deletion` 中，跨重启继续生效，不需要增加会被旧 writer 丢弃的 SQLite 字段。独立决定已经存在时同样停止普通推进，无论服务端清理仍在 pending、failed 还是已完成。
+
+恢复资源要求停证而本地缺少可用原执行证据及已保存 stop 时，删除管理器在私有清理前提交现有失败回执 `execution_evidence_missing`。历史 `localCompleted=true,stop=null` 不能绕过此检查。`stopForDeletion` 对仅有 intent 而执行行缺失的情况抛出该具名错误：尚未准备执行行的中断与执行行丢失无法区分，因此也保守进入恢复。只有持久 `launchSubmission=not-submitted` 或明确启动拒绝才可继续正常 `never_started`；已提交执行停止失败且 journal 路径缺失时转为证据缺失，其它停止失败保持 `execution_stop_unproven`。
+
+历史无依据的 `never_started` 回执收到 `session_conflict` 后，先新鲜读取恢复资源核对原绑定及承载身份，再转报证据缺失；已知缺失且只保留该回执时，inspect 不宣称可恢复，显式 recover 也不重放它。真实 stopped 回执仍可正常恢复。真正无 Session 绑定的删除仍可使用正常 null stop；新建空库存不能单独作出该判断。旧服务端没有恢复资源时，已有证据缺失失败仍停止自动推进；尚未确认缺失的 null stop 收到确定的 `session_conflict` 后转报该失败，但不盲目分类非 null 停证冲突，也不将网络失败或其它冲突误当作同一证据。
+
+库存清单和本地保留 ID 的逐项详情路径都读取恢复决定，避免远端清单过滤后又由本地 ID 恢复普通重试。恢复读取失败保留原责任与错误，不清除删除屏障，也不影响其它 Bot 的独立管理。
+
+`bots/deletion-local.ts` 拥有本机检查与恢复。`bot deletion inspect` 以只读 SQLite 事务检查 Bot 专属及旧 Worker 库，核验服务、账号和原 `workerId` 归属，报告 intent、原停证、ticket、journal 的可用性、重复权威或不可读状态；`localProcessState` 始终为 unverified，`canRecover` 只表示可以尝试，不证明已停止。`--server-only` 不打开本机存储。`bot deletion recover` 要求本机 Worker 与 `hostingWorkerId` 匹配，按原 `workerId` 读取记录，并取得 Worker 实例锁与 Bot 存储锁以排除其它持有者。它允许同一缺失证据状态重新尝试原材料，但仍调用既有 `withDeletion`、Controller 停证和精确路径清理；新执行准入关闭。缺失、不可读、锁冲突及身份不符不会创建替代执行或重建停证。
+
+接受本地未核实由 CLI 或 Web 调用服务端恢复接口完成，Worker 不执行无证明的私有清理。服务端终态保留本地未核实事实，不能调用 `finishDeletion` 把它转成正常完成。取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+
 ## 启动与授权
 
 `createBotProcess` 按 Bot 串行化启动、续期、停止和删除。Host 将独立 `canAdmitNewExecution()` 传给 runtime/process，Worker 依据 manager 存储 readiness 与已生效 native/recovery 配置实现它；`configuration()` 仍只用于能力和配置采样。首次预检先验证参数及目标配置环境，在每个 awaited preparation 后以及持久 intent、初次 register 与 launch submission 前重查门禁，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。

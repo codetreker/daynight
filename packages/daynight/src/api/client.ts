@@ -25,6 +25,8 @@ import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRe
 import { sameStartupReport } from "../session/startup.js";
 import { parseBot, botName, botOverrides, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
+import { parseBotDeletionRecovery, parseResolveBotDeletionInput } from "../commands/bot/deletion-api.js";
+import type { BotDeletionRecovery, ResolveBotDeletionInput } from "../commands/bot/deletion-api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
@@ -171,6 +173,8 @@ export type ApiClient = TaskSessionClient & {
   getBot(botId: string): Promise<Bot>;
   createBot(input: CreateBotInput): Promise<Bot>;
   deleteBot(botId: string, input: DeleteBotInput): Promise<Bot>;
+  getBotDeletionRecovery(botId: string): Promise<BotDeletionRecovery>;
+  resolveBotDeletion(botId: string, input: ResolveBotDeletionInput): Promise<BotDeletionRecovery>;
   listWorkers(): Promise<WorkerList>;
   getWorker(workerId: string): Promise<WorkerDetailResponse>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
@@ -880,6 +884,23 @@ export const createApiClient = (options: {
         if (bot.deletion === null || bot.deletion.deletionId !== body.deletionId || bot.deletion.requestedVersion !== body.ifVersion) throw new ProtocolError("Bot deletion response does not match the submitted request.");
         return bot;
       }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: body });
+    },
+    getBotDeletionRecovery: (botId) => {
+      const target = resourceId(botId), principal = accountPrincipal();
+      return exchange({ operation: "bot.deletion.inspect" }, `/me/bots/${target}/deletion-recovery`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
+        principal(metadata);
+        return parseBotDeletionRecovery(value, target);
+      } }, [200]);
+    },
+    resolveBotDeletion: (botId, input) => {
+      const target = resourceId(botId), principal = accountPrincipal(), body = parseResolveBotDeletionInput(input);
+      return exchange({ operation: body.action === "accept_unverified" ? "bot.deletion.resolve" : "bot.deletion.retry-cleanup" }, `/me/bots/${target}/deletion-recovery`, "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
+        const owner = principal(metadata), result = parseBotDeletionRecovery(value, target);
+        if (result.deletionId !== body.deletionId || result.decision?.operationId !== body.operationId || result.decision.actorUserId !== owner
+          || body.action === "accept_unverified" && (result.decision.requestedVersion !== body.ifVersion || result.decision.reason !== body.reason)
+          || BigInt(result.version) <= BigInt(body.ifVersion)) throw new ProtocolError("Bot deletion recovery response does not match the original decision.");
+        return result;
+      }, confirmMutation: result => result.decision!.operationId }, [200], { kind: "json", value: body });
     },
     listWorkers: async () => {
       const principal = accountPrincipal();

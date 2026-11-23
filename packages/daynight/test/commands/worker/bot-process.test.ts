@@ -588,6 +588,18 @@ test("only an unsubmitted first generation can attest never started", async () =
   expect(f.launch).not.toHaveBeenCalled();
 });
 
+test("a lost execution row cannot turn a retained launch intent into never-started proof", async () => {
+  const f = fixture("codex", {}, true), signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const database = new Database(path.join(f.home, "worker.sqlite"));
+  try { database.prepare("DELETE FROM bot_executions").run(); } finally { database.close(); }
+  const record = markDeleting(f);
+  let cleaned = false;
+  await expect(f.process.withDeletion(record, signal, async stop => { await stop(); cleaned = true; })).rejects.toThrow("execution_evidence_missing");
+  expect(cleaned).toBe(false); expect(existsSync(record.intent!.ticketPath)).toBe(true);
+  expect(f.current().intent).toEqual(record.intent);
+});
+
 test("an unsubmitted recovery with unknown server generation cannot manufacture a deletion stop proof", async () => {
   const f = await recoveryFixture();
   await f.manager.shutdown(f.current(), f.signal);

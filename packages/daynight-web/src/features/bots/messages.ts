@@ -1,6 +1,15 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
+  recoveryReasonInvalid: 'Use at most 1,000 valid characters without NUL.',
+  recoveryRequired: 'Execution records are missing. Recovery is needed.', recoverDeletion: 'Recover deletion', recoveryTitle: 'Recover assistant deletion',
+  recoveryDescription: 'The original machine is missing execution records, so the native Agent stop cannot be verified. Inspect existing records on the machine hosting this assistant first.',
+  recoveryInspect: 'Inspect on the hosting machine:', recoveryWarning: 'Continuing deletes the server’s conversation history and archives and retains a local-unverified record. This does not confirm that the native Agent has stopped, or delete the working directory or Provider history.',
+  recoveryReason: 'Reason for settlement', recoveryReasonPlaceholder: 'Explain why the execution records cannot be recovered', recoveryAcknowledgement: 'I accept that the local state is unverified and confirm deletion of the server data.',
+  recoveryConfirm: 'Confirm server settlement', recoverySubmitting: 'Submitting server settlement…', recoveryUnknown: 'Server settlement result unknown', recoveryUnknownDescription: 'The request may have taken effect. Check the original settlement before deciding again.',
+  recoveryRetryOriginal: 'Retry original settlement', recoveryRetryCleanup: 'Retry server cleanup', recoveryUnsupported: 'This server does not support deletion recovery yet. Upgrade the server, then check again.',
+  recoverySettled: 'Server deletion completed; local state unverified', recoveryClosedDescription: 'Deletion tracking is closed. Whether the original machine stopped and what remains locally are unverified.',
+  recoveryDecision: 'View settlement record', recoveryUnverified: 'Unverified', recoveryDecidedAt: 'Confirmed at', recoveryActor: 'Confirmed by', recoveryPending: 'Server settlement accepted; cleanup pending', recoveryReadError: 'Could not read deletion recovery. Check again before continuing.', recoveryRejected: 'Settlement was not accepted. Review the current state before deciding again.',
   legacyRoleNotice: 'Recreate this assistant to enable assistant task collaboration.',
   welcomeTitle: 'Start with a conversation', welcomeDescription: 'Check progress, clarify an idea, or move your work forward.',
   conversationStarters: [
@@ -19,6 +28,15 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
+  recoveryReasonInvalid: '原因最多 1,000 个有效字符，不能含空字符。',
+  recoveryRequired: '缺少执行记录，需要恢复', recoverDeletion: '恢复删除', recoveryTitle: '恢复助手删除',
+  recoveryDescription: '原机器缺少执行记录，无法确认原生 Agent 已停止。可以先在托管此助手的机器上检查现有记录。',
+  recoveryInspect: '执行本机检查：', recoveryWarning: '继续将删除服务端保存的会话历史和归档，保留“本机未核实”的记录。此操作无法确认原生 Agent 已停止，也不会删除工作目录或 Provider 历史。',
+  recoveryReason: '收尾原因', recoveryReasonPlaceholder: '说明为何无法恢复执行记录', recoveryAcknowledgement: '我接受本机状态未核实，并确认删除服务端数据。',
+  recoveryConfirm: '确认服务端收尾', recoverySubmitting: '正在提交服务端收尾…', recoveryUnknown: '收尾结果未知', recoveryUnknownDescription: '提交可能已生效。请核对原收尾请求的结果，再决定下一步。',
+  recoveryRetryOriginal: '重试原收尾请求', recoveryRetryCleanup: '重试服务端清理', recoveryUnsupported: '此服务端尚不支持删除恢复，请升级服务端后核对。',
+  recoverySettled: '服务端删除完成，本机未核实', recoveryClosedDescription: '删除跟踪已结束。原机器是否停止以及本地遗留仍未核实。',
+  recoveryDecision: '查看收尾记录', recoveryUnverified: '未核实', recoveryDecidedAt: '确认时间', recoveryActor: '确认人', recoveryPending: '服务端收尾已受理，等待清理', recoveryReadError: '无法读取删除恢复状态。请核对后再继续。', recoveryRejected: '收尾未受理。请核对当前状态后重新决定。',
   legacyRoleNotice: '重建后可获得助手任务协作能力',
   welcomeTitle: '从一段对话开始', welcomeDescription: '查进度、理清想法，或一起推进手头的工作。',
   conversationStarters: [

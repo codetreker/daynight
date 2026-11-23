@@ -3,11 +3,13 @@ import { createOperation, type Operation } from "../../../api/operation.js";
 import { parseServerError, ProtocolError } from "../../../api/parse.js";
 import { validateServerToken, validateTokenTransport } from "../../../config/server-token.js";
 import { botUUID, parseBot, parseBotOwner, type Bot, type BotOwner } from "./types.js";
+import { parseBotDeletionRecovery, type BotDeletionRecovery } from "../../bot/deletion-api.js";
 
 export type BotRemote = {
   readonly owner: Readonly<BotOwner>;
   list(signal: AbortSignal): Promise<readonly Bot[]>;
   read(botId: string, signal: AbortSignal, originalOwner?: BotOwner): Promise<Bot | null>;
+  readDeletionRecovery?(botId: string, signal: AbortSignal, originalOwner?: BotOwner): Promise<BotDeletionRecovery | null>;
 };
 
 /** Read only the original service/account/Worker binding; no creation or execution requests. */
@@ -16,13 +18,17 @@ export const createBotRemote = (options: { owner: BotOwner; serverToken: string 
   const token = validateServerToken(options.serverToken);
   const missing = Symbol("confirmed-missing-bot");
   validateTokenTransport(owner.serverOrigin);
-  const request = async (target: string, operation: Operation, allowMissing = false): Promise<unknown> => {
+  const request = async (target: string, operation: Operation, allowMissing = false, optionalCapability = false): Promise<unknown> => {
     operation.check();
     const response = await fetch(`${owner.serverOrigin}${target}`, {
       method: "GET", redirect: "error", headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       signal: AbortSignal.any([operation.signal, AbortSignal.timeout(operation.limits.requestMs)]),
     });
     try {
+      // An unregistered route on older services is a plain mux 404 without a
+      // principal header. This signals only missing capability, never absence
+      // of a Bot or proof that its execution is safe to clean.
+      if (optionalCapability && response.status === 404) return missing;
       if (response.headers.get("Daynight-User-ID") !== owner.ownerUserId) throw new ProtocolError("Bot response principal does not match the inventory owner.");
       if (response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") throw new ProtocolError("Bot response must be JSON.");
       const reader = response.body?.getReader();
@@ -91,6 +97,21 @@ export const createBotRemote = (options: { owner: BotOwner; serverToken: string 
         const bot = parseBot(value, original);
         if (bot.id !== botId) throw new ProtocolError("Bot detail identity differs from the requested Bot.");
         return bot;
+      } finally { read.dispose(); }
+    },
+    readDeletionRecovery: async (botId, signal, originalOwner = owner) => {
+      botUUID(botId, "Bot ID");
+      const original = parseBotOwner(originalOwner);
+      if (original.serverOrigin !== owner.serverOrigin || original.ownerUserId !== owner.ownerUserId) throw new Error("Bot recovery requires its original service and account.");
+      const read = operation(signal);
+      try {
+        const value = await request(`/api/v1/me/bots/${botId}/deletion-recovery`, read, false, true);
+        // An older service does not expose this sidecar. It never means that the
+        // original execution or its deletion responsibility is absent.
+        if (value === missing) return null;
+        const recovery = parseBotDeletionRecovery(value, botId);
+        if (recovery.workerId !== original.workerId) throw new ProtocolError("Bot recovery Worker differs from its original local responsibility.");
+        return recovery;
       } finally { read.dispose(); }
     },
   };

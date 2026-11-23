@@ -31,6 +31,36 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
 const signal = () => new AbortController().signal;
 
 describe("Bot inventory remote", () => {
+  it("reads the recovery sidecar for the original record after hosting moves", async () => {
+    const recovery = { schemaVersion: 1, botId: id(3), workerId, hostingWorkerId: id(10), version: "5", deletionId: id(8), requestedVersion: "3",
+      requiresStopProof: false, originalBinding: null, recoveryRequired: true, workerCleanup: { state: "failed", code: "execution_evidence_missing" },
+      decision: null, serverCleanup: { state: "pending", code: null } };
+    const remote = await listen((request, response) => {
+      expect(request.url).toBe(`/api/v1/me/bots/${id(3)}/deletion-recovery`);
+      response.end(JSON.stringify(recovery));
+    });
+    expect(await remote.readDeletionRecovery!(id(3), signal())).toEqual(recovery);
+  });
+
+  it("treats a plain old-server mux 404 as unsupported while rejecting other unauthenticated responses", async () => {
+    let count = 0;
+    const remote = await listen((_request, response) => {
+      count++;
+      response.removeHeader("Daynight-User-ID"); response.setHeader("Content-Type", "text/plain; charset=utf-8");
+      response.statusCode = count === 1 ? 404 : 403;
+      response.end("404 page not found\n");
+    });
+    expect(await remote.readDeletionRecovery!(id(3), signal())).toBeNull();
+    await expect(remote.readDeletionRecovery!(id(3), signal())).rejects.toThrow(/principal/);
+  });
+
+  it("rejects contradictory recovery proof requirements", async () => {
+    const remote = await listen((_request, response) => response.end(JSON.stringify({ schemaVersion: 1, botId: id(3), workerId, hostingWorkerId: workerId,
+      version: "5", deletionId: id(8), requestedVersion: "3", requiresStopProof: true, originalBinding: null, recoveryRequired: true,
+      workerCleanup: { state: "failed", code: "execution_evidence_missing" }, decision: null, serverCleanup: { state: "pending", code: null } })));
+    await expect(remote.readDeletionRecovery!(id(3), signal())).rejects.toThrow();
+  });
+
   it("preserves server-valid Unicode names without blocking the rest of the inventory", async () => {
     const items = [{ ...bot(), name: "\uFEFF" }, bot(4)];
     const remote = await listen((_request, response) => {
