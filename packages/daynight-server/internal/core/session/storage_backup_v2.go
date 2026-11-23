@@ -269,6 +269,11 @@ func validateBackupLedger(raw json.RawMessage, historyID string) error {
 // A sealed bundle owns its resource closure even before a timeline is complete.
 // A complete current timeline is checked against that closure for both uploads.
 func verifyBackupSealedBundle(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, namespace sessionarchive.Namespace, bundle store.ArchiveBundle) error {
+	// Legacy archive conversion publishes its own deterministic closure without
+	// a history upload. verifyBackupMigration checks that source and closure.
+	if bundle.HistoryID == "" && inventory.Migration != nil && (inventory.Migration.Phase == "committed" || inventory.Migration.Phase == "verified") && (bundle.Phase == "committed" || bundle.Phase == "verified") {
+		return nil
+	}
 	var ledger archiveLedger
 	if bundle.HistoryID == "" || validateBackupLedger(bundle.Ledger, bundle.HistoryID) != nil || json.Unmarshal(bundle.Ledger, &ledger) != nil || !ledger.Sealable {
 		return errors.New("invalid sealed history ledger")
