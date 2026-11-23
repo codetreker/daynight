@@ -109,7 +109,7 @@ func TestWebhookProcessShutdownPreservesCapturedWork(t *testing.T) {
 				Dispatch bool `json:"dispatchEnabled"`
 			} `json:"service"`
 		}
-		if err != nil || response.StatusCode != http.StatusOK || json.Unmarshal(data, &catalog) != nil || len(catalog.Items) != 6 || catalog.Service.Dispatch != enabled {
+		if err != nil || response.StatusCode != http.StatusOK || json.Unmarshal(data, &catalog) != nil || len(catalog.Items) != 5 || catalog.Service.Dispatch != enabled {
 			t.Fatalf("process webhook catalog enabled=%v response=%v data=%s err=%v", enabled, response, data, err)
 		}
 	}
