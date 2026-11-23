@@ -299,7 +299,7 @@ HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 chars
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
 未知或只读字段、错误类型、必填字段为 `null` 和尾随 JSON。
 
-Steps 集合、单项、status 和 position 子路径不注册 REST handler 或专用 CORS/scope 路由。旧 GET、HEAD、POST、PATCH、DELETE 和 PUT 进入既有未知 API 处理，不返回成功、不回落 SPA，也不调用 Steps 存储、修改父 Task 或产生领域事件。普通 Task、Thread 和附件沿用各自现有准入及错误行为。剩余内部服务和持久化不在入口退役时删除，详情由 [Steps 退役要求](daynight-task-steps.md)拥有。
+Steps 集合、单项、status 和 position 子路径不注册 REST handler 或专用 CORS/scope 路由。旧 GET、HEAD、POST、PATCH、DELETE 和 PUT 进入既有未知 API 处理，不返回成功、不回落 SPA，也不调用 Steps 存储、修改父 Task 或产生领域事件。普通 Task、Thread 和附件沿用各自现有准入及错误行为。Steps 应用服务与专用领域逻辑已移除，PostgreSQL 依赖的存储合同、模型、DAO 和表仍保留；详情由 [Steps 退役要求](daynight-task-steps.md)拥有。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
 不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或父 Goal 已删除的任务的定点资源返回

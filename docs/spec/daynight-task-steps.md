@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：REST、MCP、CLI 和 Web 均不提供 Task Steps 入口。本文拥有入口退役要求及尚存内部实现的边界。Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：REST、MCP、CLI 和 Web 均不提供 Task Steps 入口。应用服务与专用领域逻辑也已移除。本文拥有退役要求及尚存存储实现的边界。Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 公开入口退役
 
@@ -18,13 +18,11 @@ Task 弹窗、独立详情和 Goal 内嵌详情不提供 Steps 页签或请求�
 
 ## 所有权与模型
 
-应用服务、领域候选、codec、DAO、模型及 `task_steps` 表仍保留内部实现。它们不构成可调用的公开资源；入口退出不删除持久化行，也不改写现有父 Task。历史迁移及 checksum 保持。凭据的 `step:read`、`step:write` 与目录遵循其现有规则，入口退役不改写凭据或授予新的 Task 权限。
+应用装配不提供旧或 scoped Steps 服务；Steps 用例、领域候选、专用 codec 和 `step.*` 输入策略均已移除。共享 Thread codec、普通 Task 文字策略和共享错误保持各自职责。PostgreSQL 当前方法签名依赖的存储合同、模型、DAO 及 `task_steps` 表仍保留；它们不构成应用层可调用入口。持久化行和现有父 Task 不因此改写，历史迁移及 checksum 保持。凭据的 `step:read`、`step:write` 与目录遵循其现有规则，不因应用服务移除而改写凭据或授予新的 Task 权限。
 
-内部 Steps 以父 Task 和 Task 内八位十六进制 ID 定位，保留独立标题、Markdown 说明、四状态和 UTC 微秒内容时间，位置在 Task 内稠密。其状态不决定 Task 完成、review、Worker 调度或 Session 生命周期。普通 Task DTO 不内嵌 Steps。
+尚存的存储记录以父 Task 和 Task 内八位十六进制 ID 定位，保留独立标题、Markdown 说明、四状态和 UTC 微秒内容时间，位置在 Task 内稠密。其状态不决定 Task 完成、review、Worker 调度或 Session 生命周期。普通 Task DTO 不内嵌 Steps。
 
-内部新增与修改仍检查完整目标文字，标题上限 1024 UTF-8 字节、说明上限 65536 UTF-8 字节；保留原始合法文本。候选编码容量为 67,108,864 字节，计入转义、末尾 LF 和父版本的十九位预留。读取使用纯存储投影，不重复写入校验。该内部容量机制不表示存在公开 HTTP 读取或写入。
-
-内部写用例仍保留原项目准入、父墓碑和精确版本检查、no-op、相对排序、时间保持、集合容量准入和同事务差异写入。真实变化只 touch 父版本及更新时间一次，保留其他业务字段、附件、Thread、Session 和 Worker。事务完成保留 committed、not_committed 与 unknown 的区别，cleanup 不能反推未知 Commit 已回滚。这些机制由其对应 Service、Core 和 PostgreSQL 测试拥有。
+专用 Steps 业务规则及其测试随用例移除，不再公布文字、候选集合容量或排序操作的应用合同。存储测试继续拥有尚存 DAO 的 SQL、锁、快照、提交及回滚证明。普通 Task、Thread 和同步读写继续保留各自的授权、版本、事务与错误合同。
 
 ## 验证要求
 
@@ -36,5 +34,7 @@ Task 弹窗、独立详情和 Goal 内嵌详情不提供 Steps 页签或请求�
 | ST-MCP1 | HTTP session 的发现不包含七项工具和专用手册，旧名称明确失败，其他工具与手册保持。 |
 | ST-CLI1 | 打包 CLI 的帮助、补全和手册发现均不提供 Steps，旧命令非零退出，普通 Task 保持。 |
 | ST-W1 | Web 三种详情入口不请求 Steps；旧地址和历史恢复、附件导航、普通 Task 修改及访问校验保持。 |
+| ST-APP1 | 生产应用装配及任务服务不提供旧或 scoped Steps 操作；专用领域用例、codec 和输入策略已移除，Thread codec 仍可用。 |
+| ST-APP2 | 普通 Task、Thread、同步读写及其事务与错误验证继续通过，存储合同和模型保留至对应 DAO 清理。 |
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有验证入口；源版本、产物及实际结果随对应 PR 和验收材料保存。入口退役不代表生产部署或持久化数据清理已经完成。

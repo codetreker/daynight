@@ -25,7 +25,6 @@ type Scoped struct {
 	Session                *session.SessionAuthorizationSource
 	PATCatalog, MCPCatalog scopepolicy.CatalogSnapshot
 	Attachments            *attachment.ScopedAttachments
-	Steps                  *task.ScopedTaskSteps
 	Threads                *task.ScopedTaskThreads
 	Observations           *task.Observations
 }
@@ -77,7 +76,6 @@ func NewScoped(database store.Transactions, files filestorage.Storage, client *u
 		return nil, err
 	}
 	a.Scoped.Attachments = attachment.NewScopedAttachments(a.Attachments, source.Refresh)
-	a.Scoped.Steps = task.NewScopedTaskSteps(database, capture...)
 	a.Scoped.Threads = task.NewScopedTaskThreads(a.TaskThreads)
 	return a, nil
 }

@@ -19,10 +19,11 @@ They cannot reach the SPA or ordinary Task handler, read or write Steps,
 advance a parent version or capture an event. No dedicated retirement adapter
 or successful empty resource remains.
 
-The shared Steps Application, Service, Core, codec, DAO and model remain internal.
-Persisted rows, historical migration checksums and saved credential scopes are
-unchanged. Removing these independent implementation and persistence owners or
-retiring credential choices requires their corresponding changes. Shared Thread
+The REST retirement originally retained the shared Steps application and
+persistence owners. The [application retirement](2026-11-23-retire-task-steps-application.md) removes
+Application and scoped assembly, Service, Core candidates, codec and input policy.
+DAO interfaces, their models, PostgreSQL code and persisted rows remain. Historical
+migration checksums and saved credential scopes retain their existing rules. Shared Thread
 encoding, ordinary Task authorization and mutation behavior retain their owners.
 
 The [resource requirements](../../../../docs/spec/daynight-task-steps.md) and
@@ -36,7 +37,7 @@ consumer and HTTP proof portions of the
 [scope admission](../architecture/2026-11-20-steps-thread-scope-admission.md),
 [component test ownership](../testing/2026-11-11-go-component-test-ownership.md)
 and [dependency boundary](../testing/2026-11-08-go-test-dependency-boundaries.md)
-decisions; their surviving Thread, Service, Core and Store rules remain.
+decisions; their surviving Thread, ordinary Task and Store rules remain.
 
 ## Alternatives
 
@@ -59,6 +60,6 @@ actual source and build. Ordinary Task, Thread and attachment authorization and
 soft-deletion proofs use their own fixtures.
 
 HTTP-specific CRUD, timeout, response and capacity tests leave with their
-handlers. Internal Service, Core and PostgreSQL tests retain the behavior they
-still own. A rejected route does not establish that persisted data has been
+handlers. Steps Service, Core and codec tests leave with the application implementation;
+PostgreSQL tests retain the behavior they still own. A rejected route does not establish that persisted data has been
 deleted or that a production release has occurred.

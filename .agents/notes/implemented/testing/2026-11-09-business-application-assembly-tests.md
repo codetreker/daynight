@@ -22,9 +22,9 @@ assembly body. Private construction bindings cover the three collaborators in
 the original shared dependency proof: Projects, Tasks and Attachments. Default
 bindings invoke their production constructors; small closures adapt private or
 variadic constructor parameters to the borrowed capabilities at this boundary.
-Identity, TaskSteps and Task Observations also have private constructor bindings
-with their exact production signatures, directly bound to `identity.New`,
-`task.NewTaskSteps` and `task.NewObservations`. Other pure constructors remain real.
+Identity and Task Observations also have private constructor bindings with their
+exact production signatures, directly bound to `identity.New` and
+`task.NewObservations`. Other pure constructors remain real.
 
 Recording construction wrappers observe the supplied store, files, Engine and
 Capturer and return the real objects built by the child constructors. Tests
@@ -37,13 +37,11 @@ output satisfies the [Authentication consumer](2026-11-10-auth-identity-consumer
 and the [MCP Personal Team resolver](2026-11-09-mcp-use-case-test-ownership.md)
 structurally, allowing controlled output after real assembly. The production test
 checks the concrete Identity and callback; it does not prove Identity business
-behavior. The nine-method `TaskStepsOperations` output remains internal after
-the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md).
-Its original MCP consumer is removed by the
-[MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md).
-Its factory receives the same store and selected Capturer as Tasks, including when assembly selects a default Capturer, and its
-actual concrete result occupies the output. The production test checks the
-concrete TaskSteps output; neither assembly test proves Step business behavior.
+behavior. The former nine-method `TaskStepsOperations` output and constructor
+shared the store and selected Capturer with Tasks. The
+[application retirement](../simplification/2026-11-23-retire-task-steps-application.md) removes that output,
+its scoped counterpart and their dedicated construction assertions. Tasks still
+receives the selected default or supplied Capturer.
 The five-method `TaskObservationOperations` output satisfies the HTTP and MCP
 observation consumers, allowing controlled operations after real assembly.
 The constructor test checks the original snapshot reader, the shared Engine as
@@ -76,8 +74,8 @@ Application test to representation owned by other services. Constructor argument
 observation uses the dependency capabilities that assembly actually supplies.
 
 **Add a factory registry for every Application field.** The original dependency
-proof concerned three constructors. Identity, TaskSteps and Task Observations
-now have specific output and construction proofs as well; extending every future
+proof concerned three constructors. Identity and Task Observations
+also have specific output and construction proofs; extending every future
 module through a registry would introduce maintenance unrelated to those proofs.
 Pure construction needs no substitute when it does not run business operations.
 

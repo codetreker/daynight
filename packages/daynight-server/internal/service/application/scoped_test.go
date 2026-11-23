@@ -35,7 +35,7 @@ func TestScopedApplicationRetainsPolicySourcesAndSharedEngine(t *testing.T) {
 	if app.Scoped.Credentials.Database != database || app.Scoped.Credentials.Origin != origin || !app.Workers.ScopesEnabled() || !app.Teams.ScopeProtected() {
 		t.Fatal("scoped modules lost their shared policy source, origin or admission")
 	}
-	if app.Scoped.Attachments == nil || app.Scoped.Steps == nil || app.Scoped.Threads == nil || app.Scoped.Session == nil || app.Scoped.Observations != app.TaskObservations {
+	if app.Scoped.Attachments == nil || app.Scoped.Threads == nil || app.Scoped.Session == nil || app.Scoped.Observations != app.TaskObservations {
 		t.Fatal("scoped application published incomplete or distinct protocol adapters")
 	}
 }

@@ -929,11 +929,6 @@ func taskMockAccess(project model.Project, principal model.Principal) model.Proj
 	return model.ProjectAccess{ProjectID: project.ID, UserID: principal.UserID, Role: model.ProjectAdmin, OwnerTeam: model.TeamRef{ID: project.Ownership.TeamID, Kind: "personal"}, Ownership: project.Ownership}
 }
 
-func taskMockStep(id string, position int64) model.TaskStep {
-	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
-	return model.TaskStep{ID: id, Position: position, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
-}
-
 func (mock *sessionReaderMock) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
 	mock.need("TaskSessionSources", false)
 	return nil, nil
