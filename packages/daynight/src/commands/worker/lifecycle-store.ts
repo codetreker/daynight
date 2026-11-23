@@ -345,6 +345,42 @@ export const openLifecycleStore = (options: { file: string; identity: LifecycleI
       db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)").run(resourceId, ownerKind, originalIdentity, input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), operationId);
       bump(); return getResource(resourceId)!;
     }),
+    adoptPreparedControllerInput: (input: { binding: LifecycleBinding; previous: LifecycleResource; identity: { [key: string]: LifecycleJson } }): LifecycleResource => atomic(() => {
+      assertAdmission(input.binding);
+      const previous = getResource(input.previous.resourceId);
+      if (previous === null) return invalid("prepared Controller input reservation is missing");
+      if (encode(previous) !== encode(input.previous) || previous.ownerKind !== "controller" || previous.stage !== "reserved"
+        || previous.processProof !== null || previous.stopProof !== null || previous.saveState !== "durable" || previous.error !== null)
+        invalid("prepared Controller input reservation changed or may have dispatched");
+      if (db.prepare("SELECT resource_id FROM resource_history WHERE resource_id=?").get(previous.resourceId) !== undefined) invalid("archived input reservation cannot be adopted");
+      db.prepare("UPDATE resource_owners SET identity_json=?,instance_id=?,instance_epoch=?,scope_generation=? WHERE resource_id=?")
+        .run(encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), previous.resourceId);
+      bump(); return getResource(previous.resourceId)!;
+    }),
+    settlePreparedControllerInput: (expected: LifecycleResource): LifecycleResource => atomic(() => {
+      if (state().admission !== "closed") invalid("prepared input settlement requires closed admission");
+      const previous = getResource(expected.resourceId);
+      if (previous === null) return invalid("prepared Controller input reservation is missing");
+      if (encode(previous) !== encode(expected) || previous.ownerKind !== "controller" || previous.stage !== "reserved"
+        || previous.processProof !== null || previous.stopProof !== null || previous.saveState !== "durable" || previous.error !== null)
+        invalid("prepared Controller input reservation changed during stop verification");
+      if (db.prepare("SELECT resource_id FROM resource_history WHERE resource_id=?").get(previous.resourceId) !== undefined) invalid("archived input reservation cannot be settled");
+      db.prepare("UPDATE resource_owners SET stage='not_dispatched' WHERE resource_id=?").run(previous.resourceId);
+      bump(); return getResource(previous.resourceId)!;
+    }),
+    reserveAfterSettledControllerInput: (input: { binding: LifecycleBinding; previous: LifecycleResource; resourceId: string; identity: { [key: string]: LifecycleJson } }): LifecycleResource => atomic(() => {
+      assertAdmission(input.binding);
+      const previous = getResource(input.previous.resourceId);
+      if (previous === null || encode(previous) !== encode(input.previous) || previous.ownerKind !== "controller" || previous.stage !== "not_dispatched"
+        || previous.processProof !== null || previous.stopProof !== null || previous.saveState !== "durable" || previous.error !== null)
+        return invalid("settled Controller input reservation changed");
+      const resourceId = uuid(input.resourceId);
+      if (getResource(resourceId) !== null || allResources(db).some(resource => resource.operationId === previous.operationId && resource.stage !== "not_dispatched"))
+        return invalid("Controller input has conflicting lifecycle responsibility");
+      db.prepare("INSERT INTO resource_owners VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,'durable',NULL)")
+        .run(resourceId, "controller", encode(objectValue(input.identity)), input.binding.instanceId, BigInt(input.binding.instanceEpoch), BigInt(input.binding.scopeGeneration), previous.operationId);
+      bump(); return getResource(resourceId)!;
+    }),
     reserveCleanupCommand: (input: { binding: LifecycleBinding; task: ClaimIdentity; resourceId: string }): LifecycleResource => atomic(() => {
       const current = state(), frozen = bindingValue(input.binding);
       if (encode(identityValue(frozen)) !== encode(identity) || current.instanceId !== frozen.instanceId || current.instanceEpoch !== frozen.instanceEpoch

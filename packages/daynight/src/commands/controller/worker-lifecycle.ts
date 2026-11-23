@@ -1,7 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { openLifecycleStore, type LifecycleJson } from "../worker/lifecycle-store.js";
+import { openLifecycleStore, type LifecycleJson, type LifecycleResource } from "../worker/lifecycle-store.js";
 import { resolveWorkerPaths } from "../worker/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerOperation } from "./lifecycle-store.js";
@@ -14,6 +15,28 @@ const management = new AsyncLocalStorage<boolean>();
 export const controllerManagementActive = (): boolean => management.getStore() === true;
 export const withinControllerManagement = <T>(action: () => T): T => management.run(true, action);
 
+const controllerIdentity = (homeDirectory: string, source: ControllerLaunchTicket, storageStateDirectory?: string): { [key: string]: LifecycleJson } => {
+  const value: { [key: string]: LifecycleJson } = { executionId: source.executionId, sessionId: source.sessionId, executionGeneration: source.executionGeneration,
+    controllerInstanceId: source.controllerInstanceId, controllerId: source.controllerId, launchId: source.launchId,
+    storageStateDirectory: resolveControllerStateDirectory(homeDirectory, storageStateDirectory), ticketHash: controllerPayloadHash(source),
+    journalFile: path.join(controllerExecutionDirectory(homeDirectory, source.executionId, storageStateDirectory), "journal.sqlite") };
+  if (source.claimId === undefined) value.testExecutionId = source.testExecutionId!;
+  else Object.assign(value, { projectId: source.projectId, taskId: source.taskId, claimId: source.claimId, worktreeId: source.worktreeId });
+  return value;
+};
+
+/** Verify the complete immutable reservation identity before adoption or stopped reconciliation. */
+export const assertRecoveredInitialReservation = (homeDirectory: string, current: ControllerLaunchTicket, resource: LifecycleResource, original: ControllerLaunchTicket, storageStateDirectory?: string, allowedStage: "reserved" | "not_dispatched" = "reserved"): void => {
+  parseLaunchTicket(original);
+  if (current.claimId === undefined || original.claimId === undefined || current.initialOperationId !== original.initialOperationId
+    || resource.operationId !== current.initialOperationId || resource.ownerKind !== "controller"
+    || resource.stage !== allowedStage || resource.processProof !== null || resource.stopProof !== null || resource.saveState !== "durable" || resource.error !== null
+    || original.lifecycleBinding === undefined || resource.instanceId !== original.lifecycleBinding.instanceId || resource.instanceEpoch !== original.lifecycleBinding.instanceEpoch
+    || resource.scopeGeneration !== original.lifecycleBinding.scopeGeneration
+    || controllerPayloadHash(resource.identity) !== controllerPayloadHash({ ...controllerIdentity(homeDirectory, original, storageStateDirectory), kind: "input", operationKind: "initial", nativeSessionId: current.resumeNativeSessionId }))
+    throw new Error("Recovered initial reservation conflicts with its original ticket.");
+};
+
 export const openControllerWorkerLifecycle = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string) => {
   parseLaunchTicket(ticket);
   const file = path.join(resolveWorkerPaths(homeDirectory).workerDirectory, "lifecycle.sqlite");
@@ -23,13 +46,8 @@ export const openControllerWorkerLifecycle = (homeDirectory: string, ticket: Con
     return null;
   }
   const store = openLifecycleStore({ file, identity: { serverOrigin: binding.serverOrigin, userId: binding.userId, workerId: binding.workerId }, allowCreate: false });
-  const identity: { [key: string]: LifecycleJson } = { executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
-    controllerInstanceId: ticket.controllerInstanceId, controllerId: ticket.controllerId, launchId: ticket.launchId,
-    storageStateDirectory: resolveControllerStateDirectory(homeDirectory, storageStateDirectory), ticketHash: controllerPayloadHash(ticket),
-    journalFile: path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite") };
-  if (ticket.claimId === undefined) identity.testExecutionId = ticket.testExecutionId!;
-  else Object.assign(identity, { projectId: ticket.projectId, taskId: ticket.taskId, claimId: ticket.claimId, worktreeId: ticket.worktreeId });
-  const reservations = new Set<string>();
+  const identity = controllerIdentity(homeDirectory, ticket, storageStateDirectory);
+  const reservations = new Map<string, string>();
   const assertAdmission = (): void => store.assertAdmission(binding);
   return {
     nativeFence: freezeNativeLifecycleFence({ file, binding }),
@@ -56,21 +74,46 @@ export const openControllerWorkerLifecycle = (homeDirectory: string, ticket: Con
       store.recordResource({ resourceId: ticket.controllerInstanceId, stage: "running", processProof: JSON.parse(JSON.stringify(proof)), saveState: "durable" });
     },
     hasReservation: (operation: ControllerOperation): boolean => reservations.has(operation.operationId),
-    reserve: (operation: ControllerOperation, nativeSessionId: string | null): void => {
+    inputReservation: (operationId: string): LifecycleResource | null => {
+      const resources = store.listResources().filter(resource => resource.operationId === operationId);
+      if (resources.some(resource => resource.ownerKind !== "controller" || resource.identity.kind !== "input" || !["reserved", "not_dispatched"].includes(resource.stage))) throw new Error("Recovered initial input has conflicting lifecycle responsibility.");
+      const active = resources.filter(resource => resource.stage === "reserved");
+      if (active.length > 1) throw new Error("Recovered initial input has multiple live lifecycle reservations.");
+      if (active.length === 1) return active[0]!;
+      return resources.sort((a, b) => BigInt(String(a.identity.executionGeneration)) < BigInt(String(b.identity.executionGeneration)) ? 1 : -1)[0] ?? null;
+    },
+    reserve: (operation: ControllerOperation, nativeSessionId: string | null, recovered?: { resource: LifecycleResource; ticket: ControllerLaunchTicket }): void => {
       if (operation.kind === "cancel") return;
       if (reservations.has(operation.operationId)) { assertAdmission(); return; }
-      store.reserveExecution({ binding, resourceId: operation.operationId, ownerKind: "controller", identity: { ...identity, kind: "input", operationKind: operation.kind, nativeSessionId }, operationId: operation.operationId });
-      reservations.add(operation.operationId);
+      const newIdentity = { ...identity, kind: "input", operationKind: operation.kind, nativeSessionId };
+      if (recovered !== undefined) {
+        if (operation.kind !== "initial" || nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Recovered reservation is not the original initial input.");
+        assertRecoveredInitialReservation(homeDirectory, ticket, recovered.resource, recovered.ticket, storageStateDirectory, recovered.resource.stage === "not_dispatched" ? "not_dispatched" : "reserved");
+        const resource = recovered.resource.stage === "not_dispatched"
+          ? store.reserveAfterSettledControllerInput({ binding, previous: recovered.resource, resourceId: randomUUID(), identity: newIdentity })
+          : store.adoptPreparedControllerInput({ binding, previous: recovered.resource, identity: newIdentity });
+        reservations.set(operation.operationId, resource.resourceId);
+      } else {
+        store.reserveExecution({ binding, resourceId: operation.operationId, ownerKind: "controller", identity: newIdentity, operationId: operation.operationId });
+        reservations.set(operation.operationId, operation.operationId);
+      }
     },
     invoke: <T>(operation: ControllerOperation, action: () => T): T => operation.kind === "cancel" ? withinControllerManagement(action) : action(),
     settle: (operation: ControllerOperation): void => {
       if (operation.kind === "cancel") return;
-      const resource = store.getResource(operation.operationId);
+      let resourceId = reservations.get(operation.operationId) ?? operation.operationId;
+      let resource = store.getResource(resourceId);
+      if (operation.kind === "initial") {
+        const matching = store.listResources().filter(item => item.operationId === operation.operationId && item.ownerKind === "controller" && item.identity.kind === "input" && item.identity.executionGeneration === operation.executionGeneration);
+        if (matching.length > 1) throw new Error("Controller input receipt has multiple matching lifecycle reservations.");
+        resource = matching[0] ?? null;
+        resourceId = resource?.resourceId ?? operation.operationId;
+      }
       if (resource === null && operation.executionGeneration !== ticket.executionGeneration) return;
       if (resource === null || resource.operationId !== operation.operationId || resource.identity.executionId !== ticket.executionId || resource.identity.kind !== "input") throw new Error("Controller input receipt has no matching lifecycle reservation.");
       const stage = ["confirmed", "failed", "provider_accepted"].includes(operation.state) ? "confirmed"
         : ["rejected", "expired"].includes(operation.state) ? "not_dispatched" : "unknown";
-      store.recordResource({ resourceId: operation.operationId, stage, saveState: "durable", error: operation.error });
+      store.recordResource({ resourceId, stage, saveState: "durable", error: operation.error });
     },
   };
 };

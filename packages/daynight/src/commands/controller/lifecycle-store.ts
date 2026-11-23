@@ -30,8 +30,9 @@ import { acquireControllerStoragePermit, assertControllerStoragePermit, type Con
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
-import { controllerPayloadHash, parseControllerLifecycleBinding, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerPayloadHash, controllerTicketPath, readLaunchTicket, MAX_TICKET_BYTES, parseControllerLifecycleBinding, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
@@ -417,6 +418,25 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       const { intent: _intent, ...operation } = input; void _intent;
       return writeOperation({ ...operation, executionGeneration: ticket.executionGeneration, payloadHash: hash, state: "accepted", result: null, error: null, createdAt: Date.now(), updatedAt: Date.now() });
     }),
+    prepareRecoveredInitial: (previousTicket: ControllerLaunchTicket): ControllerOperation => atomic(() => {
+      const { snapshot, operation } = recoverableInitialEvidence(db, ticket, previousTicket);
+      if (snapshot.startup?.state !== "ready" || snapshot.activity !== "idle" || snapshot.currentTurnId !== null || !snapshot.capabilities.send
+        || !["ready", "working"].includes(snapshot.lifecycle) || snapshot.nativeStopped || snapshot.stoppedAt !== null || snapshot.error !== null)
+        throw new Error("Recovered initial input requires the original ready and idle native session.");
+      if (operation === null) {
+        assertInputCapacity();
+        const payload = { text: ticket.initialPrompt };
+        return writeOperation({ operationId: ticket.initialOperationId, kind: "initial", payload, payloadHash: controllerPayloadHash({ kind: "initial", payload }), executionGeneration: ticket.executionGeneration, state: "accepted", result: null, error: null, createdAt: Date.now(), updatedAt: Date.now() });
+      }
+      return operation.executionGeneration === ticket.executionGeneration ? operation : writeOperation({ ...operation, executionGeneration: ticket.executionGeneration, updatedAt: Date.now() });
+    }),
+    assertRecoveredInitialReservation: (previousTicket: ControllerLaunchTicket, reservationTicket: ControllerLaunchTicket): void => read(() => {
+      recoverableInitialEvidence(db, ticket, previousTicket);
+      if (BigInt(reservationTicket.executionGeneration) >= BigInt(ticket.executionGeneration)) throw new Error("Recovered reservation generation is not stopped.");
+      const row = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(reservationTicket)) as { snapshot: string; ticket_hash: string } | undefined;
+      if (!row) throw new Error("Recovered reservation lacks its original stopped generation.");
+      validateStoppedInitialTicket(ticket, reservationTicket, row);
+    }),
     getInputIntent: (operationId: string): { canonical: string; sha256: string } | null => read(() => {
       const row = db.prepare("SELECT canonical,sha256 FROM input_intents WHERE operation_id=?").get(operationId) as { canonical: string; sha256: string } | undefined;
       return row ?? null;
@@ -573,6 +593,146 @@ const validateControllerSnapshot = (value: ControllerSnapshot, ticket: Controlle
     return value;
 };
 
+type RecoverableInitialEvidence = { snapshot: ControllerSnapshot; operation: ControllerOperation | null; previousTicket: ControllerLaunchTicket };
+const stoppedTicketInventory = new Map<string, string>();
+const validateStoppedInitialTicket = (ticket: ControllerLaunchTicket, previousTicket: ControllerLaunchTicket, row: { snapshot: string; ticket_hash: string }): ControllerSnapshot => {
+  parseLaunchTicket(previousTicket);
+  const previous = validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), previousTicket, row.ticket_hash);
+  if (previousTicket.claimId !== ticket.claimId || previousTicket.projectId !== ticket.projectId || previousTicket.taskId !== ticket.taskId
+    || previousTicket.workerId !== ticket.workerId || previousTicket.worktreeId !== ticket.worktreeId || previousTicket.userId !== ticket.userId
+    || previousTicket.serverOrigin !== ticket.serverOrigin || previousTicket.executionId !== ticket.executionId || previousTicket.controllerId !== ticket.controllerId
+    || previousTicket.sessionId !== ticket.sessionId || previousTicket.provider !== ticket.provider || previousTicket.cwd !== ticket.cwd
+    || previousTicket.nativeHome !== ticket.nativeHome || previousTicket.initialOperationId !== ticket.initialOperationId || previousTicket.initialPrompt !== ticket.initialPrompt
+    || previousTicket.resumeNativeSessionId !== null && previousTicket.resumeNativeSessionId !== ticket.resumeNativeSessionId)
+    throw new Error("Recovered initial input conflicts with the original stopped ticket.");
+  if (!/^[a-f0-9]{64}$/.test(row.ticket_hash) || previous.controllerInstanceId === ticket.controllerInstanceId
+    || previous.nativeSessionId !== ticket.resumeNativeSessionId || previous.initialInputState !== "not_submitted"
+    || previous.lifecycle !== "stopped" || previous.nativeStopped !== true || previous.controllerProcess === null || !Array.isArray(previous.nativeProcesses)
+    || typeof previous.stoppedAt !== "string" || !Number.isFinite(Date.parse(previous.stoppedAt)))
+    throw new Error("Recovered initial input conflicts with the preceding stopped generation.");
+  if (process.platform === "win32") validateWindowsStoredStopProof(previous, row.ticket_hash);
+  return previous;
+};
+// The stopped receipt and input row are read together. Neither a live snapshot
+// nor an absent operation alone proves that an earlier writer never dispatched.
+const recoverableInitialEvidence = (db: Database.Database, ticket: ControllerLaunchTicket, previousTicket: ControllerLaunchTicket): RecoverableInitialEvidence => {
+  if (ticket.claimId === undefined || BigInt(ticket.executionGeneration) <= 1n || ticket.resumeNativeSessionId === null)
+    throw new Error("Recovered initial input requires a managed later generation and original native binding.");
+  const owner = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+  if (!owner) throw new Error("Original controller journal evidence is unavailable.");
+  const snapshot = validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(owner.snapshot)), ticket, owner.ticket_hash);
+  if (snapshot.nativeSessionId !== ticket.resumeNativeSessionId || snapshot.initialInputState !== "not_submitted")
+    throw new Error("Recovered initial input conflicts with the original native binding or delivery state.");
+  const rows = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE json_extract(snapshot,'$.executionGeneration')=?").all(String(BigInt(ticket.executionGeneration) - 1n)) as { snapshot: string; ticket_hash: string }[];
+  if (rows.length !== 1) throw new Error("Recovered initial input lacks a unique preceding stopped generation.");
+  validateStoppedInitialTicket(ticket, previousTicket, rows[0]!);
+  const operations = (db.prepare("SELECT value FROM operations WHERE json_extract(value,'$.kind')='initial'").all() as { value: string }[]).map(row => json<ControllerOperation>(row.value));
+  if (operations.length > 1 || operations.some(operation => operation.operationId !== ticket.initialOperationId))
+    throw new Error("Recovered initial input conflicts with another original operation.");
+  const row = db.prepare("SELECT value FROM operations WHERE id=?").get(ticket.initialOperationId) as { value: string } | undefined;
+  const operation = row === undefined ? null : json<ControllerOperation>(row.value);
+  const payload = { text: ticket.initialPrompt };
+  if (operation !== null && (operation.operationId !== ticket.initialOperationId || operation.kind !== "initial" || operation.state !== "accepted"
+    || operation.payloadHash !== controllerPayloadHash({ kind: "initial", payload }) || controllerPayloadHash(operation.payload) !== controllerPayloadHash(payload)
+    || operation.result !== null || operation.error !== null || typeof operation.executionGeneration !== "string"
+    || !/^[1-9][0-9]*$/.test(operation.executionGeneration) || BigInt(operation.executionGeneration) > BigInt(ticket.executionGeneration)))
+    throw new Error("Recovered initial operation is inconsistent or may already have been dispatched.");
+  return { snapshot, operation, previousTicket };
+};
+
+/** Read the stopped boundary and original input without taking ownership or migrating the journal. */
+export const readRecoverableInitialInput = async (file: string, ticket: ControllerLaunchTicket, home: string, deadline?: number, storageStateDirectory?: string): Promise<RecoverableInitialEvidence> => {
+  const remaining = () => {
+    const time = deadline === undefined ? 5000 : deadline - Date.now();
+    if (time <= 0) throw new Error("Recovered initial input observation exceeded its deadline.");
+    return Math.max(1, Math.min(5000, time));
+  };
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+  let stopHash!: string;
+  closeJournal(db, file, () => { stopHash = db.transaction(() => {
+    inspectReadCompatibleControllerJournal(db);
+    const owner = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+    if (!owner) throw new Error("Original controller journal evidence is unavailable.");
+    validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(owner.snapshot)), ticket, owner.ticket_hash);
+    const rows = db.prepare("SELECT ticket_hash FROM stopped_generations WHERE json_extract(snapshot,'$.executionGeneration')=?").all(String(BigInt(ticket.executionGeneration) - 1n)) as { ticket_hash: string }[];
+    if (rows.length !== 1) throw new Error("Recovered initial input lacks a unique preceding stopped generation.");
+    remaining(); return rows[0]!.ticket_hash;
+  }).deferred(); }, "not-started");
+  const directory = path.dirname(controllerTicketPath(home, ticket.launchId, storageStateDirectory));
+  const cacheKey = `${directory}\0${stopHash}`;
+  const cached = stoppedTicketInventory.get(cacheKey);
+  let previousTicket: ControllerLaunchTicket | undefined;
+  if (cached !== undefined) {
+    try {
+      const candidate = await readLaunchTicket(home, cached, storageStateDirectory);
+      if (controllerPayloadHash(candidate) === stopHash) previousTicket = candidate;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
+  if (!previousTicket) {
+  const names = await readdir(directory);
+  if (names.length > 20_000) throw new Error("Controller launch inventory exceeds its safe bound.");
+  for (const name of names) {
+    if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
+    remaining();
+    let preliminary: unknown;
+    try {
+      const source = path.join(directory, name), metadata = await lstat(source);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_TICKET_BYTES) continue;
+      preliminary = JSON.parse(await readFile(source, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError || error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (preliminary === null || typeof preliminary !== "object" || !("executionId" in preliminary) || preliminary.executionId !== ticket.executionId) continue;
+    let candidate: ControllerLaunchTicket;
+    try { candidate = await readLaunchTicket(home, name.slice(0, -5), storageStateDirectory); }
+    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") continue; throw error; }
+    if (controllerPayloadHash(candidate) === stopHash) {
+      previousTicket = candidate;
+      if (stoppedTicketInventory.size >= 64) stoppedTicketInventory.delete(stoppedTicketInventory.keys().next().value!);
+      stoppedTicketInventory.set(cacheKey, candidate.launchId);
+      break;
+    }
+  }
+  }
+  if (!previousTicket) throw new Error("Recovered initial input lacks the preceding stopped ticket.");
+  const reread = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+  let result!: RecoverableInitialEvidence;
+  closeJournal(reread, file, () => { result = reread.transaction(() => {
+    inspectReadCompatibleControllerJournal(reread);
+    const evidence = recoverableInitialEvidence(reread, ticket, previousTicket!); remaining(); return evidence;
+  }).deferred(); }, "not-started");
+  return result;
+};
+
+/** Management may close a stranded reservation only after the current native boundary stopped. */
+export const readStoppedRecoverableInitialInput = async (file: string, ticket: ControllerLaunchTicket, home: string, reservationTicket: ControllerLaunchTicket, deadline?: number, storageStateDirectory?: string): Promise<RecoverableInitialEvidence> => {
+  const observed = await readRecoverableInitialInput(file, ticket, home, deadline, storageStateDirectory);
+  const timeout = deadline === undefined ? 5000 : Math.max(1, Math.min(5000, deadline - Date.now()));
+  if (deadline !== undefined && Date.now() >= deadline) throw new Error("Recovered reservation observation exceeded its deadline.");
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout });
+  let result!: RecoverableInitialEvidence;
+  closeJournal(db, file, () => { result = db.transaction(() => {
+    inspectReadCompatibleControllerJournal(db);
+    const evidence = recoverableInitialEvidence(db, ticket, observed.previousTicket);
+    if (evidence.operation === null || evidence.snapshot.lifecycle !== "stopped" || !evidence.snapshot.nativeStopped || evidence.snapshot.controllerProcess === null || evidence.snapshot.stoppedAt === null)
+      throw new Error("Recovered reservation requires a stopped Controller and a prepared original operation.");
+    const currentStop = db.prepare("SELECT snapshot FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(ticket)) as { snapshot: string } | undefined;
+    if (!currentStop || controllerPayloadHash(json(currentStop.snapshot)) !== controllerPayloadHash(evidence.snapshot)) throw new Error("Recovered reservation lacks the current stopped boundary.");
+    if (process.platform === "win32") validateWindowsControllerStopProof(evidence.snapshot, ticket, controllerPayloadHash(ticket));
+    if (controllerPayloadHash(reservationTicket) !== controllerPayloadHash(ticket)) {
+      const prior = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(reservationTicket)) as { snapshot: string; ticket_hash: string } | undefined;
+      if (!prior || BigInt(reservationTicket.executionGeneration) >= BigInt(ticket.executionGeneration)) throw new Error("Recovered reservation lacks its original stopped generation.");
+      validateStoppedInitialTicket(ticket, reservationTicket, prior);
+    }
+    if (deadline !== undefined && Date.now() >= deadline) throw new Error("Recovered reservation observation exceeded its deadline.");
+    return evidence;
+  }).deferred(); }, "not-started");
+  return result;
+};
+
 const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline: number | undefined, allowPreviousFormat: boolean): ControllerSnapshot => {
   try {
     const row = readControllerStopRow(file, deadline, true, undefined, undefined, allowPreviousFormat);
@@ -644,6 +804,18 @@ export const readHistoricalWindowsStoppedControllerGeneration = (file: string, t
   validateWindowsControllerStopProof(row.snapshot, ticket, row.ticketHash);
   if (Date.now() >= deadline) throw new Error("Controller stopped generation observation exceeded its deadline.");
   return row.snapshot;
+};
+
+/** Recover the exact prior ticket's stopped boundary without migrating the journal. */
+export const readHistoricalStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number): ControllerSnapshot | null => {
+  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true);
+  if (row === null) return null;
+  const snapshot = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
+  if (snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.controllerProcess === null || snapshot.stoppedAt === null)
+    throw new Error("Original historical Controller stopped boundary is incomplete.");
+  if (process.platform === "win32") validateWindowsControllerStopProof(snapshot, ticket, row.ticketHash);
+  if (Date.now() >= deadline) throw new Error("Controller stopped generation observation exceeded its deadline.");
+  return snapshot;
 };
 
 export const readProvenWindowsStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {

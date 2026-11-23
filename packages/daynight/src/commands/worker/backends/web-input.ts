@@ -149,7 +149,15 @@ export const createWebInput = (options: WebInputOptions) => {
     if (protocol !== undefined && protocol !== 1) throw new Error("The Controller Worker input protocol is unsupported.");
     if (!matches(options.current(task), ticket, snapshot)) return wait(snapshot, "claim_invalid");
     const state = readProgress(task, ticket, snapshot);
-    if (state.pending !== null) return resolve(task, ticket, snapshot, state, options.readOperation(task, state.pending.operationId, ticket))!;
+    if (state.pending !== null) {
+      const operation = options.readOperation(task, state.pending.operationId, ticket);
+      // The backend verifies the stopped predecessor and the same journal before
+      // each recovered initial submission. The Controller deduplicates this ID in
+      // its native queue and atomically adopts only a still-prepared operation.
+      if (state.pending.purpose === "initial" && BigInt(ticket.executionGeneration) > 1n
+        && snapshot.initialInputState === "not_submitted" && (operation === null || operation.state === "accepted")) state.pending = null;
+      else return resolve(task, ticket, snapshot, state, operation)!;
+    }
 
     if (["dispatching", "unknown"].includes(snapshot.initialInputState)) {
       state.pending = { purpose: "initial", operationId: ticket.initialOperationId, prompt: ticket.initialPrompt, deadline: Infinity, startedAt: options.now() };

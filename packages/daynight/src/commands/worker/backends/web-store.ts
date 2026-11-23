@@ -11,7 +11,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, recoveringInitialGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -70,7 +70,8 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       db.prepare("INSERT INTO orchestration_blockers(identity,data) VALUES (?,?)").run(key(identity), JSON.stringify(blocker));
       return getOrchestrationBlocker(identity)!;
     }),
-    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport): LocalTask => atomic(() => {
+    // The caller verifies the matching journal and stopped predecessor before supplying recoveredInitial.
+    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport, recoveredInitial?: ControllerSnapshot): LocalTask => atomic(() => {
       const task = getTask(identity);
       if (task === null || task.status !== "active") throw new Error("The original active orchestration is missing.");
       requireOrdinary(task);
@@ -79,7 +80,9 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const stoppedRecovery = observed !== null && stoppedOriginalGeneration(task, observed)
         && (task.recovery.retryAuthorized || (expected.source !== "legacy_worktree" && task.recovery.pauseReason === null));
       const correctLegacyLatch = expected.source === "legacy_worktree" && !stoppedRecovery;
-      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && (continuingInitialGeneration(task, observed)
+        || recoveredInitial !== undefined && recoveringInitialGeneration(task, recoveredInitial) && recoveringInitialGeneration(task, observed)
+          && preservesControllerEvidence(recoveredInitial, observed, execution!.launchId));
       if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && !initialContinuation && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");
       if (correctLegacyLatch && (!legacyBranchLatch(task) || legacyReport === undefined || !same(legacyReport, execution?.startupReport))) throw new Error("A native recovery block cannot be cleared without the original legacy report revision.");
       const recovery = correctLegacyLatch ? { count: task.recovery.count, pauseReason: null, retryAuthorized: false } : task.recovery;
