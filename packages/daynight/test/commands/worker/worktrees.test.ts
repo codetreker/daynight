@@ -1751,7 +1751,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const notification = waiting[captured++];
       if (notification === undefined) throw new Error("Unexpected extra busy retry delay.");
       // Only a delay reached from the selected root's synthetic EBUSY is controlled.
-      timer = captureSynchronousDeadline(() => new Promise<T>(resolve => setTimeout(resolve, milliseconds, value)));
+      timer = captureSynchronousDeadline(() => new Promise<T | undefined>(resolve => setTimeout(resolve, milliseconds, value)));
       timer.markReady();
       notification.resolve(timer);
       return timer.result as Promise<T>;
