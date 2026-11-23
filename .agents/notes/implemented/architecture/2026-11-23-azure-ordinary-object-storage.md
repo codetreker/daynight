@@ -40,6 +40,5 @@ existing fixed-path lifecycle and require separate version reclamation.
 The adapter can be verified independently of service selection. Scratch writes
 consume local disk until publication finishes, and failures retain their reported
 publication outcome. An ETag mismatch on a retried read is an error rather than
-permission to substitute new bytes. Azure service configuration, identity wiring
-and streaming archive support are separate work; ordinary objects alone do not
-enable the Azure runtime backend.
+permission to substitute new bytes. The [Azure archive and startup decision](2026-11-23-azure-archive-backend.md)
+connects this adapter to the service with streaming archive support.

@@ -999,7 +999,8 @@ echoing argument values. `verify-storage` validates only database and storage
 semantics and opens the backup storage read-only. It reports each receiving v2
 file’s Session ID, file ID, and recovery offset from the paired volume. Treat
 these observations as usable only when the entire command exits successfully
-(status 0); a later failure invalidates earlier output. Logs remain on stderr.
+(status 0); a later failure invalidates earlier output. It requires the local
+backend and refuses Azure configuration. Logs remain on stderr.
 
 Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
 selected root, then appends the same JSON records to stderr and
@@ -1020,11 +1021,16 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
-| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
+| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and local-backend storage leases. An empty value disables monitoring and selects standalone local gates | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
+| `DAYNIGHT_STORAGE_BACKEND` | `local` or `azure-blob` | `local` |
+| `DAYNIGHT_STORAGE_AZURE_ENDPOINT` | HTTPS Blob service endpoint for Managed Identity | Empty |
+| `DAYNIGHT_STORAGE_AZURE_CONTAINER` | Existing Azure Blob container | Empty |
+| `DAYNIGHT_STORAGE_AZURE_MANAGED_IDENTITY_CLIENT_ID` | User-assigned Managed Identity client ID; omit for system-assigned identity | Empty |
+| `DAYNIGHT_STORAGE_AZURE_CONNECTION_STRING` | Test connection string for Azurite; mutually exclusive with endpoint and identity settings | Empty |
 | `DAYNIGHT_STORAGE_ARCHIVE_STAGING_TOPOLOGY_VERIFIED` | Declare that the actual archive volume topology has been verified and enable the local storage probe | `false` |
-| `DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED` | Advertise and accept new streaming archive uploads; requires verified staging topology | `false` |
+| `DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED` | Advertise and accept new streaming archive uploads; local storage requires verified staging topology | `false` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin on a separate hostname; HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
@@ -1053,12 +1059,47 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
-Before enabling archive staging, verify locking, visibility and sync semantics on
+Select Azure explicitly for a single Server instance with an existing container
+and a Managed Identity with Blob data access. Azure uses process-local storage
+gates even when Redis is configured for monitoring; multiple Server processes
+sharing an Azure container are not supported. The server checks container
+access within the startup timeout. The connection string and identity modes
+cannot be combined. `storage.root`
+remains a writable local scratch directory for request-scoped files.
+
+```yaml
+storage:
+  backend: azure-blob
+  archive_upload_v2_enabled: true
+  azure:
+    endpoint: "https://example.blob.core.windows.net"
+    container: "daynight"
+    # managed_identity_client_id: "<user-assigned-client-id>"
+```
+
+For isolated Azurite tests, use the test account's connection string instead:
+
+```yaml
+storage:
+  backend: azure-blob
+  archive_upload_v2_enabled: true
+  azure:
+    container: "daynight-test"
+    connection_string: "<Azurite connection string>"
+```
+
+Create the container before startup. Keep the connection string in private
+configuration or the corresponding environment variable.
+
+Before enabling local archive staging, verify locking, visibility and sync semantics on
 the actual volume across all participating instances. The topology flag records
 that declaration and runs the local probe; it does not replace multi-instance
 verification. Keep it enabled while version 2 files remain in flight. Disable
 new version 2 registration independently with `archive_upload_v2_enabled`;
-existing files still need their original protocol to settle. Streaming requests
+existing files still need their original protocol to settle. Set
+`archive_upload_v2_enabled` to `true` to accept new Azure streaming archives.
+Azure uses the Blob
+length for recovery and appends up to 1 MiB per operation. Streaming requests
 have a 30-second read-idle limit and a 30-minute total limit.
 
 The Session archive limits may be set independently as `session.archive_max_concurrent`
@@ -1387,7 +1428,7 @@ The independent startup/shutdown check runs the command tests with
 with its dedicated test transport build. Production builds use the real Web
 assets described under [Build and run](#build-and-run).
 
-The Azure ordinary-object contract uses a separate Azurite instance. For local
+The Azure storage and startup contracts use a separate Azurite instance. For local
 verification, start the same pinned image as CI with an isolated account and
 data directory, then use its reported Blob port in the test connection string:
 
@@ -1399,6 +1440,8 @@ docker run --detach --name daynight-azurite-tests \
 azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
 export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:$azurite_port/daynight;"
 DAYNIGHT_TEST_AZURITE_PRESERVE=1 go test -count=1 -timeout=5m -run '^TestAzurite$' ./internal/core/filestorage/azure
+go test -count=1 -timeout=5m -run '^TestAzuriteArchiveStaging$' ./internal/core/filestorage/azure
+GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
 go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
 docker restart daynight-azurite-tests
 azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
@@ -1410,8 +1453,8 @@ docker rm --force --volumes daynight-azurite-tests
 The account and key above are disposable test credentials. The first test
 preserves its container for the restart check; the last test removes it. The
 business tests also require `DAYNIGHT_TEST_DATABASE_URL` set to an isolated
-PostgreSQL database. CI runs the object and business tests against its own
-Azurite service.
+PostgreSQL database. The startup test uses the overlay produced by `scripts/check.sh`.
+CI runs the object, archive, startup and business tests against its own Azurite service.
 
 ### Startup and shutdown tests
 
@@ -3443,13 +3486,15 @@ Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
 reason references before deduplication. Public summaries contain fixed reason
 codes and projection quality, never private references or hidden counts.
 
-`DAYNIGHT_REDIS_URL` enables monitoring and Redis storage gates, each with a
-separate client closed during shutdown. Use a valid `redis` or `rediss` URL.
+`DAYNIGHT_REDIS_URL` enables monitoring and, for the local backend, Redis storage
+gates, each with a separate client closed during shutdown. Azure storage gates
+remain process-local and support one Server instance. Use a valid `redis` or
+`rediss` URL.
 The only supported query parameter is `db`. An empty value returns 503 for
 monitoring and selects process-local storage gates for one Server instance.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
-For shared file storage, point all Server instances at the same Redis database
+For shared local file storage, point all Server instances at the same Redis database
 with `noeviction`. Give each independently operated storage deployment its own
 Redis database. Redis stores gate keys with short TTLs. PostgreSQL and the
 file store retain business data. Redis errors fail operations that need a

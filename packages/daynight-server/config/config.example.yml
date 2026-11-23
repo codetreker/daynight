@@ -12,6 +12,7 @@ database:
   url: "postgres://daynight:replace-me@postgres/daynight?sslmode=require" # required
 
 storage:
+  backend: "local" # or azure-blob; see README for identity and Azurite configuration
   root: "storage"
   archive_staging_topology_verified: false
   archive_upload_v2_enabled: false

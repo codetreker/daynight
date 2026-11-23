@@ -39,6 +39,12 @@ type ArchiveStagingBackend interface {
 	AcquireArchiveStaging(context.Context, sessionarchive.Namespace, bool) (ArchiveStaging, error)
 }
 
+// ArchiveStagingChunkSizer selects the maximum read and append size for a
+// streaming upload. Backends without it use the local 512 KiB policy.
+type ArchiveStagingChunkSizer interface {
+	ArchiveStagingChunkSize() int
+}
+
 // ArchiveStagingReader reads a stopped, paired backup without mutating it.
 type ArchiveStagingReader interface {
 	OpenArchiveStaging(context.Context, sessionarchive.Namespace, string) (Object, error)

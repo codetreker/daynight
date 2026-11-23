@@ -212,7 +212,12 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 		logger = slog.Default()
 	}
 	return openApp(ctx, c, logger, appOpeners{
-		files: func(root string) (appStorage, error) { return openFileStorage(root, c.Monitoring.Redis.RedisURL) },
+		filesContext: func(ctx context.Context, root string) (appStorage, error) {
+			if c.Storage.BackendName() == "azure-blob" {
+				return openAzureFileStorage(ctx, c.Storage, nil, nil)
+			}
+			return openFileStorage(root, c.Monitoring.Redis.RedisURL)
+		},
 		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
 			return openPostgresWithLogger(ctx, databaseURL, logger)
 		},
@@ -240,10 +245,11 @@ func openMonitoring(rawURL string) (monitoringBackend, error) {
 }
 
 type appOpeners struct {
-	files      func(string) (appStorage, error)
-	database   func(context.Context, string) (persistenceBackend, error)
-	monitoring func(string) (monitoringBackend, error)
-	metrics    func() (*prometheus.Registry, error)
+	files        func(string) (appStorage, error)
+	filesContext func(context.Context, string) (appStorage, error)
+	database     func(context.Context, string) (persistenceBackend, error)
+	monitoring   func(string) (monitoringBackend, error)
+	metrics      func() (*prometheus.Registry, error)
 }
 
 func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open appOpeners) (*App, error) {
@@ -256,11 +262,23 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	startup, cancel := context.WithTimeout(ctx, c.Server.StartupTimeout)
 	defer cancel()
-	files, err := open.files(c.Storage.Root)
+	var files appStorage
+	if open.filesContext != nil {
+		files, err = open.filesContext(startup, c.Storage.Root)
+	} else {
+		files, err = open.files(c.Storage.Root)
+	}
 	if err != nil {
+		if c.Storage.BackendName() == "azure-blob" {
+			return nil, err
+		}
 		return nil, &configvalue.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
 	}
-	if c.Storage.ArchiveStagingTopologyVerified {
+	if c.Storage.BackendName() == "azure-blob" {
+		if _, ok := files.(filestorage.ArchiveStagingBackend); !ok {
+			return nil, errors.Join(errors.New("Azure archive staging backend unavailable"), files.Close())
+		}
+	} else if c.Storage.ArchiveStagingTopologyVerified {
 		staging, ok := files.(interface {
 			EnableArchiveStaging(context.Context, bool) error
 		})

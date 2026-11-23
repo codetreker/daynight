@@ -237,13 +237,17 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, n sessionarchive.Na
 	if err := n.Validate(); err != nil {
 		return errors.Join(filestorage.ErrInvalidAddress, err)
 	}
-	return s.sweep(ctx, sessionarchive.Bucket, n.Directory())
+	return s.withArchivePermit(ctx, n, func() error { return s.sweep(ctx, sessionarchive.Bucket, n.Directory()) })
 }
 func (s *Storage) DeleteSessionResources(ctx context.Context, n sessionresource.Namespace) error {
 	if n.Directory() == "" {
 		return filestorage.ErrInvalidAddress
 	}
-	return s.sweep(ctx, sessionresource.Bucket, n.Directory())
+	archive, err := resourceArchiveNamespace(n)
+	if err != nil {
+		return err
+	}
+	return s.withArchivePermit(ctx, archive, func() error { return s.sweep(ctx, sessionresource.Bucket, n.Directory()) })
 }
 func (s *Storage) DeleteSessionUpload(ctx context.Context, n sessionresource.Namespace, id string) error {
 	p, err := n.UploadPath(id)
