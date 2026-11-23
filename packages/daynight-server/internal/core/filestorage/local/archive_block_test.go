@@ -174,6 +174,108 @@ func TestArchiveBlockFailuresKeepOutcomeAndBytes(t *testing.T) {
 	}
 }
 
+type archiveBlockGateFailsOnReuse struct{ calls int }
+
+func (*archiveBlockGateFailsOnReuse) Close() error { return nil }
+func (*archiveBlockGateFailsOnReuse) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return ctx, func() {}
+}
+func (g *archiveBlockGateFailsOnReuse) VerifyGate(context.Context) error {
+	g.calls++
+	if g.calls == 2 {
+		return filestorage.ErrGateLost
+	}
+	return nil
+}
+
+func TestArchiveBlockReuseRequiresInodeSyncAndCurrentGate(t *testing.T) {
+	for _, kind := range []string{"inode sync", "gate lost"} {
+		t.Run(kind, func(t *testing.T) {
+			s, root := newStorage(t)
+			n, id := blockNamespace(t), uuid.NewString()
+			data := []byte("durable original")
+			if err := s.PutArchiveBlock(t.Context(), n, id, 0, data); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("existing inode sync failed")
+			calls := 0
+			gate := &archiveBlockGateFailsOnReuse{}
+			ctx := t.Context()
+			if kind == "inode sync" {
+				s.fileSync = func(file *os.File) error {
+					calls++
+					// The temporary inode is synced first; the second sync is the
+					// existing inode whose durability the retry must prove.
+					if calls == 2 {
+						return failure
+					}
+					return file.Sync()
+				}
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = filestorage.GateContext(ctx, gate)
+				defer cancel()
+				failure = filestorage.ErrGateLost
+			}
+			err := s.PutArchiveBlock(ctx, n, id, 0, data)
+			if !errors.Is(err, failure) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+				t.Fatalf("unconfirmed reuse: %v", err)
+			}
+			if kind == "gate lost" && gate.calls != 2 {
+				t.Fatalf("gate was not rechecked before reuse: %d", gate.calls)
+			}
+			s.fileSync = (*os.File).Sync
+			if err = s.PutArchiveBlock(t.Context(), n, id, 0, data); err != nil {
+				t.Fatalf("reuse retry: %v", err)
+			}
+			name, _ := n.BlockPath(id, 0)
+			if got := read(t, s, sessionarchive.Bucket, name); string(got) != string(data) {
+				t.Fatalf("retry changed original: %q", got)
+			}
+			assertNoTemporary(t, root)
+		})
+	}
+}
+
+func TestArchiveBlockReuseRejectsCancelledReadAndSymlink(t *testing.T) {
+	s, root := newStorage(t)
+	n, id := blockNamespace(t), uuid.NewString()
+	data := []byte("durable original")
+	if err := s.PutArchiveBlock(t.Context(), n, id, 0, data); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := n.BlockPath(id, 0)
+	address := sessionarchive.Bucket + "/" + name
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	s.namespace.Lock()
+	err := s.verifyExistingArchiveBlock(ctx, address, data)
+	s.namespace.Unlock()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled verification: %v", err)
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(address))
+	if err := os.Remove(fullPath); err != nil {
+		t.Fatal(err)
+	}
+	protected := filepath.Join(root, "protected")
+	if err := os.WriteFile(protected, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(protected, fullPath); err != nil {
+		t.Fatal(err)
+	}
+	s.namespace.Lock()
+	err = s.verifyExistingArchiveBlock(t.Context(), address, data)
+	s.namespace.Unlock()
+	if !errors.Is(err, filestorage.ErrNotRegular) {
+		t.Fatalf("existing symlink accepted: %v", err)
+	}
+	if got, err := os.ReadFile(protected); err != nil || string(got) != string(data) {
+		t.Fatalf("protected file changed: %q, %v", got, err)
+	}
+}
+
 type revokedArchiveBlockGate struct{}
 
 func (revokedArchiveBlockGate) Close() error { return nil }

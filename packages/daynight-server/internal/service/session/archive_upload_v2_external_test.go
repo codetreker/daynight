@@ -602,11 +602,27 @@ func TestArchiveV2StoppedHTTPAndStorage(t *testing.T) {
 			raw, _ = request(http.MethodGet, replacementPath+"/status", "", nil, nil, http.StatusOK)
 			expectReceipt(raw, "receiving", "0")
 			put(replacementPath, timeline, 0, timeline, nil, http.StatusOK)
+			faults.blockedFile = replacement
 			raw, _ = request(http.MethodPost, replacementPath+"/complete", "", nil, version, http.StatusOK)
 			expectReceipt(raw, "complete", strconv.Itoa(len(timeline)))
+			var timelineReleased bool
+			if err = db.Pool.QueryRow(ctx, `SELECT staging_released FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, snapshot.SessionID, replacement).Scan(&timelineReleased); err != nil || timelineReleased {
+				t.Fatalf("timeline cleanup failure was not retained: %v %v", timelineReleased, err)
+			}
+			faults.blockedFile = ""
 			manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentKind: "native_timeline", RecordID: snapshot.SessionID, Fence: snapshot.Fence, Provider: registration.Provider, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Timeline: sp.ArchiveFileReference{FileID: replacement, SHA256: digest(timeline), ByteLength: strconv.Itoa(len(timeline))}, Resources: sealed.Resources, Completeness: "complete"}
 			manifestBytes := marshal(manifest)
 			request(http.MethodPut, base+"/archive/content", "application/json", manifestBytes, nil, http.StatusOK)
+			if err = db.Pool.QueryRow(ctx, `SELECT staging_released FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, snapshot.SessionID, replacement).Scan(&timelineReleased); err != nil || !timelineReleased {
+				t.Fatalf("manifest did not retry timeline cleanup: %v %v", timelineReleased, err)
+			}
+			replacementBlock, err := namespace.BlockPath(replacement, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = files.Open(ctx, sessionarchive.Bucket, replacementBlock); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("manifest left timeline staging block: %v", err)
+			}
 			verifyBackup()
 			if got, _ := request(http.MethodGet, replacementPath, "", nil, nil, http.StatusOK); !bytes.Equal(got, timeline) {
 				t.Fatalf("timeline mismatch: %s", got)

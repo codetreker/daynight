@@ -2,11 +2,13 @@ package session_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
@@ -41,6 +43,61 @@ func TestLegacyArchiveDAOCannotChangeNewUpload(t *testing.T) {
 	var proof []byte
 	if err := db.Pool.QueryRow(ctx, `SELECT accepted_offset,state,prefix_proof FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, id, file.FileID).Scan(&offset, &state, &proof); err != nil || offset != 4 || state != "receiving" || len(proof) != 32 {
 		t.Fatalf("v2 state changed: offset=%d state=%s proof=%x err=%v", offset, state, proof, err)
+	}
+}
+
+func TestArchiveFileReadsRejectInvalidStoredVersionMetadata(t *testing.T) {
+	db := isolatedStore(t)
+	_, id := prepareArchiveSession(t, db)
+	ctx := t.Context()
+	fileID := uuid.NewString()
+	_, err := db.Pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path) VALUES($1,$2,'history',$3,8,8,'complete','history/original')`, id, fileID, archiveHashOf("original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		version   int
+		proof     []byte
+		successor any
+		terminal  any
+	}{
+		{"unknown version", 3, nil, nil, nil},
+		{"v2 missing proof", 2, nil, nil, nil},
+		{"v2 short proof", 2, []byte{1}, nil, nil},
+		{"v1 proof", 1, bytes.Repeat([]byte{1}, 32), nil, nil},
+		{"v1 successor", 1, nil, uuid.NewString(), nil},
+		{"v1 terminal error", 1, nil, nil, `{"code":"staging_corrupt"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Pool.Exec(ctx, `UPDATE session_archive_files SET upload_version=$3,prefix_proof=$4,successor_file_id=$5,terminal_error=$6::jsonb WHERE session_id=$1 AND file_id=$2`, id, fileID, tc.version, tc.proof, tc.successor, tc.terminal); err != nil {
+				t.Fatal(err)
+			}
+			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+				dao := base.(store.SessionArchiveDAO)
+				if _, err := dao.SessionArchiveFile(ctx, id, fileID); err == nil {
+					t.Fatal("individual read accepted invalid persisted metadata")
+				}
+				if files, err := dao.SessionArchiveFiles(ctx, id); err == nil || files != nil {
+					t.Fatalf("inventory exposed invalid persisted metadata: %+v %v", files, err)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestArchiveFileInventoryHonorsCanceledContext(t *testing.T) {
+	db := isolatedStore(t)
+	tx, err := db.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollbackSessionTestTransaction(t, tx)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if files, err := pgsession.New(tx).(store.SessionArchiveDAO).SessionArchiveFiles(ctx, uuid.NewString()); !errors.Is(err, context.Canceled) || files != nil {
+		t.Fatalf("canceled inventory returned partial data: %+v %v", files, err)
 	}
 }
 

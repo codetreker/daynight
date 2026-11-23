@@ -1216,9 +1216,10 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 	}
 	ctx, cancelGate := op.GateContext(ctx)
 	defer cancelGate()
+	archiveCtx := ctx
 	defer func() {
 		if err == nil {
-			cleanup, cancel := filestorage.GateCleanupContext(ctx)
+			cleanup, cancel := filestorage.GateCleanupContext(archiveCtx)
 			if e := op.cleanupV2Terminal(cleanup); e != nil && !errors.Is(e, model.ErrNotFound) {
 				slog.ErrorContext(ctx, "Archive staging cleanup failed", "session_id", op.id, "error", e)
 			}
