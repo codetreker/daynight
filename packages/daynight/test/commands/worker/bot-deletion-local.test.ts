@@ -96,7 +96,7 @@ test("a different machine needs its original confirmed hosting receipt before pr
   expect(create).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce(); expect(existsSync(f.paths.lockFile)).toBe(false);
 });
 
-test.each(["pending", "stale"])("retained %s hosting authority prevents local process control", async status => {
+test.each([["pending", false], ["stale", false], ["pending", true], ["stale", true]] as const)("retained %s hosting authority prevents local process control with never-started=%s", async (status, neverStarted) => {
   const f = fixture(), local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
   try {
     const record = local.store.get(f.owner, id(3))!;
@@ -110,7 +110,9 @@ test.each(["pending", "stale"])("retained %s hosting authority prevents local pr
         hostingGeneration: "1", botVersion: "3", ...f.binding, nativeSessionId: null, grantExpiresAt: null, controllerTokenHash: null } });
       recovery.finishOperation(record, id(90));
     }
-    const cleanup = local.store.prepareDeletion(record, stoppedProof(record), []);
+    const stop = stoppedProof(record);
+    if (neverStarted) stop.stopProof.kind = "never_started";
+    const cleanup = local.store.prepareDeletion(record, stop, []);
     local.store.bindDeletionWorker(cleanup, f.owner.workerId);
   } finally { local.close(); }
   const create = vi.spyOn(botProcess, "createBotProcess");
@@ -226,6 +228,67 @@ test("explicit local recovery reuses the real never-started proof protocol and r
   const local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
   try { expect(local.store.get(f.owner, id(3))).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, stop: expect.objectContaining(f.binding) } }); }
   finally { local.close(); }
+});
+
+test.each(["private removal", "completion transport"])("never-started recovery resumes its exact receipt after %s failure", async failure => {
+  const f = fixture(), remove = deletionFiles.removeBotDeletionFile, receipts: unknown[] = [];
+  const file = resolveBotPaths(f.paths.stateDirectory, id(3)).databaseFile;
+  const readSaved = () => {
+    const db = new Database(file, { readonly: true });
+    try { return JSON.parse((db.prepare("SELECT record FROM bots").get() as { record: string }).record) as BotRecord; }
+    finally { db.close(); }
+  };
+  let fail = true, current = f.bot;
+  const journal = readSaved().intent!.journalPath;
+  mkdirSync(path.dirname(journal), { recursive: true }); writeFileSync(journal, "original private journal");
+  vi.spyOn(deletionFiles, "removeBotDeletionFile").mockImplementation(async (target, signal) => {
+    if (failure === "private removal" && fail) { fail = false; throw new Error("controlled private removal failure"); }
+    await remove(target, signal);
+  });
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    if (init.method === "POST") {
+      const receipt = JSON.parse(init.body as string); receipts.push(receipt);
+      if (failure === "completion transport" && fail) { fail = false; throw new TypeError("controlled completion transport loss"); }
+      current = { ...current, version: "5", deletion: { ...current.deletion, workerCleanup: receipt.result, serverCleanup: { state: "completed", code: null } } };
+    }
+    return new Response(JSON.stringify(current), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
+  }));
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toThrow();
+  const original = readSaved().cleanup!;
+  expect(original.localCompleted).toBe(failure === "completion transport");
+  expect(original.stop).toMatchObject({ ...f.binding, stopProof: { kind: "never_started" } });
+  expect(original.workerId).toBe(f.owner.workerId);
+  expect(current).toEqual(f.bot); expect(existsSync(f.paths.lockFile)).toBe(false);
+  writeFileSync(f.paths.configFile, `workerId: ${id(21)}\n`);
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "wrong_worker" });
+  writeFileSync(f.paths.configFile, `workerId: ${f.owner.workerId}\n`);
+  await expect(recoverLocalBotDeletion(f.input)).resolves.toEqual({ receiptConfirmed: true });
+  expect(readSaved()).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, targets: [], stop: original.stop } });
+  expect(receipts).toHaveLength(failure === "private removal" ? 1 : 2);
+  for (const receipt of receipts) expect(receipt).toEqual({ deletionId: id(8), stop: original.stop, result: { state: "completed", code: null } });
+  expect(existsSync(journal)).toBe(false); expect(existsSync(f.paths.lockFile)).toBe(false);
+});
+
+test("a definitive never-started recovery rejection revokes replay across a real store reopen", async () => {
+  const f = fixture(), receipts: unknown[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    if (init.method === "POST") {
+      receipts.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ error: { code: "session_conflict", message: "Original execution consumed its grant.", requestId: "fixture" } }), {
+        status: 409, headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) },
+      });
+    }
+    return new Response(JSON.stringify(f.bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
+  }));
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "stop_unproven" });
+  const local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
+  try {
+    const record = local.store.get(f.owner, id(3))!;
+    expect(record).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, stop: { stopProof: { kind: "never_started" } } } });
+    expect(record.cleanup).not.toHaveProperty("workerId");
+  } finally { local.close(); }
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "evidence_missing" });
+  expect(receipts).toHaveLength(1); expect(existsSync(f.paths.lockFile)).toBe(false);
 });
 
 test("a missing execution row permits only journal stop compensation and never completes deletion", async () => {

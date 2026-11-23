@@ -29,13 +29,23 @@ replacement execution or partial cleanup plan. Ordinary Worker operation and
 automatic retries do not use this local compensation.
 
 Before removing any private files, explicit recovery saves the verified hosting
-Worker as optional `BotCleanup.workerId` alongside real stop proof and the
-complete cleanup plan. If cleanup removes `recovery.json`, a duty matching the
+Worker as optional `BotCleanup.workerId` alongside a validated stop and the
+complete cleanup plan. For `never_started`, the retained first-generation
+execution must prove no submission or an explicit OS launch refusal, with the
+saved proof matching the original execution fence. An unfinished plan rechecks
+that evidence on retry; missing or conflicting execution evidence cannot be
+replaced by the Worker binding. Logical erasure preserves the binding so the
+same Worker can reconcile the original receipt after execution records are gone.
+If cleanup removes `recovery.json`, a duty matching the
 local Worker, original deletion ID/version and stop proof permits remaining
 cleanup and its receipt. Pending, stale or foreign hosting records still refuse
 recovery. The duty grants no new stop, start or general hosting authority. The
 original Worker keeps its existing ownership admission; a replacement Worker
 handling an older duty without this identity still needs confirmed hosting evidence.
+Historical completed `never_started` duties without this verified binding remain
+insufficient. A `session_conflict` followed by an authoritative read showing
+Worker cleanup incomplete removes that completed duty's `never_started` retry
+binding; transport uncertainty does not remove it.
 
 The completion request distinguishes failures before submission from unknown
 outcomes after dispatch. The server commits the Worker receipt before cleanup
@@ -55,6 +65,11 @@ the ordinary completion rules. It cannot settle missing evidence.
 **Only suppress repeated receipts.** This avoids the loop but does not use valid
 remaining local material to stop the original execution. Explicit compensation
 recovers that opportunity without making automatic retries destructive.
+
+**Reject every saved never-started proof.** The historical-proof guard prevents
+lost execution history from being treated as no execution, but also blocks a
+newly validated plan after a transient cleanup failure. Rechecking retained
+execution evidence before binding the duty preserves that distinction.
 
 **Treat validated HTTP 4xx as definite receipt rejection.** This would distinguish
 ordinary admission failures, but the existing endpoint returns the same errors

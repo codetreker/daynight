@@ -85,6 +85,7 @@ const preflight = async (input: RecoveryInput): Promise<string> => {
         || deletion.requestedVersion !== input.bot.deletion.requestedVersion)) throw new DeletionLocalError("deletion_changed");
     }
     if (record === undefined || record.migration !== undefined || record.cleanup?.stop?.stopProof.kind === "never_started"
+      && !(record.cleanup.localCompleted && record.cleanup.workerId !== undefined || record.intent !== null && executionRecordPresent)
       || record.cleanup?.stop == null && (record.intent === null || !executionRecordPresent
         && (!existsSync(record.intent.journalPath) || !existsSync(record.intent.ticketPath)))) throw new DeletionLocalError("evidence_missing");
   } catch (cause) {
@@ -129,7 +130,7 @@ export const recoverLocalBotDeletion = async (input: RecoveryInput & {
     // Cleanup can erase recovery.json. Its stopped, machine-bound responsibility
     // then permits only the saved targets and receipt, not control of a writer.
     const continuingCleanup = hostingState === null && record.cleanup?.workerId === owner.workerId
-      && record.cleanup.stop !== null && record.cleanup.stop.stopProof.kind !== "never_started";
+      && record.cleanup.stop !== null;
     if (!continuingCleanup && !hosting.ownsHosting(record)) throw new DeletionLocalError("wrong_worker");
     const sessionApi = createBotSessionApi({ owner, serverToken: input.serverToken, stateDirectory: paths.stateDirectory, recovery: hosting });
     process = createBotProcess({ homeDirectory: input.homeDirectory, packageDirectory: input.packageDirectory,

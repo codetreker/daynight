@@ -206,6 +206,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     freezeToolLaunch: (record, launch, observation) => required(record).store.freezeToolLaunch(record, launch, observation),
     prepareDeletion: (record, stop, targets) => required(record).store.prepareDeletion(record, stop, targets),
     bindDeletionWorker: (record, workerId) => required(record).store.bindDeletionWorker(record, workerId),
+    rejectNeverStartedDeletion: record => required(record).store.rejectNeverStartedDeletion(record),
     completeDeletionTarget: (record, file) => required(record).store.completeDeletionTarget(record, file),
     finishDeletion: record => required(record).store.finishDeletion(record),
   };

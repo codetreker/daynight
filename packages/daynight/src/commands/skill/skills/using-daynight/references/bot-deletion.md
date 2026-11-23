@@ -17,12 +17,22 @@ uses retained evidence to stop and clean the original execution. It does not
 create a replacement execution. Locked or unreadable storage is a failure, not
 permission to remove it.
 
-Recovery saves the verified Worker identity with real stop proof and the complete
-cleanup plan before removing files. That retained duty lets the same Worker
-continue cleanup and its receipt if `recovery.json` was already removed. The
+Recovery saves the verified Worker identity with validated stop evidence and the
+complete cleanup plan before removing files. A `never_started` plan must match
+retained first-generation execution evidence proving no submission or an explicit
+OS launch refusal. An unfinished plan rechecks that evidence before continuing;
+the verified duty survives completed local erasure for receipt reconciliation.
+Historical completed plans without that binding remain insufficient.
+
+The retained duty lets the same Worker continue cleanup and its receipt if
+`recovery.json` was already removed. The
 original Worker keeps its existing ownership admission. For a replacement Worker,
 older duties without that identity still need confirmed hosting evidence; do not
 edit records to invent it.
+
+If a completion conflict and subsequent Bot read show Worker cleanup incomplete,
+the invalid never-started receipt loses its retry binding. Transport uncertainty
+does not remove that binding.
 
 When full stop proof and private cleanup are confirmed, the command reports
 through the existing completion protocol. Both Worker and server cleanup must

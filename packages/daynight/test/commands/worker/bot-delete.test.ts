@@ -34,7 +34,7 @@ const fixture=()=>{
  const process={withDeletion:async<T>(_r:BotRecord,_s:AbortSignal,action:(stop:()=>Promise<typeof stopProof>)=>Promise<T>)=>action(stop)};
  const remote={owner,read:vi.fn(async()=>remoteBot),list:vi.fn(async()=>[remoteBot])};
  const api={completeDeletion:vi.fn(async(_record:BotRecord,receipt:any)=>{remoteBot={...remoteBot,version:String(Number(remoteBot.version)+1),deletion:{...remoteBot.deletion,workerCleanup:receipt.result,serverCleanup:{state:receipt.result.state==="completed"?"completed":"pending",code:null}}};return remoteBot;})};
- const create=(dependencies={})=>createBotDeletion({homeDirectory:home,store,executions,process:process as never,sessionApi:api as never,remote,dependencies});
+ const create=(dependencies={},recoveryWorkerId?:string)=>createBotDeletion({homeDirectory:home,store,executions,process:process as never,sessionApi:api as never,remote,dependencies,...(recoveryWorkerId===undefined?{}:{recoveryWorkerId})});
  return {home,database,store,executions,intent,current,stop,stopProof,remote,api,create,setRemote:(bot:BotDeleted)=>{remoteBot=bot;}};
 };
 
@@ -124,6 +124,56 @@ test("partial execution evidence loss reports recovery and retains the original 
  expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
  await f.create().advance(f.current(), new AbortController().signal);
  expect(f.stop).toHaveBeenCalledOnce(); expect(f.api.completeDeletion).toHaveBeenCalledOnce();
+});
+
+test.each(["not-submitted", "rejected"])("explicit recovery resumes a retained %s plan without replacing its proof or completed targets", async state => {
+ const f = fixture(), { captureBotDeletionFiles, removeBotDeletionFile } = await import("../../../src/commands/worker/bots/delete-files.js");
+ const signal = new AbortController().signal, record = f.current();
+ if (state === "rejected") f.executions.update(record, { launchSubmission: "unknown", startup: { state: "failed", reasonCode: "controller_launch_failed" } });
+ const targets = await captureBotDeletionFiles(f.home, record, f.executions.get(record), signal);
+ const plan = f.store.prepareDeletion(record, f.stopProof, targets);
+ const ticket = plan.cleanup!.targets.find(target => target.path === f.intent.ticketPath)!;
+ await removeBotDeletionFile(ticket, signal); f.store.completeDeletionTarget(plan, ticket.path);
+ writeFileSync(ticket.path, "replacement ticket must survive");
+ f.setRemote({ ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ await f.create().advance(f.current(), signal, { recover: true });
+ expect(f.stop).not.toHaveBeenCalled(); expect(existsSync(ticket.path)).toBe(true);
+ expect(f.api.completeDeletion.mock.calls[0]![1]).toEqual({ deletionId: id(8), stop: f.stopProof, result: { state: "completed", code: null } });
+});
+
+test.each(["missing", "submitted", "ready", "different proof", "stamped missing", "stamped submitted", "stamped ready", "stamped different proof"])("explicit recovery rejects a never-started plan with %s original evidence", async invalid => {
+ const f = fixture(), { captureBotDeletionFiles } = await import("../../../src/commands/worker/bots/delete-files.js");
+ const signal = new AbortController().signal, record = f.current();
+ const targets = await captureBotDeletionFiles(f.home, record, f.executions.get(record), signal);
+ f.store.prepareDeletion(record, f.stopProof, targets);
+ const failed = { ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted;
+ f.store.observe(record.owner, failed, 4); f.setRemote(failed);
+ if (invalid.startsWith("stamped")) f.store.bindDeletionWorker(f.current(), record.owner.workerId);
+ if (invalid.endsWith("missing")) f.database.prepare("DELETE FROM bot_executions").run();
+ else if (invalid.endsWith("submitted")) f.executions.update(f.current(), { launchSubmission: "unknown" });
+ else if (invalid.endsWith("ready")) f.executions.update(f.current(), { startup: { state: "ready", reasonCode: "ready" } });
+ else {
+  const changed = f.current(); changed.cleanup!.stop!.stopProof.recordId = id(90);
+  f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(changed));
+ }
+ await expect(f.create({}, record.owner.workerId).advance(f.current(), signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
+ expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
+});
+
+test("a definitive rejection revokes never-started recovery replay without treating transport loss as rejection", async () => {
+ const f = fixture(), signal = new AbortController().signal;
+ f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ const manager = f.create({}, f.current().owner.workerId);
+ f.api.completeDeletion.mockRejectedValueOnce(new Error("completion response lost"));
+ await expect(manager.advance(f.current(), signal, { recover: true })).rejects.toThrow("response lost");
+ expect(f.current().cleanup).toMatchObject({ localCompleted: true, workerId: f.current().owner.workerId });
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+  status: 409, serverError: { code: "session_conflict", message: "Original execution consumed its grant.", requestId: "fixture" }, cause: new Error("rejected") }));
+ await manager.advance(f.current(), signal, { recover: true });
+ expect(f.current().cleanup).not.toHaveProperty("workerId");
+ await expect(manager.advance(f.current(), signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
 });
 
 test("a rejected historical never-started receipt retains the service failure without inferring a binding", async () => {

@@ -10,7 +10,7 @@ import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { FrozenToolObservation } from "../types.js";
-import type { BotExecution } from "./execution-store.js";
+import { hasNeverStartedDeletionEvidence, type BotExecution } from "./execution-store.js";
 import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type Bot, type BotOwner, type BotRecord, type BotLaunchIntent, type BotRoleConfiguration } from "./types.js";
 
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
@@ -64,7 +64,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       if (cleanup.localCompleted && (cleanup.targets.length !== 0 || record.intent !== null || record.definition !== null)) throw new Error("Completed Bot cleanup must retain only minimal deletion responsibility.");
       if (cleanup.workerId !== undefined) {
         botUUID(cleanup.workerId, "Bot deletion cleanup Worker");
-        if (cleanup.stop === null || cleanup.stop.stopProof.kind === "never_started") throw new Error("Bot cleanup Worker requires its original stopped execution proof.");
+        if (cleanup.stop === null) throw new Error("Bot cleanup Worker requires its original stopped execution proof.");
       }
       for (const target of cleanup.targets) {
         if (!path.isAbsolute(target.path) || !path.isAbsolute(target.root) || path.dirname(target.path) !== target.root
@@ -129,9 +129,25 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     bindDeletionWorker: (input: BotRecord, workerId: string): BotRecord => atomic(() => {
       const record = deleting(input), cleanup = record.cleanup;
       botUUID(workerId, "Bot deletion cleanup Worker");
-      if (cleanup?.stop == null || cleanup.stop.stopProof.kind === "never_started"
+      if (cleanup?.stop == null
         || cleanup.workerId !== undefined && cleanup.workerId !== workerId) throw new Error("Bot deletion cleanup requires its original stopped execution and Worker.");
+      if (cleanup.stop.stopProof.kind === "never_started") {
+        const row = db.prepare(`SELECT record FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) as { record: string } | undefined;
+        if (cleanup.localCompleted && cleanup.workerId === workerId) {
+          if (row !== undefined) throw new Error("Completed Bot deletion cannot retain conflicting execution evidence.");
+        } else if (record.observed.deletion?.workerCleanup.code !== "execution_evidence_missing"
+          || !hasNeverStartedDeletionEvidence(record, row === undefined ? null : JSON.parse(row.record) as BotExecution)) {
+          throw new Error("Bot deletion cleanup Worker requires retained never-started execution evidence.");
+        }
+      }
       cleanup.workerId = workerId;
+      return put(record);
+    }),
+    /** A definitive receipt rejection ends only the never-started replay authority. */
+    rejectNeverStartedDeletion: (input: BotRecord): BotRecord => atomic(() => {
+      const record = deleting(input), cleanup = record.cleanup;
+      if (cleanup?.stop?.stopProof.kind !== "never_started" || !cleanup.localCompleted) throw new Error("Bot deletion rejection requires its completed never-started receipt.");
+      delete cleanup.workerId;
       return put(record);
     }),
     /** Commit logical erasure and its receipt together; no journal is needed for subsequent retries. */

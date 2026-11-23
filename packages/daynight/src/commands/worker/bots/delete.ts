@@ -1,4 +1,4 @@
-import type { BotExecutionStore } from "./execution-store.js";
+import { hasNeverStartedDeletionEvidence, type BotExecutionStore } from "./execution-store.js";
 import { BotExecutionEvidenceMissingError, type BotProcess } from "./process.js";
 import type { BotRemote } from "./remote.js";
 import type { BotSessionApi, BotDeletionReceipt } from "./session-api.js";
@@ -37,9 +37,15 @@ export const createBotDeletion = (options: {
       const original = await refresh(input, signal);
       if (settings.recover === true && !requiresBotDeletionRecovery(original)) throw new Error("Bot deletion no longer requires execution evidence recovery.");
       if (requiresBotDeletionRecovery(original) && settings.recover !== true) return;
-      if (requiresBotDeletionRecovery(original) && (original.cleanup?.stop?.stopProof.kind === "never_started"
-        || original.intent === null && original.cleanup?.stop == null)) {
+      if (requiresBotDeletionRecovery(original) && original.intent === null && original.cleanup?.stop == null) {
         throw new BotExecutionEvidenceMissingError();
+      }
+      if (requiresBotDeletionRecovery(original) && original.cleanup?.stop?.stopProof.kind === "never_started") {
+        const confirmedCleanup = original.cleanup.localCompleted && options.recoveryWorkerId !== undefined
+          && original.cleanup.workerId === options.recoveryWorkerId;
+        if (!confirmedCleanup && !hasNeverStartedDeletionEvidence(original, original.intent === null ? null : options.executions.get(original))) {
+          throw new BotExecutionEvidenceMissingError();
+        }
       }
       const reportMissing = async (record: BotRecord): Promise<void> => {
         if (requiresBotDeletionRecovery(record) || record.observed.deletion!.workerCleanup.state === "completed") return;
@@ -74,7 +80,7 @@ export const createBotDeletion = (options: {
           }
           failureCode = "private_cleanup_failed";
           if (settings.recover === true && options.recoveryWorkerId !== undefined
-            && record.cleanup!.stop !== null && record.cleanup!.stop.stopProof.kind !== "never_started") {
+            && record.cleanup!.stop !== null) {
             record = options.store.bindDeletionWorker(record, options.recoveryWorkerId);
           }
           if (!record.cleanup!.localCompleted) {
@@ -115,7 +121,12 @@ export const createBotDeletion = (options: {
           if (cause instanceof ApiError && cause.phase === "response" && cause.status === 409 && cause.code === "session_conflict"
             && (receipt.stop === null || receipt.stop.stopProof.kind === "never_started")) {
             const latest = await refresh(record, signal);
-            if (latest.observed.deletion!.workerCleanup.state !== "completed") await reportMissing(latest);
+            if (latest.observed.deletion!.workerCleanup.state !== "completed") {
+              if (latest.cleanup?.stop?.stopProof.kind === "never_started" && latest.cleanup.workerId !== undefined) {
+                options.store.rejectNeverStartedDeletion(latest);
+              }
+              await reportMissing(options.store.get(latest.owner, latest.botId)!);
+            }
             return;
           }
           throw cause;
