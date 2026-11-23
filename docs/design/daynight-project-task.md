@@ -16,7 +16,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/archived/simplifica
 CLI同步保留`startedAt`、`completedAt`、`cancelledAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。资源要求 type 和可空 parentId；Goal full 解析 progress 和不适用的执行观测，图只接受普通 Task 并保留不可见前置的 ID。
-CLI 不包含 Steps 专用命令或 API 客户端，普通 Task 投影不内嵌完整 Steps。REST 和 MCP 也不提供该入口，剩余内部服务和持久化边界由[Steps 退役要求](../spec/daynight-task-steps.md)拥有。
+CLI 不包含 Steps 专用命令或 API 客户端，普通 Task 投影不内嵌完整 Steps。REST 和 MCP 也不提供该入口，应用服务已移除，尚存存储合同、模型、DAO 和表的边界由[Steps 退役要求](../spec/daynight-task-steps.md)拥有。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
