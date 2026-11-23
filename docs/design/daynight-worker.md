@@ -44,7 +44,7 @@ flowchart TB
 
 作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。repository owner 先等待同一个 Task 停止结果，再 join 报告并关闭 Git manager；Task 有界停止未确认时 repository 同样保持 unknown，原终态 writer 仍可核对和删除自己的 Git 资源。后续 reconcile 继续等待原停止，只有确认 Task 完整闭合后才关闭 Git manager。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
 
-工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。
+工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。库存先核对已知边界，再 join 同一个 Task 停止结果，随后重新核对期间准入的终态命令，并将匹配原代际及证明的已停止回执同步到生命周期账本；各阶段错误聚合保留。
 
 reporter 的 `stop()` 已结束只证明其上报循环已 join，不替代它报告的原生命令清理证明。缓存的清理错误随原资源的确认结果重新核对；有原确认凭据且全部清理责任已闭合时，该错误作为历史诊断保留。缺少凭据、混合未确认原因或仍未 join 的写入继续阻止释放管理存储和锁。
 
@@ -68,7 +68,7 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 
 原资源的确认闭合在消息和输出 join、终态保存及原句柄和 Job lease 释放后通知所有消费句柄，Git 的 joined 不依赖由哪个 owner 完成重核，也不要求再发一次停止请求。异步 spawn 失败必须由原 ChildProcess 的未启动事实、关闭事件和输出 join 共同证明没有进程；Linux 未尝试发送的原 launcher 使用上述直接关闭证据，其他已运行且缺失出生证明的边界不能仅凭直接子进程关闭结算。Windows 从未恢复执行的原挂起进程可由其原生句柄终止及关闭证明结算，不能把这项证明用于已经恢复执行的进程。
 
-作用域关闭拒绝新的 `prepared` 准入，但允许同作用域已进入 journal 的原资源重核准备记录，仍执行原代际、序列及证明校验。探针仅将首次调用明确在任何写入前被拒绝视为没有预留；曾经发生写入失败或仍有待完成写入时，后续拒绝不能抹去原责任。
+作用域关闭拒绝新的业务命令 `prepared` 准入，但允许同作用域已进入 journal 的原资源重核准备记录，仍执行原代际、序列及证明校验。运行中 coordinator 的原 Task 终态 job 使用独立的 `cleanupCommandLifecycle` sink，仅为精确 project/task/claim 准入清理命令；作用域已完全 stopped 时拒绝。该入口保留原 Worker、管理实例及作用域，先通过 `reserveCleanupCommand` 在生命周期账本持久预留 `cleanup_command`，使用当前 `localEpoch` 和 `intentVersion` 核验原绑定。业务门禁关闭或本机否决不阻止这项收尾预约，过期实例或作用域仍明确拒绝。命令继续在原 journal 代际保存 prepared、bound 与 stopped 证明，不重新开放业务执行。仅管理模式沿用原独立 owned-command 路径，不使用这项运行中 sink。探针仅将首次调用明确在任何写入前被拒绝视为没有预留；曾经发生写入失败或仍有待完成写入时，后续拒绝不能抹去原责任。
 
 Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁和未完成关闭责任。原生命令核对成功后，宿主仍须核对同一次 Reviewer 执行的全部停止原因并实际完成关闭；只有原清理证明覆盖全部原因时才可解除阻塞。普通异常、宿主 Promise 已结束或错误中包含一个已确认的命令，均不足以证明 Reviewer 资源已释放。
 
@@ -78,7 +78,7 @@ Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁�
 
 `lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、实例 epoch 与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
 
-业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
+业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原 Task 终态清理命令使用独立预约，不要求业务门禁开放；它刷新当前 localEpoch 与 intentVersion，同时严格保留原管理实例和 scopeGeneration，并在副作用前持久保存精确 claim 的 cleanup_command 责任。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
 
 本地入口为 `daynight worker disable --worker-id <uuid> --local --confirm --json`。命令在唤醒管理根之前提交本机否决；网络失败不能撤销该否决。IPC 只传原身份、操作 ID 和管理动作，回执仅确认受理；实际结果从原 SQLite 读取。原管理根不可达且请求明确尚未发出时，管理命令仅尝试取得空闲实例锁核对原责任，不接管占用的锁，也不建立业务作用域。私有 IPC 凭据不能出现在 URL、任务材料或日志中。
 
@@ -478,7 +478,7 @@ Web 归档完整性由类型化 `ArchiveRepairRequiredError` 区分 `archive_inc
 
 Ctrl+C 取消管理根，同时同步关闭执行作用域的准入、报告触发、新认领、调度和运行中的 job，包括终态清理 job。退出先 join 原 Task 生产者及清理，再在同 Task 串行入口分流：成功确认失去归属且具有可用 Web 状态的原 claim 直接执行同一终态清理与结算，其他执行沿用保留现场的停止。当前归属未知不能当作缺席；Web 状态不足时保留原停止与失败处理。首次巡查前和仅管理模式按不同 project/task 有界读取当前 Task；同一个 WorkerRemote 先通过 currentUserId 核对原账号，再读 Task。成功读到的当前 Worker、claim 与 active 状态参与原 claim 分类，读取失败保留原责任并报告错误。原生停止不等待 Agent 清理轮或退避，已停止事实不因文件失败改写；后端关闭未确认仍使退出失败。退出等待期限制查证和等待，超时不能取消原 native cleanup owner 或并发派发第二次停止。未结责任、原期限和资源身份保持可恢复；当前仍归本 Worker 的 claim、worktree、原生 Session ID 与未完成行保留，直接中断可能留下工作区外临时资源。
 
-仅管理模式为每个 Task 保留原 claim 请求结果 Promise，候选同时包含已有本机行和 pending claim reservation。同 Task 的归属判断和停止先 join 自己的对账，接住迟到保存的 pending，再复用成功当前 Task 读取；不同 Task 不等待彼此的请求。对账失败保留该 Task 的责任，其他 Task 独立推进。Task 停止尝试结束后核对相应 Controller 生命周期资源，跳过对账未解决的 Task，消费其余原资源的实际 journal 与 Job 停止结果；Task 停止失败不跳过独立 Controller 的核对。Bot 和其他 Controller 保留各自管理流程。管理路径不运行完整巡查或新领取，调度记录本身不提供归属证明。机制取舍见[当前归属终态清理决策](../../.agents/notes/implemented/bug-fix/2026-11-23-worker-retired-web-cleanup.md)。
+仅管理模式为每个 Task 保留原 claim 请求结果 Promise，候选同时包含已有本机行和 pending claim reservation。同 Task 的归属判断和停止先 join 自己的对账，接住迟到保存的 pending，再复用成功当前 Task 读取；不同 Task 不等待彼此的请求。对账失败保留该 Task 的责任，其他 Task 独立推进。Task 停止尝试结束后核对相应 Controller 生命周期资源，跳过对账未解决的 Task，消费其余原资源的实际 journal 与 Job 停止结果；Task 停止失败不跳过独立 Controller 的核对。Bot 和其他 Controller 保留各自管理流程。每 Task 清理及原 stopJournal 重试均同步原命令库存中匹配代际与证明的 stopped 生命周期回执，不能以命令 Promise 结束替代账本停证。管理路径不运行完整巡查或新领取，调度记录本身不提供归属证明。机制取舍见[当前归属终态清理决策](../../.agents/notes/implemented/bug-fix/2026-11-23-worker-retired-web-cleanup.md)。
 
 
 ## Agent 完成与人工操作

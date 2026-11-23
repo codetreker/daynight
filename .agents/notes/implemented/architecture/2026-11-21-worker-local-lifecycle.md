@@ -25,6 +25,16 @@ cannot be replaced by the default root during Windows stop verification; legacy
 resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
+Active coordinator terminal jobs reserve exact-claim cleanup commands through
+`reserveCleanupCommand` before native dispatch. The reservation records a
+`cleanup_command` resource, retains the original service, account, Worker,
+management instance and scope generation, and validates their current binding.
+It uses current localEpoch and intentVersion while allowing business admission to
+remain closed, including a local veto. Stale instance or scope identity is refused;
+cleanup cannot substitute a new owner. The original command journal generation
+continues to own prepared, bound and stopped evidence. Ordinary business commands
+remain subject to the closed admission gate.
+
 Task Web and Bot tickets can exist before launch submission. A later Worker
 lifecycle or a durable never-dispatched reservation may require a fresh local
 launch identity. Current admission authorizes it only when the durable execution
@@ -54,8 +64,13 @@ still runs. Native inventory reconciliation independently joins each original
 owned command or Bot CLI probe, including original initialization, its in-flight
 close and terminal save;
 it does not wait for a whole producer whose Git jobs may require that same
-reconciliation to finish. A lifecycle admission refusal before a reservation
-write retires the attempted
+reconciliation to finish. Inventory then joins shared Task stopping, reconciles
+late terminal commands and synchronizes stopped receipts with matching original
+generation and process proof into the lifecycle ledger. Management Task cleanup
+and stopJournal retries synchronize those receipts through their existing command
+path as well; they do not gain the active-runtime cleanup sink. Errors aggregate
+without skipping independent resource checks. A lifecycle admission refusal before
+a reservation write retires the attempted
 owned command as never started and removes its in-memory admission marker.
 Persistence failures with an uncertain outcome retain the original responsibility
 and marker for reconciliation; they cannot use the never-started path. Individual

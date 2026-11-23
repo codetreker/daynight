@@ -36,6 +36,15 @@ job retains existing failure recording and retry backoff. A settled job Promise
 is not cleanup proof: completion also requires its original ending target to
 have been cleared.
 
+The active coordinator terminal executor installs a separate exact-claim
+cleanup-command sink, so closing business admission cannot prevent its original
+Git cleanup commands from starting. Each new command durably reserves a
+cleanup_command ledger resource before dispatch, validates the original Worker,
+instance and scope, and uses current localEpoch and intentVersion without opening
+business admission or consuming the local veto. Prepared, bound and stopped
+receipts retain the original command journal generation and native proof. A stale
+owner or fully stopped scope cannot admit cleanup commands.
+
 Shutdown first cancels and joins original producers. A native stop that outlives
 the shutdown waiter retains its original owner; another waiter joins that work
 instead of issuing concurrent stopping. The repository owner waits for the shared
@@ -43,8 +52,12 @@ Task stop before disposing its Git manager, since terminal cleanup still needs
 that manager to verify and remove its original worktree. Unconfirmed Task
 closure keeps the repository owner unknown and the manager open. Later
 reconciliation joins the original stop and disposes Git only after complete Task
-closure. Current or unknown ownership retains
-preserve-site stopping. Insufficient local Web state retains the existing
+closure. Native inventory first reconciles known command boundaries, joins the
+shared Task stopping result, then reconciles late terminal commands and
+synchronizes matching generation and proof stop receipts into the lifecycle
+ledger. This captures commands created during terminal cleanup without making
+producer progress depend on a closed command gate. Current or unknown ownership
+retains preserve-site stopping. Insufficient local Web state retains the existing
 provenance failures and responsibility; current ownership alone does not prove
 that a process stopped or provide a missing native boundary.
 
@@ -56,6 +69,10 @@ current Task reads are reused; failed reconciliation retains that Task without
 making independent Tasks await its request. Controller lifecycle reconciliation
 follows the Task stop attempt, skips unresolved Task records and consumes actual
 stopped journals and native-boundary results for the remaining resources.
+Independent Controller checks continue after a Task stop failure. Management
+Task cleanup and stopJournal retries synchronize actual command stop receipts
+through the existing standalone command path; the active cleanup sink is not
+installed for management-only commands.
 
 This replaces the retired-complete-Web portion of the archived
 [direct shutdown decision](../../archived/bug-fix/2026-10-28-worker-direct-shutdown.md).

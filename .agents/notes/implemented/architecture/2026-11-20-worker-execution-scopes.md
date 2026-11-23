@@ -128,8 +128,16 @@ The receipt also waits for original handle and Job lease release. A never-resume
 Windows child can use its original native termination and handle-close evidence;
 outside the Linux pre-dispatch gate, a runnable POSIX launcher with missing birth
 proof cannot use direct-child closure because its proof helper may have descendants.
-Closing admission still permits an already admitted resource to retry its original
-prepared write under the same journal checks. A probe's first explicit pre-write
+Closing business admission still permits an already admitted resource to retry its
+original prepared write under the same journal checks. Active coordinator terminal
+jobs also have a separate exact-claim cleanup sink. It admits new cleanup commands
+while the original scope is closing, with durable cleanup reservations and the
+original Worker, instance and scope identity; a fully stopped scope refuses them.
+It never reopens ordinary command admission. Native inventory reconciles known
+boundaries before joining shared Task stopping, then reconciles late terminal
+commands and synchronizes matching generation and proof stop receipts into the
+lifecycle ledger. This ordering preserves producer progress and captures resources
+created by the terminal writer. A probe's first explicit pre-write
 rejection creates no reservation; later rejections cannot erase an earlier
 uncertain or pending write.
 

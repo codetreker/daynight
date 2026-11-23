@@ -2964,6 +2964,12 @@ timed-out native stop keeps its original owner rather than dispatching another
 stop. The repository owner waits for that shared Task stop before closing its
 Git manager. Unconfirmed Task stopping retains the manager for the original
 terminal writer; later reconciliation closes it only after complete Task closure.
+Active terminal jobs can admit exact-claim cleanup commands through a separate
+durable reservation path while business admission stays closed. They retain the
+original Worker, management instance, scope and command journal proof; stale
+instance or scope bindings are refused. Native inventory also reconciles commands created during
+Task stopping and synchronizes their proven stop receipts into the lifecycle
+ledger. Management-only commands retain their existing command path.
 Unfinished responsibility and its original deadline survive for the next
 reconciliation. External temporary resources may remain after direct interruption.
 Historical Herdr claims and resources remain the user’s responsibility and are

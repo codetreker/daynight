@@ -12,6 +12,7 @@ import type { WorkerSessionApi } from "./backends/session-api.js";
 import { requireImplementedWorkerBackend } from "./backend.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
@@ -42,6 +43,7 @@ import type { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" | "task_paused" | "claim_invalid" | "native_input" };
 export type WorkerCoordinatorOptions = {
+  cleanupCommandLifecycle?: (identity: ClaimIdentity) => OwnedCommandLifecycleSink;
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   webBackend: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "requestExecutionStop" | "observeStartupReport" | "advanceResult" | "confirmUpgrade" | "setMonitoringObserver" | "probeArchive">>;
   webStore: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
@@ -647,7 +649,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const failure = terminal ? monitoringFailures.get(`true/${identityKey}/observation`) : undefined;
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
-      return action(signal).then(() => {
+      const execute = () => action(signal);
+      const work = terminal && options.cleanupCommandLifecycle !== undefined ? withOwnedCommandLifecycle(options.cleanupCommandLifecycle(identity), execute) : execute();
+      return work.then(() => {
         if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).catch((error: unknown) => {

@@ -40,6 +40,7 @@ import * as controllerLifecycle from "../../../src/commands/controller/lifecycle
 import * as controllerProcessProof from "../../../src/commands/controller/process-proof.js";
 import * as lifecycleControllerTickets from "../../../src/commands/worker/lifecycle-controller-ticket.js";
 import { LifecycleAdmissionError, openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
+import * as lifecycleStores from "../../../src/commands/worker/lifecycle-store.js";
 import type { LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
@@ -218,6 +219,23 @@ describe("worker cloud-first startup", () => {
     const proof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
     saved.importResource({ binding, resourceId: uuid(75), operationId: uuid(76), ownerKind: "controller", stage: "running", processProof: proof,
       identity: { ...taskIdentity, executionId: uuid(77), controllerInstanceId: uuid(78), launchId: uuid(76), journalFile } });
+    let cleanupResourceId: string | undefined;
+    if (attempt === "retry") {
+      const { openExecutionResourceJournal } = await import("../../../src/commands/worker/execution-resource-journal.js");
+      const commands = await openExecutionResourceJournal({ directory: path.join(f.paths.workerDirectory, "execution-resources"), identity });
+      const operation = createOperation();
+      try {
+        await withOwnedCommandLifecycle(async event => {
+          if (event.stage === "prepared") {
+            cleanupResourceId = event.resourceId;
+            saved.reserveCleanupCommand({ binding, task: taskIdentity, resourceId: event.resourceId });
+          }
+          await commands.sink(binding.scopeGeneration)(event);
+          if (event.stage === "bound") saved.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) });
+          // The durable command journal survives a lost lifecycle stop save.
+        }, () => runOwnedCommand({ file: process.execPath, args: ["-e", "process.exit(0)"], environment: process.env }, operation));
+      } finally { operation.dispose(); }
+    }
     saved.close();
     const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), shutdownEntered = Promise.withResolvers<void>(), receiptReady = Promise.withResolvers<void>();
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -229,6 +247,15 @@ describe("worker cloud-first startup", () => {
     }) });
     remote.report.mockResolvedValue({ observedAt: "2026-11-21T00:00:00Z", lastReportedAt: "2026-11-21T00:00:00Z" });
     let stoppedReceipt = false;
+    const openStore = lifecycleStores.openLifecycleStore;
+    const lifecycleFactory = vi.spyOn(lifecycleStores, "openLifecycleStore").mockImplementation(options => {
+      const store = openStore(options), save = store.recordResource;
+      store.recordResource = input => {
+        if (input.resourceId === cleanupResourceId && input.stage === "stopped" && !stoppedReceipt) throw new Error("Lifecycle command stop save is temporarily unavailable.");
+        return save(input);
+      };
+      return store;
+    });
     const snapshot = { executionId: uuid(77), controllerInstanceId: uuid(78), controllerProcess: proof, nativeProcesses: [], nativeSessionId: null } as unknown as controllerLifecycle.ControllerSnapshot;
     const readJournal = vi.spyOn(controllerLifecycle, "readControllerSnapshot").mockImplementation(() => {
       if (!stoppedReceipt) return null;
@@ -279,11 +306,12 @@ describe("worker cloud-first startup", () => {
         expect(check.readResource(uuid(73))?.stage).toBe("confirmed");
         await vi.waitFor(() => expect(check.readResource(uuid(75))?.stage).toBe("stopped"));
         expect(check.listResources().filter(resource => resource.identity.kind === "retained_task").map(resource => resource.stage)).toEqual(["stopped"]);
+        if (cleanupResourceId !== undefined) expect(check.readResource(cleanupResourceId)?.stage).toBe("stopped");
       } finally { check.close(); }
       expect(remote.readTask).toHaveBeenCalledOnce();
     } finally {
       release.resolve(); cancellation.abort(); await running.catch(error => { if (error?.name !== "AbortError") throw error; });
-      client.mockRestore(); readJournal.mockRestore(); readTicket.mockRestore(); readWindows.mockRestore(); readProcesses.mockRestore();
+      client.mockRestore(); readJournal.mockRestore(); readTicket.mockRestore(); readWindows.mockRestore(); readProcesses.mockRestore(); lifecycleFactory.mockRestore();
     }
   }, 20_000);
 
@@ -1145,13 +1173,24 @@ describe("worker cloud-first startup", () => {
       const retry = control!.reconcile({ deadline: Date.now() + 3000 });
       expect(dispose).not.toHaveBeenCalled();
       release.resolve();
-      expect((await retry).every(result => result.stop === "confirmed")).toBe(true);
+      const retried = await retry;
+      expect(retried.filter(result => result.resourceId !== "native-inventory").every(result => result.stop === "confirmed")).toBe(true);
+      // The inventory owner first joins its original failed Task observation.
+      // A new observation accounts for cleanup commands from the successful retry.
+      const final = control!.snapshot().stopped ? retried : await control!.reconcile({ deadline: Date.now() + 3000 });
+      expect(final.every(result => result.stop === "confirmed")).toBe(true);
       expect(terminalCleanup).toHaveBeenCalledOnce();
       expect(resolveBinding).toHaveBeenCalledOnce();
       expect(f.store!.getTask(owner)?.status).toBe("done");
       expect(dispose).toHaveBeenCalledOnce();
       expect(control!.snapshot().stopped).toBe(true);
-    } finally { release.resolve(); cancellation.abort(); await running; }
+    } finally {
+      release.resolve();
+      try {
+        if (control !== undefined && !control.snapshot().stopped) await control.reconcile({ deadline: Date.now() + 3000 });
+        if (control !== undefined && !control.snapshot().stopped) await control.reconcile({ deadline: Date.now() + 3000 });
+      } finally { cancellation.abort(); await running; }
+    }
   });
 
   it("retains the management lock and blocks rebuilding until a timed-out reviewer joins", async () => {
@@ -2233,6 +2272,71 @@ it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdow
 
 
 describe("real runtime resource isolation", () => {
+  it("removes a retired worktree with newly reserved cleanup commands after closing business admission", async () => {
+    const f = await fixture(true);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
+      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } });
+    } });
+    await mkdir(f.repository.path);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
+    const owner = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(74) };
+    const project = f.store!.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const operation = createOperation();
+    const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
+    try { await git.prepareRepository(project, operation); }
+    finally { operation.dispose(); }
+    run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const savedWeb = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+    const record = savedWeb.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+    savedWeb.bindWorktree(record, binding, Date.now()); savedWeb.close();
+    const successorPath = path.join(f.repository.path, ".worktrees", "daynight", uuid(75));
+    run(["worktree", "add", "--force", successorPath, `daynight/${owner.taskId}`]);
+    await writeFile(path.join(successorPath, "survives.txt"), "successor remains\n");
+    mocks.git.mockReturnValue(git);
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
+    let taskCoordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+    let businessSink: OwnedCommandLifecycleSink | undefined;
+    mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => {
+      businessSink = currentOwnedCommandLifecycle();
+      taskCoordinator = createWorkerCoordinator(settings); taskCoordinator.tick = vi.fn(async () => {}); return taskCoordinator;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(taskCoordinator).toBeDefined());
+      const directory = path.join(f.paths.workerDirectory, "execution-resources");
+      const before = (await readdir(directory)).filter(name => name.endsWith(".json")).length;
+      const results = await control!.stop({ deadline: Date.now() + 20_000 });
+      expect(results.every(result => result.stop === "confirmed"), JSON.stringify(mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).map(([event]) => ({ message: event.message, error: String(event.error) })))).toBe(true);
+      expect(f.store!.getTask(owner)?.status).toBe("done");
+      expect(f.store!.getCleanupSchedule(owner)).toBeNull();
+      expect(run(["worktree", "list", "--porcelain"])).not.toContain(owner.worktreeId);
+      expect(run(["worktree", "list", "--porcelain"])).toContain(uuid(75));
+      await expect(readFile(path.join(binding.worktreePath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(successorPath, "survives.txt"), "utf8")).toBe("successor remains\n");
+      const saved = await Promise.all((await readdir(directory)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+      expect(saved.length).toBeGreaterThan(before);
+      expect(saved.every(record => record.event.stage === "stopped")).toBe(true);
+      expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      const refused = createOperation();
+      try {
+        expect(businessSink).toBeDefined();
+        const marker = path.join(f.homeDirectory, "refused-business.txt");
+        await expect(withOwnedCommandLifecycle(businessSink!, () => runOwnedCommand({ file: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected');`], environment: process.env }, refused))).rejects.toThrow();
+        await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      } finally { refused.dispose(); }
+    } finally { cancellation.abort(); await running; await git.dispose(); }
+  }, 35_000);
+
   it.skipIf(process.platform === "win32")("closes the original Git boundary when Worker cancellation precedes its launcher birth message", async () => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
