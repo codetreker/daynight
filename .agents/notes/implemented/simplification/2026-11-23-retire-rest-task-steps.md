@@ -22,7 +22,7 @@ or successful empty resource remains.
 The REST retirement originally retained the shared Steps application and
 persistence owners. The [application retirement](2026-11-23-retire-task-steps-application.md) removes
 Application and scoped assembly, Service, Core candidates, codec and input policy.
-DAO interfaces, their models, PostgreSQL code and persisted rows remain. Historical
+The subsequent [storage retirement](2026-11-23-retire-task-steps-storage.md) removes the DAO interfaces and code; [data retirement](2026-11-23-drop-task-steps-data.md) deletes the rows and table. Historical
 migration checksums and saved credential scopes retain their existing rules. Shared Thread
 encoding, ordinary Task authorization and mutation behavior retain their owners.
 

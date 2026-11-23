@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"os/exec"
 	"strings"
@@ -13,8 +15,11 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	migration115 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/115"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
@@ -23,8 +28,12 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			values := processAPIEnvironment(t)
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			defer cancel()
-			initial := startPersistenceProcess(t, values)
-			if err := initial.stop(); err != nil {
+			pool, err := pgxpool.New(ctx, values["DAYNIGHT_DATABASE_URL"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			if err := postgres.ReplaySchema114ForTest(ctx, pool); err != nil {
 				t.Fatal(err)
 			}
 			observer, err := pgx.Connect(ctx, values["DAYNIGHT_DATABASE_URL"])
@@ -32,26 +41,7 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer observer.Close(context.Background())
-			var expectedChecksum string
-			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=115").Scan(&expectedChecksum); err != nil {
-				t.Fatal(err)
-			}
-			// Remove later additive migrations and their ledger entries to restore schema 114.
-			if _, err := observer.Exec(ctx, `CREATE OR REPLACE VIEW task_resource_rows AS
-SELECT t.id,t.project_id,t.title,t.description,t.status,t.version,t.created_at,t.updated_at,t.started_at,t.completed_at,
- t.allow_agents,t.required_platform,t.deleted_at,t.assigned_to,t.cancelled_at,t.type,t.parent_id,
- p.type AS parent_type,p.deleted_at AS parent_deleted_at,
- COALESCE(t.deleted_at,CASE WHEN t.type='task' AND p.type='goal' THEN p.deleted_at END) AS effective_deleted_at
-FROM tasks t LEFT JOIN tasks p ON p.project_id=t.project_id AND p.id=t.parent_id;
-ALTER TABLE tasks DROP COLUMN ancestor_deleted_at;
-DROP INDEX task_properties_worker_active_claim_idx;
-ALTER TABLE task_sessions DROP COLUMN online_mode;
-ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
-DROP INDEX sessions_user_created_id;
-ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
-DELETE FROM schema_migrations WHERE version >= 115`); err != nil {
-				t.Fatal(err)
-			}
+			expectedChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte(migration115.SQL()+"\x00"+migration115.TransformSource())))
 			var latestVersion int
 			if err := observer.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&latestVersion); err != nil || latestVersion != 114 {
 				t.Fatalf("historical migration boundary: latest=%d error=%v", latestVersion, err)

@@ -3992,13 +3992,20 @@ Project authorization and refusal rules.
 The [resource requirements](../../docs/spec/daynight-task-steps.md) and
 [design](../../docs/design/daynight-task-steps.md) own this retirement and the
 remaining storage boundary. Legacy and scoped Steps application services, domain
-candidates, dedicated codec and input-policy entries are removed. Steps PostgreSQL interfaces, models and DAO code are removed; migration 030 and
-the current table remain. The shared
+candidates, dedicated codec and input-policy entries are removed. Steps PostgreSQL interfaces, models and DAO code are removed; migration 124 drops
+the table and all its rows, including those under soft-deleted Tasks. Migration 030
+and its checksum remain unchanged. The shared
 Thread codec, TaskHeader, TouchTask and errors keep their ordinary consumers.
-Application removal does not delete persisted rows or change credentials. MCP, CLI and Web
+The migration preserves parent Tasks and their materials and emits no per-row events. MCP, CLI and Web
 also expose no Steps entry point. The
 [retirement decision](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)
 records the protocol and cleanup boundaries.
+
+Before applying migration 124, drain and stop every old server and background
+worker. The migration lock does not stop old processes from accessing the table.
+Failure rolls back the DDL and ledger entry; after commit, use a compatible build
+to recover forward because older binaries reject the new ledger. This migration
+does not export the deleted data.
 
 Runtime route tests cover retired methods, HEAD, CORS and SPA isolation with
 strict zero-call observations. Candidate-service acceptance binds public-path

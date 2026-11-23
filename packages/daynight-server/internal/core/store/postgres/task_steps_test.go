@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"slices"
 	"testing"
 )
 
@@ -21,7 +22,11 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	end := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 124 })
+	if end < 1 {
+		t.Fatal("migration 124 missing")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:end]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&after); err != nil || before != after {

@@ -439,9 +439,17 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			ALTER TABLE tasks DROP COLUMN ancestor_deleted_at`); err != nil {
 			t.Fatal(err)
 		}
+		// Restore the original 030 table before replaying its later retirement.
+		stepsSQL, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations", "030_task_steps.sql"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(f.context, string(stepsSQL)); err != nil {
+			t.Fatal(err)
+		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 45 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 46 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
