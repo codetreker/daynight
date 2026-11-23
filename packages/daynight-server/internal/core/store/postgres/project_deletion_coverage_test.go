@@ -16,6 +16,7 @@ import (
 	transfercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -305,4 +306,101 @@ func TestPrivateTransferProjectLifecycleSerializesProjectDeletion(t *testing.T) 
 			}
 		})
 	}
+}
+
+// A real server-side cancellation while the historical Task lock is pending
+// exercises the row stream failure after Project and graph locks are acquired.
+func TestProjectDeletionTaskLockCancellationRollsBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db, _, _, project := membershipFixture(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	taskID := uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title,deleted_at) VALUES($1,$2,'historical',statement_timestamp())`, taskID, project.ID)
+	var epoch string
+	if err := db.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type deletionResult struct {
+		completion store.Completion
+		err        error
+		called     bool
+	}
+	results := make(chan deletionResult, 1)
+	operationCtx, stopOperation := context.WithCancel(ctx)
+	var probe pgx.Tx
+	launched, drained := false, false
+	defer func() {
+		stopOperation()
+		cleanup, stop := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer stop()
+		if probe != nil {
+			if err := probe.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				t.Errorf("cleanup probe: %v", err)
+			}
+		}
+		if err := blocker.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("cleanup Task blocker: %v", err)
+		}
+		if launched && !drained {
+			select {
+			case <-results:
+			case <-cleanup.Done():
+				t.Errorf("cleanup deletion goroutine: %v", cleanup.Err())
+			}
+		}
+	}()
+	if _, err = blocker.Exec(ctx, `SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	launched = true
+	go func() {
+		called := false
+		completion, err := db.WriteProjectDeletion(operationCtx, project.ID, func(store.ProjectDeletionScope) error { called = true; return nil })
+		results <- deletionResult{completion: completion, err: err, called: called}
+	}()
+	waitTransferTeamLock(t, ctx, db, "SELECT id FROM tasks WHERE project_id=", blocker.Conn().PgConn().PID())
+	var pid int32
+	if err = db.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM tasks WHERE project_id=%' AND $1=ANY(pg_blocking_pids(pid))`, blocker.Conn().PgConn().PID()).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	var canceled bool
+	if err = db.Pool.QueryRow(ctx, `SELECT pg_cancel_backend($1)`, pid).Scan(&canceled); err != nil || !canceled {
+		t.Fatalf("cancel task lock: %v %v", canceled, err)
+	}
+	var result deletionResult
+	select {
+	case result = <-results:
+		drained = true
+	case <-ctx.Done():
+		t.Fatal("deletion did not stop after cancellation")
+	}
+	var driver *pgconn.PgError
+	if result.called || result.completion.Outcome != store.TransactionNotCommitted || !errors.As(result.err, &driver) || driver.Code != "57014" {
+		t.Fatalf("canceled task scan: callback=%v completion=%+v error=%v", result.called, result.completion, result.err)
+	}
+	var live bool
+	var after string
+	if err = db.Pool.QueryRow(ctx, `SELECT deleted_at IS NULL,task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&live, &after); err != nil || !live || after != epoch {
+		t.Fatalf("canceled deletion changed Project: live=%v epoch=%s error=%v", live, after, err)
+	}
+	probe, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = probe.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE NOWAIT`, project.ID); err != nil {
+		probe.Rollback(ctx)
+		t.Fatalf("canceled deletion retained Project lock: %v", err)
+	}
+	if err = probe.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertPoolReusable(t, db.Pool)
 }
