@@ -136,3 +136,11 @@ it("counts proposed separately and keeps both dependency kinds blocked until con
   for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ ready: false, blockedBy: [id(1)] });
   expect(projection.index.components.get(id(1))!.progress).toMatchObject({ total: 3, done: 0, ended: 0, status: "todo" });
 });
+
+it('distinguishes known ordinary Parent facts while accepting a legacy omitted field', () => {
+  const unknown = task(1), none = task(1, { parentTaskId: null }), parent = task(1, { parentTaskId: id(2) });
+  expect(sameSummary(unknown, none)).toBe(true);
+  expect(sameSummary(unknown, parent)).toBe(true);
+  expect(sameSummary(none, parent)).toBe(false);
+  expect(sameSummary(parent, task(1, { parentTaskId: id(3) }))).toBe(false);
+});

@@ -465,7 +465,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     });
   }, [activeView, history.select, selection]);
   const onSelectRelation = useCallback((id: string) => {
-    history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || currentSnapshot === null ? "direct" : "summary",
+    history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || !currentSnapshot?.index.nodes.has(id) ? "direct" : "summary",
       insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
       usageChild.current = null; usageCloseRequested.current = false; setUsage(null);
     });
@@ -559,7 +559,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement, fromFragment: boolean | 'chain' = false) => {
     const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
     const task = snapshot?.index.nodes.get(id);
-    if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (snapshot === null || task === undefined) {
+      select({ ...selection, detail: { id, source: "direct", insideProjectGraph: false,
+        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+      });
+      return;
+    }
     if (detailSelection === null) pausedOrigin.current = null;
     if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openGraphTarget !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;

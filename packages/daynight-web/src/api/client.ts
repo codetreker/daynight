@@ -5,7 +5,7 @@ import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
 import { canonicalId, id, record, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
 import type { ExecutionPlatform, Attachment, AttachmentPage, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
-import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, type TaskSyncJsonRead } from "./project-json";
+import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, decodeTaskPageJson, type TaskSyncJsonRead } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
   controller_offline: "The agent environment is offline. Reconnect it to load history and use controls.",
@@ -161,7 +161,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   if (normalRead) networkSignal.addEventListener("abort", stopCounting, { once: true });
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
-    const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
+    const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2", "Daynight-Task-Relations": "task-parent-v1" } : init.headers;
     response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal: networkSignal, credentials: "same-origin", redirect: "error" });
   } catch (error) {
     networkSignal.throwIfAborted();
@@ -289,6 +289,7 @@ export type CreateTaskInput = {
   readonly description?: string;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly status?: TaskStatus;
   readonly assignedTo?: string | null;
   readonly tagIds?: readonly string[];
@@ -297,8 +298,9 @@ export type CreateTaskInput = {
 export const createTask = async (projectId: string, input: CreateTaskInput, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const tagIds = (input.tagIds ?? []).map(requestId);
-  if (new Set(tagIds).size !== tagIds.length) throw new ApiError("protocol");
+  if (new Set(tagIds).size !== tagIds.length || input.parentTaskId !== undefined && (input.parentId != null || input.type === "goal")) throw new ApiError("protocol");
   const body = { ...input, tagIds,
+    ...(input.parentTaskId === undefined ? {} : { parentTaskId: requestId(input.parentTaskId) }),
     ...(input.parentId === undefined ? {} : { parentId: input.parentId === null ? null : requestId(input.parentId) }),
     ...(input.assignedTo === undefined ? {} : { assignedTo: input.assignedTo === null ? null : requestId(input.assignedTo) }) };
   const response = await request(`/api/v1/projects/${project}/tasks`, signal, {
@@ -308,7 +310,7 @@ export const createTask = async (projectId: string, input: CreateTaskInput, sign
   if (response.status === 201) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, id(record(data).id));
-    if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) ||
+    if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) || body.parentTaskId !== undefined && result.parentTaskId !== body.parentTaskId ||
       result.title !== body.title || result.description !== (body.description ?? "") ||
       result.status !== (body.status ?? (result.type === "goal" ? "todo" : "proposed")) ||
       body.assignedTo !== undefined && result.assignedTo !== body.assignedTo ||
@@ -364,6 +366,27 @@ export const getTask = async (projectId: string, taskId: string, signal: AbortSi
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => parseTaskDetail(data, project, task));
+};
+
+export type TaskChildrenPage = { readonly items: readonly TaskDetail[]; readonly nextCursor: string | null };
+
+export const listTaskChildren = async (projectId: string, parentTaskId: string, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskChildrenPage> => {
+  const project = requestId(projectId), parent = requestId(parentTaskId);
+  if (cursor !== null && (cursor.trim() === "" || !cursor.isWellFormed() || cursor.includes("\0"))) throw new ApiError("protocol");
+  const params = new URLSearchParams({ parentTaskId: parent, limit: "100" });
+  if (cursor !== null) params.set("cursor", cursor);
+  const response = await request(`/api/v1/projects/${project}/tasks?${params}`, signal, { headers: { Accept: "application/json" } });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  return json(response, signal, (value) => {
+    if (response.status !== 200) throw new ApiError("protocol", response.status);
+    const data = record(value);
+    if (!Array.isArray(data.items) || data.items.length > 100) throw new ApiError("protocol", response.status);
+    const items = data.items.map(item => parseTaskDetail(item, project, id(record(item).id)));
+    if (items.some(item => item.type !== "task" || item.parentTaskId !== parent) || new Set(items.map(item => item.id)).size !== items.length) throw new ApiError("protocol", response.status);
+    const nextCursor = data.nextCursor === null ? null : typeof data.nextCursor === "string" && data.nextCursor.trim() !== "" && data.nextCursor.isWellFormed() && !data.nextCursor.includes("\0") ? data.nextCursor : (() => { throw new ApiError("protocol", response.status); })();
+    if (nextCursor !== null && items.length === 0) throw new ApiError("protocol", response.status);
+    return { items, nextCursor };
+  }, decodeTaskPageJson);
 };
 
 export const deleteTask = async (

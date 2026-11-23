@@ -22,7 +22,8 @@ const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
 export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
-  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.title === right.title && left.titlePreview === right.titlePreview &&
+  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId &&
+  (left.parentTaskId === undefined || right.parentTaskId === undefined || left.parentTaskId === right.parentTaskId) && left.title === right.title && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&

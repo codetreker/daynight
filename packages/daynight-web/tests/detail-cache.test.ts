@@ -198,3 +198,12 @@ it("checks same-version detail properties against complete summaries while accep
   expect(await record()).toEqual(saved);
   expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
 });
+
+it('uses fresh Parent evidence without trusting shared cached detail fields', async () => {
+  const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await saveDetail(scope, ticket, detail, signal());
+  const incoming = { ...detail, parentTaskId: taskId(2) };
+  await expect(saveDetail(scope, ticket, incoming, signal())).resolves.toMatchObject({ kind: 'matching', detail: { parentTaskId: taskId(2) } });
+  expect(await readCachedDetail(scope, ticket, detail.id, signal())).not.toHaveProperty('parentTaskId');
+  expect((await record())!.detail).not.toHaveProperty('parentTaskId');
+});
