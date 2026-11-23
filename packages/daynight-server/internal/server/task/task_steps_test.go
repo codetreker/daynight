@@ -21,7 +21,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -381,7 +380,7 @@ func (f *stepMaterialFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 		want["steps"] = 1
 	}
 	if !expected.Refused && !expected.Stale {
-		want["header"], want["observed"], want["touch"], want["capture"] = 2, 1, 1, 1
+		want["observed"], want["touch"] = 1, 1
 		want[expected.Operation] = 1
 	}
 	plan := newHTTPCallPlan(f.t, want)
@@ -471,16 +470,7 @@ func (f *stepMaterialFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 			return nil
 		}
 	}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-	capture.FreezeAudienceFn = func(ctx context.Context, project string, types []string) ([]store.WebhookAudience, error) {
-		f.require(ctx, project)
-		plan.Called("capture")
-		if !reflect.DeepEqual(types, []string{protocol.StepUpdated}) {
-			unexpectedHTTPCall(f.t, "Step capture event")
-		}
-		return []store.WebhookAudience{}, nil
-	}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
+	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }}
 	f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 		plan.Called("write")
 		if project != expected.Header.ProjectID || f.active || run == nil {

@@ -34,7 +34,7 @@ func verifyCatalog(t *testing.T, f *httpFixture, actor httpActor) {
 	status, _, data := f.request(t, actor, http.MethodGet, "/api/v1/webhook-event-types", "")
 	mustStatus(t, status, 200, data)
 	catalog := jsonBody(t, data)
-	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 	items := catalog["items"].([]any)
 	if len(items) != len(keys) {
 		t.Fatalf("catalog=%s", data)
@@ -117,7 +117,7 @@ func testHTTPSubscriptionOwnerEligibility(t *testing.T, f *httpFixture) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_kind='team' AND owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_kind='team' AND owner_id=$1)`, team).Scan(&count, &receipts); err != nil || count != 1 || receipts != 1 {
 		t.Fatalf("team endpoint=%d receipt=%d err=%v", count, receipts, err)
 	}
-	t.Logf("T02-A01 HTTP personal membership=%s grant=%s team=%s denied=403 catalog=6", owned, direct, team)
+	t.Logf("T02-A01 HTTP personal membership=%s grant=%s team=%s denied=403 catalog=5", owned, direct, team)
 }
 
 // T02-A12: 51 identical project/event choices remain independently addressable
@@ -221,6 +221,7 @@ func testHTTPSubscriptionArraysRejectInvalidValues(t *testing.T, f *httpFixture)
 		{"event null", nil},
 		{"event scalar", "task.created"},
 		{"event mixed array", []any{"task.created", 17}},
+		{"retired event", []string{"task.step_updated"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := createFields(actor, "invalid array", "https://receiver.example/path")

@@ -22,7 +22,6 @@ type StepsStore interface {
 
 type TaskSteps struct {
 	store           StepsStore
-	capturer        Capturer
 	readOperations  taskStepReadOperations
 	writeOperations taskStepWriteOperations
 	admit           func(...scopepolicy.Operation) error
@@ -40,11 +39,10 @@ type taskStepWriteOperations struct {
 	admitDelete         func(model.TaskHeader, []model.TaskStep, string) (tasksteps.Mutation, error)
 }
 
-func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
+func NewTaskSteps(database StepsStore, _ ...Capturer) *TaskSteps {
 	return &TaskSteps{
 		store:          database,
 		admit:          func(...scopepolicy.Operation) error { return nil },
-		capturer:       capturer(capture),
 		readOperations: taskStepReadOperations{requireProjectRead: projectcore.RequireProjectRead},
 		writeOperations: taskStepWriteOperations{
 			requireProjectWrite: projectcore.RequireProjectWrite,
@@ -304,7 +302,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
-		actor, err := sourceActor(ctx, tx, principal)
+		_, err := sourceActor(ctx, tx, principal)
 		if err != nil {
 			return err
 		}
@@ -336,7 +334,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
 			return err
 		}
-		return s.captureStep(ctx, tx, actor, projectID, taskID, step.ID, "created", observed, nil, nil, nil, nil)
+		return nil
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }
