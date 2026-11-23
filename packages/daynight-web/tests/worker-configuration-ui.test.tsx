@@ -103,7 +103,7 @@ describe('Worker configuration form', () => {
     install(() => configurationResponse(observed('1', value, globals(value))));
     mount({ platform: 'linux', toolPaths: toolPathTelemetry() }); await flush();
     const summary = document.querySelector<HTMLElement>('.configuration-summary')!;
-    expect(summary).toHaveTextContent('Tool paths · Codex / Copilot');
+    expect(summary).toHaveTextContent('Tool launch paths · Codex / Copilot');
     expect(summary).toHaveTextContent('Applied');
     expect(summary.querySelector('.status-chip')).toHaveTextContent('Awaiting application');
   });

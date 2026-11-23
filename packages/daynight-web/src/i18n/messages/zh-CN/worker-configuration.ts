@@ -3,8 +3,8 @@ import type { WorkerConfigurationMessages } from '../worker-configuration';
 export const workerConfiguration: WorkerConfigurationMessages = {
   review: { title: 'PR 审查', label: '参与 PR 审查', detail: '支持 PR 审查的 Worker 在下次成功轮询时应用此设置。关闭后将停止进行中的 PR 审查。保存仅确认服务端设置，不代表 Worker 已处理。', loading: '正在读取 PR 审查设置…', unavailable: 'PR 审查设置不可用。', readError: '读取 PR 审查设置失败。', saving: '正在保存…', saved: 'PR 审查设置已保存。', rejected: '保存 PR 审查设置失败。', conflict: '设置已被其他位置修改，请核对当前值后再操作。', unknown: '保存结果未知。当前值不能确认原保存是否成功。', checkError: '无法核对当前值。' },
   toolPaths: {
-    title: '工具路径', detail: '填写此 Worker 机器上的绝对文件路径；恢复自动发现请使用对应按钮。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
-    unsupportedService: '升级服务后可配置工具路径。', unsupportedWorker: 'Worker 尚未上报工具路径能力，请升级或等待支持版本上报。',
+    title: '工具启动路径', detail: '自动选择工具，也可指定启动文件的完整路径。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
+    unsupportedService: '升级服务后可配置工具启动路径。', unsupportedWorker: 'Worker 尚未上报工具启动路径能力，请升级或等待支持版本上报。',
     invalidPath: '请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', unsaved: '未保存',
     target: '已保存目标', reportedTarget: '上报目标', actual: '新执行使用', previousActual: '此前实际选择', reportedActual: '上报的实际选择',
     candidate: '待应用选择', active: '运行中的选择', noActual: '尚无已验证的实际选择', otherContext: '其他执行模式', details: '查看实际路径',

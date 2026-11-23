@@ -47,15 +47,15 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
     act(() => { browserNavigation().navigate(`/workers/${id}`); rendered.rerender(view(id, active)); }); await flush();
   } };
 };
-const shortcut = () => screen.getByRole('button', { name: 'Tool paths' });
-const summary = () => screen.getByText('Tool paths', { selector: 'summary' });
+const shortcut = () => screen.getByRole('button', { name: 'Tool launch paths' });
+const summary = () => screen.getByText('Tool launch paths', { selector: 'summary' });
 
 describe('Worker software tool path shortcut', () => {
   it('waits for the first configuration read, then opens the actual fields', async () => {
     const state = await mount({ delayed: true });
     fireEvent.click(shortcut()); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true');
-    expect(state.requested()).toBe(true); expect(screen.queryByText('Tool paths', { selector: 'summary' })).toBeNull();
+    expect(state.requested()).toBe(true); expect(screen.queryByText('Tool launch paths', { selector: 'summary' })).toBeNull();
     await state.resolve();
     expect(summary().closest('details')).toHaveAttribute('open');
     expect(screen.getByRole('textbox', { name: 'Codex' })).toBeVisible();

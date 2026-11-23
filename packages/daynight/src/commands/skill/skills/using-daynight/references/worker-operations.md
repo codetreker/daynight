@@ -102,7 +102,7 @@ single quotes for backslash paths. Native arguments keep their existing settings
 
 The first tool-path-capable cloud exchange imports each unadopted local choice;
 an explicit choice already saved in the cloud wins. Afterwards use **My Workers →
-the intended Worker → Configuration → Tool paths**. Expand the section, edit a
+the intended Worker → Configuration → Tool launch paths**. Expand the section, edit a
 path and use the panel's normal Save or Cancel action. **Restore automatic** is
 explicit: clearing the input is not a reset. Cloud automatic discovery does not
 reactivate an old local path. Editing local YAML after adoption does not replace
@@ -125,8 +125,13 @@ There is no `daynight config` or `daynight worker config` command for this edit.
 An explicit path selects that installation and never silently falls back to
 `PATH` or the bundled runtime. Version/capability checks and execution use the
 same verified selection. Web Copilot still uses Daynight's SDK and requires a
-compatible external runtime. An unused automatic tool can remain unchecked;
-that does not establish failure of unrelated tools or Provider availability.
+compatible external runtime. After adopting the cloud target, the Worker checks
+both configured tool choices within bounded operations, even when current work
+does not use one of them. Successful checks are reused; failed checks retain their
+actual errors during retry backoff. A failure does not establish failure of
+unrelated tools or Provider availability. Overall configuration success still
+requires current applied evidence for both editable tools. These checks do not
+start a task or replace demand-based Provider capability discovery.
 
 Native executables, symlinks, supported Node entries and recognized npm shims
 are resolved on the Worker. npm shim text is inspected, not run as shell code;

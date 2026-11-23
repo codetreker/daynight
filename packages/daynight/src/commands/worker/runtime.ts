@@ -1615,6 +1615,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     return async () => {
       while (!signal.aborted) {
         const revision = reconcileWake.snapshot();
+        void toolRuntime.checkConfiguredTools(signal).then(changed => {
+          if (!changed || signal.aborted) return;
+          reconcileWake.request(); return refreshToolProofs();
+        }).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Configured tool inspection could not be published.", error }); });
         void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
         try {
           const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;

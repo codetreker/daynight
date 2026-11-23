@@ -18,10 +18,7 @@ export const toolPathSummaryStates = (resource: WorkerConfigurationResource, tel
   const { desired } = resource;
   return (['codex', 'copilot'] as const).map(tool => {
     const entry = telemetry.entries.find(item => item.tool === tool && item.context === 'web');
-    const state = toolPathApplicationState(entry, desired, online);
-    // An unused automatic tool can fail discovery without making other tools unusable.
-    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent;
-    return state === 'error' && !required ? 'not_checked' : state;
+    return toolPathApplicationState(entry, desired, online);
   });
 };
 

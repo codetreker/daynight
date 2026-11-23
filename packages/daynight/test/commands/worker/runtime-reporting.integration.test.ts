@@ -29,10 +29,11 @@ import * as instanceLocks from "../../../src/commands/worker/instance-lock.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
+const checkConfiguredTools = vi.hoisted(() => vi.fn(async (_signal: AbortSignal) => false));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   const fixture = await import("../../helpers/worker-tool-runtime-fixture.js");
   return { createWorkerToolSelectionRuntime: (options: Parameters<typeof fixture.createWorkerToolSelectionFixture>[0]) => ({
-    ...fixture.createWorkerToolSelectionFixture(options), prepareWebCandidates: mocks.prepareCandidates,
+    ...fixture.createWorkerToolSelectionFixture(options), prepareWebCandidates: mocks.prepareCandidates, checkConfiguredTools,
   }) };
 });
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: (options: { copilotRequired: () => boolean }) => ({
@@ -195,6 +196,7 @@ describe("worker runtime configuration reporting", () => {
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", error: failure })));
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalled());
     expect(mocks.prepareCandidates).not.toHaveBeenCalled();
+    expect(checkConfiguredTools).toHaveBeenCalledWith(expect.any(AbortSignal));
     f.signal.abort(); await running;
   });
 
