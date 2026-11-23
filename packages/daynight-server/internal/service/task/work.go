@@ -49,11 +49,9 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 	if err != nil {
 		return taskwork.Page{}, fmt.Errorf("select task work overview: %w", err)
 	}
-	ids := make([]string, len(groups.Items))
 	indexes := make(map[string]int, len(groups.Items))
 	positions := make(map[string]store.TaskWorkPosition, len(groups.Items))
 	for i, group := range groups.Items {
-		ids[i] = group.ID
 		indexes[group.ID] = i
 		positions[group.ID] = store.TaskWorkPosition{GroupID: group.ID, StartedAt: group.StartedAt}
 		result.Groups = append(result.Groups, taskcore.ProjectWorkGroup(group, selection.Query.AssignedTo, result.ObservedAt))
@@ -65,19 +63,28 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 		}
 		result.NextCursor = &cursor
 	}
-	var after *store.TaskWorkTargetPosition
-	for len(ids) > 0 {
+	if err := checkWorkTargetKeys(groups, indexes); err != nil {
+		return taskwork.Page{}, err
+	}
+	for start := 0; start < len(groups.Targets); start += 200 {
+		keys := groups.Targets[start:min(start+200, len(groups.Targets))]
 		var targets store.TaskWorkTargets
 		var selected []model.Task
 		var sources store.SnapshotScope
 		err := s.readWorkSnapshot(ctx, principal, projectID, fence, func(snapshot store.SnapshotScope) error {
 			var err error
-			targets, err = snapshot.TaskDAO().TaskWorkTargets(ctx, projectID, ids, after, 200)
+			targets, err = snapshot.TaskDAO().TaskWorkTargets(ctx, projectID, keys)
 			if err != nil {
 				return err
 			}
+			if len(targets.Items) != len(keys) {
+				return fmt.Errorf("work target results do not match selected keys")
+			}
 			selected = make([]model.Task, len(targets.Items))
 			for i, item := range targets.Items {
+				if item.GroupID != keys[i].GroupID || item.Task.ID != keys[i].TaskID || item.Task.ProjectID != projectID || item.Task.Status != model.TaskInProgress {
+					return fmt.Errorf("work target result does not match selected key")
+				}
 				selected[i] = item.Task
 			}
 			sources, err = s.loadSources(ctx, snapshot, projectID, selected)
@@ -112,18 +119,6 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 				group.ContributorCursor = &cursor
 			}
 		}
-		if !targets.HasMore {
-			break
-		}
-		if len(targets.Items) == 0 {
-			return taskwork.Page{}, fmt.Errorf("work target continuation did not advance")
-		}
-		last := targets.Items[len(targets.Items)-1]
-		next := store.TaskWorkTargetPosition{GroupID: last.GroupID, TaskID: last.Task.ID}
-		if after != nil && (next.GroupID < after.GroupID || next.GroupID == after.GroupID && next.TaskID <= after.TaskID) {
-			return taskwork.Page{}, fmt.Errorf("work target continuation did not advance")
-		}
-		after = &next
 	}
 	// No transaction spans live sampling. Rechecking the graph after the final
 	// batch also prevents publishing a partial traversal of a changed component.
@@ -136,6 +131,29 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 		}
 	}
 	return taskcore.FitWorkPage(result, selection, fence, positions, taskwork.MaxResponseBytes-request.ResponseOverhead)
+}
+
+func checkWorkTargetKeys(groups store.TaskWorkGroups, indexes map[string]int) error {
+	counts := make([]int64, len(groups.Items))
+	for i, key := range groups.Targets {
+		index, ok := indexes[key.GroupID]
+		if !ok {
+			return fmt.Errorf("work target belongs to an unselected group")
+		}
+		if i > 0 {
+			previous := groups.Targets[i-1]
+			if key.GroupID < previous.GroupID || key.GroupID == previous.GroupID && key.TaskID <= previous.TaskID {
+				return fmt.Errorf("work target keys are not strictly ordered")
+			}
+		}
+		counts[index]++
+	}
+	for i, group := range groups.Items {
+		if counts[i] != group.InProgressCount {
+			return fmt.Errorf("work target keys do not cover the selected group")
+		}
+	}
+	return nil
 }
 
 func workFence(ctx context.Context, reader store.TaskReader, projectID string) (store.TaskSearchFence, error) {

@@ -95,9 +95,9 @@ func (s readRouteTasks) TaskListFence(context.Context, string) (store.TaskListFe
 	return store.TaskListFence{Count: "1", VersionSum: "1"}, nil
 }
 func (s readRouteTasks) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
-	return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: s.task.ID, DisplayTaskID: s.task.ID, TitlePreview: s.task.Title, MemberCount: 1, MatchedCount: 1, InProgressCount: 1, RootCount: 1, Roots: []store.TaskWorkRoot{{ID: s.task.ID, TitlePreview: s.task.Title}}, StartedAt: testTime}}}, nil
+	return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: s.task.ID, DisplayTaskID: s.task.ID, TitlePreview: s.task.Title, MemberCount: 1, MatchedCount: 1, InProgressCount: 1, RootCount: 1, Roots: []store.TaskWorkRoot{{ID: s.task.ID, TitlePreview: s.task.Title}}, StartedAt: testTime}}, Targets: []store.TaskWorkTargetPosition{{GroupID: s.task.ID, TaskID: s.task.ID}}}, nil
 }
-func (s readRouteTasks) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (s readRouteTasks) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	return store.TaskWorkTargets{Items: []store.TaskWorkTarget{{GroupID: s.task.ID, Task: s.task}}}, nil
 }
 

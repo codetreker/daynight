@@ -761,7 +761,7 @@ func (mock *taskHTTPReaderMock) TaskWorkGroups(context.Context, string, store.Ta
 	panic("unreachable")
 }
 
-func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	mock.need("TaskWorkTargets", false)
 	panic("unreachable")
 }

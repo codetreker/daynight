@@ -38,7 +38,7 @@ func testWorkSyncAndAssigneesExcludeHiddenChildren(t *testing.T, db *postgres.St
 		if len(groups.Items) != 1 || groups.Items[0].ID != visible.ID || groups.Items[0].MemberCount != 1 || groups.HasMore {
 			t.Fatalf("work includes hidden member: %+v", groups)
 		}
-		targets, err := dao.TaskWorkTargets(t.Context(), project.ID, []string{visible.ID, hidden.ID, liveGoal.ID}, nil, 20)
+		targets, err := dao.TaskWorkTargets(t.Context(), project.ID, groups.Targets)
 		if err != nil {
 			return err
 		}
