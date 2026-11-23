@@ -26,6 +26,9 @@ export class GoalRelationSession {
   private readonly listeners = new Set<() => void>();
   private readonly denied = new Set<string>();
   private readonly withdrawnProjects = new Set<string>();
+  private readonly prerequisiteTargets = new Map<string, Map<string, string>>();
+  private readonly targetWithdrawals = new Map<string, number>();
+  private withdrawalGeneration = 0;
   private queue: string[] = [];
   private active = 0;
   private disposed = false;
@@ -73,8 +76,9 @@ export class GoalRelationSession {
     }
     this.summaries = summaries;
     const roots = new Map([...summaries].filter(([, goal]) => goal.type === 'goal' && (goal.status === 'todo' || goal.status === 'in_progress')));
-    for (const [id, source] of this.sources) if (!roots.has(id)) { this.cancel(source); this.sources.delete(id); this.denied.delete(id); }
+    for (const [id, source] of this.sources) if (!roots.has(id)) { this.cancel(source); this.sources.delete(id); if (!this.targetWithdrawals.has(id)) this.denied.delete(id); }
     for (const [id, summary] of roots) {
+      if (this.targetWithdrawals.has(id) && this.denied.has(id)) continue;
       const key = `${summary.version}:${this.scope.getHistoryGeneration(this.projectId)}`;
       const existing = this.sources.get(id);
       if (existing === undefined) {
@@ -94,6 +98,42 @@ export class GoalRelationSession {
     for (const id of legal.conflictingIds) { const source = this.sources.get(id)!; this.cancel(source); source.view = { ...source.view, phase: 'conflict', contribution: null }; }
     this.publish(); this.pump();
   };
+  private withdrawHiddenTargets = (source: Source, page: GoalDependencies, readGeneration: number) => {
+    const prior = source.view.contribution?.prerequisites;
+    let known = this.prerequisiteTargets.get(source.view.goalId);
+    if (known === undefined) { known = new Map(); this.prerequisiteTargets.set(source.view.goalId, known); }
+    // Keep opaque edge identity after public references are scrubbed so repeated losses remain attributable.
+    for (const item of page.prerequisites) if (item.edgeId !== undefined && item.target !== null &&
+      readGeneration >= (this.targetWithdrawals.get(item.target.goalId) ?? 0)) known.set(item.edgeId, item.target.goalId);
+    const hidden = page.prerequisites.flatMap(item => {
+      if (item.target !== null || item.edgeId === undefined) return [];
+      const target = known.get(item.edgeId) ?? prior?.find(previous => previous.edgeId === item.edgeId)?.target?.goalId;
+      return target === undefined ? [] : [target];
+    });
+    if (hidden.length === 0) return;
+    const generation = ++this.withdrawalGeneration;
+    for (const id of hidden) {
+      this.targetWithdrawals.set(id, generation); this.denied.add(id);
+      const target = this.sources.get(id);
+      if (target !== undefined) { this.cancel(target); this.sources.delete(id); }
+    }
+    const removed = new Set(hidden);
+    for (const retained of this.sources.values()) {
+      const contribution = retained.view.contribution;
+      if (contribution === null) continue;
+      const prerequisites = contribution.prerequisites.map(item => item.target !== null && removed.has(item.target.goalId) ? { ...item, target: null } : item);
+      retained.view = { ...retained.view, contribution: { ...contribution, prerequisites,
+        successors: contribution.successors.filter(goal => !removed.has(goal.goalId)) }, hiddenCount: prerequisites.filter(item => item.target === null).length };
+    }
+    this.queue = this.queue.filter(id => this.sources.has(id));
+    this.publish();
+  };
+  private admitsTarget = (goal: RelatedGoal, readGeneration: number) => {
+    const withdrawal = this.targetWithdrawals.get(goal.goalId);
+    if (withdrawal !== undefined && readGeneration < withdrawal || this.withdrawnProjects.has(goal.projectId)) return false;
+    if (withdrawal !== undefined) this.denied.delete(goal.goalId);
+    return true;
+  };
   private contributions = (candidate?: GoalRelationContribution) => [...this.sources.values()].flatMap(source =>
     source.view.goalId === candidate?.sourceId ? [candidate] : source.view.contribution === null ? [] : [source.view.contribution]);
   private cancel = (source: Source) => { source.generation++; source.controller?.abort(); source.controller = null; };
@@ -108,6 +148,7 @@ export class GoalRelationSession {
   retry = (id: string) => { this.enqueue(id); };
   reenter = () => {
     if (!this.qualified) return;
+    this.setRoots(this.summaries);
     for (const [id, source] of this.sources) if (!['queued', 'loading', 'partial'].includes(source.view.phase)) this.enqueue(id);
   };
   private pump = () => {
@@ -137,11 +178,12 @@ export class GoalRelationSession {
       if (fence === null) { source.view = { ...source.view, phase: 'interrupted' }; this.publish(); return; }
       source.view = { ...source.view, phase: 'loading' }; this.publish();
       let cursor: string | null = null, identity: string | null = null;
-      const seen = new Set<string>(), successors = new Map<string, RelatedGoal>();
+      const seen = new Set<string>(), successors = new Map<string, RelatedGoal>(), successorGenerations = new Map<string, number>();
       do {
+        let readGeneration = this.withdrawalGeneration;
         const result = await this.read(source.view.projectId, source.view.goalId, cursor, signal, {
           userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
-          onDispatch: () => { timeout = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeoutMilliseconds); },
+          onDispatch: () => { readGeneration = this.withdrawalGeneration; timeout = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeoutMilliseconds); },
         });
         if (timeout !== null) clearTimeout(timeout); timeout = null;
         if (!current() || !await this.scope.verifyTaskRead(fence, signal) || !current()) return;
@@ -150,11 +192,14 @@ export class GoalRelationSession {
           source.view = { ...source.view, phase: 'unavailable', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.publish(); return;
         }
         const page = result.page;
+        this.withdrawHiddenTargets(source, page, readGeneration);
+        if (!current()) return;
         if (identity !== null && identity !== pageIdentity(page)) throw new ApiError('protocol');
         if (page.nextCursor !== null && seen.has(page.nextCursor)) throw new ApiError('protocol');
         identity = pageIdentity(page);
-        for (const goal of page.successors) if (!this.withdrawnProjects.has(goal.projectId)) successors.set(goal.goalId, goal);
-        const prerequisites = page.prerequisites.map(item => item.target !== null && this.withdrawnProjects.has(item.target.projectId) ? { ...item, target: null } : item);
+        for (const goal of page.successors) if (this.admitsTarget(goal, readGeneration)) { successors.set(goal.goalId, goal); successorGenerations.set(goal.goalId, readGeneration); }
+        for (const [id] of successors) if (this.denied.has(id) || (this.targetWithdrawals.get(id) ?? 0) > successorGenerations.get(id)!) successors.delete(id);
+        const prerequisites = page.prerequisites.map(item => item.target !== null && !this.admitsTarget(item.target, readGeneration) ? { ...item, target: null } : item);
         const candidate: GoalRelationContribution = { sourceId: source.view.goalId, sourceProjectId: source.view.projectId, prerequisites, successors: [...successors.values()] };
         const denied = new Set(this.denied); denied.delete(source.view.goalId);
         if (contributionConflicts(this.projectId, projectGoalAcceptance(this.summaries), this.contributions(candidate), denied)) {

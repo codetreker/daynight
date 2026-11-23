@@ -31,6 +31,89 @@ const prepare = async (read: ConstructorParameters<typeof GoalRelationSession>[2
 const settled = (session: GoalRelationSession, goalId = id(1), phase = 'ready') => waitFor(() => expect(session.snapshot().sources.get(goalId)?.phase).toBe(phase));
 
 describe('Goal graph relationship session', () => {
+  it('withdraws a matched hidden prerequisite immediately through held and failed paging, rejecting older responses and admitting a fresh positive read', async () => {
+    let hidden = false, holdPeer = false, peerReply!: (value: GoalDependenciesRead) => void, rejectPage!: (error: unknown) => void;
+    const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
+      if (goalId === id(2)) {
+        if (holdPeer) return new Promise(resolve => { peerReply = resolve; });
+        return page(goalId, { successors: [related(10)] });
+      }
+      if (cursor !== null) return new Promise((_resolve, reject) => { rejectPage = reject; });
+      return page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : related(10) }],
+        successors: [related(20)], nextCursor: hidden ? 'next' : null });
+    });
+    const { session, scope } = await prepare(read), revoke = vi.spyOn(scope, 'revokeProject');
+    session.setRoots(roots(2)); await settled(session); await settled(session, id(2));
+    holdPeer = true; session.retry(id(2)); await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    hidden = true; session.retry(id(1)); await settled(session, id(1), 'partial');
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.prerequisites[0]?.target).toBeNull();
+    expect(session.snapshot().sources.get(id(1))!.hiddenCount).toBe(1);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors[0]?.goalId).toBe(id(20));
+    expect(session.snapshot().sources.get(id(2))!.contribution?.successors).toEqual([]);
+    rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
+    peerReply(page(id(2), { successors: [related(10)] })); await settled(session, id(2));
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(2))!.contribution?.successors).toEqual([]);
+    holdPeer = false; session.retry(id(2)); await settled(session, id(2));
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(false);
+    expect(session.snapshot().sources.get(id(2))!.contribution?.successors[0]?.goalId).toBe(id(10));
+    session.retry(id(1)); await settled(session, id(1), 'partial');
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(2))!.contribution?.successors).toEqual([]);
+    rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('retires the target source and keeps synchronized local identity denied across reconciliation and its late reply', async () => {
+    let hidden = false, targetReply!: (value: GoalDependenciesRead) => void, targetSignal!: AbortSignal;
+    const target = { ...related(2), projectId, projectName: 'Local', kind: 'internal' as const };
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal): Promise<GoalDependenciesRead> => goalId === id(2)
+      ? new Promise(resolve => { targetReply = resolve; targetSignal = signal; })
+      : Promise.resolve(page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : target }] })));
+    const { session } = await prepare(read), input = roots(2);
+    session.setRoots(input); await settled(session); await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    hidden = true; session.retry(id(1)); await settled(session);
+    expect(targetSignal.aborted).toBe(true);
+    expect(session.snapshot().sources.has(id(2))).toBe(false);
+    expect(session.snapshot().deniedIds.has(id(2))).toBe(true);
+    session.setRoots(new Map(input));
+    expect(session.snapshot().sources.has(id(2))).toBe(false);
+    targetReply(page(id(2), { successors: [related(30)] })); await Promise.resolve();
+    expect(session.snapshot().sources.has(id(2))).toBe(false);
+    expect(session.snapshot().deniedIds.has(id(2))).toBe(true);
+  });
+
+  it('withdraws the matched target before rejecting a conflicting replacement while retaining other legal context', async () => {
+    let hidden = false;
+    const read = vi.fn(async (_project: string, goalId: string) => goalId === id(1)
+      ? page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : related(10) }], successors: hidden ? [related(11)] : [related(20)] })
+      : page(goalId, { prerequisites: [{ target: related(11) }], successors: [related(10)] }));
+    const { session } = await prepare(read), input = roots(2);
+    input.set(id(1), { ...input.get(id(1))!, dependsOn: [id(2)] });
+    session.setRoots(input); await settled(session); await settled(session, id(2));
+    hidden = true; session.retry(id(1)); await settled(session, id(1), 'conflict');
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.prerequisites[0]?.target).toBeNull();
+    expect(session.snapshot().sources.get(id(1))!.hiddenCount).toBe(1);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors[0]?.goalId).toBe(id(20));
+    expect(session.snapshot().sources.get(id(2))!.contribution?.successors).toEqual([]);
+    expect(session.snapshot().sources.get(id(2))!.contribution?.prerequisites[0]?.target?.goalId).toBe(id(11));
+  });
+
+  it.each([undefined, id(91)])('does not infer withdrawal from an unmatched hidden prerequisite edge %s', async edgeId => {
+    let hidden = false, rejectPage!: (error: unknown) => void;
+    const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
+      if (cursor !== null) return new Promise((_resolve, reject) => { rejectPage = reject; });
+      return page(goalId, { prerequisites: hidden ? [{ ...(edgeId === undefined ? {} : { edgeId }), target: null }] : [{ edgeId: id(90), target: related(10) }], nextCursor: hidden ? 'next' : null });
+    });
+    const { session } = await prepare(read);
+    session.setRoots(roots()); await settled(session); hidden = true; session.retry(id(1)); await settled(session, id(1), 'partial');
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(false);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.prerequisites[0]?.target?.goalId).toBe(id(10));
+    rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
+  });
+
   it('retains prior downstream pages through held and failed replacement, removing absent Goals only on complete replacement', async () => {
     let round = 0, rejectPage!: (error: unknown) => void;
     const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {

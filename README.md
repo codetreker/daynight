@@ -37,7 +37,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   Goals. Local inspection follows the synchronized Goal relations and states.
   External cards show their actual Project; first reads show partial context,
   while complete refreshed traversals replace retained authorized results.
-  Unavailable prerequisites and retries remain explicit. The server retains the
+  Unavailable prerequisites and retries remain explicit; confirmed target withdrawal
+  removes its earlier visible context immediately. The server retains the
   complete acceptance check; ordinary Task graphs keep their execution scope.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML

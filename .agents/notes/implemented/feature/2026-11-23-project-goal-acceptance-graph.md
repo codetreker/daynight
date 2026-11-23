@@ -52,6 +52,21 @@ completion decision. Subject, source generation and history fences qualify each
 publication; trusted withdrawal clears affected nodes, edges and inspection data
 and cancels pages that could otherwise restore them.
 
+An admitted page that turns a previously known prerequisite edge's readable
+target into `null` supplies narrow withdrawal evidence when its stable edge ID
+matches the source's earlier record. The graph session immediately removes that
+target's identity, cards and inspection context from retained contributions,
+including during a staged traversal that later fails or conflicts. The readable
+source and other targets in the same Project remain available. An unmatched or
+ID-less hidden prerequisite cannot identify a prior target; ordinary candidate
+absence or status changes still wait for the complete atomic replacement.
+A withdrawal generation sampled at real request dispatch prevents older pages
+from restoring the target; a newly dispatched, currently qualified readable
+response can admit it again. The source privately retains each opaque edge ID's
+last verified target ID after clearing public references. If another fresh read
+restores that target, a later hidden response for the same edge can withdraw it
+again. This correlation is not exposed in cards, relations or inspection context.
+
 Candidate external contributions are checked together with current synchronized
 edges. When independently read edge reversal would create a cycle, the conflicting
 contribution is rejected while the legal local graph and valid reading state

@@ -35,8 +35,11 @@ pages sequentially. First reads publish verified partial results; repeated reads
 stage a complete replacement while retaining the prior still-authorized legal
 contribution. Failed, conflicting or unsupported replacement reads retain that
 contribution with their explicit phase while it remains authorized and legal;
-trusted withdrawal removes
-affected content immediately. Inspection takes local relations, titles and states
+trusted withdrawal removes affected content immediately. A newly hidden prerequisite
+with a stable edge ID matching a prior readable target immediately removes that
+target from retained cards and inspection, even before replacement completes or
+if it later fails. It preserves the source and other targets; unmatched hidden
+edges do not identify a target. Inspection takes local relations, titles and states
 from full synchronized Goal indexes, combining raw external context without
 overwriting newer local facts or growing the canvas. The session exposes retries,
 unsupported reads and inaccessible prerequisites. External cards use their

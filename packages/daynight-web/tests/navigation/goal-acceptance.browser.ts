@@ -613,3 +613,51 @@ test('a complete same-source refresh may reverse an external edge without confli
   await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
   expect(state.syncRequests).toEqual(requests);
 });
+
+test('a stable prerequisite edge becoming hidden retires its Goal and Details before refresh completes and rejects late peer context', async ({ page }) => {
+  const state = await install(page, { external: true });
+  const edgeId = '00000000-0000-4000-8000-000000000801';
+  state.sourceReply(activeId, cursor => ({ goalId: activeId, canEdit: true, revision: '1', completionBlocked: true,
+    prerequisites: [{ edgeId, target: state.externalGoal }], successors: cursor === null ? [state.relatedGoal(externalSuccessorId)] : [], nextCursor: cursor === null ? 'second-page' : null }));
+  state.sourceReply(isolatedId, () => ({ goalId: isolatedId, canEdit: false, completionBlocked: true, prerequisites: [{ target: state.externalGoal }], successors: [], nextCursor: null }));
+  state.holdSource(isolatedId);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await expect.poll(() => state.sourceHeld(isolatedId)).toBe(true);
+  await card(dialog, activeId).locator('.task-node-body').click();
+  const inspector = dialog.locator('.goal-acceptance-inspection');
+  await inspector.getByRole('button', { name: 'External authentication', exact: true }).click();
+  state.sourceReply(activeId, cursor => ({ goalId: activeId, canEdit: true, revision: '1', completionBlocked: true,
+    prerequisites: [{ edgeId, target: null }], successors: cursor === null ? [state.relatedGoal(externalSuccessorId)] : [], nextCursor: cursor === null ? 'second-page' : null }));
+  state.holdSource(activeId);
+  state.holdPage(activeId, 'second-page');
+  await retryRelations(dialog, 'Release client').click();
+  await expect.poll(() => state.sourceHeld(activeId)).toBe(true);
+  await inspector.getByRole('button', { name: 'Details', exact: true }).click();
+  const reader = page.locator('.goal-detail-surface');
+  await expect(reader.locator('.task-detail-title')).toHaveText('External authentication');
+  const requests = [...state.syncRequests];
+  state.releaseSource(activeId);
+  await expect.poll(() => state.pageHeld(activeId, 'second-page')).toBe(true);
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, activeId)).toHaveCount(0);
+  await expect(reader).toHaveCount(0);
+  await expect(dialog).not.toContainText('External authentication');
+  await expect(sourceStatus(dialog, activeId)).toContainText('You cannot access 1 prerequisite Goals');
+  await expect(card(dialog, isolatedId)).toHaveCount(1);
+  await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+  state.failPage(activeId, 'second-page', true);
+  state.releasePage(activeId, 'second-page');
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  await expect(card(dialog, externalSuccessorId)).toHaveCount(1);
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(reader).toHaveCount(0);
+  state.releaseSource(isolatedId);
+  await expect.poll(() => state.sourceHeld(isolatedId)).toBe(false);
+  await expect(sourceStatus(dialog, isolatedId)).not.toHaveAttribute('data-phase', 'loading');
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(edge(dialog, externalId, isolatedId)).toHaveCount(0);
+  await expect(dialog).not.toContainText('External authentication');
+  await expect(sourceStatus(dialog, activeId)).toContainText('You cannot access 1 prerequisite Goals');
+  expect(state.syncRequests).toEqual(requests);
+});
