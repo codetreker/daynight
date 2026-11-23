@@ -132,11 +132,15 @@ describe("attachment transport", () => {
     fetcher.mockResolvedValue(new Response("pending", { status: 202 }));
     await expect(readAttachmentText(project, task, item.path, signal())).rejects.toMatchObject({ kind: "protocol", status: 202 });
     const controller = new AbortController();
-    fetcher.mockResolvedValue({ ok: true, status: 200, text: async () => { controller.abort(); return "stale"; } });
+    const stale = new Response("stale");
+    vi.spyOn(stale, "text").mockImplementation(async () => { controller.abort(); return "stale"; });
+    fetcher.mockResolvedValue(stale);
     const error = await readAttachmentText(project, task, item.path, controller.signal).catch((failure: unknown) => failure);
     expect(error).toBe(controller.signal.reason);
     const aborted = new DOMException("Aborted", "AbortError");
-    fetcher.mockResolvedValue({ ok: true, status: 200, text: async () => { throw aborted; } });
+    const cancelled = new Response("text");
+    vi.spyOn(cancelled, "text").mockRejectedValue(aborted);
+    fetcher.mockResolvedValue(cancelled);
     await expect(readAttachmentText(project, task, item.path, signal())).rejects.toBe(aborted);
   });
 });
