@@ -54,7 +54,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 		expected := model.WorkerReport{
 			Telemetry:     capacityDecode[model.WorkerTelemetry](t, body),
 			TaskInventory: capacityDecode[*model.WorkerTaskInventory](t, body["taskInventory"]),
-			Configuration: capacityDecode[*model.WorkerConfigurationExchange](t, body["configuration"]),
+			Configuration: configurationHTTPExchange(t, body["configuration"]),
 		}
 		return f.request("POST", path+"/report", jsonBody(t, body), &workerRouteCall{
 			name: "Report", args: []any{id, expected}, result: result,

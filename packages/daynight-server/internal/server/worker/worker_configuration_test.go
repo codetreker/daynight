@@ -88,6 +88,9 @@ func configurationHTTPWireValue(t *testing.T, value model.WorkerConfiguration) m
 
 func configurationHTTPExchange(t *testing.T, value any) *model.WorkerConfigurationExchange {
 	t.Helper()
+	if value == nil {
+		return nil
+	}
 	var result model.WorkerConfigurationExchange
 	raw := []byte(jsonBody(t, value))
 	if err := json.Unmarshal(raw, &result); err != nil {
