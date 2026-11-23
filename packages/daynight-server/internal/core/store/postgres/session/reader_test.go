@@ -156,6 +156,31 @@ func testSessionReaderPropagatesWorkerDecodeErrors(t *testing.T, db *postgres.St
 		{name: "worker field type", raw: strings.Replace(valid, `"state":"active"`, `"state":1`, 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.sqlState != "" {
+				var indexDefinition string
+				if err := db.Pool.QueryRow(t.Context(), `SELECT pg_get_indexdef('task_properties_worker_active_claim_idx'::regclass)`).Scan(&indexDefinition); err != nil {
+					t.Fatal(err)
+				}
+				// The index rejects malformed JSON during writes. We temporarily
+				// remove it to exercise the reader's independent SQL decode failure.
+				mustQueryExec(t, db, `DROP INDEX task_properties_worker_active_claim_idx`)
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
+					defer cancel()
+					if _, err := db.Pool.Exec(ctx, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, task.ID); err != nil {
+						t.Errorf("remove corrupt worker fixture: %v", err)
+						return
+					}
+					if _, err := db.Pool.Exec(ctx, indexDefinition); err != nil {
+						t.Errorf("restore worker inventory index: %v", err)
+						return
+					}
+					var valid, ready bool
+					if err := db.Pool.QueryRow(ctx, `SELECT indisvalid,indisready FROM pg_index WHERE indexrelid='task_properties_worker_active_claim_idx'::regclass`).Scan(&valid, &ready); err != nil || !valid || !ready {
+						t.Errorf("restored worker inventory index valid=%t ready=%t: %v", valid, ready, err)
+					}
+				})
+			}
 			mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2) ON CONFLICT(task_id,name) DO UPDATE SET value=excluded.value`, task.ID, test.raw)
 			err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
 				_, err := scope.SessionDAO().CurrentTaskSessionSources(t.Context(), project.ID)

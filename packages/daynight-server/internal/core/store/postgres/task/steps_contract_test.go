@@ -339,7 +339,7 @@ func testTaskStepsWritesPreserveParentAcrossExecutionPolicies(t *testing.T, data
 				testutil.MustExec(t, database.Pool, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, fmt.Sprintf(`{"claimId":%q,"state":"active","userId":%q,"workerId":%q,"machine":{"id":%q,"name":"Build machine"},"platform":"linux","agent":"codex","agentControlMode":"herdr","worktreeId":%q,"phase":"preparing","claimedAt":"2026-01-01T00:00:00Z"}`, testutil.QueryID(501+index), testutil.QueryID(500), testutil.QueryID(510), testutil.QueryID(511), testutil.QueryID(512)))
 				testutil.MustExec(t, database.Pool, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,grant_hash,grant_expires_at,grant_kind) VALUES($1,$2,$3,$4,$5,$6,'{}','{}','secret','2099-01-01','connect')`, testutil.QueryID(520+index), project.ID, task.ID, testutil.QueryID(501+index), testutil.QueryID(500), testutil.QueryID(530+index))
 			} else if policy == "invalid_worker" {
-				testutil.MustExec(t, database.Pool, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','invalid JSON')`, task.ID)
+				testutil.MustExec(t, database.Pool, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{"claimId":1}')`, task.ID)
 			} else if policy != "todo" {
 				testutil.MustExec(t, database.Pool, `UPDATE tasks SET status=$2,started_at='2026-01-01',completed_at=CASE WHEN $2='done' THEN '2026-01-02'::timestamptz ELSE NULL END WHERE id=$1`, task.ID, policy)
 			}
