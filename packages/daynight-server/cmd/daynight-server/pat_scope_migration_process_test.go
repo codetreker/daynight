@@ -45,8 +45,8 @@ ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_
 DROP INDEX webhook_endpoints_live_client_key_idx;
 ALTER TABLE webhook_endpoints DROP COLUMN client_key;
 DROP INDEX task_properties_worker_active_claim_idx;
-ALTER TABLE task_sessions DROP COLUMN history_content_policy;
-DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112,113,114,115)`); err != nil {
+ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode;
+DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112,113,114,115,116)`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64
