@@ -13,12 +13,31 @@ import { acquireControllerStoragePermit } from "../../../src/commands/controller
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { currentSqliteVersion, inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
-import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
+import { cleanupMigrationResources, cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
-afterEach(cleanupMigrations);
+// A Vitest timeout does not stop the case; keep its resources isolated until it settles.
+let activeMigrationCase: { controller: AbortController; settled: Promise<void>; resources: (() => void)[] } | undefined;
+const trackMigrationCase = (run: (signal: AbortSignal, resources: (() => void)[]) => Promise<void>): Promise<void> => {
+  const controller = new AbortController();
+  const resources: (() => void)[] = [];
+  const result = Promise.resolve().then(() => run(controller.signal, resources));
+  activeMigrationCase = { controller, resources, settled: result.then(() => {}, () => {}) };
+  return result;
+};
 
-const previousJournalFixture = async (version: 16 | 17 | 18 = 16) => {
-  const fixture = await migrationFixture();
+afterEach(async () => {
+  const active = activeMigrationCase;
+  activeMigrationCase = undefined;
+  cleanupMigrations();
+  if (active !== undefined) {
+    active.controller.abort();
+    await active.settled;
+    cleanupMigrationResources(active.resources);
+  }
+});
+
+const previousJournalFixture = async (version: 16 | 17 | 18 = 16, resources?: (() => void)[]) => {
+  const fixture = await migrationFixture({}, resources);
   const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
   restoreControllerJournalVersion(journal, version);
   expect(inspectSqlite(journal, controllerJournalFormat)).toEqual({ kind: "outdated", version });
@@ -27,10 +46,11 @@ const previousJournalFixture = async (version: 16 | 17 | 18 = 16) => {
 };
 
 describe("legacy Bot storage migration", () => {
-  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", async version => {
-    const f = await previousJournalFixture(version), original = readFileSync(f.record.intent!.journalPath);
+  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", version => trackMigrationCase(async (signal, resources) => {
+    const f = await previousJournalFixture(version, resources), original = readFileSync(f.record.intent!.journalPath);
+    signal.throwIfAborted();
     expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
-    const manifest = await migrateLegacyBot(f.input), paths = resolveBotPaths(f.stateDirectory, f.botId);
+    const manifest = await migrateLegacyBot({ ...f.input, signal }), paths = resolveBotPaths(f.stateDirectory, f.botId);
     expect(readFileSync(f.record.intent!.journalPath)).toEqual(original);
     const copies = new Map(manifest.files.map(file => {
       const destination = path.join(paths.directory, file.destination);
@@ -49,7 +69,7 @@ describe("legacy Bot storage migration", () => {
     }
     const copiedJournal = path.join(paths.directory, manifest.journal!);
     expect(() => readCurrentControllerSnapshot(copiedJournal, f.ticket)).toThrow(/current journal format/);
-  });
+  }), 15_000);
 
   it.each(["future", "unversioned", "schema", "ticket"] as const)("refuses a protected v16 copy with invalid %s evidence", async conflict => {
     const f = await previousJournalFixture(), manifest = await migrateLegacyBot(f.input);
