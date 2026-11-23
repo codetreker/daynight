@@ -468,6 +468,20 @@ func TestRelayRetryDirectSubmissionPrecedesMediaResult(t *testing.T) {
 	}
 	id := mediaIdentity(out.Capture.AttemptID, "retry_capture")
 	message := sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture"}
+	original := f.d.media[id]
+	for _, body := range [][]byte{
+		[]byte(`{}`),
+		encode(map[string]string{"captureId": request.CaptureID, "attemptId": uuid.NewString()}),
+	} {
+		row := original
+		row.Body = body
+		f.d.media[id] = row
+		message.MediaResult = encode(validated)
+		if _, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, message); err == nil || f.d.media[id].Complete {
+			t.Fatal("retry response with invalid durable identity accepted", err)
+		}
+	}
+	f.d.media[id] = original
 	changed := validated
 	changed.SHA256 = imageBytesHash([]byte("different"))
 	message.MediaResult = encode(changed)
@@ -522,6 +536,11 @@ func TestRelayRetryFailureSettlesOriginalAttempt(t *testing.T) {
 				_, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture", MediaError: &failure})
 				if err != nil || !reflect.DeepEqual(before, f.d.captures[request.CaptureID].Receipt) {
 					t.Fatal("original failure replay changed receipt", err)
+				}
+				changed := sp.ImageError{Code: "source_timeout", Message: "Different failure."}
+				_, err = f.s.acceptMediaResponse(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{ControllerFence: f.r.Snapshot.ControllerFence, RequestID: id, Action: "retry_capture", MediaError: &changed})
+				if err == nil || !reflect.DeepEqual(before, f.d.captures[request.CaptureID].Receipt) {
+					t.Fatal("different retry failure changed original receipt", err)
 				}
 			}
 			capture := f.d.captures[request.CaptureID]
