@@ -177,13 +177,18 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
   });
   try {
     checkSignal(connectionSignal); await awaitAdmission(() => connected(socket, "connect"), connectionSignal);
+    // Before sending a request, any readable bytes or EOF mean this peer can
+    // no longer provide a valid response. A paused socket may not emit close
+    // for a peer FIN until its readable side is observed.
+    socket.once("readable", closed); if (socket.destroyed || socket.readableLength || socket.readableEnded) closed();
     if (socket.readableHighWaterMark > 65536 || socket.writableHighWaterMark > 65536) throw failure("policy_restricted");
     assertExternalImageSocketPeer(socket, address, boundary?.address);
     await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), connectionSignal);
     await assertPolicy(policy, connectionSignal);
     if (url.protocol === "https:") {
-      const tls = await authorized(policy, connectionSignal, () => { if (socket.destroyed) throw failure("source_unavailable"); const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) }); tls.on("error", () => {}); current = tls; watch(tls); return tls; });
+      const tls = await authorized(policy, connectionSignal, () => { if (socket.destroyed || socket.readableLength || socket.readableEnded) throw failure("source_unavailable"); socket.off("readable", closed); const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) }); tls.on("error", () => {}); current = tls; watch(tls); return tls; });
       await awaitAdmission(() => connected(tls, "secureConnect"), connectionSignal);
+      tls.once("readable", closed); if (tls.destroyed || tls.readableLength || tls.readableEnded) closed();
       if (tls.readableHighWaterMark > 65536 || tls.writableHighWaterMark > 65536) throw failure("policy_restricted");
       if (!tls.authorized || (tls.alpnProtocol && tls.alpnProtocol !== "http/1.1")) throw failure("source_forbidden");
       assertExternalImageSocketPeer(tls, address, boundary?.address);
@@ -193,7 +198,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
     }
     checkSignal(connectionSignal); if (current.destroyed) throw failure("source_unavailable"); return current;
   } catch (error) { await destroyAndJoin(current); if (current !== socket) await destroyAndJoin(socket); throw error; }
-  finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); unwatch(current); if (current !== socket) unwatch(socket); }
+  finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); current.off("readable", closed); unwatch(current); if (current !== socket) { socket.off("readable", closed); unwatch(socket); } }
 }
 function validateResponseHeaders(response: IncomingMessage): { length: number | null; contentType: string | null } {
   if (response.rawHeaders.length > 200) throw failure("source_unavailable");
@@ -273,7 +278,7 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       const socket = active, agent = new Agent({ keepAlive: false, maxSockets: 1 });
       const connection = new AbortController();
       const closed = () => { if (!connection.signal.aborted) connection.abort(failure("source_unavailable")); };
-      socket.once("close", closed); socket.once("error", closed); if (socket.destroyed) closed();
+      socket.once("close", closed); socket.once("error", closed); socket.once("readable", closed); if (socket.destroyed || socket.readableLength || socket.readableEnded) closed();
       const connectionSignal = AbortSignal.any([signal, connection.signal]);
       // An explicit dedicated Agent prevents agent:false from discarding createConnection.
       agent.createConnection = () => socket;
@@ -281,7 +286,8 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       try {
         await assertPolicy(policy, connectionSignal);
         response = await authorized(policy, connectionSignal, () => new Promise<IncomingMessage>((resolve, reject) => {
-          if (socket.destroyed) { reject(failure("source_unavailable")); return; }
+          if (socket.destroyed || socket.readableLength || socket.readableEnded) { reject(failure("source_unavailable")); return; }
+          socket.off("readable", closed);
           const req = request({ protocol: "http:", hostname, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), path: url.pathname + url.search, method: "GET", agent, maxHeaderSize: 32768, insecureHTTPParser: false, headers: { Host: url.host, Accept: "image/png,image/jpeg,image/webp,image/gif,image/avif", "Accept-Encoding": "identity", "User-Agent": "Daynight-Image-Source/1", Connection: "close" }, signal });
           req.maxHeadersCount = 0;
           let settled = false;
@@ -337,7 +343,7 @@ export async function copyExternalImage(input: { url: string; outputPath: string
         if (end.dev !== stat.dev || end.ino !== stat.ino || finalStat.nlink !== 1n || finalStat.size !== BigInt(bytes)) throw failure("policy_restricted");
         await handle.sync(); await handle.chmod(0o400); await assertPolicy(policy, signal);
         return { inputPath: input.outputPath, byteLength: String(bytes), sha256: hash.digest("hex"), declaredMediaType };
-      } finally { socket.off("close", closed); socket.off("error", closed); response?.destroy(); agent.destroy(); await destroyAndJoin(socket); active = null; }
+      } finally { socket.off("close", closed); socket.off("error", closed); socket.off("readable", closed); response?.destroy(); agent.destroy(); await destroyAndJoin(socket); active = null; }
     }
     throw failure("source_forbidden");
   } catch (error) {
