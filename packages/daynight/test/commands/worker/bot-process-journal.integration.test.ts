@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
@@ -28,7 +29,7 @@ const stoppedJournalFixture = async (version: 16 | 17 = 16) => {
   f.executions.update(f.current(), { controllerProcess: controller, snapshot });
   const db = new Database(sqliteFilename(original.journalPath));
   db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
-  if (version === 16) db.exec("DROP TABLE stopped_generations; PRAGMA user_version=16");
+  restoreControllerJournalVersion(db, version);
   db.close();
   vi.spyOn(localClient, "requestController").mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original Controller exited."));
   vi.spyOn(processProof, "inspectBootstrapProcessProof").mockResolvedValue("stopped");
@@ -60,7 +61,7 @@ test.each(["recovery", "shutdown"] as const)("reconciles an exited ordinary v16 
   }
   expect(f.reconcile).toHaveBeenCalledOnce();
   const db = new Database(sqliteFilename(f.original.journalPath), { readonly: true });
-  try { expect(db.pragma("user_version", { simple: true })).toBe(17); }
+  try { expect(db.pragma("user_version", { simple: true })).toBe(18); }
   finally { db.close(); }
   expect(f.leases.release).toHaveBeenCalledWith(f.ticket.launchId);
 });
@@ -74,7 +75,7 @@ test.each([
   if (conflict === "ticket") db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
   else if (conflict === "process") db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...f.snapshot, controllerProcess: { ...f.snapshot.controllerProcess!, parentPid: 999 } }));
   else if (conflict === "schema") db.exec("DROP TABLE timeline_entries");
-  else db.pragma("user_version=18");
+  else db.pragma("user_version=19");
   db.close();
   const bytes = readFileSync(f.original.journalPath);
   const failure = await f.manager.advance(f.current(), f.signal).catch(error => error);

@@ -10,7 +10,7 @@ Goal acceptance relationships can cross Projects and survive changes in caller v
 
 A dedicated Goal relationship service coordinates repeatable-read projections and Project-bound edits. Core owns the final graph rules; the Store supplies a single post-lock SQL admission snapshot containing source authorization, candidate authorization, endpoint facts and current Team ownership. All edits take the local Project lock followed by its owner Team graph lock, shared with [Goal lifecycle protection](2026-11-19-goal-dependency-lifecycle.md) and [Project cleanup](2026-11-19-project-goal-dependency-cleanup.md). Remote Project and Task rows are neither locked nor updated.
 
-Relationships retain independent opaque edge IDs and persistent revisions. Exact revision comparison precedes no-op detection. Real changes advance once; empty sets retain their revision. Read projections redact inaccessible prerequisite targets and filter inaccessible successors before LIMIT. The [relationship design](../../../../docs/design/goal-dependencies.md) owns the mechanism and service guarantees.
+Relationships retain independent opaque edge IDs and persistent revisions. Exact revision comparison precedes no-op detection. Real changes advance once; empty sets retain their revision. The [Goal relation synchronization decision](2026-11-23-goal-relation-task-watermark.md) also advances the downstream Task version for direct edits. Read projections redact inaccessible prerequisite targets and filter inaccessible successors before LIMIT. The [relationship design](../../../../docs/design/goal-dependencies.md) owns the mechanism and service guarantees.
 
 ## Alternatives
 

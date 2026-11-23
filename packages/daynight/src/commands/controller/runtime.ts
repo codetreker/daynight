@@ -271,7 +271,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (stopping) throw new NativeDispatchRejectedError("Controller stopped before native dispatch.");
     assertProviderNativeDispatch(workerLifecycle?.assertAdmission);
   };
-  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), relayMode: () => relay.currentOnlineMode() === "relay", currentFence: () => relay.currentFence(), currentAcknowledgedSequence: () => relay.currentAcknowledgedSequence(), sourceEpoch: ticket.executionId, provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
   const markdownCaptures = createMarkdownCaptureCoordinator({ ...(workerLifecycle ? { beforeSpawn: workerLifecycle.assertAdmission } : {}), ticket, journal, bridge: captureBridge.providerOptions,
@@ -280,6 +280,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     nativeReadPolicy: () => nativeReadPolicy,
     acquireExternalPolicy: externalImages.acquire,
     onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onNativeReceipt: (request, receipt) => accountingBoundary(() => journal.applyNativeImageReceipt(request, receipt)),
     onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
   });
   const stopMarkdownCaptures = own(() => markdownCaptures.stop());
@@ -294,6 +295,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     readState,
     onAcknowledged: () => {
       provider?.acknowledgeImageOccurrences?.();
+      if (relay.currentOnlineMode() === "relay") return;
       if (historyTimer) clearTimeout(historyTimer);
       historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(error)); }, 250);
     },
@@ -374,6 +376,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   async function runImageHistorySynchronization(forCapture: boolean): Promise<void> {
     let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (relay?.currentOnlineMode() === "relay") return;
     if (stopping || !relay?.connected()) {
       if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
       return;
@@ -752,6 +755,8 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
+      stageNativeImageCapture: (request, signal) => markdownCaptures.stageNative(request, signal),
+      recoverNativeImageCapture: request => markdownCaptures.recoverNative(request),
       imageRuntime: {
         publishNativeInputAssociation: request => {
           const result = accountingBoundary(() => journal.publishNativeInputAssociation(request));

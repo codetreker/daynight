@@ -14,7 +14,7 @@ import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerP
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
 import { sameWorktreeLocation } from "../worktrees/paths.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
+import { continuingOriginalGeneration, continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
@@ -201,6 +201,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const autoInput = createWebInput({
     current, buildPrompt: task => options.buildPrompt(task, options.platform), request,
     currentSnapshot: (task, ticket) => readCurrentControllerSnapshot(journal(task), ticket),
+    initialSnapshot: (task, ticket) => readCompatibleControllerSnapshot(journal(task), ticket),
     ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }),
     ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }),
     readOperation: (task, operationId, ticket) => readCompatibleControllerOperation(journal(task), ticket, operationId), now: options.now,
@@ -368,7 +369,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); observed = response.snapshot; }
     catch (error) { signal.throwIfAborted(); if (correctLegacyLatch || error instanceof ControllerIpcIdentityConflictError) throw error; }
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
-    const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+    const initialOperation = blocker.source !== "legacy_worktree" && observed !== null && BigInt(execution.executionGeneration) > 1n
+      && ["dispatching", "unknown"].includes(observed.initialInputState)
+      ? readCompatibleControllerOperation(journal(task), ticket, ticket.initialOperationId) : null;
+    const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingOriginalGeneration(task, observed, initialOperation);
     const liveObservation = observed !== null && (healthyOriginalGeneration(task, observed) || initialContinuation);
     if (observed !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) throw new Error("The native observation conflicts with the original controller journal.");
     if (observed !== null && execution.controllerProcess !== null) await jobLeases.retain(ticket.launchId, execution.controllerProcess, Date.now() + 10_000);
@@ -399,7 +403,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     }
     signal.throwIfAborted();
     task = await verifyWorktree(task, signal, allowWorktreeRestore);
-    task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport);
+    task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport, initialOperation);
     task = remember(task, observed);
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
     if (observed.lifecycle === "ready" || observed.lifecycle === "working") success(task, { kind: "execution", phase: "agent-observation" });

@@ -455,10 +455,8 @@ Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再
 复用原解析与资源检查，生产装配使用这些 scoped 入口。
 
 REST 不注册 Steps 集合、单项及两个 PUT 子资源或其 scope 操作；旧路径由既有
-未知 API 处理。MCP 不注册 Steps 工具，旧名称返回既有未知工具错误。内部 scoped
-Steps 服务仍保留原检查：读取要求 `step:read`，返回完整集合的写操作同时要求
-`step:read` 与 `step:write`，检查在项目和父资源准入后、读内容或修改前执行。
-该内部能力没有公开 REST/MCP 消费者。生产 PAT 和 MCP 目录排除 Steps scopes，
+未知 API 处理。MCP 不注册 Steps 工具，旧名称返回既有未知工具错误。内部旧与
+scoped Steps 应用服务及其领域用例也已移除。生产 PAT 和 MCP 目录排除 Steps scopes，
 目录 revision 随之变化；规范化仍接受已存 ID，以保留历史凭据和已批准授权码。
 编辑可保留或移除已有旧值，但不能重新添加；混合凭据继续使用其他原有授权，
 旧值不授予新的 Task 权限。

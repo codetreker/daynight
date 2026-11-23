@@ -25,9 +25,10 @@ operation and wire observations; Root retained application assembly proofs.
 The [MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md)
 removes that protocol matrix with the seven tools. Production HTTP sessions now
 verify the absence of the retired entry points and preserve ordinary Task and
-Thread calls. The shared internal Step service retains its coordination proofs after the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md);
-Core owns admission and encoding, and the Webhook Capturer owns event freezing.
-Store tests retain SQL, transaction and persisted-state proofs. The
+Thread calls. The [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md)
+removes the other public consumer. The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
+then removes Step coordination, Core admission, encoding and their dedicated
+tests. Store tests retain SQL, transaction and persisted-state proofs. The
 [Root DAO decision](2026-11-09-root-http-test-dao-ownership.md) records the
 earlier fixture boundary changed for the original Step matrix. The
 [Step limits decision](2026-11-10-step-limits-test-ownership.md) records
@@ -50,6 +51,6 @@ could conceal incorrect wire arguments.
 
 The original operation test isolated protocol and registration failures without
 claiming that controlled completion proved persistence. Its fixture no longer
-serves a live Step MCP operation. Surviving receiver tests remain necessary and
+serves a live Step MCP operation. Surviving Store and ordinary-operation tests remain necessary and
 contribute to validation cost; package timing alone does not establish a hosted
 CI improvement. Other Root MCP and Identity matrices retain their own boundaries.

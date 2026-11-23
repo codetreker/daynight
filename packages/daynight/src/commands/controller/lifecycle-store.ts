@@ -3,6 +3,8 @@ import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-fil
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { openUsageStore } from "./usage/store.js";
 import { createNativeInputPublication } from "./media/native-publication.js";
+import type { NativeImageProjectionState } from "./media/native-publication-types.js";
+import { nativeEntryId } from "./native-identity.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
 import { createMarkdownSourceStore } from "./markdown/store.js";
 import type { MarkdownProjectionState } from "./markdown/projection.js";
@@ -12,7 +14,7 @@ import { openControllerMediaStore, type ControllerMediaStore } from "./media/pre
 import type { ImageDecoder } from "./media/image-decoder.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
+import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type ImageCaptureRequest, type ImageCaptureReceipt, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
 import { parseStoredTimelineEntry, type SessionCommand, type TimelineEntry } from "../../session/protocol.js";
 import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
@@ -241,7 +243,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     // Online details and source replay commit together; ACK never removes the
     // original content needed by a reconnect or an outstanding approval.
     sessionContent.onlineTimeline.save(durableEntry);
-    return appendEvent({ kind: "timeline_upsert", payload: display });
+    const event = appendEvent({ kind: "timeline_upsert", payload: display });
+    db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, revision, event.sequence, display.kind === payload.kind ? 1 : 0);
+    return event;
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
     const operation = getOperation(operationId);
@@ -274,7 +278,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const payload = options.contentOwnedLocally ? { ...content, entrySeq } : content;
     const display = options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload;
     parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: display });
-    return appendEvent({ kind: "timeline_upsert", payload: display });
+    const event = appendEvent({ kind: "timeline_upsert", payload: display });
+    db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, entry.revision, event.sequence, display.kind === payload.kind ? 1 : 0);
+    return event;
   });
   const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
@@ -290,7 +296,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const acknowledged = BigInt(ack) >= BigInt(sequence);
-    db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
+    const parts = entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : entry.kind === "tool_call" ? entry.output : [];
+    const partIndex = occurrence.partId === null ? parts.findIndex(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId) : -1;
+    db.prepare("INSERT INTO image_occurrences(image_id,occurrence,native_source,source_sequence,acknowledged,part_index) VALUES(?,?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0, partIndex < 0 ? null : partIndex);
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
   const getOnlineImageOccurrences = (): ImageOccurrence[] => read(() => {
@@ -306,6 +314,17 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     return result;
   });
+  const patchNativeImagePart = (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
+    const occurrence = parseImageOccurrence(input);
+    const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
+    if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
+    const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
+    const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
+    if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
+    const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
+    projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
+    return sessionContent.onlineTimeline.get(entry.entryId)!;
+  });
   return {
     usage,
     markdownStore,
@@ -317,20 +336,35 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence }),
     ...createNativeImageState(db, { read, write: atomic }),
     ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, { contentPolicy: () => sessionContent.contentPolicy, onlineImageOccurrences: getOnlineImageOccurrences }),
-    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot),
+    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, () => sessionContent.onlineTimeline),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
-    patchNativeImagePart: (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
-      const occurrence = parseImageOccurrence(input);
-      const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
-      if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
-      const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
-      const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
-      if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
-      const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
-      projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
-      return sessionContent.onlineTimeline.get(entry.entryId)!;
+    patchNativeImagePart,
+    applyNativeImageReceipt: (request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void => atomic(() => {
+      const source = request.nativeSource, occurrence = request.occurrence;
+      if (!source || occurrence.partId !== null || receipt.captureId !== request.captureId || canonicalImageJson(receipt.occurrence) !== canonicalImageJson(occurrence)) throw new Error("Native image receipt differs from its original occurrence.");
+      const captureRow = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture:${request.captureId}`) as { value: string } | undefined;
+      if (!captureRow) throw new Error("Native image receipt has no original capture.");
+      const capture = JSON.parse(captureRow.value) as { request: ImageCaptureRequest; attemptId: string; receipt: ImageCaptureReceipt | null };
+      if (capture.attemptId !== receipt.attemptId || canonicalImageJson(capture.receipt) !== canonicalImageJson(receipt)) return;
+      const key = `native_provider:image-slot:${nativeEntryId(source.nativeSessionId, occurrence.sourceKey)}`;
+      const stateRow = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
+      if (!stateRow) throw new Error("Native image receipt has no original projection state.");
+      const state = JSON.parse(stateRow.value) as NativeImageProjectionState;
+      if (canonicalImageJson(state.request) !== canonicalImageJson(capture.request) || canonicalImageJson({ ...request, attemptId: state.request.attemptId }) !== canonicalImageJson(state.request)) throw new Error("Native image receipt changed its original request.");
+      if (!Number.isSafeInteger(state.index) || state.index < 0) throw new Error("Native image projection position is corrupt.");
+      const current = sessionContent.onlineTimeline.get(occurrence.entryId);
+      const parts = current?.kind === "user_message" || current?.kind === "assistant_message" ? current.content : current?.kind === "tool_call" ? current.output : null;
+      const existing = parts?.[state.index];
+      if (!existing || (existing.type !== "image" && existing.type !== "image_unavailable") || existing.imageId !== occurrence.imageId) throw new Error("Native image receipt lost its original slot.");
+      if (receipt.state !== "committed" && receipt.state !== "failed") throw new Error("Native image receipt is not settled.");
+      const label = state.part.label;
+      const part: ImagePart | ImageUnavailablePart = receipt.state === "committed" && receipt.resourceId ? { type: "image", imageId: occurrence.imageId, resourceId: receipt.resourceId, label } : receipt.state === "failed" && receipt.error ? { type: "image_unavailable", imageId: occurrence.imageId, label, error: receipt.error } : (() => { throw new Error("Native image receipt has no terminal result."); })();
+      const updated: NativeImageProjectionState = { ...state, attemptId: receipt.attemptId, phase: "settled", part, submission: null };
+      delete updated.resumeReserved; delete updated.submissionRefusal;
+      patchNativeImagePart(occurrence, part);
+      db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(JSON.stringify(updated), key);
     }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
@@ -397,6 +431,17 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
     getHistoryContentPolicy: (): SessionHistoryContentPolicy => sessionContent.contentPolicy,
+    getOnlineMode: (): "legacy" | "relay" | null => read(() => {
+      const row = db.prepare("SELECT online_mode FROM execution WHERE id=1").get() as { online_mode: "legacy" | "relay" | null };
+      return row.online_mode;
+    }),
+    bindOnlineMode: (mode: "legacy" | "relay", policy: SessionHistoryContentPolicy | null): void => atomic(() => {
+      const row = db.prepare("SELECT online_mode,history_content_policy FROM execution WHERE id=1").get() as { online_mode: "legacy" | "relay" | null; history_content_policy: SessionHistoryContentPolicy };
+      if (row.online_mode !== null && row.online_mode !== mode) throw new Error("Controller online mode differs from the original execution.");
+      if (policy !== null && policy !== row.history_content_policy) throw new Error("Controller history policy differs from the original execution.");
+      if (mode === "relay" && policy === null) throw new Error("Relay requires a bound history content policy.");
+      if (row.online_mode === null) db.prepare("UPDATE execution SET online_mode=? WHERE id=1").run(mode);
+    }),
     getOnlineImageOccurrences,
     hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.onlineTimeline.has(entryId)),
     getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.onlineTimeline.get(entryId)),
@@ -543,7 +588,7 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
         const source = allowPreviousFormat ? inspectReadCompatibleControllerJournal(db) : inspectSqlite(db, controllerJournalFormat);
         if (!allowPreviousFormat && source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
         db.pragma(`busy_timeout = ${remaining()}`);
-        const row = read(db, source.kind === "current"); remaining(); return row;
+        const row = read(db, source.version >= 17); remaining(); return row;
       }).deferred();
     }, "not-started");
     remaining(); return result;
@@ -589,7 +634,7 @@ const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchT
 /** Read the current journal without migration and verify its original ticket fence. */
 export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, false);
 
-/** Read a validated v16 or current snapshot without modifying protected or retained evidence. */
+/** Read a validated v16, v17 or current snapshot without modifying protected or retained evidence. */
 export const readCompatibleControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, true);
 
 /** Immutable launch attempts can share a generation; only the journal's exact ticket owns its snapshot. */

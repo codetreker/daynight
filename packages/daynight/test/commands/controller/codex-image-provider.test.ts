@@ -217,6 +217,23 @@ test("paginated native image history uses one item per page and preserves each o
   } finally { await provider.close(); await f.cleanup(); }
 });
 
+test("resumed native image history retains its media while read authority is enabled", async () => {
+  const f = await fixture("normal", [{ id: "generated", type: "mcpToolCall", tool: "draw", status: "completed", result: { content: [{ type: "image", mimeType: "image/png", data: png.toString("base64") }] } }]);
+  f.options.onNativeReadPolicy = () => {};
+  const stage = vi.mocked(f.options.stageImageCapture!);
+  stage.mockImplementation(async input => {
+    expect(await readFile(input.inputPath)).toEqual(png);
+    return { mediaType: "image/png", byteLength: input.byteLength, sha256: input.sha256, width: 1, height: 1, frameCount: 1 };
+  });
+  let provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;
+  try {
+    provider = await openCodexProvider(f.options);
+    await vi.waitFor(() => expect(f.captures).toHaveLength(1));
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(f.captures[0]?.nativeSource?.nativeMessageId).toBe("generated");
+  } finally { await provider?.close(); await f.cleanup(); }
+});
+
 test("a repeated native history cursor fails the same connection without starting input", async () => {
   const f = await fixture("cursor-loop");
   try {
