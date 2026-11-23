@@ -405,3 +405,113 @@ func TestAttachmentConsumedConflictResponseRestoresWriteDeadline(t *testing.T) {
 		})
 	}
 }
+
+type heldRejectionLease struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (l *heldRejectionLease) Close() error {
+	close(l.entered)
+	<-l.release
+	return nil
+}
+
+func TestAttachmentConflictResponseCompletesBeforeSlowLeaseCleanup(t *testing.T) {
+	for _, tc := range []struct{ name, headers string }{
+		{"client close", "Content-Length: 0\r\nConnection: close\r\n"},
+		{"unread body", "Transfer-Encoding: chunked\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := api.Task{ID: uuid.NewString(), ProjectID: uuid.NewString()}
+			principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+			token := "dnpat_" + strings.Repeat("A", 43)
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			auth, err := authhttp.NewRequestAuthentication(func(context.Context, model.CredentialKind, string) (model.Principal, error) { return principal, nil }, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			lease := &heldRejectionLease{entered: entered, release: release}
+			var uploads atomic.Int32
+			ops := attachmenthttp.AttachmentOperationsForTest{PutRetained: func(ctx context.Context, p model.Principal, project, id, path, contentType string, body io.Reader) (model.Attachment, bool, io.Closer, error) {
+				if uploads.Add(1) != 1 || ctx.Err() != nil || p != principal || project != task.ProjectID || id != task.ID || path != "parent/child" {
+					t.Error("unexpected upload")
+				}
+				return model.Attachment{}, false, lease, &model.Fault{Code: "path_conflict", Message: "conflict"}
+			}}
+			mux := http.NewServeMux()
+			attachmenthttp.RegisterRoutesWithOperationsForTest(mux, ops, auth.Require, logger, time.Second)
+			handler := httpx.RequestLogging(logger, attachmenthttp.PathGuard(mux, logger))
+			deadlines := make(chan time.Time, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handler.ServeHTTP(&reusableRejectionWriter{ResponseWriter: w, deadlines: deadlines}, r)
+			}))
+			t.Cleanup(server.Close)
+			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 5*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			_, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nX-Request-ID: slow-lease\r\n%s\r\n", attachmentFilePath(task, "parent/child"), token, tc.headers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			type bodyResult struct {
+				data []byte
+				err  error
+			}
+			finished := make(chan bodyResult, 1)
+			go func() { data, err := io.ReadAll(response.Body); finished <- bodyResult{data, err} }()
+			var deadline time.Time
+			select {
+			case deadline = <-deadlines:
+			case <-time.After(5 * time.Second):
+				t.Fatal("write deadline not set")
+			}
+			if deadline.IsZero() || time.Until(deadline) > time.Second {
+				t.Fatalf("unbounded write deadline %v", deadline)
+			}
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("lease cleanup not entered")
+			}
+			wait := time.NewTimer(max(time.Until(deadline), 0) + 100*time.Millisecond)
+			defer wait.Stop()
+			var body bodyResult
+			completedBeforeRelease := false
+			select {
+			case body = <-finished:
+				completedBeforeRelease = true
+				<-wait.C
+			case <-wait.C:
+			}
+			releaseOnce.Do(func() { close(release) })
+			if !completedBeforeRelease {
+				select {
+				case body = <-finished:
+				case <-time.After(5 * time.Second):
+					t.Fatal("response did not finish after lease release")
+				}
+			}
+			_ = response.Body.Close()
+			if !completedBeforeRelease || body.err != nil || response.StatusCode != http.StatusConflict || !response.Close || response.ContentLength != int64(len(body.data)) || len(response.TransferEncoding) != 0 || !strings.Contains(string(body.data), `"code":"path_conflict"`) || !strings.Contains(string(body.data), `"requestId":"slow-lease"`) {
+				t.Fatalf("completedBeforeRelease=%v status=%s close=%v length=%d encoding=%v body=%q read=%v", completedBeforeRelease, response.Status, response.Close, response.ContentLength, response.TransferEncoding, body.data, body.err)
+			}
+			if uploads.Load() != 1 {
+				t.Fatalf("uploads=%d", uploads.Load())
+			}
+		})
+	}
+}

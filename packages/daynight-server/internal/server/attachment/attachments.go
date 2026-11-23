@@ -271,7 +271,10 @@ func writeAttachmentRejection(w http.ResponseWriter, request *http.Request, logg
 		httpx.LogFailure(logger, request.Context(), "attachment", "rejection write deadline", deadlineErr)
 		panic(http.ErrAbortHandler)
 	}
-	httpx.WriteError(w, request, logger, "attachment", "put", err)
+	// WriteError encodes its complete JSON envelope in one Write. Sending its
+	// exact length makes the flushed response complete before lease cleanup,
+	// even when that cleanup outlives the connection's write deadline.
+	httpx.WriteError(&fixedLengthRejectionWriter{ResponseWriter: w}, request, logger, "attachment", "put", err)
 	if request.Context().Err() != nil {
 		panic(http.ErrAbortHandler)
 	}
@@ -285,6 +288,21 @@ func writeAttachmentRejection(w http.ResponseWriter, request *http.Request, logg
 			panic(http.ErrAbortHandler)
 		}
 	}
+}
+
+type fixedLengthRejectionWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *fixedLengthRejectionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *fixedLengthRejectionWriter) WriteHeader(status int) { w.status = status }
+
+func (w *fixedLengthRejectionWriter) Write(body []byte) (int, error) {
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.ResponseWriter.WriteHeader(w.status)
+	return w.ResponseWriter.Write(body)
 }
 
 func (h *handler[A]) delete(w http.ResponseWriter, request *http.Request, principal A) {

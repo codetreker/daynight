@@ -13,7 +13,9 @@ an empty HTTP 200 instead of the promised error and request ID.
 
 The attachment HTTP handler sends an eligible, definite business refusal before
 closing the unread body. It marks the connection for closure, bounds the socket
-write, and flushes the response using the original request context. The handler
+write, and sends the exact JSON content length before flushing with the original
+request context. The complete response is framed before retained lease cleanup,
+which can outlast the socket write deadline. The handler
 then closes the body and releases the retained upload lease. Eligibility requires
 a known refusal with reliable transaction and cleanup facts, no independent
 joined failure, and no published or uncertain file effect. Business work retains
