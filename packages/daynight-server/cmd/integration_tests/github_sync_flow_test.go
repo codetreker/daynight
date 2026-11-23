@@ -430,7 +430,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119)`); err != nil || result.RowsAffected() != 41 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 42 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -460,6 +460,9 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	}
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&migrationCount); err != nil || migrationCount != 1 {
 		t.Fatalf("upgraded Step Webhook retirement: migration count=%d error=%v", migrationCount, err)
+	}
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=120`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("upgraded Worker platform task mode: migration count=%d error=%v", migrationCount, err)
 	}
 	var historyPolicyColumn bool
 	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {
