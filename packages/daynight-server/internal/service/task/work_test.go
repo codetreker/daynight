@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ type workServiceReader struct {
 	bodies  func(context.Context, string, []string) ([]model.Task, error)
 	fence   store.TaskListFence
 	groups  func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error)
-	targets func(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error)
+	targets func(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error)
 }
 
 func (r *workServiceReader) TaskBodies(ctx context.Context, project string, ids []string) ([]model.Task, error) {
@@ -43,8 +44,8 @@ func (r *workServiceReader) TaskListFence(context.Context, string) (store.TaskLi
 func (r *workServiceReader) TaskWorkGroups(ctx context.Context, p string, q store.TaskWorkQuery) (store.TaskWorkGroups, error) {
 	return r.groups(ctx, p, q)
 }
-func (r *workServiceReader) TaskWorkTargets(ctx context.Context, p string, g []string, a *store.TaskWorkTargetPosition, l int) (store.TaskWorkTargets, error) {
-	return r.targets(ctx, p, g, a, l)
+func (r *workServiceReader) TaskWorkTargets(ctx context.Context, p string, keys []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
+	return r.targets(ctx, p, keys)
 }
 
 type workServiceSnapshot struct {
@@ -124,10 +125,10 @@ func TestWorkTargetCursorIgnoresLiveChangesAndResetsForTaskChanges(t *testing.T)
 		if p != workProject || q.AssignedTo != workActor {
 			t.Fatal("wrong work filter")
 		}
-		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 22, MatchedCount: 21, InProgressCount: 21, RootCount: 1, Roots: []store.TaskWorkRoot{{ID: workGroup}}, StartedAt: workTime}}}, nil
+		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 22, MatchedCount: 21, InProgressCount: 21, RootCount: 1, Roots: []store.TaskWorkRoot{{ID: workGroup}}, StartedAt: workTime}}, Targets: workKeys(workGroup, 21)}, nil
 	}
-	reader.targets = func(_ context.Context, p string, groups []string, after *store.TaskWorkTargetPosition, limit int) (store.TaskWorkTargets, error) {
-		if p != workProject || len(groups) != 1 || groups[0] != workGroup || after != nil || limit != 200 {
+	reader.targets = func(_ context.Context, p string, keys []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
+		if p != workProject || len(keys) != 21 || keys[0].GroupID != workGroup || keys[0].TaskID != taskReadScopeID(0) {
 			t.Fatal("wrong target batch")
 		}
 		items := make([]store.TaskWorkTarget, 21)
@@ -165,6 +166,14 @@ func TestWorkTargetCursorIgnoresLiveChangesAndResetsForTaskChanges(t *testing.T)
 	}
 }
 func ptrWork[T any](v T) *T { return &v }
+
+func workKeys(group string, count int) []store.TaskWorkTargetPosition {
+	keys := make([]store.TaskWorkTargetPosition, count)
+	for i := range keys {
+		keys[i] = store.TaskWorkTargetPosition{GroupID: group, TaskID: taskReadScopeID(i)}
+	}
+	return keys
+}
 func TestWorkReadRejectsAuthorityAndSnapshotCompletionFailures(t *testing.T) {
 	service, reader, _, database := workServiceFixture(t)
 	actor := model.Principal{UserID: workActor, CredentialID: workProject, Kind: model.PATCredential}
@@ -190,23 +199,23 @@ func TestWorkReadRejectsAuthorityAndSnapshotCompletionFailures(t *testing.T) {
 func TestWorkBatchTraversalReleasesSnapshotsAndRejectsChangedGraph(t *testing.T) {
 	service, reader, observer, database := workServiceFixture(t)
 	reader.groups = func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
-		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 401, MatchedCount: 401, InProgressCount: 401, StartedAt: workTime}}}, nil
+		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 401, MatchedCount: 401, InProgressCount: 401, StartedAt: workTime}}, Targets: workKeys(workGroup, 401)}, nil
 	}
 	calls := 0
-	reader.targets = func(_ context.Context, _ string, _ []string, after *store.TaskWorkTargetPosition, limit int) (store.TaskWorkTargets, error) {
+	reader.targets = func(_ context.Context, _ string, keys []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 		calls++
-		if !database.active || limit != 200 {
+		if !database.active || len(keys) != min(200, 401-(calls-1)*200) {
 			t.Fatal("target read escaped bounded snapshot")
 		}
 		start := (calls - 1) * 200
-		if start > 0 && (after == nil || after.TaskID != fmt.Sprintf("20000000-0000-4000-8000-%012d", start-1)) {
+		if keys[0].TaskID != taskReadScopeID(start) {
 			t.Fatal("incorrect continuation")
 		}
 		items := make([]store.TaskWorkTarget, min(200, 401-start))
 		for i := range items {
 			items[i] = store.TaskWorkTarget{GroupID: workGroup, Task: model.Task{ID: fmt.Sprintf("20000000-0000-4000-8000-%012d", start+i), ProjectID: workProject, Version: 1, Status: model.TaskInProgress}}
 		}
-		return store.TaskWorkTargets{Items: items, HasMore: start+len(items) < 401}, nil
+		return store.TaskWorkTargets{Items: items}, nil
 	}
 	observer.after = func() {
 		if database.active {
@@ -223,5 +232,119 @@ func TestWorkBatchTraversalReleasesSnapshotsAndRejectsChangedGraph(t *testing.T)
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "reset_required" || page.Groups != nil || calls != 1 {
 		t.Fatalf("published changed graph: %#v %v calls=%d", page, err, calls)
+	}
+}
+
+func TestWorkTargetsCoverTwoGroupsOnceAcrossBoundedSnapshots(t *testing.T) {
+	service, reader, observer, database := workServiceFixture(t)
+	secondGroup := "10000000-0000-4000-8000-000000000004"
+	keys := append(workKeys(workGroup, 205), workKeys(secondGroup, 205)...)
+	for i := 205; i < len(keys); i++ {
+		keys[i].TaskID = fmt.Sprintf("30000000-0000-4000-8000-%012d", i-205)
+	}
+	groupCalls, targetCalls := 0, 0
+	reader.groups = func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+		groupCalls++
+		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, InProgressCount: 205, StartedAt: workTime}, {ID: secondGroup, DisplayTaskID: secondGroup, InProgressCount: 205, StartedAt: workTime}}, Targets: keys}, nil
+	}
+	var seen []store.TaskWorkTargetPosition
+	reader.targets = func(_ context.Context, p string, batch []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
+		if !database.active || p != workProject || len(batch) > 200 {
+			t.Fatal("unbounded or unauthorized target read")
+		}
+		targetCalls++
+		start := len(seen)
+		if !slices.Equal(batch, keys[start:min(start+200, len(keys))]) {
+			t.Fatalf("unexpected keys: %v", batch)
+		}
+		seen = append(seen, batch...)
+		items := make([]store.TaskWorkTarget, len(batch))
+		for i, key := range batch {
+			items[i] = store.TaskWorkTarget{GroupID: key.GroupID, Task: model.Task{ID: key.TaskID, ProjectID: workProject, Version: 1, Status: model.TaskInProgress}}
+		}
+		return store.TaskWorkTargets{Items: items}, nil
+	}
+	observer.after = func() {
+		if database.active {
+			t.Fatal("sampling retained snapshot")
+		}
+	}
+	page, err := service.WorkList(t.Context(), observationActor(), workProject, taskcore.WorkRequest{})
+	if err != nil || groupCalls != 1 || targetCalls != 3 || observer.calls != 3 || !slices.Equal(seen, keys) || len(page.Groups) != 2 {
+		t.Fatalf("two-group traversal: %#v err=%v groups=%d targets=%d observations=%d", page, err, groupCalls, targetCalls, observer.calls)
+	}
+	for _, group := range page.Groups {
+		if group.Summary.WorkingCount != 205 || len(group.Targets) != 20 || group.ContributorCursor == nil {
+			t.Fatalf("incomplete group: %#v", group)
+		}
+	}
+}
+
+func TestWorkRejectsIncompleteOrMisidentifiedTargetResults(t *testing.T) {
+	for _, scenario := range []string{"missing", "wrong_task", "wrong_group", "wrong_project", "wrong_status", "target_error"} {
+		t.Run(scenario, func(t *testing.T) {
+			service, reader, observer, _ := workServiceFixture(t)
+			reader.groups = func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+				return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, InProgressCount: 1, StartedAt: workTime}}, Targets: workKeys(workGroup, 1)}, nil
+			}
+			expectedErr := errors.New("target read failed")
+			reader.targets = func(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
+				if scenario == "target_error" {
+					return store.TaskWorkTargets{}, expectedErr
+				}
+				item := store.TaskWorkTarget{GroupID: workGroup, Task: model.Task{ID: taskReadScopeID(0), ProjectID: workProject, Status: model.TaskInProgress}}
+				switch scenario {
+				case "missing":
+					return store.TaskWorkTargets{}, nil
+				case "wrong_task":
+					item.Task.ID = workActor
+				case "wrong_group":
+					item.GroupID = workActor
+				case "wrong_project":
+					item.Task.ProjectID = workActor
+				case "wrong_status":
+					item.Task.Status = model.TaskDone
+				}
+				return store.TaskWorkTargets{Items: []store.TaskWorkTarget{item}}, nil
+			}
+
+			page, err := service.WorkList(t.Context(), observationActor(), workProject, taskcore.WorkRequest{})
+			if err == nil || page.Groups != nil || observer.calls != 0 {
+				t.Fatalf("published inconsistent target: %#v %v calls=%d", page, err, observer.calls)
+			}
+			if scenario == "target_error" && !errors.Is(err, expectedErr) {
+				t.Fatalf("lost target error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkRejectsIncompleteOrUnorderedInitialKeys(t *testing.T) {
+	for _, scenario := range []string{"missing", "duplicate", "wrong_group", "reverse"} {
+		t.Run(scenario, func(t *testing.T) {
+			service, reader, observer, _ := workServiceFixture(t)
+			keys := workKeys(workGroup, 2)
+			switch scenario {
+			case "missing":
+				keys = keys[:1]
+			case "duplicate":
+				keys[1] = keys[0]
+			case "wrong_group":
+				keys[0].GroupID = workActor
+			case "reverse":
+				keys[0], keys[1] = keys[1], keys[0]
+			}
+			reader.groups = func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+				return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, InProgressCount: 2, StartedAt: workTime}}, Targets: keys}, nil
+			}
+			reader.targets = func(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
+				t.Fatal("invalid keys reached target query")
+				return store.TaskWorkTargets{}, nil
+			}
+			page, err := service.WorkList(t.Context(), observationActor(), workProject, taskcore.WorkRequest{})
+			if err == nil || page.Groups != nil || observer.calls != 0 {
+				t.Fatalf("published invalid keys: %#v %v", page, err)
+			}
+		})
 	}
 }

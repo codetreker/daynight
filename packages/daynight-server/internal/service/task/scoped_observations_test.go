@@ -115,9 +115,9 @@ func TestScopedWorkRetainsAllUnknownContributorsBeforePagination(t *testing.T) {
 	snapshot.sessions = nil
 	database.snapshot = snapshot
 	reader.groups = func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
-		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 21, InProgressCount: 21, MatchedCount: 21, StartedAt: workTime}}}, nil
+		return store.TaskWorkGroups{Items: []store.TaskWorkGroup{{ID: workGroup, DisplayTaskID: workGroup, MemberCount: 21, InProgressCount: 21, MatchedCount: 21, StartedAt: workTime}}, Targets: workKeys(workGroup, 21)}, nil
 	}
-	reader.targets = func(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	reader.targets = func(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 		items := make([]store.TaskWorkTarget, 21)
 		for i := range items {
 			task := observationTask()
