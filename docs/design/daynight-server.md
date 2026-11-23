@@ -304,7 +304,7 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
-Goal 不进入普通 Task 依赖图，其旧投影的依赖和 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
+Goal 不进入普通 Task 依赖图；详情和写回执中的依赖及 blockedBy 为空且 ready=false。TaskSync 摘要的 Goal dependsOn 单独投影项目内有效 Goal 的直接验收前置，externalDependsOn 为空，机制见[摘要同步设计](daynight-task-sync.md)。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
 external=true 的排序子集；数组明确为空。ready 当且仅当 todo 且 blockedBy 为空。
 派生值不持久化，前置变化不修改本任务版本或更新时间；因此同版本读取可有新 ready/blockedBy。
 POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[外部依赖架构](daynight-external-dependencies.md)。
