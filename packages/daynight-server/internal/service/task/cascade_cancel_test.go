@@ -167,3 +167,54 @@ func TestCascadeCancellationLogsRequestCorrelation(t *testing.T) {
 		t.Fatalf("cancellation log: %v", entry)
 	}
 }
+
+func TestCascadeCancellationPreservesNoOpAndRejectsStaleVersion(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cancelled no-op", true: "stale version"}[stale], func(t *testing.T) {
+			f := newTaskRuleFixture(t)
+			root := f.target
+			root.Type, root.Status = model.TaskTypeTask, model.TaskCancelled
+			child := root
+			child.ID, child.Status = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", model.TaskTodo
+			child.ParentID = &root.ID
+			f.scope.TaskDAOFn = func() store.TaskWriteDAO {
+				return &cascadeWriter{TaskWriteDAO: f.writer, rows: []model.Task{root, child}}
+			}
+			f.database.WriteProjectFn = func(_ context.Context, _ string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+				err := work(f.scope)
+				if err != nil {
+					return store.Completion{Outcome: store.TransactionNotCommitted}, err
+				}
+				return store.Completion{Outcome: store.TransactionCommitted}, nil
+			}
+			version := root.Version
+			if stale {
+				version++
+			}
+			result, err := f.tasks.SetStatus(t.Context(), f.principal, f.project.ID, root.ID, taskcore.SetTaskStatus{Version: version, Status: model.TaskCancelled, CancelDescendants: true})
+			if stale {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "version_conflict" {
+					t.Fatalf("stale: %v", err)
+				}
+			} else if err != nil || !reflect.DeepEqual(root, result) {
+				t.Fatalf("no-op result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCascadeCancellationMissingTargetIsNotFound(t *testing.T) {
+	f := newTaskRuleFixture(t)
+	root := f.target
+	root.Type = model.TaskTypeTask
+	f.scope.TaskDAOFn = func() store.TaskWriteDAO { return &cascadeWriter{TaskWriteDAO: f.writer} }
+	f.database.WriteProjectFn = func(_ context.Context, _ string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, work(f.scope)
+	}
+	_, err := f.tasks.SetStatus(t.Context(), f.principal, f.project.ID, root.ID, taskcore.SetTaskStatus{Version: root.Version, Status: model.TaskCancelled, CancelDescendants: true})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "not_found" {
+		t.Fatalf("missing target: %v", err)
+	}
+}
