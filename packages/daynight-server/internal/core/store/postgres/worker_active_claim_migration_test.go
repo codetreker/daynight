@@ -125,6 +125,9 @@ func TestWorkerActiveClaimMigrationPreservesFactsAndReopens(t *testing.T) {
 	if len(want) != 65 {
 		t.Fatalf("active claims=%d", len(want))
 	}
+	if err := migrate(t.Context(), pool, workerActiveClaimMigrations(t)); err != nil {
+		t.Fatal(err)
+	}
 	reopened, err := Open(t.Context(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)

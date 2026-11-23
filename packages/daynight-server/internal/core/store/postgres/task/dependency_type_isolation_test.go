@@ -236,7 +236,7 @@ func TestTaskWorkGroupsIgnoreGoalEdges(t *testing.T) {
 		if len(groups.Items) != 1 || groups.Items[0].ID != first.ID || groups.Items[0].MemberCount != 1 || groups.Items[0].RootCount != 1 {
 			t.Fatalf("work groups crossed Goal edge: %+v", groups)
 		}
-		targets, err := dao.TaskWorkTargets(ctx, project.ID, []string{first.ID}, nil, 10)
+		targets, err := dao.TaskWorkTargets(ctx, project.ID, groups.Targets)
 		if err != nil {
 			return err
 		}
