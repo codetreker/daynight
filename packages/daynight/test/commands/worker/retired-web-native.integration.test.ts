@@ -265,7 +265,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (process.platform === "win32") expect(readControllerSnapshot(journalPath)?.windowsJobStopProof).toBeDefined();
     if (state === "missing" && mode === "patrol" && !recovered) {
       const upgraded = new Database(journalPath, { readonly: true });
-      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(18); }
+      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(19); }
       finally { upgraded.close(); }
     }
     await expect(access(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });

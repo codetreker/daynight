@@ -12,12 +12,12 @@ import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js"
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import { inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
+import { currentSqliteVersion, inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
 import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
 afterEach(cleanupMigrations);
 
-const previousJournalFixture = async (version: 16 | 17 = 16) => {
+const previousJournalFixture = async (version: 16 | 17 | 18 = 16) => {
   const fixture = await migrationFixture();
   const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
   restoreControllerJournalVersion(journal, version);
@@ -27,7 +27,7 @@ const previousJournalFixture = async (version: 16 | 17 = 16) => {
 };
 
 describe("legacy Bot storage migration", () => {
-  it.each([16, 17] as const)("preserves checksummed v%i history and recovery copies across the v18 journal upgrade", async version => {
+  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", async version => {
     const f = await previousJournalFixture(version), original = readFileSync(f.record.intent!.journalPath);
     expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
     const manifest = await migrateLegacyBot(f.input), paths = resolveBotPaths(f.stateDirectory, f.botId);
@@ -55,7 +55,7 @@ describe("legacy Bot storage migration", () => {
     const f = await previousJournalFixture(), manifest = await migrateLegacyBot(f.input);
     const paths = resolveBotPaths(f.stateDirectory, f.botId), journal = path.join(paths.directory, manifest.journal!);
     const db = f.openRaw(journal, false);
-    if (conflict === "future") db.pragma("user_version=19");
+    if (conflict === "future") db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
     else if (conflict === "unversioned") db.pragma("user_version=0");
     else if (conflict === "schema") db.exec("DROP TABLE timeline_entries");
     else db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));

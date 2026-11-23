@@ -66,6 +66,19 @@ input+output，以及 profile 声明不相交的两类 cache 之和超过 input 
 | `copilot-event-1.0.11-v1` | `copilot-event-v1:<event.id>`，immutable 单事件 | output/reasoning 可知；input/cache/total 未知，原始分项单列；只能 partial |
 | `claude-message-input-0.3.247-v1` | `claude-message-input-v1:<message.id>`，root assistant 输入 | 三个输入分项齐全才计算规范 input，cache 为子集；output/reasoning/total 未知；只能 partial |
 | `codex-snapshot-unaccountable-v1` | 只登记 unsupported state | 不将累计或上下文快照变成 counted measurement |
+| `codex-response-0.169.0-v1` | `codex-response-v1:<thread/response 摘要>`，immutable 单响应 | input/output/total 为原生响应指标；正 cache read/reasoning 为子项，默认零值细项及 cache write 未知；只能 partial |
+
+Codex 响应 profile 仅适用于已核实的 `0.169.0`，不自动扩展到其他版本。
+来源摘要是 UTF-8 `JSON.stringify([threadId,responseId])` 的 SHA-256 小写十六进制，
+不截断长 response ID；`nativeCallId` 保存该摘要，`nativeTurnId` 保存原 turn ID。
+实时通知与原线程回执路径下的 `token_usage_record.usage` 使用相同来源键，
+不加算 turn/thread 累计，不从 context 快照差分。
+原生默认零值不能证明上游明确提供细项，因此零 cache read/reasoning 显示未知，
+正值可显示；cache write 保留原生指标但规范值未知。模型未由响应提供时保持 null。
+恢复只补报已经持久化 turn→原 state 归属的记录，未绑定历史不收费给新代次，
+并标记 attribution_unknown。原生落盘为 best-effort，未覆盖子 Agent，始终保留
+native_recovery_gap、subagent_scope_unknown、model_unknown，不能报告完整覆盖。
+旧 snapshot state 保留原口径，不能在同一代次自动升级为响应 profile。
 
 实际 runtime/SDK 未通过精确组合资格验证时为 `profile_unverified`，研究过字段不等于
 生产环境已验证。Provider JS number 不安全时不得转成看似精确的字符串。
