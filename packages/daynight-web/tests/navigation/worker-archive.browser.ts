@@ -30,7 +30,7 @@ for (const width of [320, 390, 1360]) {
     const state = await setup(page);
     const checkbox = page.getByRole('checkbox', { name: '归档 Session' });
     await expect(checkbox).toBeChecked();
-    await page.locator('#config-preferPlatformSpecificTasks').focus();
+    await page.locator('#config-platformTaskMode').focus();
     await page.keyboard.press('Tab'); await expect(checkbox).toBeFocused();
     expect(await checkbox.evaluate(element => getComputedStyle(element).outlineStyle !== 'none' || getComputedStyle(element).boxShadow !== 'none')).toBe(true);
     await page.keyboard.press('Space'); await expect(checkbox).not.toBeChecked();

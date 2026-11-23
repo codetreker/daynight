@@ -11,7 +11,7 @@ export type ProjectNativeDraft = {
   readonly argsMode: 'inherit' | 'clear' | 'custom'; readonly args: string;
 };
 export type ConfigurationDraft = {
-  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
+  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly platformTaskMode?: WorkerConfigurationValue['platformTaskMode']; readonly native: NativeDraft;
   readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
   readonly archiveSessions?: boolean;
   readonly enableSudoCleanup?: boolean | undefined;
@@ -33,6 +33,7 @@ const tools: readonly Tool[] = ['codex', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
+  ...(value.platformTaskMode === undefined ? {} : { platformTaskMode: value.platformTaskMode }),
 
   ...(value.archiveSessions === undefined ? {} : { archiveSessions: value.archiveSessions }),
   ...(value.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: value.enableSudoCleanup }),
@@ -102,7 +103,7 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     };
     return { projectId: project.projectId, nativeOverrides };
   });
-  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
+  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, ...(draft.platformTaskMode === undefined ? { preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks } : { platformTaskMode: draft.platformTaskMode }),
     ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), ...(draft.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: draft.enableSudoCleanup }), ...(draft.enableWindowsProcessCleanup === undefined ? {} : { enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup }), ...(taskTagFilter === undefined ? {} : { taskTagFilter }), native, projects }) : null, errors };
 };
 const filterKey = (filter: ConfigurationDraft['taskTagFilter']): string | undefined => {
@@ -116,8 +117,9 @@ const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigura
   return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}), ...(includeSudoCleanup && enableSudoCleanup !== undefined ? { enableSudoCleanup } : {}), ...(includeWindowsProcessCleanup && enableWindowsProcessCleanup !== undefined ? { enableWindowsProcessCleanup } : {}) };
 };
 export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true, includeWindowsProcessCleanup = true): boolean => {
-  const a = parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup));
-  const b = parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup));
+  const project = (value: WorkerConfigurationValue) => value.platformTaskMode === undefined ? value : Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'preferPlatformSpecificTasks'));
+  const a = parseWorkerConfigurationValue(project(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup)));
+  const b = parseWorkerConfigurationValue(project(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup)));
   const { taskTagFilter: af, ...ar } = a, { taskTagFilter: bf, ...br } = b;
   return JSON.stringify(ar) === JSON.stringify(br) && (af === undefined ? bf === undefined : bf !== undefined && taskTagFilterSemantics(af) === taskTagFilterSemantics(bf));
 };
@@ -139,7 +141,7 @@ export const configurationFieldChanges = (draft: ConfigurationDraft, desired: Wo
     maxConcurrent: errors.maxConcurrent !== undefined || Number(draft.maxConcurrent) !== desired.maxConcurrent,
     pollIntervalMs: errors.pollIntervalMs !== undefined || Number(draft.pollIntervalMs) !== desired.pollIntervalMs,
     recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
-    preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
+    preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks || desired.platformTaskMode !== undefined && draft.platformTaskMode !== desired.platformTaskMode,
     archiveSessions: draft.archiveSessions !== desired.archiveSessions,
     enableSudoCleanup: draft.enableSudoCleanup !== desired.enableSudoCleanup,
     enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup !== desired.enableWindowsProcessCleanup,
@@ -165,9 +167,9 @@ export const mergeConfigurationResources = (current: WorkerConfigurationResource
   if (current === null) return incoming;
   const currentValue = current.desired?.value, incomingValue = incoming.desired?.value;
   const currentHasMore = current.desired?.revision === incoming.desired?.revision && currentValue !== undefined && incomingValue !== undefined &&
-    (incomingValue.agentControlMode === undefined || currentValue.agentControlMode !== undefined) && (incomingValue.toolPaths === undefined || currentValue.toolPaths !== undefined) && (incomingValue.archiveSessions === undefined || currentValue.archiveSessions !== undefined) &&
-    (currentValue.agentControlMode !== undefined && incomingValue.agentControlMode === undefined || currentValue.toolPaths !== undefined && incomingValue.toolPaths === undefined || currentValue.archiveSessions !== undefined && incomingValue.archiveSessions === undefined);
+    (incomingValue.platformTaskMode === undefined || currentValue.platformTaskMode !== undefined) && (incomingValue.agentControlMode === undefined || currentValue.agentControlMode !== undefined) && (incomingValue.toolPaths === undefined || currentValue.toolPaths !== undefined) && (incomingValue.archiveSessions === undefined || currentValue.archiveSessions !== undefined) &&
+    (currentValue.platformTaskMode !== undefined && incomingValue.platformTaskMode === undefined || currentValue.agentControlMode !== undefined && incomingValue.agentControlMode === undefined || currentValue.toolPaths !== undefined && incomingValue.toolPaths === undefined || currentValue.archiveSessions !== undefined && incomingValue.archiveSessions === undefined);
   const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision) || currentHasMore) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.document === undefined ? {} : { document: incoming.document }), ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(incoming.archiveSessionsSupported === true ? { archiveSessionsSupported: true } : {}) };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.document === undefined ? {} : { document: incoming.document }), ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(incoming.archiveSessionsSupported === true ? { archiveSessionsSupported: true } : {}), ...(incoming.platformTaskModeSupported === true ? { platformTaskModeSupported: true } : {}) };
 };

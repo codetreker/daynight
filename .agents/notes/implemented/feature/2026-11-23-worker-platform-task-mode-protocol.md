@@ -18,7 +18,9 @@ Worker configuration resource. The
 owns negotiation, input, conflicts and application evidence. This replaces the
 server's boolean representation from the
 [platform preference decision](2026-11-09-worker-platform-task-preference.md);
-the existing two-state clients retain their original selection behavior.
+the existing two-state clients retain their original selection behavior. The
+[Web mode decision](2026-11-23-worker-platform-task-mode-web.md) adopts the
+negotiated view for editing.
 
 An independent capability selects the enum target and application kind. Legacy
 readers receive the boolean projection, with `only` projected as true. Legacy

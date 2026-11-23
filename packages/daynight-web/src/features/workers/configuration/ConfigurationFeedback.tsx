@@ -24,7 +24,7 @@ export const configurationOutcomeState = (resource: WorkerConfigurationResource,
   return item.state;
 };
 
-export const ConfigurationFeedback = ({ resource, kind, projectId, expected, changed = false, label = false, id }: {
+export const ConfigurationFeedback = ({ resource, kind, projectId, expected, changed = false, label = false, id, platformName }: {
   readonly resource: WorkerConfigurationResource;
   readonly kind: WorkerConfigurationKey['kind'];
   readonly projectId?: string;
@@ -32,13 +32,15 @@ export const ConfigurationFeedback = ({ resource, kind, projectId, expected, cha
   readonly changed?: boolean;
   readonly label?: boolean;
   readonly id?: string;
+  readonly platformName?: string;
 }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
   const item = configurationOutcome(resource, kind, projectId);
   const actualState = configurationOutcomeState(resource, item, expected);
   const state = changed ? 'unsaved' : actualState;
   const value = item?.appliedValue;
-  const rendered = kind === 'taskTagFilter' ? m.unavailableValue : value === undefined || value === null ? m.unavailableValue : typeof value === 'number' || typeof value === 'string' ? String(value)
+  const platform = platformName ?? m.platformCurrent;
+  const rendered = kind === 'platformTaskMode' && typeof value === 'string' ? value === 'all' ? m.platformAll : value === 'prefer' ? m.preferPlatformTasks({ platform }) : m.platformOnly({ platform }) : kind === 'preferPlatformSpecificTasks' && typeof value === 'boolean' ? value ? m.preferPlatformTasks({ platform }) : m.platformAll : kind === 'taskTagFilter' ? m.unavailableValue : value === undefined || value === null ? m.unavailableValue : typeof value === 'number' || typeof value === 'string' ? String(value)
     : typeof value === 'boolean' ? (kind === 'preferPlatformSpecificTasks' || kind === 'archiveSessions' || kind === 'enableSudoCleanup' || kind === 'enableWindowsProcessCleanup') ? value ? m.enabled : m.disabled : m.state.applied : `${value.agent === 'claude' ? 'Claude Code' : value.agent === 'copilot' ? 'Copilot' : 'Codex'} / ${value.model === null ? m.defaultModel : value.model} / ${JSON.stringify(value.args)}`;
   const previousFailure = item?.lastFailure ?? (actualState === 'pending' ? item?.error : null);
   return <div id={id} className="application-feedback">
