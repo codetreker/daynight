@@ -40,7 +40,7 @@ func (h *RequestAuthentication) admitsBrowserActivity(r *http.Request) bool {
 }
 
 func (h *RequestAuthentication) sameOriginActivity(r *http.Request) bool {
-	if r.Host != h.authority {
+	if r.Host != h.authority || h.cookieOriginError(r) != nil {
 		return false
 	}
 	origin, present, valid := activityHeader(r, "Origin")

@@ -142,11 +142,8 @@ func (h *RequestAuthentication) AuthenticateRequest(request *http.Request) (mode
 	if err != nil {
 		return model.Principal{}, err
 	}
-	if request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
-		origins := request.Header.Values("Origin")
-		if len(origins) != 1 || origins[0] != h.origin {
-			return model.Principal{}, &model.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
-		}
+	if err := h.cookieOriginError(request); err != nil {
+		return model.Principal{}, err
 	}
 	return principal, nil
 }

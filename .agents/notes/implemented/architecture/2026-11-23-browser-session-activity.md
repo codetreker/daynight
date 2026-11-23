@@ -24,6 +24,10 @@ entries with the configured authority and consistent same-origin evidence.
 Registered method refusals carry a request role before authentication and remain
 read-only, including qualified refusals that shadow wildcard business routes.
 Their authentication, policy and CSRF checks keep the same ordering.
+Cookie writes require the exact Origin independently of Fetch Metadata. A shared
+Origin check excludes invalid writes before renewal while the read-only path
+keeps authentication refusal ahead of CSRF refusal; metadata-only safe reads
+remain eligible.
 Preview activity follows protected content authorization and rechecks the
 original preview hash, with a constrained request-source matrix. The explicit
 activity API binds the intended account before writing. The
