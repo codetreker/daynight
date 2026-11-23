@@ -140,6 +140,9 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 	if actual, _, err := testutil.IdentityUser(ctx, s, bob.ID); err != nil || !reflect.DeepEqual(actual, bob) {
 		t.Fatalf("other account changed after profile update: %+v %v", actual, err)
 	}
+	identityScopeTest(t, s, func(sc IdentityScope) error {
+		return sc.IdentityDAO().LockSession(ctx, principal, session.ExpiresAt)
+	})
 	for _, op := range []func(IdentityScope) error{
 		func(sc IdentityScope) error {
 			_, err := sc.IdentityDAO().ConsumeLogin(ctx, login.StateHash, login.BrowserBindingHash, now)
@@ -148,7 +151,6 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 		func(sc IdentityScope) error {
 			return sc.IdentityDAO().LockSession(ctx, model.Principal{Kind: model.PATCredential}, now)
 		},
-		func(sc IdentityScope) error { return sc.IdentityDAO().LockSession(ctx, principal, session.ExpiresAt) },
 		func(sc IdentityScope) error {
 			_, err := sc.IdentityDAO().LockActivePAT(ctx, uuid.NewString(), pat.ID, now)
 			return err

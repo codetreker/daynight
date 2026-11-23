@@ -173,6 +173,7 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	s := &Store{Pool: pool}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, session := identitySession(uuid.NewString(), "historical:"+uuid.NewString())
+	session.CreatedAt = now.Add(-time.Hour)
 	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, user.ID, user.UniAuthID, now)
 	mustQueryExec(t, s, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, session.ID, user.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
 	p := model.Principal{Kind: model.SessionCredential, UserID: user.ID, CredentialID: session.ID}
@@ -213,7 +214,11 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	if _, err := testAuthenticate(s, ctx, model.PATCredential, finite.TokenHash, future); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("historical finite expiry lost: %v", err)
 	}
-	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, session.ExpiresAt); !errors.Is(err, model.ErrNotFound) {
+	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, future); err != nil {
+		t.Fatalf("application clock expired a live browser session: %v", err)
+	}
+	mustQueryExec(t, s, `UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, session.ID)
+	if _, err := testAuthenticate(s, ctx, model.SessionCredential, session.TokenHash, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("session became nonexpiring: %v", err)
 	}
 	if err := testIdentityWrite(s, ctx, func(scope IdentityScope) error { return scope.IdentityDAO().CleanupCredentials(ctx, future) }); err != nil {

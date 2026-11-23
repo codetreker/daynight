@@ -103,6 +103,7 @@ type LoginTransaction struct {
 }
 
 type Session struct {
+	LastUsedAt       *time.Time
 	ID               string
 	UserID           string
 	TokenHash        []byte

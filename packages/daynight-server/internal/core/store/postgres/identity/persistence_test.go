@@ -89,7 +89,7 @@ func TestCredentialIssuanceExpiryAndOwnerBoundRevocation(t *testing.T) {
 		t.Fatalf("session principal: %+v", principal)
 	}
 	requireNoError(t, dao.LockSession(ctx, principal, now))
-	requireMissing(t, dao.LockSession(ctx, principal, session.ExpiresAt))
+	requireNoError(t, dao.LockSession(ctx, principal, session.ExpiresAt))
 	requireMissing(t, dao.LockSession(ctx, model.Principal{Kind: model.PATCredential}, now))
 	requireNoError(t, dao.DeleteSession(ctx, model.Principal{CredentialID: session.ID, UserID: uuid.NewString()}))
 	_, err = dao.Authenticate(ctx, model.SessionCredential, session.TokenHash, now)
@@ -334,7 +334,7 @@ func TestLoginExpiryUsesDatabaseTimeAcrossApplicationClockSkew(t *testing.T) {
 			user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "skew-owner"}, appNow)
 			requireNoError(t, err)
 			expiry := appNow.Add(time.Hour)
-			requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-session"), CreatedAt: appNow, ExpiresAt: expiry}))
+			requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-session"), CreatedAt: databaseNow, ExpiresAt: databaseNow.Add(time.Hour)}))
 			requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-pat"), Name: "Skew", CreatedAt: appNow, ExpiresAt: &expiry}))
 			if test.admissionCleanup {
 				requireNoError(t, dao.CleanupLoginCredentials(ctx, databaseNow, appNow))

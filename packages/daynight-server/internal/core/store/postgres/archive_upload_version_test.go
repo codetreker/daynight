@@ -30,7 +30,7 @@ func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path) VALUES($1,$2,'history',$3,8,8,'complete','legacy')`, session, oldID, hash); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
 	var version int

@@ -79,6 +79,9 @@ func (m *strictIdentity) PreviewSSO() *identity.PreviewSSO {
 func (m *strictIdentity) Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error) {
 	return model.Principal{}, m.unexpected("Authenticate")
 }
+func (m *strictIdentity) AuthenticateBrowserActivity(context.Context, string, string) (model.Principal, error) {
+	return model.Principal{}, m.unexpected("AuthenticateBrowserActivity")
+}
 func (m *strictIdentity) ValidateLogin(string, string) error { return m.unexpected("ValidateLogin") }
 func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
 	return identitycore.LoginStart{}, m.unexpected("StartLogin")

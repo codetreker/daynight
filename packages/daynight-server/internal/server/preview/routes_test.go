@@ -85,7 +85,7 @@ func TestExplicitNavigationAndCookieContract(t *testing.T) {
 				t.Fatalf("callback cookies %v", cookies)
 			}
 			cookie := cookies[0]
-			if cookie.Name != h.SessionCookieName() || cookie.Value != value || cookie.Domain != "preview.daynight.test" || cookie.Path != "/" || cookie.Secure != secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || !cookie.Expires.Equal(expires) || cookie.MaxAge != 0 {
+			if cookie.Name != h.SessionCookieName() || cookie.Value != value || cookie.Domain != "preview.daynight.test" || cookie.Path != "/" || cookie.Secure != secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || !cookie.Expires.Equal(expires.Add(400*24*time.Hour-identity.SessionLifetime)) || cookie.MaxAge != 400*24*60*60 {
 				t.Fatalf("session cookie %+v", cookie)
 			}
 			if cookies[1].Name != binding.Name || cookies[1].MaxAge != -1 || cookies[1].Domain != "" {

@@ -173,7 +173,7 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
  'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id) FROM projects t),
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
- 'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash' ORDER BY id) FROM sessions t),
+ 'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash'-'last_used_at' ORDER BY id) FROM sessions t),
  'tokens',(SELECT jsonb_agg(to_jsonb(t)-'last_used_at'-'description'-'business_scopes'-'scope_version' ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
 		t.Fatal(err)
 	}

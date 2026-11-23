@@ -188,7 +188,7 @@ func completeStrictLogin(t *testing.T, requestedReturnPath, resolvedReturnPath, 
 	actor, user := authRequestAccount(1)
 	completed := identitycore.LoginCompletion{
 		LoginID: start.ID, User: user, Secret: authAliceCookie, ReturnPath: resolvedReturnPath,
-		Session: model.Session{ID: actor.CredentialID, UserID: actor.UserID, ExpiresAt: start.ExpiresAt.Add(identitycore.SessionLifetime)},
+		Session: model.Session{ID: actor.CredentialID, UserID: actor.UserID, CreatedAt: start.ExpiresAt, ExpiresAt: start.ExpiresAt.Add(identitycore.SessionLifetime)},
 	}
 	callbackQuery := url.Values{"state": {state}, "code": {code}}
 	callbackPath := "/api/v1/auth/callback?" + callbackQuery.Encode()
@@ -199,9 +199,9 @@ func completeStrictLogin(t *testing.T, requestedReturnPath, resolvedReturnPath, 
 		t.Fatalf("login callback: status=%d cookies=%d", response.Code, len(completionCookies))
 	}
 	cleared := requireLoginCookie(t, completionCookies, bindingName, false, -1)
-	session := requireLoginCookie(t, completionCookies, "daynight_session", false, 604800)
+	session := requireLoginCookie(t, completionCookies, "daynight_session", false, int(BrowserCookieLifetime.Seconds()))
 	if cleared.Value != "" || !cleared.Expires.Equal(time.Unix(1, 0)) ||
-		session.Value != completed.Secret || !session.Expires.Equal(completed.Session.ExpiresAt) {
+		session.Value != completed.Secret || !session.Expires.Equal(completed.Session.CreatedAt.Add(BrowserCookieLifetime)) {
 		t.Fatal("login callback did not clear the binding or issue the expected session")
 	}
 	return response

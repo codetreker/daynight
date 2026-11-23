@@ -24,7 +24,7 @@ import (
 func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.Login(t, "user-one")
-	if cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 604800 {
+	if cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 400*24*60*60 {
 		t.Fatalf("session cookie: %+v", cookie)
 	}
 	cookies := []*http.Cookie{cookie}
