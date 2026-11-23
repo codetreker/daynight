@@ -102,7 +102,7 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 blocked 迁移直接改名属性行，验证旧布尔值并让主键冲突或坏行回滚迁移及 ledger，包含软删除任务，不触碰任务版本、业务时间、项目 epoch、claim 和事件。排空旧服务端及后台写入方后运行迁移，再启动包含兼容 Web 的新制品，验证服务端后才分发新版客户端。提交后优先前滚；旧服务端回退须恢复匹配其 ledger 的备份，并按原操作流程处理备份后的写入。
 
-迁移 114 在 SHARE 锁内验证全部 Worker 属性、建立非唯一部分索引并写账本，保留属性原文、任务版本、时间和 Sync epoch。空库 snapshot 包含同一索引；当前清单读路径继续可用，了解相同账本的索引构建可用于查询切换后的重启回退。启动预算、未知提交核对和前滚修复由[索引设计](worker-active-claim-index.md)拥有。
+迁移 115 在 SHARE 锁内验证全部 Worker 属性、建立非唯一部分索引并写账本，保留属性原文、任务版本、时间和 Sync epoch。空库 snapshot 包含同一索引；当前清单读路径继续可用，了解相同账本的索引构建可用于查询切换后的重启回退。启动预算、未知提交核对和前滚修复由[索引设计](worker-active-claim-index.md)拥有。
 
 后续变更按[组件交付与启用规则](../development.md#component-delivery-and-activation)分别评估 PR 边界和受支持的运行时版本组合。
 

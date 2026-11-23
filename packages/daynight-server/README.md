@@ -573,7 +573,7 @@ writers remain stopped, with its corresponding loss of later writes.
 
 ### Worker active claim index upgrade
 
-Migration 114 validates every stored Worker property under a SHARE table lock,
+Migration 115 validates every stored Worker property under a SHARE table lock,
 including historical Herdr and completed claims. Frozen Go decoding must match
 PostgreSQL extraction of state, userId and workerId before the nonunique active
 claim index and ledger commit together. The checksum includes the lock SQL,
@@ -587,7 +587,7 @@ and listener startup on representative data against DAYNIGHT_STARTUP_TIMEOUT
 startup budget, select and verify it before rolling out.
 
 After startup cancellation, lost commit acknowledgment or listener failure,
-inspect migration 114's exact checksum and the index definition, predicate and
+inspect migration 115's exact checksum and the index definition, predicate and
 validity through a fresh connection. Both absent permits a new attempt after
 diagnosis; both matching means the migration committed and requires a build
 that understands that same ledger. Mixed or mismatched state requires

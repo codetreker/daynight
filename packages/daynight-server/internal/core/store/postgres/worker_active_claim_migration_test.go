@@ -12,7 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	migration114 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/114"
+	migration115 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/115"
 	taskdao "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -21,12 +21,12 @@ import (
 
 const workerActiveClaimIndex = "task_properties_worker_active_claim_idx"
 
-const workerActiveClaimMigrationPosition = 111
+const workerActiveClaimMigrationPosition = 112
 
 func workerActiveClaimMigrations(t *testing.T) []migration {
 	t.Helper()
-	if len(schemaMigrations) <= workerActiveClaimMigrationPosition || schemaMigrations[workerActiveClaimMigrationPosition].version != 114 {
-		t.Fatal("migration 114 must follow 113 with historical 84/85 gaps")
+	if len(schemaMigrations) <= workerActiveClaimMigrationPosition || schemaMigrations[workerActiveClaimMigrationPosition].version != 115 {
+		t.Fatal("migration 115 must follow 114 with historical 84/85 gaps")
 	}
 	return schemaMigrations[:workerActiveClaimMigrationPosition+1]
 }
@@ -55,7 +55,7 @@ func workerIndexOldPool(t *testing.T) *pgxpool.Pool {
 
 func workerIndexState(t *testing.T, pool *pgxpool.Pool) (ledger bool, definition *string, valid *bool) {
 	t.Helper()
-	if err := pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=114),
+	if err := pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=115),
  (SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid=to_regclass($1)),
  (SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid=to_regclass($1))`, workerActiveClaimIndex).Scan(&ledger, &definition, &valid); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestWorkerActiveClaimMigrationPreservesFactsAndReopens(t *testing.T) {
 		t.Fatalf("index not committed: %v %v %v", ledger, definition, valid)
 	}
 	var checksum string
-	if err := pool.QueryRow(t.Context(), `SELECT checksum FROM schema_migrations WHERE version=114`).Scan(&checksum); err != nil || checksum != schemaMigrations[workerActiveClaimMigrationPosition].checksum() {
+	if err := pool.QueryRow(t.Context(), `SELECT checksum FROM schema_migrations WHERE version=115`).Scan(&checksum); err != nil || checksum != schemaMigrations[workerActiveClaimMigrationPosition].checksum() {
 		t.Fatalf("checksum=%s err=%v", checksum, err)
 	}
 	reader := func(db *Store) []string {
@@ -152,7 +152,7 @@ func TestWorkerActiveClaimMigrationRejectsInvalidRowsAtomically(t *testing.T) {
 			}
 			err := migrate(t.Context(), pool, workerActiveClaimMigrations(t))
 			var transaction *store.TransactionError
-			var propertyError *migration114.WorkerPropertyError
+			var propertyError *migration115.WorkerPropertyError
 			if err == nil || !errors.As(err, &transaction) || !errors.As(err, &propertyError) || propertyError.TaskID != id || !workerMigrationErrorContains(transaction.Cause, id) || !workerMigrationErrorContains(transaction.Cause, test.reason) {
 				t.Fatalf("failure lacks Task identity/reason: %v", err)
 			}

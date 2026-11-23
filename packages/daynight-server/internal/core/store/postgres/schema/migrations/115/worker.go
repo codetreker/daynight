@@ -1,4 +1,4 @@
-package migration114
+package migration115
 
 import (
 	"encoding/json"
@@ -20,7 +20,7 @@ type inventoryWorker struct {
 	ClaimedAt                                            time.Time
 }
 
-// validateWorker owns the stored codec at migration 114, including historical
+// validateWorker owns the stored codec at migration 115, including historical
 // Herdr resources. New-claim admission and later field budgets do not apply.
 func validateWorker(data []byte) error {
 	fields, err := object(data, "worker", "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt")

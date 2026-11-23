@@ -1,4 +1,4 @@
-package migration114
+package migration115
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-//go:embed migrations/114_worker_active_claim_index.sql
+//go:embed migrations/115_worker_active_claim_index.sql
 var lockSQL string
 
 const indexSQL = `CREATE INDEX task_properties_worker_active_claim_idx ON task_properties (
@@ -39,7 +39,7 @@ type WorkerPropertyError struct {
 }
 
 func (e *WorkerPropertyError) Error() string {
-	return fmt.Sprintf("migration 114 task %s: %s", e.TaskID, e.Reason)
+	return fmt.Sprintf("migration 115 task %s: %s", e.TaskID, e.Reason)
 }
 
 func (e *WorkerPropertyError) Unwrap() error { return e.cause }
@@ -57,7 +57,7 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT task_id::text,value FROM task_properties
  WHERE name='worker' AND ($1::uuid IS NULL OR task_id>$1::uuid) ORDER BY task_id LIMIT 128`, after)
 		if err != nil {
-			return fmt.Errorf("migration 114 read worker properties: %w", err)
+			return fmt.Errorf("migration 115 read worker properties: %w", err)
 		}
 		type record struct{ id, raw string }
 		batch := make([]record, 0, 128)
@@ -65,13 +65,13 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 			var item record
 			if err := rows.Scan(&item.id, &item.raw); err != nil {
 				rows.Close()
-				return fmt.Errorf("migration 114 scan worker property: %w", err)
+				return fmt.Errorf("migration 115 scan worker property: %w", err)
 			}
 			batch = append(batch, item)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("migration 114 read worker properties: %w", err)
+			return fmt.Errorf("migration 115 read worker properties: %w", err)
 		}
 		if len(batch) == 0 {
 			break
@@ -100,13 +100,13 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 			}
 		}
 		if err := results.Close(); err != nil {
-			return fmt.Errorf("migration 114 finish worker extraction batch: %w", err)
+			return fmt.Errorf("migration 115 finish worker extraction batch: %w", err)
 		}
 		id := batch[len(batch)-1].id
 		after = &id
 	}
 	if _, err := tx.Exec(ctx, indexSQL); err != nil {
-		return fmt.Errorf("migration 114 create worker active claim index: %w", err)
+		return fmt.Errorf("migration 115 create worker active claim index: %w", err)
 	}
 	return nil
 }

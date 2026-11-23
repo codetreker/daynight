@@ -11,7 +11,7 @@ opaque non-Worker properties and a restartable recovery build.
 
 ## Decision
 
-Keep the Worker property as the only claim authority. Migration 114 installs a
+Keep the Worker property as the only claim authority. Migration 115 installs a
 nonunique partial B-tree over exact C-collated account and Worker text plus Task
 ID, limited to active Worker rows. CASE guards prevent other property values from
 entering JSONB conversion. The existing inventory reader remains available in

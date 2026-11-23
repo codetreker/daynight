@@ -33,12 +33,12 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			}
 			defer observer.Close(context.Background())
 			var expectedChecksum string
-			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=114").Scan(&expectedChecksum); err != nil {
+			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=115").Scan(&expectedChecksum); err != nil {
 				t.Fatal(err)
 			}
-			// Migration 114 is purely additive, so removing its ledger entry and
+			// Migration 115 is purely additive, so removing its ledger entry and
 			// index restores the schema consumed by the preceding binary.
-			if _, err := observer.Exec(ctx, "DROP INDEX task_properties_worker_active_claim_idx; DELETE FROM schema_migrations WHERE version=114"); err != nil {
+			if _, err := observer.Exec(ctx, "DROP INDEX task_properties_worker_active_claim_idx; DELETE FROM schema_migrations WHERE version=115"); err != nil {
 				t.Fatal(err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()
@@ -112,7 +112,7 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 				t.Fatal("migration failure did not terminate")
 			}
 			var committed, indexed, preserved bool
-			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=114 AND checksum=$1),
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=115 AND checksum=$1),
 EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('task_properties_worker_active_claim_idx') AND indisvalid AND indisready),
 EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$2 AND t.version=37 AND t.updated_at=$3 AND p.name='worker' AND p.value=$4)`, expectedChecksum, taskID, originalUpdatedAt, string(raw)).Scan(&committed, &indexed, &preserved); err != nil {
 				t.Fatal(err)
@@ -143,7 +143,7 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if err := recovered.stop(); err != nil {
 				t.Fatal(err)
 			}
-			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=114 AND checksum=$1) AND EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('task_properties_worker_active_claim_idx') AND indisvalid AND indisready)`, expectedChecksum).Scan(&committed); err != nil || !committed {
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=115 AND checksum=$1) AND EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('task_properties_worker_active_claim_idx') AND indisvalid AND indisready)`, expectedChecksum).Scan(&committed); err != nil || !committed {
 				t.Fatalf("same-ledger recovery: committed=%t error=%v", committed, err)
 			}
 		})

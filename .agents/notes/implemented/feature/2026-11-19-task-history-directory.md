@@ -14,7 +14,9 @@ become stale when a Task reopens or its dependencies change.
 Expose separate group, member and original Session pages. Each read authorizes
 the current credential and Project in the same repeatable snapshot as graph and
 archive selection. Cursors bind the user, Project, view, target and a digest of
-directory-visible facts; changed facts require a restart. Calculate displayed
+directory-visible facts; changed facts require a restart. Calculate connected components once from vertices and streamed internal edges in the
+same snapshot, then aggregate and page in SQL. Member and retention reads traverse
+only the requested component through both dependency indexes. Calculate displayed
 retention from current chain members and original archive facts without writing
 or trusting cached deadlines. An expired tombstone remains authoritative.
 
@@ -45,6 +47,10 @@ selection. Requiring version 1 keeps legacy scripts stable and makes unsupported
 capabilities visible without interpreting permission or cursor failures as a
 reason to fall back.
 
+**Traverse from every member.** This derives the same groups but expands a chain
+once per member, producing quadratic intermediate rows. A snapshot-local disjoint
+set processes each edge once without introducing write-side maintenance.
+
 **Persist directory groups.** This would add group maintenance to Task graph
 writes and require invalidation on every relevant lifecycle transition. The
 directory instead derives groups from the existing authoritative graph.
@@ -57,8 +63,8 @@ without redirecting to a newer claim. Finalized unavailable recordings retain th
 an entire chain's execution history in one response.
 
 The fact digest scans Project history metadata, and derived connected components
-cost more than a simple indexed Task list. Paging bounds returned rows rather
-than graph computation. A directory-visible change elsewhere in the Project can
+cost more than a simple indexed Task list. The component mapping requires memory proportional to the number of vertices;
+paging bounds returned rows rather than graph computation. A directory-visible change elsewhere in the Project can
 invalidate a cursor; this conservative restart avoids mixed directory snapshots.
 Session rows project only generation and end time from execution JSON, keeping
 unrelated snapshot and terminal-run metadata outside the directory result.

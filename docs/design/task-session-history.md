@@ -72,7 +72,7 @@ service 的后台清理器在应用启动后扫描每页最多 32 个原 Session
 
 Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|unavailable|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，不套用 Web TTL；没有归档记录时保持 `pending`，已持久化的不可用回执显示 `unavailable`，`reason` 优先保留回执的真实原因，缺少时兼容持久化 `error_code`（如 `recording_not_enabled`、`ended_before_first_sample`），缺少原因时为 `archive_unavailable`。其它 Herdr 状态的期限原因是 `not_applicable`。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
 
-组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
+组查询在同一只读快照中读取有效普通 Task 与内部边，通过无业务依赖的并查集逐边合并，以每个分量的最小 UUID 为组 ID，再将成员映射交给 SQL 聚合及分页。成员及期限查询从指定 Task 沿正反向依赖索引遍历目标链；成员页还验证组 ID 是该链最小 UUID，期限计算接受任一成员。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 
 CLI 的 `list --directory-version 1` 消费独立的 Task Session 页，GET 成功响应必须同时具有 `Daynight-Task-History-Directory-Version: 1` 与正文 `version: 1`。独立 DTO 解码器验证原 Task、Session 唯一性、模式与内容类型、分页上限及字段类型，并拒绝未知字段；`graphVersion` 保持十进制字符串。新版目录时间保留有效 RFC3339 的 `Z` 或数值时区偏移，并分别校验日历时间和偏移范围，以兼容 PostgreSQL 返回非 UTC 时区的归档时间。默认 `list` 仍消费旧 inspection 目录，不混入新增字段。版本化续页命令携带相同版本选项，失败保留服务端拒绝，不自动切换入口或重试。正文与 `show` 继续走原 Session 入口；正文 `history_unavailable` 的已知过期原因映射为固定诊断，其他不可用原因不被误判为过期。
 

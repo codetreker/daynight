@@ -64,6 +64,16 @@ by comparing their hashes for equality. The source relation travels with ready
 schema3 status and lets a stopped uploader replace its confirmed local receipt
 without reopening native execution.
 
+A stopped execution with a bound content policy can prepare an archive without an
+active history bundle. The Session stores the optional policy separately from the
+public snapshot; no production negotiation writes it yet. Preparation fixes its
+observed value, and final history checks the capture inventory and the retained
+image occurrences before releasing online-only message references. Unbound older
+executions retain their established behavior. Pending capture receipts remain
+unchanged and block publication; they are not evidence of a failed collection.
+The [archive design](../../../../docs/design/session-image-archives.md) owns the
+policy, reference and retry contracts.
+
 ## Alternatives
 
 **Increase one JSON limit and retain embedded Base64.** Opening and uploading a
@@ -99,7 +109,19 @@ requires the original active connection. Keeping that round receiving after the
 writer stops blocks every final sync. Explicit retirement preserves its evidence
 and leaves the complete ledger and references intact until final synchronization.
 
+**Settle every in-flight capture during stopped preparation.** This would let
+more stopped Sessions finish, but the current stopped uploader cannot provide or
+reconcile the original validated bytes and outcome. Preparation instead preserves
+the original attempt and refuses sealing. A later stopped reconciliation must use
+the same identity and proof and synchronize the resulting body; it must not require
+restarting the source. This preserves a path to add the missing coordination.
+
 ## Consequences
+
+A capture still reserved or copying can leave an archive incomplete after stop.
+Its original state and references remain available for later reconciliation; a
+known committed body image cannot be omitted or downgraded to partial. No new
+source IO is started to make an archive pass.
 
 An unresolved Markdown image projection error leaves the occurrence set unknown,
 even when the full text and source sequence are present. It blocks archive
