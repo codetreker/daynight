@@ -144,7 +144,9 @@ it("deduplicates equivalent operation JSON regardless of object key insertion or
 it("test tickets and journals omit task identity and preserve no-input initialization", async () => {
   const { home, ticket: task, database } = await fixture();
   const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
-  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
+  const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", usageScope: "standalone_test" };
+  for (const usageScope of [null, "bot", undefined]) expect(() => parseLaunchTicket({ ...ticket, usageScope })).toThrow(/usage scope/);
+  expect(() => parseLaunchTicket({ ...task, usageScope: "standalone_test" })).toThrow(/usage scope/);
   await writeLaunchTicket(home, ticket);
   expect(await readLaunchTicket(home, ticket.launchId)).toEqual(ticket);
   const store = openControllerLifecycleStore(path.join(home, "test.sqlite"), ticket, { database });
@@ -167,6 +169,7 @@ it.each(["codex", "claude", "copilot"] as const)("%s Bot recovery bindings are p
   const field = `${provider}BotRecovery`;
   const ticket = { ...common, provider, configuration: { ...common.configuration, agent: provider }, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", [field]: binding };
   expect(parseLaunchTicket(ticket)).toEqual(ticket);
+  expect(() => parseLaunchTicket({ ...ticket, usageScope: "standalone_test" })).toThrow(/usage scope/);
   expect(() => parseLaunchTicket({ ...task, [field]: binding })).toThrow(/recovery binding/);
   for (const other of ["codex", "claude", "copilot"].filter(value => value !== provider)) {
     expect(() => parseLaunchTicket({ ...ticket, provider: other, configuration: { ...ticket.configuration, agent: other } })).toThrow(/recovery binding/);

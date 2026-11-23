@@ -49,3 +49,17 @@ type GitHubAppAdminStore interface {
 	ReadGitHubAppAdmins(context.Context, func(GitHubAppAdminReader) error) error
 	WriteGitHubAppAdmins(context.Context, string, func(GitHubAppAdminWriter) error) (Completion, error)
 }
+
+// GitHubAppAdminVisibilityDAO checks minimal authorization and target facts in
+// the same snapshot or transaction as the subsequent administrator operation.
+type GitHubAppAdminVisibilityDAO interface {
+	AppAdminVisibility(context.Context, string, string) error
+	AdminMembershipVisibility(context.Context, string, string) error
+	AdminInvitationVisibility(context.Context, string, string) error
+	AvailableAdminInvitation(context.Context, []byte) (GitHubAdminInvitationRef, error)
+}
+
+type GitHubAdminInvitationRef struct {
+	ID, AppID string
+	ExpiresAt time.Time
+}

@@ -1,0 +1,5 @@
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@playwright/test';
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const evidence = fileURLToPath(new URL('../../../../.tmp/ordinary-task-browser/', import.meta.url));
+export default defineConfig({ testDir: '.', testMatch: '**/ordinary-task.browser.ts', workers: 1, retries: 0, timeout: 45_000, globalTimeout: 180_000, outputDir: `${evidence}/results`, reporter: [['line'], ['json', { outputFile: `${evidence}/results.json` }]], use: { channel: 'chromium', baseURL: 'http://127.0.0.1:14371', screenshot: 'only-on-failure' }, webServer: { command: `"${process.execPath}" node_modules/vite/bin/vite.js --config tests/navigation/ordinary-task-vite.config.ts`, cwd: root, url: 'http://127.0.0.1:14371/tests/navigation/ordinary-task-fixture.html', reuseExistingServer: false, timeout: 60_000 } });

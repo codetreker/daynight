@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -32,6 +33,9 @@ func captureCanRetry(ctx context.Context, d store.SessionResourceDAO, c store.Se
 func (s *Execution) GetImageOccurrence(ctx context.Context, p model.Principal, project, taskID, id, imageID string) (sp.ImageOccurrenceStatus, error) {
 	out := sp.ImageOccurrenceStatus{ImageID: imageID, Revision: "1", State: "unregistered", Action: "none"}
 	e := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, t task, write bool) error {
+		if e := s.admitCommand(ctx, tx, p, scopepolicy.SessionRead); e != nil {
+			return e
+		}
 		if e := s.admitImageRate(ctx, tx, p.UserID, "observe"); e != nil {
 			return e
 		}
@@ -54,7 +58,7 @@ func (s *Execution) GetImageOccurrence(ctx context.Context, p model.Principal, p
 				if err != nil && !errors.Is(err, model.ErrNotFound) {
 					return err
 				}
-				if err == nil && row.Complete && row.Error == nil {
+				if err == nil && row.Complete && row.Error == nil && r.OnlineMode != "relay" {
 					v, err := sp.DecodeValidatedImage(row.Result)
 					if err != nil {
 						return fault("resource_conflict", "The original retry result is invalid.")
@@ -104,7 +108,14 @@ func (s *Execution) GetImageOccurrence(ctx context.Context, p model.Principal, p
 				return e
 			}
 			if yes {
-				out.Action = "retry_source"
+				if e := s.admitCommand(ctx, tx, p, scopepolicy.SessionControl); e != nil {
+					var refusal *model.Fault
+					if !errors.As(e, &refusal) || refusal.Code != "insufficient_scope" {
+						return e
+					}
+				} else {
+					out.Action = "retry_source"
+				}
 			}
 		default:
 			out.State = "unknown"
@@ -118,6 +129,12 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 	var out sp.ImageOccurrenceRetryReceipt
 	var capture store.SessionCaptureRecord
 	e := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, t task, write bool) error {
+		if e := s.admitCommand(ctx, tx, p, scopepolicy.SessionControl); e != nil {
+			return e
+		}
+		if e := s.admitCommand(ctx, tx, p, scopepolicy.SessionRead); e != nil {
+			return e
+		}
 		if e := s.admitImageRate(ctx, tx, p.UserID, "prepare"); e != nil {
 			return e
 		}
@@ -197,6 +214,12 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 		}
 		if current.Receipt.AttemptID != capture.Receipt.AttemptID {
 			return conflict()
+		}
+		if r.OnlineMode == "relay" {
+			// The durable retry offer starts the Controller's source work. Only
+			// its direct submission can admit the resulting bytes in relay mode.
+			out.Capture = current.Receipt
+			return nil
 		}
 		if current.Receipt.State == "committed" {
 			out.Capture = current.Receipt

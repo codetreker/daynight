@@ -7,7 +7,9 @@ export const getInitialTaskViewport = (geometry: CanvasLayout, rootId: string, w
   const right = Math.max(...geometry.nodes.map((node) => node.position.x + node.width));
   const bottom = Math.max(...geometry.nodes.map((node) => node.position.y + node.height));
   const bounds = { x: left, y: top, width: right - left, height: bottom - top };
-  const fitted = getViewportForBounds(bounds, width, height, 0.8, 1, 0.15);
+  const widestNode = Math.max(...geometry.nodes.map((node) => node.width));
+  const minimumZoom = Math.max(0.2, Math.min(0.8, (width - 40) / widestNode));
+  const fitted = getViewportForBounds(bounds, width, height, minimumZoom, 1, 0.15);
   if (bounds.width * fitted.zoom <= width && bounds.height * fitted.zoom <= height) return fitted;
   const root = geometry.nodes.find((node) => node.id === rootId)!;
   if (geometry.direction === 'vertical') {

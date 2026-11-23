@@ -10,6 +10,8 @@ and removing a page's last row can leave keyboard focus without a target.
 
 ## Decision
 
+The [Web Steps retirement](../simplification/2026-11-23-retire-web-task-steps.md) supersedes this Web-specific decision. The following records the former implementation and its rationale.
+
 The existing [shared write owner](../../archived/architecture/2026-11-04-task-steps-web-status.md) submits
 and validates deletion against the complete previous collection. The confirmation
 identifies the record and explains the effects on its description, references

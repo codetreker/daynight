@@ -61,36 +61,9 @@ func (s *Store) WriteGitHubProjectDeletion(ctx context.Context, id string, op fu
 	return s.writeAppProjectLifecycle(ctx, id, true, func(tx pgx.Tx) error { return op(appProjectDeletionScope{appProjectTransferScope{tx, id}}) })
 }
 func (s *Store) writeAppProjectLifecycle(ctx context.Context, id string, deleting bool, op func(pgx.Tx) error) (store.Completion, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin App project lifecycle", err)
-	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error {
-		var locked string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&locked); err != nil {
-			return pg.QueryError("lock App lifecycle Project", err)
-		}
-		if err := pg.LockGoalDependencyTeam(ctx, tx, id); err != nil {
-			return err
-		}
+	return s.writeGoalProjectLifecycle(ctx, id, "App project lifecycle", deleting, func(tx pgx.Tx) error {
 		if deleting {
-			rows, err := tx.Query(ctx, `SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE`, id)
-			if err != nil {
-				return pg.QueryError("lock App lifecycle Tasks", err)
-			}
-			for rows.Next() {
-				var task string
-				if err = rows.Scan(&task); err != nil {
-					break
-				}
-			}
-			if err == nil {
-				err = rows.Err()
-			}
-			rows.Close()
-			if err != nil {
-				return pg.QueryError("lock App lifecycle Tasks", err)
-			}
+			var locked string
 			var owner string
 			if err := tx.QueryRow(ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1 FOR UPDATE`, id).Scan(&owner); err != nil {
 				return fmt.Errorf("lock deletion ownership: %w", err)
@@ -101,7 +74,6 @@ func (s *Store) writeAppProjectLifecycle(ctx context.Context, id string, deletin
 		}
 		return op(tx)
 	})
-	return teamCompletion("App project lifecycle", err)
 }
 
 type appTeamDeletionScope struct {

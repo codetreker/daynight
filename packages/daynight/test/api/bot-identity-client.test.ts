@@ -6,8 +6,6 @@ const projectId = "abcdefab-1111-4111-8111-111111111111";
 const taskId = "abcdefab-2222-4222-8222-222222222222";
 const claimId = "abcdefab-3333-4333-8333-333333333333";
 const botId = "abcdefab-4444-4444-8444-444444444444";
-const stepId = "0123abcd";
-const requestId = "abcdefab-5555-4555-8555-555555555555";
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
 
@@ -34,21 +32,15 @@ const writes: readonly [string, (api: ApiClient) => Promise<unknown>][] = [
   ["complete claimed Task", (api) => api.completeWorkerTask(projectId, taskId, { version: 1n, claimId })],
   ["set Task property", (api) => api.setTaskProperty(projectId, taskId, "pullRequests", { version: 1n, valueText: "[]" })],
   ["remove Task property", (api) => api.removeTaskProperty(projectId, taskId, "pullRequests", { version: 1n })],
-  ["add Step", (api) => api.addTaskStep(projectId, taskId, { version: 1n, id: stepId, title: "Step" }, { requestId })],
-  ["update Step", (api) => api.updateTaskStep(projectId, taskId, stepId, { version: 1n, title: "Step" }, { requestId })],
-  ["set Step status", (api) => api.setTaskStepStatus(projectId, taskId, stepId, { version: 1n, status: "done" }, { requestId })],
-  ["move Step", (api) => api.moveTaskStep(projectId, taskId, stepId, { version: 1n, after: "89abcdef" }, { requestId })],
-  ["delete Step", (api) => api.deleteTaskStep(projectId, taskId, stepId, { version: 1n }, { requestId })],
   ["post Thread message", (api) => api.postTaskThreadMessage(projectId, taskId, { body: "Body" })],
 ];
 const others: readonly [string, (api: ApiClient) => Promise<unknown>][] = [
   ["show Task", (api) => api.getTask(projectId, taskId)],
-  ["list Steps", (api) => api.listTaskSteps(projectId, taskId, { requestId })],
   ["read Thread", (api) => api.readTaskThread(projectId, taskId, { count: 20, details: false })],
   ["remove attachment", (api) => api.removeTaskAttachment(projectId, taskId, "notes.txt")],
 ];
 
-describe("Bot identity on Task, Step and Thread requests", () => {
+describe("Bot identity on Task and Thread requests", () => {
   it.each(writes)("declares the Bot when it is configured: %s", async (_name, call) => {
     const headers = await sentHeaders(call);
     expect(headers).toHaveLength(1);

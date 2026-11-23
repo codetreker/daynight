@@ -16,8 +16,9 @@ parser validates their identities and names, and summary equality includes the
 references. Graph tasks retain their narrower graph representation. Task cache
 schema 12 cleared incompatible project, summary and detail projections before
 parsing. The subsequent [complete-title decision](2026-11-15-task-sync-full-titles.md)
-rebuilds these projections under schema 13; identity, profiles and compatible
-Session history retain their existing upgrade rules. A normal versioned delta updates affected summaries and invalidates
+rebuilt these projections under schema 13. The [Goal summary decision](2026-11-23-goal-summary-admission.md)
+uses schema 14 to rebuild incomplete Goal adjacency. Identity, profiles and
+compatible Session history retain their existing upgrade rules. A normal versioned delta updates affected summaries and invalidates
 their details without rotating the Task cache epoch. The
 [task synchronization design](../../../../docs/design/daynight-task-sync.md)
 owns the cache and admission mechanisms.

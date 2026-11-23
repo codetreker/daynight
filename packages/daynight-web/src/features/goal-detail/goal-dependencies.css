@@ -1,18 +1,18 @@
-.goal-dependencies h3, .goal-dependencies h4 { margin: 0 0 8px; font-size: 13px; }
-.goal-dependencies h4 { font-size: 12px; color: var(--ink); }
+.goal-dependencies h3, .goal-dependencies h4 { margin: 0 0 8px; }
+.goal-dependencies h4 { font-size: inherit; color: var(--ink); }
 .goal-dependencies section { margin-top: 14px; }
 .goal-dependencies ul { margin: 0; padding: 0; list-style: none; }
-.goal-dependencies li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; margin: 7px 0; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-size: 11px; }
+.goal-dependencies li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; margin: 7px 0; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
 .goal-dependencies li:focus-within, .goal-dependencies li:hover { background: #f7f7fd; }
 .goal-dependencies a { overflow-wrap: anywhere; }
-.goal-dependency-context, .goal-dependency-empty { display: block; color: var(--task-helper); font-size: 12px; margin: 0; }
-.goal-dependency-status { display: inline-flex; gap: 5px; align-items: center; justify-self: start; white-space: nowrap; border-radius: 4px; padding: 3px 7px; font-size: 11px; }
+.goal-dependency-context, .goal-dependency-empty { display: block; color: var(--task-helper); margin: 0; }
+.goal-dependency-status { display: inline-flex; gap: 5px; align-items: center; justify-self: start; white-space: nowrap; border-radius: 4px; padding: 3px 7px; }
 .goal-dependency-status::before { content: ''; width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
 .goal-dependency-status-todo { background: var(--task-todo-background); color: var(--task-todo-ink); }
 .goal-dependency-status-in_progress { background: var(--task-in_progress-background); color: var(--task-in_progress-ink); }
 .goal-dependency-status-done { background: var(--task-done-background); color: var(--task-done-ink); }
 .goal-dependency-status-cancelled { background: var(--task-cancelled-background); color: var(--task-cancelled-ink); }
-.goal-dependency-notice { margin: 0 0 12px; padding: 8px 11px; border-radius: 6px; font-size: 12px; }
+.goal-dependency-notice { margin: 0 0 12px; padding: 8px 11px; border-radius: 6px; }
 .goal-dependency-notice p { margin: 0; }
 .goal-dependency-blocked { background: var(--task-attention-background); color: var(--task-attention-ink); border: 1px solid var(--task-attention-border); }
 .goal-dependency-error { background: var(--task-error-background); color: var(--task-error-ink); border: 1px solid var(--task-error-border); }

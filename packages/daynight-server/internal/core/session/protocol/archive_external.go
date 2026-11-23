@@ -59,6 +59,8 @@ type ArchivePrepareReceipt struct {
 	SourceThrough    string                     `json:"sourceThrough"`
 }
 type ArchiveFileReceipt struct {
+	UploadVersion    int         `json:"-"`
+	SuccessorFileID  *string     `json:"successorFileId,omitempty"`
 	TimelineRevision *string     `json:"-"`
 	FileID           string      `json:"fileId"`
 	State            string      `json:"state"`

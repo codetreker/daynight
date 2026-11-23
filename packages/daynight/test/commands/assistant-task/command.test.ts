@@ -83,6 +83,7 @@ describe("assistant-task command grammar and identity", () => {
   });
   it.each([
     ["show", "INVALID"],
+    ["metrics", "INVALID"],
     ["list", "--limit", "201"],
     ["list", "--limit", "01"],
     ["pause", task, "--if-version", "01"],
@@ -123,8 +124,11 @@ describe("assistant-task command reads and user writes", () => {
     { args: ["manual", "show", task, "--version", version], method: "getManual", expected: [task, version] },
     { args: ["manual", "list", task], method: "listManuals", expected: [task, {}] },
     { args: ["appendix", "list", task], method: "listAppendix", expected: [task, {}] },
+    { args: ["appendix", "related", task], method: "relatedAppendix", expected: [task, {}] },
+    { args: ["appendix", "related", task, "--project", target, "--event-type", "report", "--category", " build "], method: "relatedAppendix", expected: [task, { projectId: target, eventType: "report", itemCategory: " build " }] },
     { args: ["proposal", "list", task], method: "listProposals", expected: [task, {}] },
     { args: ["item", "show", task, resource], method: "getItem", expected: [task, resource] },
+    { args: ["metrics", task], method: "getMetrics", expected: [task] },
     { args: ["record", "list", task, "--item", resource], method: "listRecords", expected: [task, { itemId: resource }] },
     { args: ["inquiry", "list", task, "--state", "open"], method: "listInquiries", expected: [task, { state: "open" }] },
     { args: ["events", "pull", "--target-bot", bot], method: "listEvents", expected: [undefined, { targetBotId: bot }] },
@@ -154,6 +158,47 @@ describe("assistant-task command reads and user writes", () => {
     const response = await f.run(["appendix", "update", task, resource, "--if-version", version, "--text", "Replacement", ...(clear ? ["--clear-source-records"] : [])]);
     expect(response.exit).toBe(0);
     expect(updateAppendix).toHaveBeenCalledExactlyOnceWith(task, resource, { ifVersion: version, text: "Replacement", ...(clear ? { sourceRecords: [] } : {}) });
+  });
+  it.each([
+    [[], {}],
+    [["--scope-category", "build", "--scope-category", "deploy"], { scope: { projectIds: [], eventTypes: [], itemCategories: ["build", "deploy"] } }],
+    [["--clear-scope"], { scope: { projectIds: [], eventTypes: [], itemCategories: [] } }],
+  ] as const)("replaces the appendix scope only when declared: %j", async (args, expected) => {
+    const updateAppendix = vi.fn(async () => result) as unknown as AssistantTaskClient["updateAppendix"];
+    const f = fixture({ updateAppendix });
+    expect((await f.run(["appendix", "update", task, resource, "--if-version", version, "--text", "Replacement", ...args])).exit).toBe(0);
+    expect(updateAppendix).toHaveBeenCalledExactlyOnceWith(task, resource, { ifVersion: version, text: "Replacement", ...expected });
+  });
+  it.each([
+    ["update", task, resource, "--if-version", version, "--text", "Replacement", "--scope-category", "build", "--clear-scope"],
+    ["update", task, resource, "--if-version", version, "--text", "Replacement", "--scope-project", "NOT-A-UUID"],
+    ["add", task, "--text", "Text", "--clear-scope"],
+  ])("refuses an inconsistent appendix scope before network: %j", async (...args) => {
+    const f = fixture();
+    expect((await f.run(["appendix", ...args])).exit).toBe(2);
+    expect(f.runServerCommand).not.toHaveBeenCalled();
+  });
+  it("shows appendix scope and validation counts in list output", async () => {
+    const page = { items: [{ ...result, scope: { projectIds: [], eventTypes: ["report"], itemCategories: [] }, validation: { successCount: "3", failureCount: "1", lastValidatedAt: "2026-11-13T10:00:00Z" } }], nextCursor: null, observedAt: "2026-11-13T10:00:00Z" };
+    const listAppendix = vi.fn(async () => page) as unknown as AssistantTaskClient["listAppendix"];
+    const response = await fixture({ listAppendix }).run(["appendix", "list", task]);
+    expect(response.exit).toBe(0);
+    for (const text of ['"eventTypes": [', '"report"', '"successCount": "3"', '"failureCount": "1"']) expect(response.out).toContain(text);
+  });
+  it("reads related appendices from a Bot without a claim credential", async () => {
+    const related = { items: [result], observedAt: "2026-11-13T10:00:00Z" };
+    const relatedAppendix = vi.fn(async () => related) as unknown as AssistantTaskClient["relatedAppendix"];
+    const f = fixture({ relatedAppendix }, { DAYNIGHT_BOT_ID: bot });
+    const response = await f.run(["appendix", "related", task, "--event-type", "escalation", "--json"]);
+    expect(response.exit).toBe(0);
+    expect(JSON.parse(response.out)).toEqual(related);
+    expect(relatedAppendix).toHaveBeenCalledExactlyOnceWith(task, { eventType: "escalation" });
+    expect(f.readClaimCredential).not.toHaveBeenCalled();
+  });
+  it("refuses a noncanonical related project before dispatch", async () => {
+    const f = fixture({});
+    expect((await f.run(["appendix", "related", task, "--project", "bad"])).exit).toBe(2);
+    expect(f.runServerCommand).not.toHaveBeenCalled();
   });
   it("submits edited proposal text and rules only with the explicit decision", async () => {
     const decide = vi.fn(async () => result) as unknown as AssistantTaskClient["decide"];
@@ -192,6 +237,37 @@ describe("assistant-task Bot work and recovery", () => {
     expect(f.readClaimCredential).toHaveBeenCalledOnce();
     expect(response.out + response.err).not.toContain(credential.claimToken);
   });
+  it("sends a declared appendix scope with the addition", async () => {
+    const addAppendix = vi.fn(async () => result) as unknown as AssistantTaskClient["addAppendix"];
+    const f = fixture({ addAppendix }, env);
+    expect((await f.run(["appendix", "add", task, "--text", "Restart", "--scope-project", target, "--scope-event-type", "report", "--scope-event-type", "escalation", "--operation-id", op])).exit).toBe(0);
+    expect(addAppendix).toHaveBeenCalledExactlyOnceWith(task, { ...credential, id: op, text: "Restart", sourceRecords: [], scope: { projectIds: [target], eventTypes: ["report", "escalation"], itemCategories: [] } });
+  });
+  it("validates an appendix with an outcome record under the holder credential", async () => {
+    const validated = { ...result, validation: { successCount: "1", failureCount: "0", lastValidatedAt: "2026-11-13T10:00:00Z" } };
+    const validateAppendix = vi.fn(async () => validated) as unknown as AssistantTaskClient["validateAppendix"];
+    const f = fixture({ validateAppendix }, env);
+    const response = await f.run(["appendix", "validate", task, resource, "--outcome-record", target, "--operation-id", op, "--json"]);
+    expect(response.exit).toBe(0);
+    expect(validateAppendix).toHaveBeenCalledExactlyOnceWith(task, resource, { ...credential, outcomeRecordId: target });
+    expect(JSON.parse(response.out)).toEqual(validated);
+    expect(response.out + response.err).not.toContain(credential.claimToken);
+  });
+  it("refuses appendix validation without Bot identity or a canonical outcome record", async () => {
+    for (const [args, environment] of [[["--outcome-record", target], {}], [["--outcome-record", "bad"], env], [[], env]] as const) {
+      const f = fixture({}, environment);
+      expect((await f.run(["appendix", "validate", task, resource, ...args])).exit).toBe(2);
+      expect(f.runServerCommand).not.toHaveBeenCalled();
+    }
+  });
+  it("reports a refused duplicate validation without retrying", async () => {
+    const validateAppendix = vi.fn(async () => { throw new AssistantTaskApiError(false, "operation_conflict", 409, true); }) as unknown as AssistantTaskClient["validateAppendix"];
+    const f = fixture({ validateAppendix }, env);
+    const response = await f.run(["appendix", "validate", task, resource, "--outcome-record", target, "--operation-id", op, "--json"]);
+    expect(response.exit).toBe(1);
+    expect(JSON.parse(response.err).error).toMatchObject({ code: "operation_conflict", status: 409, outcomeUnconfirmed: false });
+    expect(validateAppendix).toHaveBeenCalledOnce();
+  });
   it("allows another Bot to append a note without stealing the holder credential", async () => {
     const getTask = vi.fn(async () => ({ holderBotId: target })) as unknown as AssistantTaskClient["getTask"];
     const addRecord = vi.fn(async () => result) as unknown as AssistantTaskClient["addRecord"];
@@ -199,6 +275,46 @@ describe("assistant-task Bot work and recovery", () => {
     expect((await f.run(["record", "add", task, "--kind", "note", "--text", "I observed this", "--operation-id", op])).exit).toBe(0);
     expect(addRecord).toHaveBeenCalledExactlyOnceWith(task, { id: op, kind: "note", text: "I observed this" });
     expect(f.readClaimCredential).not.toHaveBeenCalled();
+  });
+  it("appends an outcome record with its evaluated action under the holder credential", async () => {
+    const getTask = vi.fn(async () => ({ holderBotId: bot })) as unknown as AssistantTaskClient["getTask"];
+    const stored = { id: op, taskId: task, kind: "outcome", text: "Retry cleared it", outcome: "inconclusive", actionRecordId: resource };
+    const addRecord = vi.fn(async () => stored) as unknown as AssistantTaskClient["addRecord"];
+    const f = fixture({ getTask, addRecord }, env);
+    const response = await f.run(["record", "add", task, "--kind", "outcome", "--outcome", "inconclusive", "--action-record", resource, "--text", "Retry cleared it", "--refs", `{"recordIds":["${target}"]}`, "--operation-id", op, "--json"]);
+    expect(response.exit).toBe(0);
+    expect(addRecord).toHaveBeenCalledExactlyOnceWith(task, { ...credential, id: op, kind: "outcome", text: "Retry cleared it", outcome: "inconclusive", actionRecordId: resource, refs: { recordIds: [target] } });
+    expect(JSON.parse(response.out)).toEqual(stored);
+  });
+  it("does not let another Bot append an outcome record", async () => {
+    const getTask = vi.fn(async () => ({ holderBotId: target })) as unknown as AssistantTaskClient["getTask"];
+    const addRecord = vi.fn(async () => result) as unknown as AssistantTaskClient["addRecord"];
+    const f = fixture({ getTask, addRecord }, env);
+    const response = await f.run(["record", "add", task, "--kind", "outcome", "--outcome", "effective", "--action-record", resource, "--text", "Done", "--operation-id", op, "--json"]);
+    expect(response.exit).toBe(1);
+    expect(JSON.parse(response.err).error.message).toContain("Only the responsible Bot");
+    expect(addRecord).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["--kind", "outcome", "--text", "Done"],
+    ["--kind", "outcome", "--outcome", "effective", "--text", "Done"],
+    ["--kind", "outcome", "--action-record", resource, "--text", "Done"],
+    ["--kind", "outcome", "--outcome", "resolved", "--action-record", resource, "--text", "Done"],
+    ["--kind", "outcome", "--outcome", "effective", "--action-record", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", "--text", "Done"],
+    ["--kind", "action", "--outcome", "effective", "--text", "Done"],
+    ["--kind", "note", "--action-record", resource, "--text", "Done"],
+  ])("refuses an inconsistent outcome evaluation before network: %j", async (...args) => {
+    const f = fixture({}, env);
+    expect((await f.run(["record", "add", task, ...args])).exit).toBe(2);
+    expect(f.runServerCommand).not.toHaveBeenCalled();
+  });
+  it("shows outcome evaluations in record text output", async () => {
+    const page = { items: [{ id: op, taskId: task, kind: "outcome", text: "Retry cleared it", outcome: "effective", actionRecordId: resource }], nextCursor: null, observedAt: "2026-11-13T10:00:00Z" };
+    const listRecords = vi.fn(async () => page) as unknown as AssistantTaskClient["listRecords"];
+    const response = await fixture({ listRecords }, env).run(["record", "list", task]);
+    expect(response.exit).toBe(0);
+    expect(response.out).toContain('"outcome": "effective"');
+    expect(response.out).toContain(`"actionRecordId": "${resource}"`);
   });
   it("uses holder credentials even for a note", async () => {
     const getTask = vi.fn(async () => ({ holderBotId: bot })) as unknown as AssistantTaskClient["getTask"];

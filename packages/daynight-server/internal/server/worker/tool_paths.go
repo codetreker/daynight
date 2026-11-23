@@ -9,6 +9,7 @@ import (
 
 const workerToolPathsHeader = "Daynight-Worker-Tool-Paths"
 const workerArchiveSessionsHeader = "Daynight-Worker-Archive-Sessions"
+const workerPlatformTaskModeHeader = "Daynight-Worker-Platform-Task-Mode"
 const workerControlModeHeader = "Daynight-Worker-Control-Mode"
 
 func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error) {
@@ -28,10 +29,19 @@ func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error)
 		}
 		result.ArchiveSessions = true
 	}
+	if values, exists := header[workerPlatformTaskModeHeader]; exists {
+		if len(values) != 1 || values[0] != "1" {
+			return result, httpx.InvalidInput("Unsupported Worker platform task mode protocol.")
+		}
+		result.PlatformTaskMode = true
+	}
 	return result, nil
 }
 
 func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Capabilities) {
+	if capabilities.PlatformTaskMode {
+		header.Set(workerPlatformTaskModeHeader, "1")
+	}
 	if capabilities.ToolPaths {
 		header.Set(workerToolPathsHeader, "2")
 	}

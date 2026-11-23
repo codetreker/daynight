@@ -7,14 +7,13 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Operation | Required topic; conditional additions |
 | --- | --- |
 | Establish Account, Team or Project context; resolve a repository | [Concepts](daynight://manuals/concepts.md) |
-| Register or transfer a Project | [Concepts](daynight://manuals/concepts.md); Write safety for writes; transfer requires preview and explicit user confirmation of permanent Goal dependency removal |
+| Register, transfer or change the repository of a Project | [Concepts](daynight://manuals/concepts.md); Write safety for writes; transfer and repository changes require their previews and explicit user confirmation |
 | Inspect Tasks/Goals, list ready work or read properties | [Task reads](daynight://manuals/tasks.md) |
 | Create or delete Tasks/Goals, or change metadata, status or properties | [Task writes](daynight://manuals/task-writes.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependency writes](daynight://manuals/dependency-writes.md) when setting relationships |
 | Read ordinary Task graphs or Goal acceptance relationships | [Dependencies](daynight://manuals/dependencies.md) |
 | Edit Goal acceptance relationships | [Dependency writes](daynight://manuals/dependency-writes.md); [Dependencies](daynight://manuals/dependencies.md) |
 | Replace or reduce dependency relationships | [Dependency writes](daynight://manuals/dependency-writes.md) |
 | Organize requirements, designs, shared sources or results | [Materials](daynight://manuals/materials.md) |
-| Read or maintain Steps | [Steps](daynight://manuals/steps.md) |
 | Read or post participant discussion | [Threads](daynight://manuals/threads.md) |
 | Read attachment metadata/bytes or resolve paths | [Attachment reads](daynight://manuals/attachment-reads.md) |
 | Publish or remove attachments | [Attachment writes](daynight://manuals/attachment-writes.md); Attachment reads for unknown path rules or reading back bytes |
@@ -23,7 +22,7 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Send to an exact Session or query its original operation | [Session messages](daynight://manuals/session-messages.md); Session reads when target identity, state or admission must be established |
 | Hand off work or complete an explicitly owned Worker claim | [Worker operations](daynight://manuals/worker-operations.md) |
 
-Every write also requires [Write safety](daynight://manuals/write-safety.md) and its operation-specific prerequisites. Topics state any further necessary reads. For an input-dependent decision, read the actual complete material, not only its inventory or a preview. Task/Step summaries omit definitions; even full Task lists omit descriptions. Attachments, Steps, Thread and Session content are separate reads.
+Every write also requires [Write safety](daynight://manuals/write-safety.md) and its operation-specific prerequisites. Topics state any further necessary reads. For an input-dependent decision, read the actual complete material, not only its inventory or a preview. Task summaries omit definitions; even full Task lists omit descriptions. Attachments, Thread and Session content are separate reads.
 
 ## Shared conventions
 

@@ -2,7 +2,7 @@
 
 ## 范围与能力
 
-本文的既有管理、登记和 grant 合同描述现行接口；“Bot 本地存储与恢复合同”定义须单独声明能力的新增要求，不表示已经实现或通过真实 Provider 验收。没有 `botRecoveryVersion=1` 的生产方继续使用既有绑定 Worker 与父 PAT 规则，不能凭新规范开放接管。
+本文的管理、登记、grant 及独立恢复 v1 合同描述服务端接口。“Bot 本地存储与恢复合同”还包含 Worker 与 Provider 的独立验收要求；服务端接口存在不表示真实 Provider 恢复已通过。未登记恢复身份的 Bot 继续使用既有 Worker 与父 PAT 规则；登记后只接受带恢复证明及承载代次的新运行时写接口。没有对应能力的 Worker 不能启用恢复或退回旧写接口。
 
 Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供公开 Bot CLI、远端 Worker 查询、名字创建的默认解析、幂等定义存储、查询、删除屏障与服务端历史清理，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；`worker run` 组合原生执行托管、恢复和私有资料清理，网页全局侧栏提供助手入口。首次创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用；同请求重放保留原资源的当前状态，包括删除责任，不复活定义。
 
@@ -55,7 +55,7 @@ Codex 必须以发生 compact 的线程验证同一 ID resume 后继续下一轮
 
 ### 字段、版本与失败语义
 
-新增字段通过独立版本化接管／观测合同交换，既有管理 DTO 和 `/grant` 不静默扩展。以下字段是下游实现的语义输入，不声明现有 HTTP 路由已提供它们。
+新增字段通过独立版本化接管／观测合同交换，既有管理 DTO 和 `/grant` 不静默扩展。恢复登记、接管、grant、report 与原操作查询由[独立恢复 v1 协议](../design/assistant.md#服务端恢复-v1-协议)提供；机器定位与可用性由[服务端观测 v1 协议](../design/assistant.md#服务端观测-v1-协议)提供。下表的 Provider 备份字段仍须由其生产方声明能力，不能从恢复回执或在线状态推导。
 
 | 字段／能力 | 语义 |
 | --- | --- |
@@ -71,6 +71,12 @@ Codex 必须以发生 compact 的线程验证同一 ID resume 后继续下一轮
 无能力为 `upgrade_required`；账号认证失效为 `unauthenticated`，错误 owner／服务域为拒绝访问，预期代次或执行权冲突为 `resource_conflict`。缺恢复材料、Provider 不可用、不兼容版本、旧执行未证实停止必须有可区分原因，分别为 `recovery_material_missing`、`provider_unavailable`、`recovery_version_unsupported`、`stop_unconfirmed`。未知结果保持 `outcome_unknown`，不能映射成失败重试许可。旧接口仍维持原错误形状；新增错误通过版本化合同提供。
 
 Worker 心跳过期显示 offline 并保留机器、主机名与最后时间，提示在该机器运行 `daynight worker run`。上线但定位、接管或同步未完成显示 connecting/recovering；已证实缺件或执行权冲突显示 abnormal 及具体补救。idle/working 只取该 Bot 当前代次已同步 Session 的当前轮次；同机其它任务活动和持久 ready 不改变它。首次尚无原生 ID 显示 connecting。已有授权缓存只供阅读，不恢复实时 Working、计时或发送资格。
+
+`GET /api/v1/me/bots/{botId}/observation` 返回独立 `schemaVersion=1` 的观测 DTO，也支持 HEAD；不接受 query。它使用当前有效账号与 Bot 归属授权，不要求原创建 PAT 仍有效，不启动 Provider、不写 Session、不签发 grant，且不返回发送权限。旧 Bot 列表、详情及 Worker inventory 的 DTO 与创建时 Worker 字段保持原义。未升级服务没有此入口时，客户端不得由旧 ready 构造新观测。
+
+观测返回当前承载 `workerId`、可空 `machine`、`provider`、原平台及原生 Session 身份、承载与连接代次、`state`／`reason`、服务端 `observedAt`、可空 `workerLastSeenAt`／`sessionLastSeenAt`／`freshUntil` 和仅工作中有效的 `currentTurnId`。版本及代次为十进制字符串，未知值明确为 null；未登记恢复身份的 `hostingGeneration` 为 null。机器定位不受普通 Worker 查询的 72 小时窗口影响。恢复登记的机器 ID 保持不变，同一机器的新上报名称可以更新显示；不同机器 ID 不覆盖已确认定位。
+
+Worker 报告年龄须严格小于 120 秒；有效在线活动还要求当前 Session 心跳年龄严格小于 30 秒、持久连接租约未到期、相同 Controller fence、年龄严格小于 30 秒的当前 relay 已提交同步采样。`freshUntil` 取所用事实的最早截止时间，客户端到期须撤下实时状态并刷新，不能延续计时。只有其它 relay 的连接时返回 recovering／`session_observation_unavailable`，不从数据库的历史 activity 猜测在线活动。原生记录缺失等已确认启动失败保留其实际错误码，过期的 Provider 预检失败不覆盖当前已同步的 Bot 活动。
 
 ### 恢复验证边界
 

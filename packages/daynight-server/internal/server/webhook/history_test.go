@@ -219,7 +219,7 @@ func TestWebhookMaintenanceMapping(t *testing.T) {
 			Dispatch bool `json:"dispatchEnabled"`
 		} `json:"service"`
 	}
-	if json.Unmarshal(catalog, &catalogJSON) != nil || len(catalogJSON.Items) != 6 || catalogJSON.Service.Dispatch {
+	if json.Unmarshal(catalog, &catalogJSON) != nil || len(catalogJSON.Items) != 5 || catalogJSON.Service.Dispatch {
 		t.Fatalf("default catalog: %s", catalog)
 	}
 	plans.addRead(scope("Credential", "Endpoints"))

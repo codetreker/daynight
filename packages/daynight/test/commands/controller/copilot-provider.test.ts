@@ -1,3 +1,4 @@
+import { LifecycleAdmissionError } from "../../../src/commands/worker/lifecycle-store.js";
 import { imageQualificationFingerprint } from "../../../src/commands/controller/providers/image-qualification.js";
 import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
@@ -12,7 +13,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { ChildProcess } from "node:child_process";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
-import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
+import { NativeRpcTimeoutError, NativeDispatchRejectedError } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
 import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
@@ -496,6 +497,19 @@ test("Copilot cannot submit input when the working-state callback fences its que
   try {
     await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
     expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test("Copilot reports the final queued lifecycle refusal as not dispatched and restores idle state", async () => {
+  let fenced = false;
+  const provider = await openCopilotProvider({ ...fixture.options,
+    onState: state => { fixture.options.onState(state); if (state.activity === "working") fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw new LifecycleAdmissionError(); },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBeInstanceOf(NativeDispatchRejectedError);
+    expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null });
   } finally { await provider.close(); }
 });
 

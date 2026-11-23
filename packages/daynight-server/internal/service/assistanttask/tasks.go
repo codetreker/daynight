@@ -117,6 +117,12 @@ func (s *Tasks) ListAppendix(ctx context.Context, actor core.Actor, taskID strin
 	})
 }
 
+func (s *Tasks) RelatedAppendix(ctx context.Context, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	return execute(ctx, s, "RelatedAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskRelatedAppendices, error) {
+		return s.operations.RelatedAppendix(ctx, dao, actor, taskID, input)
+	})
+}
+
 func (s *Tasks) AddAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error) {
 	return execute(ctx, s, "AddAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskAppendix, error) {
 		return s.operations.AddAppendix(ctx, dao, actor, input)
@@ -126,6 +132,12 @@ func (s *Tasks) AddAppendix(ctx context.Context, actor core.Actor, input core.Ap
 func (s *Tasks) UpdateAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error) {
 	return execute(ctx, s, "UpdateAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskAppendix, error) {
 		return s.operations.UpdateAppendix(ctx, dao, actor, input)
+	})
+}
+
+func (s *Tasks) ValidateAppendix(ctx context.Context, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	return execute(ctx, s, "ValidateAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskAppendix, error) {
+		return s.operations.ValidateAppendix(ctx, dao, actor, input)
 	})
 }
 
@@ -168,6 +180,12 @@ func (s *Tasks) GetItem(ctx context.Context, actor core.Actor, taskID, id string
 func (s *Tasks) SaveItem(ctx context.Context, actor core.Actor, input core.ItemInput) (model.AssistantTaskItem, error) {
 	return execute(ctx, s, "SaveItem", func(dao store.AssistantTaskDAO) (model.AssistantTaskItem, error) {
 		return s.operations.SaveItem(ctx, dao, actor, input)
+	})
+}
+
+func (s *Tasks) Metrics(ctx context.Context, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	return execute(ctx, s, "Metrics", func(dao store.AssistantTaskDAO) (model.AssistantTaskMetrics, error) {
+		return s.operations.Metrics(ctx, dao, actor, taskID)
 	})
 }
 
@@ -226,10 +244,41 @@ func (s *Tasks) ClearAttention(ctx context.Context, actor core.Actor, targetBotI
 	return err
 }
 
+func (s *Tasks) EnableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return execute(ctx, s, "EnableInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
+		return s.operations.EnableInbox(ctx, dao, actor, input)
+	})
+}
+
+func (s *Tasks) DisableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return execute(ctx, s, "DisableInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
+		return s.operations.DisableInbox(ctx, dao, actor, input)
+	})
+}
+
+func (s *Tasks) RotateInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return execute(ctx, s, "RotateInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
+		return s.operations.RotateInbox(ctx, dao, actor, input)
+	})
+}
+
+func (s *Tasks) InboxOperation(ctx context.Context, actor core.Actor, taskID, operationID string) (core.InboxResult, error) {
+	return execute(ctx, s, "InboxOperation", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
+		return s.operations.InboxOperation(ctx, dao, actor, taskID, operationID)
+	})
+}
+
+func (s *Tasks) GetInbox(ctx context.Context, actor core.Actor, taskID string) (core.InboxView, error) {
+	return execute(ctx, s, "GetInbox", func(dao store.AssistantTaskDAO) (core.InboxView, error) {
+		return s.operations.GetInbox(ctx, dao, actor, taskID)
+	})
+}
+
 type operations interface {
 	EnablePreset(context.Context, store.AssistantTaskDAO, core.Actor, core.CreateInput, string) (core.TaskResult, error)
 	Create(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
 	Get(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.TaskResult, error)
+	Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error)
 	List(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.PageInput) (model.AssistantTaskPage[core.TaskResult], error)
 	Update(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.UpdateInput) (core.TaskResult, error)
 	Claim(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.ClaimInput) (model.AssistantTaskClaimResult, error)
@@ -237,8 +286,10 @@ type operations interface {
 	GetManual(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, version int64) (model.AssistantTaskManual, error)
 	ListManuals(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskManual], error)
 	ListAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskAppendix], error)
+	RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error)
 	AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
 	UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
+	ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error)
 	ListProposals(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskProposal], error)
 	Propose(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.ProposalInput) (core.ProposalResult, error)
 	Decide(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.DecisionInput) (model.AssistantTaskProposal, error)
@@ -255,6 +306,11 @@ type operations interface {
 	Ask(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.InquiryInput) (model.AssistantTaskInquiry, error)
 	Answer(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AnswerInput) (model.AssistantTaskInquiry, error)
 	ClearAttention(context.Context, store.AssistantTaskDAO, core.Actor, string) error
+	EnableInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
+	DisableInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
+	RotateInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
+	InboxOperation(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID, operationID string) (core.InboxResult, error)
+	GetInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.InboxView, error)
 }
 
 // RegisterRules installs the application-owned validation boundary used by all

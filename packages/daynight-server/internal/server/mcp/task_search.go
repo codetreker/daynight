@@ -27,6 +27,8 @@ type searchInput struct {
 	Query              string              `json:"query"`
 	Type               model.TaskType      `json:"type"`
 	ParentID           *string             `json:"parentId"`
+	ParentTaskID       *string             `json:"parentTaskId"`
+	TaskParentView     string              `json:"taskParentView"`
 	AssignedTo         *string             `json:"assignedTo"`
 	Status             *model.TaskStatus   `json:"status"`
 	Ready              *bool               `json:"ready"`
@@ -37,15 +39,17 @@ type searchInput struct {
 }
 
 type searchItem struct {
-	ID        string                          `json:"id"`
-	Type      model.TaskType                  `json:"type"`
-	ParentID  *string                         `json:"parentId"`
-	ProjectID string                          `json:"projectId"`
-	Title     string                          `json:"title"`
-	Status    model.TaskStatus                `json:"status"`
-	Context   *tasksearch.Context             `json:"context"`
-	Match     tasksearch.Match                `json:"match"`
-	Tags      []taskprotocol.RESTTagReference `json:"tags"`
+	ID                string                          `json:"id"`
+	Type              model.TaskType                  `json:"type"`
+	ParentID          *string                         `json:"parentId"`
+	ParentTaskID      **string                        `json:"parentTaskId,omitempty"`
+	ProjectID         string                          `json:"projectId"`
+	Title             string                          `json:"title"`
+	Status            model.TaskStatus                `json:"status"`
+	Context           *tasksearch.Context             `json:"context"`
+	ParentTaskContext *tasksearch.Context             `json:"parentTaskContext,omitempty"`
+	Match             tasksearch.Match                `json:"match"`
+	Tags              []taskprotocol.RESTTagReference `json:"tags"`
 }
 
 type searchData struct {
@@ -71,12 +75,16 @@ func RegisterTaskSearchTool(entry *Entry, search TaskSearchOperation) error {
 		if err := queryBusinessLimit(raw); err != nil {
 			return ToolResult{}, err
 		}
-		if err := ValidateUnicodeFields(raw, "projectId", "query", "type", "parentId", "assignedTo", "status", "compatiblePlatform", "tagIds", "tagMatch", "cursor"); err != nil {
+		if err := ValidateUnicodeFields(raw, "projectId", "query", "type", "parentId", "parentTaskId", "taskParentView", "assignedTo", "status", "compatiblePlatform", "tagIds", "tagMatch", "cursor"); err != nil {
 			return ToolResult{}, err
 		}
 		var in searchInput
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+		}
+		relations, err := taskParentView(in.TaskParentView)
+		if err != nil {
+			return ToolResult{}, err
 		}
 		in.ParentID = queryParent(raw, in.ParentID)
 		if in.Limit == 0 {
@@ -85,7 +93,7 @@ func RegisterTaskSearchTool(entry *Entry, search TaskSearchOperation) error {
 		operation, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		page, err := search(operation, actor.Principal, in.ProjectID, tasksearch.Request{
-			TagFilter: in.filter(), Type: in.Type, Parent: in.ParentID, Query: in.Query,
+			TagFilter: in.filter(), Type: in.Type, Parent: in.ParentID, ParentTask: in.ParentTaskID, Query: in.Query,
 			AssignedTo: in.AssignedTo, Status: in.Status, Ready: in.Ready, AllowAgents: in.AllowAgents,
 			CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor,
 		})
@@ -94,8 +102,16 @@ func RegisterTaskSearchTool(entry *Entry, search TaskSearchOperation) error {
 		}
 		data := searchData{ProjectID: page.ProjectID, Total: page.Total, Items: make([]searchItem, 0, len(page.Items)), NextCursor: page.NextCursor}
 		for _, item := range page.Items {
-			data.Items = append(data.Items, searchItem{ID: item.ID, Type: item.Type, ParentID: item.ParentID,
-				ProjectID: item.ProjectID, Title: item.Title, Status: item.Status, Context: item.Context,
+			parentID, parentTaskID := taskprotocol.ParentRelation(item.ParentID, item.ParentType, relations)
+			var goalContext, parentTaskContext *tasksearch.Context
+			if parentID != nil {
+				goalContext = item.Context
+			}
+			if parentTaskID != nil && *parentTaskID != nil {
+				parentTaskContext = item.Context
+			}
+			data.Items = append(data.Items, searchItem{ID: item.ID, Type: item.Type, ParentID: parentID, ParentTaskID: parentTaskID,
+				ProjectID: item.ProjectID, Title: item.Title, Status: item.Status, Context: goalContext, ParentTaskContext: parentTaskContext,
 				Match: item.Match, Tags: taskprotocol.RESTTags(item.Tags)})
 		}
 		encoded, err := json.Marshal(data)

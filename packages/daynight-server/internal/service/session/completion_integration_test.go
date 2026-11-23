@@ -92,7 +92,7 @@ func TestSessionWriterCompletionControlsLivePublication(t *testing.T) {
 			owner := testsupport.ServicePrincipal(t, db)
 			credentialID := uuid.NewString()
 			hash := sha256.Sum256([]byte(credentialID))
-			if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'completion',now(),now()+interval '1 day')`, credentialID, owner.UserID, hash[:]); err != nil {
+			if _, err = db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'completion',now(),now()+interval '1 day')`, credentialID, owner.UserID, hash[:]); err != nil {
 				t.Fatal(err)
 			}
 			principal := model.Principal{Kind: model.PATCredential, UserID: owner.UserID, CredentialID: credentialID}

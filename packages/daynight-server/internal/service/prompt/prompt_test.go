@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,78 @@ type call struct {
 	result any
 	err    error
 }
+
+func TestReviewerPurposeAuthorizationAndByteLimits(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		scope model.PromptScope
+		id    string
+	}{
+		{model.PromptScopeUser, user}, {model.PromptScopeProject, project}, {model.PromptScopeWorker, worker},
+	} {
+		for _, text := range []string{strings.Repeat("a", 32768), strings.Repeat("界", 10922) + "ab", strings.Repeat("<", 32765) + "\n\"\\"} {
+			m := &promptMock{t: t}
+			svc := testService(m)
+			m.write(store.TransactionCommitted)
+			switch tc.scope {
+			case model.PromptScopeProject:
+				m.expect("lock", nil, nil, principal, tc.id)
+			case model.PromptScopeWorker:
+				m.expect("worker", nil, nil, user, tc.id)
+			}
+			empty := model.PromptResource{Scope: tc.scope, ScopeID: tc.id, Revision: "0"}
+			created := model.PromptResource{Scope: tc.scope, ScopeID: tc.id, Revision: "1", Text: text}
+			m.expect("resource", empty, nil, model.PromptPurposeReviewer, user, tc.scope, tc.id)
+			m.expect("decision", decisionResult{1, true}, nil, empty, int64(0), text)
+			m.expect("create", created, nil, model.PromptPurposeReviewer, user, tc.scope, tc.id, text)
+			value, err := svc.PutReviewer(ctx, principal, tc.scope, tc.id, user, "0", text)
+			if err != nil || value != created {
+				t.Fatalf("scope %s at limit: %+v %v", tc.scope, value, err)
+			}
+			m.check()
+			_, err = svc.PutReviewer(ctx, principal, tc.scope, tc.id, user, "1", text+"a")
+			fault(t, err, "invalid_input")
+			_, err = svc.PutReviewer(ctx, principal, tc.scope, tc.id, other, "1", "draft")
+			fault(t, err, "identity_mismatch")
+			m.snapshot()
+			switch tc.scope {
+			case model.PromptScopeProject:
+				m.expect("access", nil, nil, principal, tc.id)
+			case model.PromptScopeWorker:
+				m.expect("worker", nil, nil, user, tc.id)
+			}
+			m.expect("metadata", store.PromptMetadata{}, nil, model.PromptPurposeReviewer, user, tc.scope, tc.id)
+			value, err = svc.GetReviewer(ctx, principal, tc.scope, tc.id)
+			if err != nil || value != empty {
+				t.Fatalf("scope %s read: %+v %v", tc.scope, value, err)
+			}
+			m.check()
+		}
+	}
+}
+
+func TestReviewerAuthorizationStopsBeforeStorage(t *testing.T) {
+	m := mock(t)
+	svc := testService(m)
+	ctx := context.Background()
+	m.snapshot()
+	m.expect("access", nil, model.ErrNotFound, principal, project)
+	_, err := svc.GetReviewer(ctx, principal, model.PromptScopeProject, project)
+	fault(t, err, "not_found")
+	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
+	m.expect("lock", nil, model.ErrNotFound, principal, project)
+	_, err = svc.PutReviewer(ctx, principal, model.PromptScopeProject, project, user, "1", "draft")
+	fault(t, err, "not_found")
+	m.snapshot()
+	m.expect("worker", nil, model.ErrNotFound, user, worker)
+	_, err = svc.GetReviewer(ctx, principal, model.PromptScopeWorker, worker)
+	fault(t, err, "not_found")
+	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
+	m.expect("worker", nil, model.ErrNotFound, user, worker)
+	_, err = svc.PutReviewer(ctx, principal, model.PromptScopeWorker, worker, user, "1", "draft")
+	fault(t, err, "not_found")
+}
+
 type promptMock struct {
 	t            *testing.T
 	expected     []call
@@ -127,39 +200,39 @@ func (m *promptMock) PromptWorkerExists(ctx context.Context, u, id string) error
 	m.checkContext(ctx)
 	return m.next("worker", u, id).err
 }
-func (m *promptMock) PromptMetadata(_ context.Context, u string, s model.PromptScope, id string) (store.PromptMetadata, error) {
-	c := m.next("metadata", u, s, id)
+func (m *promptMock) PromptMetadata(_ context.Context, purpose model.PromptPurpose, u string, s model.PromptScope, id string) (store.PromptMetadata, error) {
+	c := m.next("metadata", purpose, u, s, id)
 	if c.err != nil {
 		return store.PromptMetadata{}, c.err
 	}
 	return c.result.(store.PromptMetadata), nil
 }
-func (m *promptMock) PromptText(_ context.Context, u string, s model.PromptScope, id string) (string, error) {
-	c := m.next("text", u, s, id)
+func (m *promptMock) PromptText(_ context.Context, purpose model.PromptPurpose, u string, s model.PromptScope, id string) (string, error) {
+	c := m.next("text", purpose, u, s, id)
 	if c.err != nil {
 		return "", c.err
 	}
 	return c.result.(string), nil
 }
-func (m *promptMock) PromptResource(ctx context.Context, u string, s model.PromptScope, id string) (model.PromptResource, error) {
+func (m *promptMock) PromptResource(ctx context.Context, purpose model.PromptPurpose, u string, s model.PromptScope, id string) (model.PromptResource, error) {
 	m.checkContext(ctx)
-	c := m.next("resource", u, s, id)
+	c := m.next("resource", purpose, u, s, id)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
 	}
 	return c.result.(model.PromptResource), nil
 }
-func (m *promptMock) CreatePrompt(ctx context.Context, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
+func (m *promptMock) CreatePrompt(ctx context.Context, purpose model.PromptPurpose, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
 	m.checkContext(ctx)
-	c := m.next("create", u, s, id, text)
+	c := m.next("create", purpose, u, s, id, text)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
 	}
 	return c.result.(model.PromptResource), nil
 }
-func (m *promptMock) UpdatePrompt(ctx context.Context, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
+func (m *promptMock) UpdatePrompt(ctx context.Context, purpose model.PromptPurpose, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
 	m.checkContext(ctx)
-	c := m.next("update", u, s, id, next, expected, text)
+	c := m.next("update", purpose, u, s, id, next, expected, text)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
 	}
@@ -184,7 +257,7 @@ func TestGetPutIdentityAndVersions(t *testing.T) {
 	first := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: "text", UpdatedAt: &now}
 	cleared := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "2", UpdatedAt: &now}
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	v, err := svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if err != nil || v != empty {
 		t.Fatalf("empty: %+v %v", v, err)
@@ -192,36 +265,36 @@ func TestGetPutIdentityAndVersions(t *testing.T) {
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, other, "0", "unsafe")
 	fault(t, err, "identity_mismatch")
 	m.write(store.TransactionCommitted)
-	m.expect("resource", empty, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", empty, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{0, false}, nil, empty, int64(0), "")
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "")
 	if err != nil || v != empty {
 		t.Fatalf("empty no-op: %+v %v", v, err)
 	}
 	m.write(store.TransactionCommitted)
-	m.expect("resource", empty, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", empty, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{1, true}, nil, empty, int64(0), "text")
-	m.expect("create", first, nil, user, model.PromptScopeUser, user, "text")
+	m.expect("create", first, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user, "text")
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "text")
 	if err != nil || v != first {
 		t.Fatalf("create: %+v %v", v, err)
 	}
 	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
-	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", first, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", nil, &model.Fault{Code: "version_conflict", Message: "changed"}, first, int64(0), "text")
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "text")
 	fault(t, err, "version_conflict")
 	m.write(store.TransactionCommitted)
-	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", first, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{2, true}, nil, first, int64(1), "")
-	m.expect("update", cleared, nil, user, model.PromptScopeUser, user, int64(2), int64(1), "")
+	m.expect("update", cleared, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user, int64(2), int64(1), "")
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "")
 	if err != nil || v != cleared {
 		t.Fatalf("clear: %+v %v", v, err)
 	}
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 2, UpdatedAt: &now}, nil, user, model.PromptScopeUser, user)
-	m.expect("text", "", nil, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 2, UpdatedAt: &now}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
+	m.expect("text", "", nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	v, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if err != nil || v != cleared {
 		t.Fatalf("read: %+v %v", v, err)
@@ -247,9 +320,9 @@ func TestBatchKnownAndVisibility(t *testing.T) {
 	selectors := []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}, KnownRevision: &known}, {Key: model.PromptKey{Scope: model.PromptScopeWorker}, KnownRevision: &zero}, {Key: model.PromptKey{Scope: model.PromptScopeProject, ProjectID: project}}}
 	setup := func(withText, denied bool) {
 		m.snapshot()
-		m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+		m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 		if withText {
-			m.expect("text", "known", nil, user, model.PromptScopeUser, user)
+			m.expect("text", "known", nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 		}
 		if denied {
 			m.expect("worker", nil, model.ErrNotFound, user, worker)
@@ -257,9 +330,9 @@ func TestBatchKnownAndVisibility(t *testing.T) {
 			return
 		}
 		m.expect("worker", nil, nil, user, worker)
-		m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeWorker, worker)
+		m.expect("metadata", store.PromptMetadata{}, nil, model.PromptPurposeWorker, user, model.PromptScopeWorker, worker)
 		m.expect("access", nil, nil, principal, project)
-		m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeProject, project)
+		m.expect("metadata", store.PromptMetadata{}, nil, model.PromptPurposeWorker, user, model.PromptScopeProject, project)
 	}
 	setup(false, false)
 	result, err := Batch(ctx, m, principal, worker, selectors)
@@ -313,42 +386,42 @@ func TestFailuresAndInputRejection(t *testing.T) {
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "\x00")
 	fault(t, err, "invalid_input")
 	m.snapshot()
-	m.expect("metadata", nil, marker, user, model.PromptScopeUser, user)
+	m.expect("metadata", nil, marker, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
-	m.expect("text", nil, marker, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
+	m.expect("text", nil, marker, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
-	m.expect("text", nil, marker, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
+	m.expect("text", nil, marker, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}}})
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
 	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
-	m.expect("resource", nil, marker, user, model.PromptScopeUser, user)
+	m.expect("resource", nil, marker, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "y")
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
 	first := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: "x"}
 	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
-	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", first, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{2, true}, nil, first, int64(1), "y")
-	m.expect("update", nil, marker, user, model.PromptScopeUser, user, int64(2), int64(1), "y")
+	m.expect("update", nil, marker, model.PromptPurposeWorker, user, model.PromptScopeUser, user, int64(2), int64(1), "y")
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "y")
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
 	m.write(store.TransactionUnknown)
-	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", first, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{1, false}, nil, first, int64(1), "x")
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "x")
 	if err == nil {
@@ -386,23 +459,23 @@ func TestCorruptStoredTextFailsWithoutClientFault(t *testing.T) {
 		}
 	}
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
-	m.expect("text", badText, nil, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
+	m.expect("text", badText, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err := svc.Get(ctx, principal, model.PromptScopeUser, user)
 	check(err)
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
-	m.expect("text", badText, nil, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
+	m.expect("text", badText, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}}})
 	check(err)
 	current := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: badText}
 	m.writeFailure(store.TransactionNotCommitted, "operation", nil)
-	m.expect("resource", current, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", current, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "safe")
 	check(err)
 	known := "1"
 	m.snapshot()
-	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	results, err := svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}, KnownRevision: &known}})
 	if err != nil || len(results) != 1 || results[0].Status != "unchanged" {
 		t.Fatalf("unchanged: %+v %v", results, err)
@@ -417,7 +490,7 @@ func TestWriteCompletionKeepsOperationAndCleanupFailures(t *testing.T) {
 	refusal := &model.Fault{Code: "version_conflict", Message: "revision changed"}
 	cleanup := errors.New("rollback failure")
 	m.writeFailure(store.TransactionUnknown, "cleanup", cleanup)
-	m.expect("resource", current, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", current, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", nil, refusal, current, int64(1), "after")
 	value, err := svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "after")
 	if value != (model.PromptResource{}) {
@@ -429,10 +502,10 @@ func TestWriteCompletionKeepsOperationAndCleanupFailures(t *testing.T) {
 	}
 	commitErr := errors.New("commit response lost")
 	m.expect("write", transactionFixture{completion: store.Completion{Outcome: store.TransactionUnknown}, phase: "commit", cause: commitErr}, nil)
-	m.expect("resource", current, nil, user, model.PromptScopeUser, user)
+	m.expect("resource", current, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user)
 	m.expect("decision", decisionResult{2, true}, nil, current, int64(1), "after")
 	updated := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "2", Text: "after"}
-	m.expect("update", updated, nil, user, model.PromptScopeUser, user, int64(2), int64(1), "after")
+	m.expect("update", updated, nil, model.PromptPurposeWorker, user, model.PromptScopeUser, user, int64(2), int64(1), "after")
 	value, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "after")
 	if value != (model.PromptResource{}) {
 		t.Fatalf("commit failure returned resource: %+v", value)

@@ -13,7 +13,6 @@ Use this topic when identity or the intended Project is unknown. A connection au
 | Project | A registered repository, owning Team, settings and Task/access scope, identified by UUID. |
 | Task | Ordinary work with `type: "task"`, its own UUID and nullable Goal `parentId`. |
 | Goal | An objective with `type: "goal"`, its own UUID and ordinary direct child Tasks. Parent ownership differs from dependency edges. |
-| Step | A Task-owned ordered record with a complete eight-hex-digit ID. |
 | Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. |
 | Attachment | Independent bytes and metadata at a complete case-sensitive Task-relative path. |
 | Session | Execution or conversation content with its own execution identity. Task material cannot reconstruct it. |
@@ -75,6 +74,16 @@ Resolution does not register a Project, configure a local binding/default, inspe
 ## Register a repository
 
 `project_create` resolves the selected `team` first. A unique accessible Project with the same repository identity in that Team is returned with `created: false`, including access through a direct Project grant. Multiple visible matches return `resource_conflict`. With no match, creation requires `confirm: true`; a concurrent or inaccessible occupant can cause `project_repository_conflict`. Unknown write outcomes must be observed before any new decision. Other Teams do not participate in reuse.
+
+## Change a Project repository
+
+Read [Write safety](daynight://manuals/write-safety.md) before submitting. Call `project_preview_repository` with the explicit `projectId` and candidate `repoUrl`; this works independently of the host's current repository. The preview returns `projectId`, `projectName`, `currentRepoUrl`, `repoUrl`, exact decimal `repositoryVersion` and `ownershipVersion`, `classification`, nullable `targetGitHubRepositoryId` and `unverifiedReason`, and `bindingsInvalidated`.
+
+Show the user the Project, old and new addresses, classification and effects. `unchanged` preserves the address and bindings; `same_repository` changes the address and preserves bindings. `different_repository` disconnects the Project's GitHub App repository binding and removes the Project from Worker cloud configurations selected in the transaction's batch. For `unverified`, explain the reason and the same switch effects if the user chooses to proceed. Worker configuration application has a synchronization window, and existing executions may be stopped by the normal Worker removal process. Local clones and worktrees are not changed; reconnect GitHub and manage local Worker configuration as needed.
+
+Wait for the user's explicit confirmation of these facts. No answer or refusal means no call to `project_set_repository`. For `unverified`, separately obtain explicit agreement to treat it as a switch. Submit once with `confirm: true`, the same `projectId` and `repoUrl`, the exact preview `repositoryVersion`, `ownershipVersion`, `classification` and nullable `targetGitHubRepositoryId`. Set `treatUnverifiedAsSwitch: true` only for an explicitly agreed unverified switch. Preserve all decimal digits; do not refresh or substitute the confirmed values.
+
+On `version_conflict`, preview and present the current facts again, then obtain new confirmation before another submission. For an unknown outcome, read the current Project and relevant state without automatically replaying the write; current state does not establish the original receipt. A successful `data` receipt contains `projectId`, `repoUrl`, `repositoryVersion`, `changed` and `bindingsInvalidated`; `meta.writeOutcome` and `meta.refs.projectId` identify the confirmed write and Project. A confirmed switch establishes the server-side changes for the batch, not that Workers have applied them.
 
 ## Transfer a Project
 

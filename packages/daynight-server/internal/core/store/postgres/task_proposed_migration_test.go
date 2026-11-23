@@ -33,7 +33,7 @@ func TestTaskProposedStateMigrationPreservesFourStateResources(t *testing.T) {
 			dependencyExpr += ` - 'dependency_type' - 'goal_edge_id'`
 		}
 		var result string
-		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(to_jsonb(t)-'type'-'parent_id' ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d))::text`).Scan(&result)
+		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(to_jsonb(t)-'type'-'parent_id'-'ancestor_deleted_at' ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d))::text`).Scan(&result)
 		if err != nil {
 			t.Fatal(err)
 		}

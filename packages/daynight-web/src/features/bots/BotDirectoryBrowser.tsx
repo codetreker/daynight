@@ -115,14 +115,14 @@ export function BotDirectoryBrowser({ workerId, workerName, initialPath, default
       <p className="bot-directory-worker" tabIndex={0}>{workerName}</p>
       <div className="bot-directory-path">
         <button className="button" type="button" aria-label={m.parent} aria-disabled={!permitted || !page?.result.parentPath} onClick={() => { if (page?.result.parentPath) navigate(page.result.parentPath); }}>↑</button>
-        <input ref={pathInput} aria-label={m.path} value={draft} autoComplete="off" spellCheck={false} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+        <input data-touch-text="responsive" ref={pathInput} aria-label={m.path} value={draft} autoComplete="off" spellCheck={false} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
           if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
           event.preventDefault(); event.stopPropagation(); navigate(draft);
         }} />
         <button className="button" type="button" aria-disabled={!permitted || draft.length === 0} onClick={() => { if (draft.length > 0) navigate(draft); }}>{m.go}</button>
       </div>
       <button className="button bot-directory-default" type="button" aria-disabled={!permitted} onClick={() => navigate(defaultPath)}>{m.defaultDirectory}</button>
-      <div className="field"><label htmlFor="bot-directory-filter">{m.filter}</label><input id="bot-directory-filter" type="search" value={filter} onChange={event => setFilter(event.target.value)} /></div>
+      <div className="field"><label htmlFor="bot-directory-filter">{m.filter}</label><input data-touch-text="responsive" id="bot-directory-filter" type="search" value={filter} onChange={event => setFilter(event.target.value)} /></div>
       <div className="bot-directory-list" aria-busy={busy}>
         {entries.map(entry => <button className="bot-directory-entry" type="button" key={entry.path} aria-disabled={!permitted || busy} onClick={() => { if (!busy) navigate(entry.path); }}><span aria-hidden="true">▱</span><span>{entry.name}</span><span aria-hidden="true">›</span></button>)}
         {page !== null && !busy && error === null && entries.length === 0 && <p className="bot-directory-empty">{filter ? m.noMatches : m.empty}</p>}

@@ -20,7 +20,7 @@ func DefaultBodyReadTimeout() time.Duration { return newAttachmentHandler(nil, n
 type AttachmentOperationsForTest = attachmentOperations
 
 func RegisterRoutesWithOperationsForTest(mux *http.ServeMux, operations AttachmentOperationsForTest, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, timeout time.Duration) {
-	handler := &attachmentHandler{attachments: operations, logger: logger, bodyReadTimeout: timeout}
+	handler := &attachmentHandler{attachments: operations, principal: principalIdentity, logger: logger, bodyReadTimeout: timeout}
 	registerContentFixture(mux, handler, require)
 }
 

@@ -10,10 +10,33 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 )
 
+// ScopedAuthentication supplies an authenticated current credential policy.
+type ScopedAuthentication interface {
+	RequireScoped(func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)) http.HandlerFunc
+}
+
+// ScopedProfile admits the account mutation with a transaction-bound policy recheck.
+type ScopedProfile interface {
+	PatchUserAuthorized(context.Context, model.CredentialAuthorization, model.UserProfilePatch, identityservice.ProfileScopeRecheck) (model.User, error)
+}
+
 func (h *Authentication) patchMe(w http.ResponseWriter, request *http.Request, p model.Principal) {
+	h.patchMeWith(w, request, p, func(ctx context.Context, patch model.UserProfilePatch) (model.User, error) {
+		return h.identity.PatchUser(ctx, p, patch)
+	})
+}
+
+func (h *Authentication) patchMeAuthorized(w http.ResponseWriter, request *http.Request, auth model.CredentialAuthorization, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck) {
+	h.patchMeWith(w, request, auth.Principal, func(ctx context.Context, patch model.UserProfilePatch) (model.User, error) {
+		return profile.PatchUserAuthorized(ctx, auth, patch, recheck)
+	})
+}
+
+func (h *Authentication) patchMeWith(w http.ResponseWriter, request *http.Request, p model.Principal, patchUser func(context.Context, model.UserProfilePatch) (model.User, error)) {
 	if _, err := httpx.QueryValues(request); err != nil {
 		httpx.WriteError(w, request, h.logger, "auth", "patch_me", err)
 		return
@@ -30,7 +53,7 @@ func (h *Authentication) patchMe(w http.ResponseWriter, request *http.Request, p
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
 	defer cancel()
-	user, err := h.identity.PatchUser(ctx, p, patch)
+	user, err := patchUser(ctx, patch)
 	if err != nil {
 		writeProfileError(w, request, h.logger.With("user_id", p.UserID), err)
 		return

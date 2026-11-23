@@ -131,7 +131,8 @@ const Draft = ({ taskId, identity, page, close, relation }: {
     {metadata && <ThreadMessageDetails message={message} messages={discussion} owner={container} fallbackFocus={editor}
       onClose={() => setMetadata(false)} onOpenChange={(open) => { metadataOpen.current = open; }}
       canRestoreFocus={() => !identity.lifetime.signal.aborted} />}
-    {attachment !== null && <AttachmentDeleteDialog target={attachment} busy={false} error={null} fallback={editor}
+    {attachment !== null && <AttachmentDeleteDialog target={attachment} busy={false} error={null}
+      onRestoreFocus={() => (attachment.trigger.isConnected ? attachment.trigger : editor.current)?.focus()}
       onConfirm={() => { counters.actions++; }} onDismiss={() => setAttachment(null)} />}
     <DraftNavigationConfirmation owner={container} fallbackFocus={editor} taskTitle="Task with an unsaved draft · 未保存的任务草稿" />
   </>;

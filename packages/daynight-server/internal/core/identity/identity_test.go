@@ -80,6 +80,9 @@ func (d *identityDAO) DeletePAT(context.Context, string, string) error { return 
 func (d *identityDAO) LockActivePAT(context.Context, string, string, time.Time) (model.PersonalAccessToken, error) {
 	return d.pat, d.hit("lock-pat")
 }
+func (d *identityDAO) FreshPATTime(_ context.Context, now time.Time) (time.Time, error) {
+	return now, d.hit("fresh-pat-time")
+}
 func (d *identityDAO) SetPATExpiry(_ context.Context, _ string, e *time.Time) (model.PersonalAccessToken, error) {
 	d.pat.ExpiresAt = e
 	return d.pat, d.hit("set-expiry")

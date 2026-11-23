@@ -7,10 +7,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -36,16 +38,28 @@ func NewRoutes(service *webhookservice.Service, auth *authhttp.Authentication, l
 
 // RegisterRoutes attaches the personal and team management resources to mux.
 // Calling it is separate from application route registration.
-func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
+func (h *Routes) RegisterRoutes(mux httpx.RouteRegistrar) {
+	h.RegisterRoutesWithScopeObserver(mux, nil)
+}
+
+// RegisterRoutesWithScopeObserver records classifications at actual registration sites.
+func (h *Routes) RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) {
 	auth, logger := h.auth, h.logger
-	mux.HandleFunc("GET /api/v1/webhook-event-types", auth.Require(h.catalog))
-	mux.HandleFunc("/api/v1/webhook-event-types", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes := routeRegistry{mux: mux, observe: observe}
+	routes.handle("GET /api/v1/webhook-event-types", auth.Require(h.catalog), readBranch("catalog"))
+	routes.handle("/api/v1/webhook-event-types", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), fallbackBranch(""))
 	for _, base := range []string{"/api/v1/me/webhooks", "/api/v1/teams/{teamId}/webhooks"} {
-		mux.HandleFunc("GET "+base, auth.Require(h.list))
-		mux.HandleFunc("POST "+base, auth.Require(h.create))
-		mux.HandleFunc(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-		mux.HandleFunc(base+"/{endpointId}", auth.Require(h.endpoint))
-		mux.HandleFunc(base+"/{endpointId}/{subresource}", auth.Require(h.subresource))
+		routes.handle("GET "+base, auth.Require(h.list), readBranch("list"))
+		routes.handle("POST "+base, auth.Require(h.create), mutationBranch("create", scopepolicy.WebhookWrite))
+		routes.handle(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")), fallbackBranch(""))
+		routes.handle(base+"/{endpointId}", auth.Require(h.endpoint),
+			methodBranch(http.MethodGet, readBranch("get")), methodBranch(http.MethodHead, readBranch("get")),
+			methodBranch(http.MethodPatch, mutationBranch("update", scopepolicy.WebhookWrite)),
+			methodBranch(http.MethodDelete, mutationBranch("delete", scopepolicy.WebhookDelete)), fallbackBranch(""))
+		routes.handle(base+"/{endpointId}/{subresource}", auth.Require(h.subresource),
+			methodBranch(http.MethodGet, readBranch("endpointId=operations")), methodBranch(http.MethodHead, readBranch("endpointId=operations")),
+			methodBranch(http.MethodGet, secretBranch("endpointId!=operations,subresource=signing-secret")), methodBranch(http.MethodHead, secretBranch("endpointId!=operations,subresource=signing-secret")),
+			fallbackBranch("known subresource"), notFoundBranch("unknown subresource"))
 		for path, kind := range map[string]string{
 			"/{endpointId}/deliveries":                           "deliveries",
 			"/{endpointId}/deliveries/{deliveryId}":              "delivery",
@@ -54,7 +68,18 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 			"/{endpointId}/deliveries/{deliveryId}/redeliveries": "redeliver",
 		} {
 			kind := kind
-			mux.HandleFunc(base+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+			branch := readBranch(kind)
+			method := http.MethodGet
+			if kind == "redeliver" {
+				branch = mutationBranch(kind, scopepolicy.WebhookDeliver)
+				branch.Dynamic = "Service.RedeliverAuthorized"
+				method = http.MethodPost
+			}
+			branches := []ScopeRoute{methodBranch(method, branch), fallbackBranch("")}
+			if method == http.MethodGet {
+				branches = append(branches, methodBranch(http.MethodHead, branch))
+			}
+			routes.handle(base+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 				method := http.MethodGet
 				allow := "GET, HEAD"
 				if kind == "redeliver" {
@@ -65,10 +90,10 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 					return
 				}
 				h.history(w, r, p, kind)
-			}))
+			}), branches...)
 		}
-		mux.HandleFunc("POST "+base+"/{endpointId}/signing-secret/rotations", auth.Require(h.rotate))
-		mux.HandleFunc(base+"/{endpointId}/signing-secret/rotations", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+		routes.handle("POST "+base+"/{endpointId}/signing-secret/rotations", auth.Require(h.rotate), mutationBranch("rotate", scopepolicy.WebhookSecret))
+		routes.handle(base+"/{endpointId}/signing-secret/rotations", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")), fallbackBranch(""))
 	}
 }
 
@@ -125,8 +150,8 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		"invalid_input": 400, "invalid_cursor": 400, "invalid_operation_time": 400,
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
 		"webhook_project_ineligible": 403,
-		"identity_mismatch": 409, "version_conflict": 409, "operation_conflict": 409,
-		"version_exhausted": 409, "destination_unsupported": 409,
+		"identity_mismatch":          409, "version_conflict": 409, "operation_conflict": 409,
+		"version_exhausted": 409, "destination_unsupported": 409, "endpoint_exists": 409,
 		"generation_conflict": 409, "delivery_busy": 409, "target_changed": 409, "delivery_stopped": 409,
 		"operation_expired": 410, "payload_expired": 410, "content_too_large": 413,
 		"webhooks_unavailable": 503, "dependency_unavailable": 503,
@@ -143,7 +168,7 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		// failure behind a domain error.
 		failed, _ := store.DatabaseErrorFacts(err)
 		facts := operation.CompletionFacts(err)
-		if direct.Code == "write_outcome_unknown" || (!failed && !facts.CleanupFailed && (facts.Outcome == "" || facts.Outcome == store.TransactionNotCommitted) && (facts.Phase == "" || facts.Phase == "operation")) {
+		if direct.Code == "write_outcome_unknown" || (direct.Code != "insufficient_scope" && !failed && !facts.CleanupFailed && (facts.Outcome == "" || facts.Outcome == store.TransactionNotCommitted) && (facts.Phase == "" || facts.Phase == "operation")) {
 			f = direct
 		}
 	}
@@ -152,15 +177,40 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		status, code = http.StatusServiceUnavailable, "dependency_unavailable"
 	}
 	if f != nil {
-		if selected, ok := statuses[f.Code]; ok {
-			status, code = selected, f.Code
+		if f.Code == "insufficient_scope" {
+			w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
+			status, code = http.StatusForbidden, "forbidden"
+		} else {
+			if selected, ok := statuses[f.Code]; ok {
+				status, code = selected, f.Code
+			}
 		}
 	}
 	logger.ErrorContext(r.Context(), "webhook request failed", "component", "webhook", "phase", phase, "error_code", code, "request_id", httpx.RequestID(r.Context()))
 	if r.Context().Err() != nil {
 		return
 	}
-	httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: http.StatusText(status), RequestID: httpx.RequestID(r.Context())}})
+	message := http.StatusText(status)
+	if f != nil && f.Code == "insufficient_scope" && status == http.StatusForbidden {
+		message = "Credential scope is insufficient."
+	}
+	var details *api.ErrorDetails
+	if f != nil && code == "endpoint_exists" && f.ExistingEndpoint != nil {
+		configVersion := strconv.FormatInt(f.ExistingEndpoint.ConfigVersion, 10)
+		details = &api.ErrorDetails{EndpointID: &f.ExistingEndpoint.ID, ConfigVersion: &configVersion}
+	}
+	httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context()), Details: details}})
+}
+
+func returnReceipt(r *http.Request) (bool, error) {
+	values := r.Header.Values("Daynight-Return")
+	if len(values) == 0 {
+		return false, nil
+	}
+	if len(values) != 1 || values[0] != "receipt-v1" {
+		return false, httpx.InvalidInput("Invalid Daynight-Return header.")
+	}
+	return true, nil
 }
 
 func (h *Routes) catalog(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -259,6 +309,10 @@ func (h *Routes) rotate(w http.ResponseWriter, r *http.Request, p model.Principa
 }
 func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal, kind string) {
 	o, err := owner(r, p)
+	var receipt bool
+	if err == nil {
+		receipt, err = returnReceipt(r)
+	}
 	if err == nil {
 		err = noQuery(r)
 	}
@@ -272,6 +326,9 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 	}
 	if kind == "endpoint.create" || kind == "endpoint.update" {
 		allowed = append(allowed, "name", "enabled", "destination", "subscriptions")
+		if kind == "endpoint.create" {
+			allowed = append(allowed, "clientKey")
+		}
 		if kind == "endpoint.update" {
 			allowed = append(allowed, "confirmProjectIds")
 		}
@@ -286,6 +343,7 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 		fields, digest, err = readBody(w, r, allowed...)
 		if err == nil {
 			mutation, err = mutationInput(fields, digest, kind, id, p)
+			mutation.ReturnReceipt = receipt
 		}
 	}
 	var result MutationResult
@@ -300,6 +358,9 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 	status := http.StatusOK
 	if kind == "endpoint.create" && !result.Replay {
 		status = http.StatusCreated
+	}
+	if receipt {
+		w.Header().Set("Daynight-Return", "receipt-v1")
 	}
 	httpx.WriteMutationJSON(w, r, h.logger, "webhook", status, result.Body)
 }

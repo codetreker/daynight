@@ -132,7 +132,7 @@ func TestProjectAppTransactionLogging(t *testing.T) {
 			candidate := core.InstallationCandidate{}
 			candidate.Installation.ID, candidate.Installation.AccountLogin = 99, "owner"
 			candidate.Repository.ID, candidate.Repository.FullName = 42, "owner/repo"
-			result, err := NewProjectAppManager(db, nil, logger).write(ctx, mgmtPrincipal, mgmtProject, tc.action, input, 17, true, initial.Project.RepoURL, candidate)
+			result, err := NewProjectAppManager(db, nil, logger).write(ctx, mgmtPrincipal, mgmtProject, tc.action, input, 17, true, initial.Project.RepoURL, candidate, nil)
 			if tc.outcome == store.TransactionCommitted && err != nil {
 				t.Fatal(err)
 			}

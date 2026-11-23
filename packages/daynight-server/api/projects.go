@@ -55,6 +55,8 @@ type ErrorDetails struct {
 	EncodedBytes    *int64     `json:"encodedBytes,omitempty"`
 	MaxEncodedBytes *int64     `json:"maxEncodedBytes,omitempty"`
 	TaskIDs         []string   `json:"taskIds,omitempty"`
+	EndpointID      *string    `json:"endpointId,omitempty"`
+	ConfigVersion   *string    `json:"configVersion,omitempty"`
 }
 
 type Error struct {

@@ -1,6 +1,7 @@
 package preview
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 
@@ -26,6 +27,7 @@ func (h *Routes) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
 		}
 		if err == nil {
 			httpx.CloseUnreadBody(w, r)
+			r = r.WithContext(context.WithValue(r.Context(), authenticatedPreviewKey{}, authenticatedPreview{secret: value, principal: principal}))
 			next(w, r, principal)
 			return
 		}

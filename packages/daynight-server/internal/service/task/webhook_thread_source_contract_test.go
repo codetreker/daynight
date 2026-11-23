@@ -115,6 +115,7 @@ type replySourceScope struct {
 	projects    replySourceProjectDAO
 	messages    replySourceMessageDAO
 	capture     store.WebhookCaptureDAO
+	bots        store.BotBarrierDAO
 }
 
 func (s replySourceScope) TaskDAO() store.ThreadTaskDAO             { return s.tasks }
@@ -122,6 +123,12 @@ func (s replySourceScope) CredentialDAO() store.ThreadCredentialDAO { return s.c
 func (s replySourceScope) ProjectDAO() store.ThreadProjectDAO       { return s.projects }
 func (s replySourceScope) ThreadDAO() store.ThreadDAO               { return s.messages }
 func (s replySourceScope) CaptureDAO() store.WebhookCaptureDAO      { return s.capture }
+func (s replySourceScope) BotBarrierDAO() store.BotBarrierDAO {
+	if s.bots == nil {
+		panic("unexpected Bot barrier")
+	}
+	return s.bots
+}
 
 func TestThreadSourceRefusalsDoNotInvokeCapture(t *testing.T) {
 	for _, mode := range []string{"empty body", "missing reply"} {

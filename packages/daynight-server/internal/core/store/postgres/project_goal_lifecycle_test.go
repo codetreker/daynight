@@ -30,7 +30,9 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 					t.Fatal(err)
 				}
 				cause := errors.New("refuse after Project and graph effects")
-				remove := func(dao store.ProjectGoalDependencyDAO) error { return dao.RemoveProjectEdges(t.Context()) }
+				remove := func(dao store.ProjectGoalDependencyDAO, deleting bool) error {
+					return dao.RemoveProjectEdges(t.Context(), deleting)
+				}
 				finish := func(err error) error {
 					if err != nil {
 						return err
@@ -44,12 +46,9 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 				var err error
 				switch kind {
 				case "transfer":
-					completion, err = db.WriteProject(t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
+					completion, err = db.WriteProjectTransfer(t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
 						dao := scope.ProjectGoalDependencyDAO()
-						if err := dao.LockTeam(t.Context()); err != nil {
-							return err
-						}
-						if err := remove(dao); err != nil {
+						if err := remove(dao, false); err != nil {
 							return err
 						}
 						_, err := scope.ProjectDAO().MoveOwnership(t.Context(), project.Ownership.TeamID)
@@ -57,7 +56,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 					})
 				case "App transfer":
 					completion, err = db.WriteGitHubProjectTransfer(t.Context(), project.ID, func(scope store.GitHubProjectTransferScope) error {
-						if err := remove(scope.ProjectGoalDependencyDAO()); err != nil {
+						if err := remove(scope.ProjectGoalDependencyDAO(), false); err != nil {
 							return err
 						}
 						_, err := scope.ProjectDAO().MoveOwnership(t.Context(), project.Ownership.TeamID)
@@ -65,7 +64,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 					})
 				case "delete":
 					completion, err = db.WriteProjectDeletion(t.Context(), project.ID, func(scope store.ProjectDeletionScope) error {
-						if err := remove(scope.ProjectGoalDependencyDAO()); err != nil {
+						if err := remove(scope.ProjectGoalDependencyDAO(), true); err != nil {
 							return err
 						}
 						_, err := scope.ProjectDAO().MarkDeleted(t.Context())
@@ -73,7 +72,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 					})
 				case "App delete":
 					completion, err = db.WriteGitHubProjectDeletion(t.Context(), project.ID, func(scope store.GitHubProjectDeletionScope) error {
-						if err := remove(scope.ProjectGoalDependencyDAO()); err != nil {
+						if err := remove(scope.ProjectGoalDependencyDAO(), true); err != nil {
 							return err
 						}
 						_, err := scope.ProjectDAO().MarkDeleted(t.Context())
@@ -370,6 +369,9 @@ func projectGoalUnknown(c store.Completion, err error) (store.Completion, error)
 }
 func (s projectGoalLostCommit) WriteProject(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
 	return projectGoalUnknown(s.Store.WriteProject(ctx, id, op))
+}
+func (s projectGoalLostCommit) WriteProjectTransfer(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
+	return projectGoalUnknown(s.Store.WriteProjectTransfer(ctx, id, op))
 }
 func (s projectGoalLostCommit) WriteProjectDeletion(ctx context.Context, id string, op func(store.ProjectDeletionScope) error) (store.Completion, error) {
 	return projectGoalUnknown(s.Store.WriteProjectDeletion(ctx, id, op))

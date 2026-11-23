@@ -307,7 +307,7 @@ func configureTransportAttachments(t *testing.T, database *httpTestStore, projec
 	}
 	conflicts := []store.AttachmentConflictQuery{{Ancestors: ancestors, DescendantPrefix: path + "/"}, {Ancestors: []string{}, DescendantPrefix: "😀/"}}
 	items := []model.Attachment{first, second}
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 4, "access": 4, "presence": 4, "mutation": 2, "lock": 2, "live": 2, "conflict": 2, "put": 2, "read": 1, "list": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 9, "access": 4, "presence": 4, "mutation": 2, "lock": 2, "live": 2, "conflict": 2, "put": 2, "read": 1, "list": 1})
 	count := plan.Called
 	var conflictIndex, putIndex atomic.Int32
 	check := func(got, want any) {

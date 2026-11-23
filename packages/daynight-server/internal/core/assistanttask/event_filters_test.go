@@ -95,6 +95,7 @@ func TestEventListsPassTypeFilterToStore(t *testing.T) {
 	for _, id := range []string{taskID, ""} {
 		d := baseDAO(t, baseTask())
 		d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
+		d.retrospectiveTasks = noRetrospectives
 		reads := 0
 		d.events = func(_ context.Context, q store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 			reads++

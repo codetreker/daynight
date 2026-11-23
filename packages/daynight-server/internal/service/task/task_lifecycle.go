@@ -25,13 +25,24 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 	if err != nil {
 		return model.Task{}, err
 	}
+	ctx = withTaskWriteOperations(ctx, taskcore.StatusOperation(input))
 	ctx, cancel, goal, err := s.lifecycleContext(ctx, principal, projectID, id)
 	if err != nil {
 		return model.Task{}, err
 	}
 	defer cancel()
-	result, err := s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	ctx = withTaskWriteTarget(ctx, id, goal)
+	if input.CancelDescendants {
 		if goal {
+			return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Descendant cancellation requires an ordinary Task."}
+		}
+		bounded, stop := context.WithTimeout(ctx, goalLifecycleTimeout)
+		defer stop()
+		result, err := s.cancelDescendants(bounded, principal, projectID, id, input)
+		return result, goalLifecycleError(err, true)
+	}
+	result, err := s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+		if goal && !scopedGoalLocked(ctx) {
 			if err := tx.GoalDependencyDAO().LockTeam(ctx); err != nil {
 				return taskcore.Mutation{}, err
 			}

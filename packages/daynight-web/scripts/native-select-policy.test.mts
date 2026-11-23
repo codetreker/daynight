@@ -121,7 +121,7 @@ test('checks literal spread and createElement component props and rejects unreso
 test('allows shared presentation owners and statically resolved trigger layout aliases', async () => {
   await fixture(async (directory, put) => {
     await put('src/ui/selection-control/SelectTrigger.tsx', 'export const SelectTrigger = (props: unknown) => <button />;');
-    await put('src/ui/selection-control/selection-control.css', '.selection-control { --selection-control-height:32px; --selection-control-font-size:11px }.select-trigger {height:var(--selection-control-height);background:white}.selection-control__arrow,.select-trigger__count{width:10px}');
+    await put('src/ui/selection-control/selection-control.css', '.selection-control { --selection-control-height:32px; font-size:var(--text-sm) }.select-trigger {height:var(--selection-control-height);background:white}.selection-control__arrow,.select-trigger__count{width:10px}');
     await put('src/view.tsx', `import { SelectTrigger as Trigger } from './ui/selection-control/SelectTrigger';
       import * as Selection from './ui/selection-control/SelectTrigger';
       import { createElement as element } from 'react';

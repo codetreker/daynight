@@ -66,6 +66,7 @@ func TestPreviewReturnTargets(t *testing.T) {
 }
 
 type previewDAO struct {
+	clock             func(context.Context) (time.Time, error)
 	cleanup           func(context.Context, time.Time) error
 	insert            func(context.Context, model.PreviewSSOLogin) error
 	start             func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
@@ -76,6 +77,8 @@ type previewDAO struct {
 	retry             func(context.Context, string, []byte, model.Principal, time.Time) (model.PreviewSSOLogin, error)
 	authenticate      func(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
 }
+
+func (d previewDAO) SessionTime(ctx context.Context) (time.Time, error) { return d.clock(ctx) }
 
 func (d previewDAO) CleanupPreviewSSO(c context.Context, n time.Time) error { return d.cleanup(c, n) }
 func (d previewDAO) InsertPreviewSSO(c context.Context, l model.PreviewSSOLogin) error {
@@ -110,7 +113,7 @@ func TestPreviewSSOLifecycleOperations(t *testing.T) {
 	want := previewTarget() + "?x=%2f&x=2"
 	principal := model.Principal{Kind: model.SessionCredential, UserID: "user", CredentialID: "session"}
 	var login model.PreviewSSOLogin
-	d := previewDAO{cleanup: func(c context.Context, n time.Time) error {
+	d := previewDAO{clock: func(context.Context) (time.Time, error) { return now, nil }, cleanup: func(c context.Context, n time.Time) error {
 		if c != ctx || n != now {
 			t.Fatal("cleanup context/time")
 		}
@@ -228,20 +231,22 @@ func TestPreviewSSORejectsAndPropagatesErrors(t *testing.T) {
 	}
 }
 
-func TestPreviewAuthorizationCountsCleanupTime(t *testing.T) {
+func TestPreviewAuthorizationUsesPostLockIssuanceTime(t *testing.T) {
 	s := previewFixture(t)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	var lockTime time.Time
+	lockTime := now.Add(time.Minute)
 	d := previewDAO{
-		cleanup: func(context.Context, time.Time) error { time.Sleep(15 * time.Millisecond); return nil },
+		cleanup: func(context.Context, time.Time) error { return nil },
 		lockAuthorization: func(_ context.Context, _ string, _ []byte, _ model.Principal, n time.Time) (time.Time, error) {
-			lockTime = n
-			return n, nil
+			if n != now {
+				t.Fatal("application time changed")
+			}
+			return lockTime, nil
 		},
 		setAuthorization: func(_ context.Context, _ string, _ model.Principal, _ []byte, _ time.Time) error { return nil },
 	}
 	auth, err := s.Authorize(context.Background(), d, previewLogin, secret.Random(""), model.Principal{Kind: model.SessionCredential}, now)
-	if err != nil || lockTime.Before(now.Add(15*time.Millisecond)) || !auth.ExpiresAt.Equal(lockTime.Add(time.Minute)) {
+	if err != nil || !auth.ExpiresAt.Equal(lockTime.Add(time.Minute)) {
 		t.Fatalf("cleanup timing: %v %v %v", lockTime, auth.ExpiresAt, err)
 	}
 }
@@ -259,6 +264,7 @@ func TestPreviewCreateRejectsTargetAndStorageFailures(t *testing.T) {
 	}{
 		{"cleanup", previewDAO{cleanup: func(context.Context, time.Time) error { return failure }}},
 		{"insert", previewDAO{
+			clock:   func(context.Context) (time.Time, error) { return now, nil },
 			cleanup: func(context.Context, time.Time) error { return nil },
 			insert:  func(context.Context, model.PreviewSSOLogin) error { return failure },
 		}},

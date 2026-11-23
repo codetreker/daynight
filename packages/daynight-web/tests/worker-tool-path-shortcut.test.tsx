@@ -9,6 +9,8 @@ import { configurationResource, configurationResponse } from './helpers/worker-c
 import { toolPathConfiguration, toolPathTelemetry } from './helpers/worker-tool-paths';
 import { WORKER_USER, workerDetail, workerId, workerResponse } from './helpers/workers';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 const target = workerId(1), other = workerId(2);
 const scopes: TaskCacheScope[] = [];
 const flush = () => act(async () => { for (let n = 0; n < 30; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
@@ -22,6 +24,7 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
     if (init.method !== undefined && init.method !== 'GET' && !url.endsWith('/monitoring/query')) writes.push(`${init.method} ${url}`);
     if (url.startsWith('/api/v1/projects?')) return workerResponse({ items: [], nextCursor: null });
+    if (url.endsWith('/review-participation')) return workerResponse(init.method === 'PUT' ? { enabled: true, version: '2' } : { enabled: false, version: '1' });
     if (url.endsWith('/configuration')) {
       if (url.includes(target) && delayed) { requested = true; await gate.promise; }
       const { toolPathsSupported: _tools, controlModeSupported: _mode, ...resource } = supported ? toolPathConfiguration() : configurationResource();
@@ -106,6 +109,20 @@ describe('Worker software tool path shortcut', () => {
     expect(summary().closest('details')).not.toHaveAttribute('open');
     await state.setActive(true); expect(summary().closest('details')).not.toHaveAttribute('open');
     expect(state.writes).toEqual([]);
+  });
+
+  it('pauses review participation on an inactive retained Worker without affecting configuration', async () => {
+    const state = await mount(); fireEvent.click(shortcut()); await flush();
+    const control = screen.getByRole('switch', { name: 'Participate in PR review' });
+    expect(control).toHaveAttribute('aria-disabled', 'false');
+    await state.setActive(false);
+    expect(control).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(control); await flush(); expect(state.writes).toEqual([]);
+    expect(summary().closest('details')).toBeInTheDocument();
+    await state.setActive(true); expect(control).toHaveAttribute('aria-disabled', 'false');
+    fireEvent.click(control); await flush();
+    expect(control).toHaveAttribute('aria-checked', 'true');
+    expect(state.writes).toEqual([`PUT /api/v1/me/workers/${target}/review-participation`]);
   });
 
   it('cancels delayed navigation when the user chooses another tab', async () => {

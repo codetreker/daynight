@@ -81,8 +81,22 @@ func (m *operationMock) AddAppendix(ctx context.Context, dao store.AssistantTask
 	}
 	return value.(model.AssistantTaskAppendix), err
 }
+func (m *operationMock) RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	value, err := m.call(ctx, dao, actor, "RelatedAppendix", taskID, input)
+	if value == nil {
+		return model.AssistantTaskRelatedAppendices{}, err
+	}
+	return value.(model.AssistantTaskRelatedAppendices), err
+}
 func (m *operationMock) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error) {
 	value, err := m.call(ctx, dao, actor, "UpdateAppendix", input)
+	if value == nil {
+		return model.AssistantTaskAppendix{}, err
+	}
+	return value.(model.AssistantTaskAppendix), err
+}
+func (m *operationMock) ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	value, err := m.call(ctx, dao, actor, "ValidateAppendix", input)
 	if value == nil {
 		return model.AssistantTaskAppendix{}, err
 	}
@@ -136,6 +150,13 @@ func (m *operationMock) SaveItem(ctx context.Context, dao store.AssistantTaskDAO
 		return model.AssistantTaskItem{}, err
 	}
 	return value.(model.AssistantTaskItem), err
+}
+func (m *operationMock) Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	value, err := m.call(ctx, dao, actor, "Metrics", taskID)
+	if value == nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	return value.(model.AssistantTaskMetrics), err
 }
 func (m *operationMock) ListRecords(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 	value, err := m.call(ctx, dao, actor, "ListRecords", taskID, input)
@@ -204,4 +225,44 @@ func (m *operationMock) EnablePreset(ctx context.Context, dao store.AssistantTas
 		return core.TaskResult{}, err
 	}
 	return value.(core.TaskResult), err
+}
+
+func (m *operationMock) EnableInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	value, err := m.call(ctx, dao, actor, "EnableInbox", input)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
+}
+
+func (m *operationMock) DisableInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	value, err := m.call(ctx, dao, actor, "DisableInbox", input)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
+}
+
+func (m *operationMock) RotateInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	value, err := m.call(ctx, dao, actor, "RotateInbox", input)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
+}
+
+func (m *operationMock) InboxOperation(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID, operationID string) (core.InboxResult, error) {
+	value, err := m.call(ctx, dao, actor, "InboxOperation", taskID, operationID)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
+}
+
+func (m *operationMock) GetInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.InboxView, error) {
+	value, err := m.call(ctx, dao, actor, "GetInbox", taskID)
+	if value == nil {
+		return core.InboxView{}, err
+	}
+	return value.(core.InboxView), err
 }

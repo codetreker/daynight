@@ -22,13 +22,15 @@ type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent
 type AuthenticateAPIAccess func(context.Context, string) (store.OAuthAccessIdentity, error)
 
 type RequestAuthentication struct {
-	authenticate AuthenticateCredential
-	origin       string
-	secure       bool
-	logger       *slog.Logger
-	observeUsage ObserveUsage
-	apiAccess    AuthenticateAPIAccess
-	apiOrigin    string
+	authenticate    AuthenticateCredential
+	origin          string
+	secure          bool
+	logger          *slog.Logger
+	observeUsage    ObserveUsage
+	apiAccess       AuthenticateAPIAccess
+	apiOrigin       string
+	browserActivity AuthenticateBrowserActivity
+	authority       string
 }
 
 // BindAPIAccess configures the application verifier and the browser channel Origin.
@@ -68,7 +70,7 @@ func NewRequestAuthentication(authenticate AuthenticateCredential, settings auth
 	if err != nil {
 		return nil, err
 	}
-	h := &RequestAuthentication{authenticate: authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger}
+	h := &RequestAuthentication{authenticate: authenticate, origin: settings.PublicOrigin, authority: origin.Host, secure: origin.Scheme == "https", logger: logger}
 	if len(observers) == 1 {
 		h.observeUsage = observers[0]
 	}
@@ -133,15 +135,15 @@ func (h *RequestAuthentication) AuthenticateRequest(request *http.Request) (mode
 	if !ok {
 		return model.Principal{}, Failure()
 	}
+	if h.browserActivity != nil && h.admitsBrowserActivity(request) {
+		return h.browserActivity(request.Context(), secret, "")
+	}
 	principal, err := h.authenticate(request.Context(), model.SessionCredential, secret)
 	if err != nil {
 		return model.Principal{}, err
 	}
-	if request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
-		origins := request.Header.Values("Origin")
-		if len(origins) != 1 || origins[0] != h.origin {
-			return model.Principal{}, &model.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
-		}
+	if err := h.cookieOriginError(request); err != nil {
+		return model.Principal{}, err
 	}
 	return principal, nil
 }

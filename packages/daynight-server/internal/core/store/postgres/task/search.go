@@ -95,7 +95,7 @@ func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids
 }
 
 func (s *searchSnapshot) Titles(ctx context.Context, projectID string, ids []string) (map[string]string, error) {
-	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM task_resource_rows WHERE project_id=$1 AND type='goal' AND effective_deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
+	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM task_resource_rows WHERE project_id=$1 AND effective_deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
 	if err != nil {
 		return nil, searchError("read task search titles", err)
 	}

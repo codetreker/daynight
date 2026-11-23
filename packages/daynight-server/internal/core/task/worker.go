@@ -289,19 +289,16 @@ func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {
 	return values, err
 }
 
-// ClaimParentAdmission rechecks the parent inside the Project write scope.
+// ClaimParentAdmission rechecks the ancestor Goal inside the Project write scope.
 func ClaimParentAdmission(ctx context.Context, dao store.TaskWriteDAO, current model.Task) error {
 	if current.ParentID == nil {
 		return nil
 	}
-	parent, err := dao.ParentTask(ctx, *current.ParentID)
+	terminal, err := dao.HasTerminalAncestorGoal(ctx, *current.ParentID)
 	if err != nil {
 		return err
 	}
-	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
-		return invalidInput("Parent must identify a visible Goal in this project.")
-	}
-	if parent.Status.IsTerminal() {
+	if terminal {
 		return &model.Fault{Code: "invalid_transition", Message: "A task in a completed or cancelled Goal cannot be claimed automatically."}
 	}
 	return nil

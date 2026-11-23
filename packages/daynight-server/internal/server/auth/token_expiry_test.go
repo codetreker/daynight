@@ -18,7 +18,7 @@ import (
 
 func createHTTPPAT(t *testing.T, h *authHarness, cookie *http.Cookie, expiry *time.Time) api.CreatedPersonalAccessToken {
 	t.Helper()
-	return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", testsupport.JSONBody(t, map[string]any{"name": "Editable token", "expiresAt": expiry}), []*http.Cookie{cookie}, nil, h.Origin), 201)
+	return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createScopedHTTPPAT(t, h, cookie, "Editable token", expiry), 201)
 }
 
 func TestTokenExpiryHTTPCreateEditAndCurrentBearer(t *testing.T) {

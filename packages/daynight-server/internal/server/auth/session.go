@@ -16,5 +16,8 @@ func (h *RequestAuthentication) AuthenticateSessionRequest(request *http.Request
 	if !ok {
 		return model.Principal{}, Failure()
 	}
+	if h.browserActivity != nil && h.admitsBrowserActivity(request) {
+		return h.browserActivity(request.Context(), value, "")
+	}
 	return h.authenticate(request.Context(), model.SessionCredential, value)
 }

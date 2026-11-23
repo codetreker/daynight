@@ -10,9 +10,18 @@ import (
 )
 
 type projectedConfiguration struct {
-	model.WorkerConfigurationWire
-	ToolPaths       any `json:"toolPaths,omitempty"`
-	ArchiveSessions any `json:"archiveSessions,omitempty"`
+	TaskTagFilter               *model.TagNameFilter               `json:"taskTagFilter,omitempty"`
+	EnableSudoCleanup           bool                               `json:"enableSudoCleanup"`
+	EnableWindowsProcessCleanup bool                               `json:"enableWindowsProcessCleanup"`
+	PreferPlatformSpecificTasks any                                `json:"preferPlatformSpecificTasks,omitempty"`
+	PlatformTaskMode            any                                `json:"platformTaskMode,omitempty"`
+	MaxConcurrent               int64                              `json:"maxConcurrent"`
+	PollIntervalMs              int64                              `json:"pollIntervalMs"`
+	RecoveryLimit               int64                              `json:"recoveryLimit"`
+	Native                      model.WorkerNativeConfiguration    `json:"native"`
+	Projects                    []model.WorkerProjectConfiguration `json:"projects"`
+	ToolPaths                   any                                `json:"toolPaths,omitempty"`
+	ArchiveSessions             any                                `json:"archiveSessions,omitempty"`
 }
 
 type projectedDesiredConfiguration struct {
@@ -40,6 +49,20 @@ func (v rawConfigurationProjection) MarshalJSON() ([]byte, error) {
 	if _, exists := fields["enableSudoCleanup"]; !exists {
 		fields["enableSudoCleanup"] = json.RawMessage(`false`)
 	}
+	if _, exists := fields["enableWindowsProcessCleanup"]; !exists {
+		fields["enableWindowsProcessCleanup"] = json.RawMessage(`false`)
+	}
+	if modeRaw, exists := fields["platformTaskMode"]; exists && !v.capabilities.PlatformTaskMode {
+		var mode model.WorkerPlatformTaskMode
+		if err := json.Unmarshal(modeRaw, &mode); err != nil {
+			return nil, err
+		}
+		if !mode.Valid() {
+			return nil, errors.New("stored worker platform task mode is invalid")
+		}
+		fields["preferPlatformSpecificTasks"], _ = json.Marshal(mode != model.PlatformTaskAll)
+		delete(fields, "platformTaskMode")
+	}
 	if !v.capabilities.ToolPaths {
 		delete(fields, "toolPaths")
 	}
@@ -64,12 +87,17 @@ func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capa
 	if len(desired.Raw) != 0 {
 		return &projectedDesiredConfiguration{Revision: desired.Revision, UpdatedAt: desired.UpdatedAt, Value: rawConfigurationProjection{raw: desired.Raw, archive: desired.ArchiveSessions, capabilities: capabilities}}
 	}
-	value := projectedConfiguration{WorkerConfigurationWire: model.WorkerConfigurationWire(desired.Value)}
+	value := projectedConfiguration{TaskTagFilter: desired.Value.TaskTagFilter, EnableSudoCleanup: desired.Value.EnableSudoCleanup, EnableWindowsProcessCleanup: desired.Value.EnableWindowsProcessCleanup, MaxConcurrent: desired.Value.MaxConcurrent, PollIntervalMs: desired.Value.PollIntervalMs, RecoveryLimit: desired.Value.RecoveryLimit, Native: desired.Value.Native, Projects: desired.Value.Projects}
 	if capabilities.ToolPaths {
 		value.ToolPaths = desired.Value.ToolPaths
 	}
 	if capabilities.ArchiveSessions {
 		value.ArchiveSessions = desired.Value.ArchiveSessions
+	}
+	if capabilities.PlatformTaskMode {
+		value.PlatformTaskMode = desired.Value.PlatformTaskMode
+	} else {
+		value.PreferPlatformSpecificTasks = desired.Value.PlatformTaskMode != model.PlatformTaskAll
 	}
 	return &projectedDesiredConfiguration{Revision: desired.Revision, UpdatedAt: desired.UpdatedAt, Value: value}
 }
@@ -86,6 +114,12 @@ func projectConfiguration(resource model.WorkerConfigurationResource, capabiliti
 		copied := *observation
 		copied.Items = make([]model.WorkerConfigurationItem, 0, len(observation.Items))
 		for _, item := range observation.Items {
+			if item.Key.Kind == "platformTaskMode" && !capabilities.PlatformTaskMode {
+				continue
+			}
+			if item.Key.Kind == "preferPlatformSpecificTasks" && capabilities.PlatformTaskMode {
+				continue
+			}
 			if item.Key.Kind != "agentControlMode" && (item.Key.Kind != "archiveSessions" || capabilities.ArchiveSessions) {
 				copied.Items = append(copied.Items, item)
 			}

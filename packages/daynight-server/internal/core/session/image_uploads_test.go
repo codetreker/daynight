@@ -239,7 +239,7 @@ func (d *imageRuleDAO) SaveSessionMediaRequest(_ context.Context, row store.Sess
 			if old.Action != row.Action || old.Fence.Fence != row.Fence.Fence || !jsonEqual(old.Body, row.Body) {
 				return conflict()
 			}
-			if old.Complete && (!row.Complete || !jsonEqual(old.Result, row.Result)) {
+			if old.Complete && (!row.Complete || !(old.Result == nil && row.Result == nil || jsonEqual(old.Result, row.Result)) || !jsonEqual(encode(old.Error), encode(row.Error))) {
 				return conflict()
 			}
 		}
@@ -335,6 +335,11 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 			t.Error(e)
 		}
 	})
+	return newImageRuleFixtureWithStorage(t, raw, storage)
+}
+
+func newImageRuleFixtureWithStorage(t *testing.T, raw []byte, storage filestorage.Storage) imageRuleFixture {
+	t.Helper()
 	d := &imageRuleDAO{media: map[string]store.SessionMediaRequest{}, captures: map[string]store.SessionCaptureRecord{}, uploads: map[string]store.SessionUploadRecord{}, chunks: map[string][]store.SessionUploadChunk{}, resources: map[string]store.SessionResourceRecord{}, references: map[store.SessionResourceReference]bool{}, leases: map[string]store.SessionResourceLease{}}
 	files := &imageRuleStorage{Storage: storage, free: 1 << 45, total: 1 << 46}
 	engine := NewEngine(files)
@@ -805,5 +810,47 @@ func TestCaptureRequiresCurrentCompleteHistory(t *testing.T) {
 	f.d.bundle.Ledger = encode(archiveLedger{HistoryID: f.d.bundle.HistoryID, HistoryEpoch: f.r.Snapshot.HistoryEpoch, SourceThrough: "0", Sealable: true})
 	if e := requireImageHistoryLedger(t.Context(), &operationTx{dao: f.d}, f.r, true); e != nil {
 		t.Fatal("current complete checkpoint refused capture", e)
+	}
+}
+
+func TestRelayImagePublicationUsesAvailableResourceBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		bytes     int64
+		resources int
+		want      bool
+	}{
+		{"above legacy content limit", MaxSessionContentBytes, 1, true},
+		{"exact bytes", sp.MaxSessionResourceBytes - 5, 1, true},
+		{"bytes exceeded", sp.MaxSessionResourceBytes - 4, 1, false},
+		{"exact count", 0, sp.MaxSessionResources - 1, true},
+		{"count exceeded", 0, sp.MaxSessionResources, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte("image")
+			f := newImageRuleFixture(t, raw)
+			f.r.OnlineMode = "relay"
+			f.d.bundle = store.ArchiveBundle{}
+			f.d.usage.Bytes, f.d.usage.Resources = tc.bytes, tc.resources
+			f.prepare(t)
+			if _, err := f.write(t, raw, 0); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := f.complete(t)
+			if tc.want {
+				if err != nil || receipt.State != "complete" || receipt.Resource == nil {
+					t.Fatal(receipt, err)
+				}
+				replay, err := f.complete(t)
+				if err != nil || replay.Resource == nil || replay.Resource.ResourceID != receipt.Resource.ResourceID || len(f.d.resources) != 1 {
+					t.Fatal("replay changed publication", replay, err)
+				}
+			} else {
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "quota_exceeded" || len(f.d.resources) != 0 || f.d.uploads[f.spec.UploadID].Receipt.State != "failed" {
+					t.Fatal("publication not refused", receipt, err)
+				}
+			}
+		})
 	}
 }

@@ -24,9 +24,10 @@ the complete Task, property, sync, graph, search and Step read paths.
 
 Write ingress retains structure, fields, normalization, existing capacity rules
 and transaction-state conditions. Task writes keep their 512 KiB protocol
-response admission before commit; Step mutations keep strict candidate codecs
-and the 64 MiB complete-collection admission with reserved version width. Their
-atomicity and completion facts remain.
+response admission before commit. The original Step mutations retained strict
+candidate codecs and 64 MiB complete-collection admission with reserved version
+width until the [application retirement](2026-11-23-retire-task-steps-application.md) removed those use cases.
+Ordinary transaction atomicity and completion facts remain.
 
 Stored properties load directly into `json.RawMessage` maps. Reads do not call
 Normalize, Validate or Admit, parse values through a separate JSON interpreter,
@@ -49,10 +50,12 @@ parent Goal titles in one batch. The [typed resource read decision](../architect
 replaces the earlier ordinary-component search context with actual membership. Exact-ID
 ranking, Boolean evidence, the project fence, sort order and count cursors remain.
 
-Step collection and item reads use pure `ProjectCollection`/`ProjectItem`
-projection. MCP Step lists use one `limit+1` DAO query; ordinary Get/GetSummary
-preserve their response views. Request syntax and explicit expected parent
-versions remain checked before page reads. Task MCP lists keep their existing
+Step collection and item reads originally used pure `ProjectCollection`/`ProjectItem`
+projection internally; application retirement removes those readers and codec. The original MCP Step lists used one `limit+1` DAO query and
+ordinary Get/GetSummary views before the [MCP Steps retirement](2026-11-23-retire-mcp-task-steps.md).
+The original page reads checked request syntax and explicit expected parent
+versions. The [REST retirement](2026-11-23-retire-rest-task-steps.md) removes its public collection and item consumers. Task MCP lists keep
+their existing
 priority selection and fence; full views batch their selected-item materialization. Task graph summary and full views both return the complete
 selected graph. These domain paths have no read-byte slicing or admission; the
 shared MCP entry has no read-output schema or byte admission. Input checks,
@@ -98,8 +101,8 @@ page length without adding concurrent read orchestration.
 ## Consequences
 
 Ordinary Task pages, sync and search context use batch queries. Stored properties
-are decoded only by consumers that need typed fields, and Step reads project
-without write-candidate validation. Server reads no longer promise encoded-byte
+are decoded only by consumers that need typed fields. The former Step reads
+projected without write-candidate validation. Server reads no longer promise encoded-byte
 or stored graph-size bounds; memory and processing cost follow the actual
 selected data. Existing client transport, detail-cache and browser quotas remain
 separate, and failures preserve valid caches or local ownership rather than

@@ -25,6 +25,13 @@ type AttachmentMutationScope interface {
 	AttachmentDAO() AttachmentMutationDAO
 }
 
+// TransferAttachmentCredentialScope locks the original transfer authority in
+// the attachment mutation transaction. The Task lifecycle lock must already
+// be held; OAuth grants are locked before their access token.
+type TransferAttachmentCredentialScope interface {
+	CurrentTransferAttachmentAuthorization(context.Context, model.Principal, string, string, string, string) (model.CredentialAuthorization, error)
+}
+
 type AttachmentMutationDAO interface {
 	AttachmentReader
 	AttachmentWriter

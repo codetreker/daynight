@@ -21,6 +21,12 @@ type sessionHistoryReader interface {
 type sessionInspector interface {
 	Inspect(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error)
 }
+
+// SessionReadChecker checks the current credential policy and Task visibility
+// while the underlying read retains its own Session resource authorization.
+type SessionReadChecker interface {
+	CheckSessionRead(context.Context, model.CredentialAuthorization, string, string, string) error
+}
 type sessionReadInput struct {
 	ProjectID    string `json:"projectId"`
 	TaskID       string `json:"taskId"`
@@ -34,6 +40,23 @@ type sessionReadInput struct {
 // RegisterSessionReadTools exposes Task-authorized identity and content reads.
 // History uses Large admission because an archive can require materialization.
 func RegisterSessionReadTools(entry *Entry, history sessionHistoryReader, inspection sessionInspector) error {
+	return registerSessionReadTools(entry, history, inspection, nil)
+}
+
+// RegisterScopedSessionReadTools enables policy checks without changing the
+// published tool definitions. Scoped authentication must be enabled on entry.
+func RegisterScopedSessionReadTools(entry *Entry, history sessionHistoryReader, inspection sessionInspector, checker SessionReadChecker, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) error {
+	if checker == nil || current == nil || snapshot == nil {
+		return fmt.Errorf("MCP Session read authorization is required")
+	}
+	return registerSessionReadToolsScoped(entry, history, inspection, checker, current, snapshot)
+}
+
+func registerSessionReadTools(entry *Entry, history sessionHistoryReader, inspection sessionInspector, checker SessionReadChecker) error {
+	return registerSessionReadToolsScoped(entry, history, inspection, checker, nil, nil)
+}
+
+func registerSessionReadToolsScoped(entry *Entry, history sessionHistoryReader, inspection sessionInspector, checker SessionReadChecker, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) error {
 	if entry == nil || history == nil || inspection == nil {
 		return fmt.Errorf("MCP Session reads require an entry, history and inspection services")
 	}
@@ -48,6 +71,18 @@ func RegisterSessionReadTools(entry *Entry, history sessionHistoryReader, inspec
 				refs["sessionId"] = in.SessionID
 			}
 			result := ToolResult{Refs: refs}
+			if checker != nil {
+				if actor.Authorization == nil || actor.Authorization.Principal != actor.Principal {
+					return result, fmt.Errorf("MCP Session read authorization unavailable")
+				}
+				if err := actor.Authorization.Validate(); err != nil {
+					return result, err
+				}
+				ctx = ss.WithScopedSessionRead(ctx, *actor.Authorization, current, snapshot)
+				if err := checker.CheckSessionRead(ctx, *actor.Authorization, in.ProjectID, in.TaskID, ""); err != nil {
+					return result, err
+				}
+			}
 			limit := 20
 			if in.Limit != nil {
 				limit = *in.Limit
@@ -113,6 +148,12 @@ func RegisterSessionReadTools(entry *Entry, history sessionHistoryReader, inspec
 		}, "projectId", "taskId", "sessionId", "cursor", "before")
 		if err != nil {
 			return err
+		}
+		if checker != nil {
+			if entry.scopedTools == nil {
+				entry.scopedTools = make(map[string]bool)
+			}
+			entry.scopedTools["task_session_"+name] = true
 		}
 	}
 	return nil

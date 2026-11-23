@@ -333,6 +333,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       })),
       { args: ["update", "--help"], blocked: ["/commands/review/", "/commands/update/updater.js", "semver", "read-cmd-shim"] },
       { args: ["task", "session", "read", "--help"], blocked: ["/commands/task/session/read.js", "/api/", "better-sqlite3"] },
+      ...[[], ["--help"], ["recover", "--help"]].map(args => ({
+        args: ["bot", ...args], blocked: ["/commands/bot/commands.js", "/commands/bot/recover.js", "/commands/worker/", "/commands/server/runtime.js", "/api/", "/config/", "better-sqlite3"],
+      })),
       ...[[], ["--help"], ["bash"], ["zsh"], ["bash", "--help"], ["zsh", "--help"], ["setup", "--help"]].map((args) => ({
         args: ["completion", ...args], blocked: ["/commands/completion/setup.js", "/commands/review/", "/commands/update/", "better-sqlite3", "semver", "read-cmd-shim"],
       })),

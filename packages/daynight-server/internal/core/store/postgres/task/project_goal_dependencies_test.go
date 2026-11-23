@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -25,11 +26,8 @@ func TestProjectGoalDependencyRemovalPreservesOrdinaryAndUnrelatedEdges(t *testi
  ($1,$3,$4,'goal',$9),($1,$3,$5,'goal',$10),($2,$5,$3,'goal',$11),($2,$5,$4,'goal',$12),($2,$6,$7,'goal',$13),($1,$8,$14,'task',NULL)`, a.ID, b.ID, ids[0], ids[1], ids[2], ids[3], ids[4], readerID(17), readerID(21), readerID(22), readerID(23), readerID(24), readerID(25), readerID(18))
 	readerExec(t, db, `INSERT INTO goal_dependency_revisions(goal_id,revision) VALUES($1,7)`, ids[2])
 	write := func(remove bool) error {
-		return readerWriteProject(db, t.Context(), a.ID, func(scope store.ProjectWriteScope) error {
+		completion, err := db.WriteProjectTransfer(t.Context(), a.ID, func(scope store.ProjectWriteScope) error {
 			dao := scope.ProjectGoalDependencyDAO()
-			if err := dao.LockTeam(t.Context()); err != nil {
-				return err
-			}
 			found, err := dao.HasProjectEdges(t.Context())
 			if err != nil {
 				return err
@@ -37,18 +35,38 @@ func TestProjectGoalDependencyRemovalPreservesOrdinaryAndUnrelatedEdges(t *testi
 			if found != remove {
 				t.Fatalf("found %v want %v", found, remove)
 			}
-			return dao.RemoveProjectEdges(t.Context())
+			return dao.RemoveProjectEdges(t.Context(), false)
 		})
+		if err == nil && completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("cleanup did not commit: %+v", completion)
+		}
+		return err
 	}
 	if err := write(true); err != nil {
 		t.Fatal(err)
 	}
+	var beforeNoop time.Time
+	if err := db.Pool.QueryRow(t.Context(), `SELECT updated_at FROM tasks WHERE id=$1`, ids[0]).Scan(&beforeNoop); err != nil {
+		t.Fatal(err)
+	}
+	readerExec(t, db, `UPDATE tasks SET version=$1 WHERE id=$2`, int64(math.MaxInt64), ids[0])
 	if err := write(false); err != nil {
 		t.Fatal(err)
+	}
+	var noopVersion int64
+	var afterNoop time.Time
+	if err := db.Pool.QueryRow(t.Context(), `SELECT version,updated_at FROM tasks WHERE id=$1`, ids[0]).Scan(&noopVersion, &afterNoop); err != nil || noopVersion != math.MaxInt64 || !afterNoop.Equal(beforeNoop) {
+		t.Fatalf("no-op changed exhausted Task: version=%d updated=%v error=%v", noopVersion, afterNoop, err)
 	}
 	var ordinary, goals int
 	if err := db.Pool.QueryRow(t.Context(), `SELECT count(*) FILTER(WHERE dependency_type='task'),count(*) FILTER(WHERE dependency_type='goal') FROM task_dependencies`).Scan(&ordinary, &goals); err != nil || ordinary != 1 || goals != 1 {
 		t.Fatalf("survivors task=%d goal=%d error=%v", ordinary, goals, err)
+	}
+	for _, id := range []string{ids[2]} {
+		var version int64
+		if err := db.Pool.QueryRow(t.Context(), `SELECT version FROM tasks WHERE id=$1`, id).Scan(&version); err != nil || version != 2 {
+			t.Fatalf("Task version after change and no-op = %d, error %v", version, err)
+		}
 	}
 	for id, want := range map[string]int64{ids[0]: 2, ids[2]: 8} {
 		var got int64
@@ -70,12 +88,8 @@ func TestProjectGoalDependencyRemovalRevisionRefusalsRollback(t *testing.T) {
 	for _, revision := range []int64{0, math.MaxInt64} {
 		readerExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES($1,$2,$3,'goal',$4)`, a.ID, source, target, readerID(21))
 		readerExec(t, db, `INSERT INTO goal_dependency_revisions(goal_id,revision) VALUES($1,$2) ON CONFLICT(goal_id) DO UPDATE SET revision=$2`, source, revision)
-		err := readerWriteProject(db, t.Context(), a.ID, func(scope store.ProjectWriteScope) error {
-			dao := scope.ProjectGoalDependencyDAO()
-			if err := dao.LockTeam(t.Context()); err != nil {
-				return err
-			}
-			return dao.RemoveProjectEdges(t.Context())
+		_, err := db.WriteProjectTransfer(t.Context(), a.ID, func(scope store.ProjectWriteScope) error {
+			return scope.ProjectGoalDependencyDAO().RemoveProjectEdges(t.Context(), false)
 		})
 		if revision == math.MaxInt64 {
 			var f *model.Fault

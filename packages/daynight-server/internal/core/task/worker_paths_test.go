@@ -245,7 +245,7 @@ func TestCancelledTaskCannotRestoreExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, changed, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
+	values, changed, err := StatusCandidate(t.Context(), taskDAO{}, owner, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
 	if err != nil || !changed || values.Status != model.TaskCancelled {
 		t.Fatal(values, changed, err)
 	}

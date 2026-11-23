@@ -8,7 +8,7 @@ import (
 
 // RemoveProjectGoalDependencies requires authorization for the enclosing Project
 // operation and the owner Team graph lock in the same transaction.
-func RemoveProjectGoalDependencies(ctx context.Context, dao store.ProjectGoalDependencyDAO, confirmed bool) error {
+func RemoveProjectGoalDependencies(ctx context.Context, dao store.ProjectGoalDependencyDAO, confirmed, deletingProject bool) error {
 	if !confirmed {
 		found, err := dao.HasProjectEdges(ctx)
 		if err != nil {
@@ -19,5 +19,5 @@ func RemoveProjectGoalDependencies(ctx context.Context, dao store.ProjectGoalDep
 		}
 		return nil
 	}
-	return dao.RemoveProjectEdges(ctx)
+	return dao.RemoveProjectEdges(ctx, deletingProject)
 }

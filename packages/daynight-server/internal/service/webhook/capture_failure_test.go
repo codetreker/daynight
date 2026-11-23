@@ -50,20 +50,20 @@ func TestCaptureRejectsInvalidBatchBeforeDAO(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dao := newCaptureDAOMock(t)
-			if err := (&Capturer{}).CaptureBatch(t.Context(), dao, tc.facts()); err == nil {
+			if err := (&Capturer{}).CaptureBatch(t.Context(), dao, captureActor, tc.facts()); err == nil {
 				t.Fatal("invalid batch accepted")
 			}
 		})
 	}
 	t.Run("missing DAO", func(t *testing.T) {
-		if err := (&Capturer{}).CaptureBatch(t.Context(), nil, []protocol.Fact{valid}); err == nil {
+		if err := (&Capturer{}).CaptureBatch(t.Context(), nil, captureActor, []protocol.Fact{valid}); err == nil {
 			t.Fatal("missing DAO accepted")
 		}
 	})
 	t.Run("request ID too long", func(t *testing.T) {
 		dao := newCaptureDAOMock(t)
 		c := &Capturer{RequestID: func(context.Context) string { return strings.Repeat("x", 129) }}
-		if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{valid}); err == nil {
+		if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{valid}); err == nil {
 			t.Fatal("oversized request ID accepted")
 		}
 	})
@@ -72,7 +72,7 @@ func TestCaptureRejectsInvalidBatchBeforeDAO(t *testing.T) {
 func TestCaptureEmptyAudienceStopsBeforePolicyAndPersistence(t *testing.T) {
 	dao := newCaptureDAOMock(t, "freeze")
 	dao.freeze = func(context.Context, string, []string) ([]store.WebhookAudience, error) { return nil, nil }
-	if err := (&Capturer{}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := (&Capturer{}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 0 {
@@ -102,7 +102,7 @@ func TestCaptureDAOFailuresPreserveCauseAndStop(t *testing.T) {
 			case "save":
 				dao.save = func(context.Context, store.WebhookCapturedEvent, []store.WebhookCapturedDelivery) error { return cause }
 			}
-			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
 				t.Fatalf("lost cause: %v", err)
 			}
 			if phase != "save" && len(dao.writes) != 0 {
@@ -138,7 +138,7 @@ func TestCaptureEntropyFailureStopsBeforeSave(t *testing.T) {
 			dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Created)}, 0)
 			cause := errors.New("entropy unavailable")
 			c := &Capturer{Random: &captureFailedEntropy{cause: cause, uuidFailure: tc.uuidFailure, jitterFailure: tc.jitterFailure}}
-			if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+			if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
 				t.Fatalf("entropy cause = %v", err)
 			}
 			if len(dao.writes) != 0 {
@@ -179,7 +179,7 @@ func TestCaptureUnsupportedPolicyAndTargetStopBeforeSave(t *testing.T) {
 				tc.policy(&p)
 			}
 			dao.policy = func(context.Context, int64) (wm.Policy, error) { return p, nil }
-			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
+			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
 				t.Fatal("unsupported capture accepted")
 			}
 		})
@@ -187,7 +187,7 @@ func TestCaptureUnsupportedPolicyAndTargetStopBeforeSave(t *testing.T) {
 	t.Run("duplicate original match", func(t *testing.T) {
 		a := captureAudience(t, protocol.Created)
 		dao := captureSuccessfulDAO(t, []store.WebhookAudience{a, a}, 0)
-		if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
+		if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
 			t.Fatal("duplicate original identity accepted")
 		}
 	})
@@ -199,7 +199,7 @@ func TestCaptureSaveFailureDoesNotPrepareLaterFact(t *testing.T) {
 	cause := errors.New("source transaction insert failed")
 	dao.save = func(context.Context, store.WebhookCapturedEvent, []store.WebhookCapturedDelivery) error { return cause }
 	entropy := &captureEntropy{}
-	if err := (&Capturer{Random: entropy}).CaptureBatch(t.Context(), dao, facts); !errors.Is(err, cause) {
+	if err := (&Capturer{Random: entropy}).CaptureBatch(t.Context(), dao, captureActor, facts); !errors.Is(err, cause) {
 		t.Fatalf("save cause = %v", err)
 	}
 	if len(dao.writes) != 1 || dao.writes[0].event.EventType != facts[0].Type || entropy.ids != 2 {
@@ -237,7 +237,7 @@ func TestCaptureCancellationAfterAudienceReadKeepsCause(t *testing.T) {
 	})
 	go func() {
 		defer close(done)
-		result <- (&Capturer{}).CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)})
+		result <- (&Capturer{}).CaptureBatch(ctx, dao, captureActor, []protocol.Fact{captureFact(protocol.Created)})
 	}()
 	select {
 	case <-entered:

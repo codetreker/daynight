@@ -35,7 +35,7 @@ func newFixture(t *testing.T) fixture {
 	task := testsupport.CreateTask(t, tasks, session, project.ID, "download")
 	id := uuid.NewString()
 	hash := sha256.Sum256([]byte(id))
-	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
+	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload'],1,$1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	actor := mcptransfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: session.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}

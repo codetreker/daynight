@@ -11,7 +11,7 @@ import { createWorkerConfigurationManager, type WorkerConfigurationManager } fro
 import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
 import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { runWorker } from "../../../src/commands/worker/runtime.js";
+import { currentWorkerPlatform, runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
+  closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn(), managerOptions: vi.fn(), disableReporter: vi.fn() }));
@@ -48,7 +48,7 @@ vi.mock("../../../src/commands/worker/backends/session-api.js", () => ({ createW
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
-const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const platform = currentWorkerPlatform();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const serverOrigin = "https://daynight.example";
 const workerId = uuid(1), userId = uuid(2), projectId = uuid(3), taskId = uuid(4), claimId = uuid(5), worktreeId = uuid(6);
@@ -59,8 +59,6 @@ const cancellations = new Set<AbortController>();
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.managerOptions.mockReturnValue({}); mocks.disableReporter.mockReturnValue(false);
-  // Platform selection is simulated; native processes and macOS process-control behavior are outside this regression.
-  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
   mocks.prompt.mockReturnValue("prompt");
   mocks.verify.mockResolvedValue(undefined);
   mocks.telemetry.mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
@@ -69,7 +67,6 @@ afterEach(async () => {
   for (const cancellation of cancellations) cancellation.abort(); cancellations.clear();
   await Promise.allSettled(running); running.clear();
   for (const store of stores) store.close(); stores.clear();
-  Object.defineProperty(process, "platform", platformDescriptor);
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
@@ -92,7 +89,7 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
     id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
-    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
+    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform, agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
   const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-unavailable-model", args: ["--search"] }, projects: [{ projectId, nativeOverrides: {} }] } };
@@ -117,7 +114,7 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
   running.add(execution); void execution.catch(() => {});
-  await vi.waitFor(() => expect(advance).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+  await Promise.race([vi.waitFor(() => expect(advance).toHaveBeenCalled(), { timeout: 3500, interval: 10 }), execution.then(() => { throw new Error("Worker stopped before recovering the retained execution."); })]);
   expect(advance.mock.calls[0]![0].configuration).toEqual(frozen);
   expect(mocks.probe).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled(); expect(remote.claim).not.toHaveBeenCalled();
   expect(report).toHaveBeenCalled(); expect(prepareRepository).toHaveBeenCalledWith(project, expect.anything());
@@ -146,7 +143,7 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
   }
   cancellation.abort(); await execution;
   expect(dispose).toHaveBeenCalledOnce();
-  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), immediateStop: true });
+  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), immediateStop: true, signal: expect.any(AbortSignal) });
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
 });
@@ -184,7 +181,7 @@ it("registers fresh stop verification after a failed startup read even when the 
     id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
-    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
+    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform, agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
   let releaseRead!: () => void, reads = 0, observationRevision = 1n;
@@ -222,7 +219,7 @@ it("registers fresh stop verification after a failed startup read even when the 
   await vi.waitFor(() => {
     const snapshot = (mocks.configuration.mock.calls.at(-1)![0] as WorkerConfigurationManager).current();
     const warnings = mocks.emit.mock.calls.map(([event]) => ({ kind: event.kind, message: event.message, error: event.error instanceof Error ? event.error.message : undefined })).filter(event => event.error !== undefined || event.kind === "warning");
-    expect(remote.candidates, JSON.stringify({ effective: snapshot.effective, warnings })).toHaveBeenCalledWith(selectedProjectId, "macos", expect.any(AbortSignal));
+    expect(remote.candidates, JSON.stringify({ effective: snapshot.effective, warnings })).toHaveBeenCalledWith(selectedProjectId, platform, expect.any(AbortSignal));
   }, { timeout: 3500, interval: 10 });
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
   expect(readWorkerClaim(task.properties)).toEqual(originalClaim); expect(await readFile(marker, "utf8")).toBe("original unfinished work\n");
@@ -291,7 +288,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
-    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
+    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform, agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const remote = {
     serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "1", observation: null }))), reportConfiguration: vi.fn(), report: vi.fn(),

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -74,7 +75,10 @@ type archiveLedgerEntry struct {
 }
 type archiveLedger struct {
 	ContentPolicy                          string               `json:",omitempty"`
+	StoppedContentPolicy                   string               `json:",omitempty"`
+	WithoutActiveBundle                    bool                 `json:",omitempty"`
 	OnlineImageOccurrences                 []sp.ImageOccurrence `json:",omitempty"`
+	PendingImageRetirement                 []sp.ImageOccurrence `json:",omitempty"`
 	HistoryEpoch, SourceThrough, HistoryID string
 	FinalSourceThrough                     string `json:",omitempty"`
 	FinalHistoryEpoch                      string `json:",omitempty"`
@@ -278,6 +282,9 @@ func (op *ArchiveOperation) bundleAccess(ctx context.Context, fn func(*operation
 		if r.Owner != op.owner {
 			return conflict()
 		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
 		if op.historyWriter != nil {
 			if err := op.validateHistoryWriter(r, t); err != nil {
 				return err
@@ -324,6 +331,9 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 		if r.Owner != op.owner {
 			return conflict()
 		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
 		if err := archiveWriter(op.principal, r, in.Fence, in.ControllerID, in.ControllerInstanceID); err != nil {
 			return err
 		}
@@ -339,7 +349,24 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 			if in.FailedFileID != "" {
 				return archiveConflict()
 			}
-			bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: in.ControllerInstanceID, Phase: "settling", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
+			policy := ""
+			if r.HistoryContentPolicy != nil {
+				policy = *r.HistoryContentPolicy
+				media, e := archiveMediaDAO(tx)
+				if e != nil {
+					return e
+				}
+				leases, e := media.ListSessionResourceLeases(ctx, op.id)
+				if e != nil {
+					return e
+				}
+				for _, lease := range leases {
+					if lease.Kind != "read" {
+						return fault("resource_busy", "An original resource writer is still running.")
+					}
+				}
+			}
+			bundle = store.ArchiveBundle{SessionID: op.id, PrepareID: in.ControllerInstanceID, Phase: "settling", Revision: 1, Identity: encode(identity), Resources: json.RawMessage(`[]`), Ledger: encode(archiveLedger{WithoutActiveBundle: true, StoppedContentPolicy: policy, HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})}
 			if err = dao.SaveSessionArchiveBundle(ctx, bundle); err != nil {
 				return err
 			}
@@ -386,31 +413,6 @@ func (s *Execution) ArchivePreparation(ctx context.Context, p model.Principal, p
 	})
 	return
 }
-func (s *Execution) ArchiveFileStatus(ctx context.Context, p model.Principal, project, taskID, id, fileID string) (out sp.ArchiveFileReceipt, err error) {
-	err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, t task) error {
-		if p.Kind != model.PATCredential || p.UserID != r.Owner {
-			return denied()
-		}
-		dao, e := archiveDAO(tx)
-		if e != nil {
-			return e
-		}
-		bundle, e := dao.SessionArchiveBundle(ctx, id)
-		if e != nil {
-			return e
-		}
-		if e = observeArchivePreparation(p, r, t, bundle); e != nil {
-			return e
-		}
-		file, e := dao.SessionArchiveFile(ctx, id, fileID)
-		if e != nil {
-			return e
-		}
-		out = fileReceipt(file)
-		return nil
-	})
-	return
-}
 
 // PutArchiveFile persists each immutable chunk before acknowledging its offset.
 // A lost SQL result is reconciled with the original file ID, never a new file.
@@ -448,6 +450,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	var file store.ArchiveBundleFile
 	var chunk store.ArchiveBundleChunk
 	var epoch int64
+	var inventoryRequired bool
 	leaseID := uuid.NewString()
 	archiveCtx := ctx
 	var finish func() error
@@ -488,6 +491,13 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		if (purpose == "history" && bundle.Phase != "active" || purpose == "resource") && bundle.Phase != "settling" || purpose == "timeline" && bundle.Phase != "sealed" {
 			return archiveConflict()
 		}
+		if purpose == "history" {
+			var existing archiveLedger
+			if json.Unmarshal(bundle.Ledger, &existing) != nil {
+				return archiveConflict()
+			}
+			inventoryRequired = existing.StoppedContentPolicy != ""
+		}
 		media, e := archiveMediaDAO(tx)
 		if e != nil {
 			return e
@@ -518,6 +528,11 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		}
 		file, e = dao.SessionArchiveFile(ctx, op.id, fileID)
 		if errors.Is(e, model.ErrNotFound) {
+			if purpose == "resource" {
+				if e = archiveStreamResourceUnregistered(ctx, dao, op.id, resource, false); e != nil {
+					return e
+				}
+			}
 			if offset != 0 {
 				return archiveConflict()
 			}
@@ -525,11 +540,14 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				return archiveConflict()
 			}
 			if purpose == "history" && bundle.HistoryID != "" && bundle.HistoryID != fileID {
-				previous, e := dao.SessionArchiveFile(ctx, op.id, bundle.HistoryID)
+				previous, e := archiveFileAny(ctx, dao, op.id, bundle.HistoryID)
 				if e != nil {
 					return e
 				}
 				if previous.State != "complete" && previous.State != "failed" {
+					return archiveConflict()
+				}
+				if previous.UploadVersion == 2 && previous.State == "failed" {
 					return archiveConflict()
 				}
 				leases, e := media.SessionResourceLeaseCount(ctx, op.id)
@@ -698,6 +716,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		var candidate archiveLedger
 		var history sp.ArchiveHistoryContent
 		var timeline sp.ArchiveTimeline
+		var capturedImages map[string]string
 		if purpose == "history" {
 			history, err = sp.DecodeArchiveHistory(content)
 			if err == nil {
@@ -707,6 +726,12 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				return out, invalidArchiveFile(err)
 			}
 			candidate.HistoryID = fileID
+			if inventoryRequired {
+				capturedImages, err = stoppedCaptureImages(history.Entries)
+				if err != nil {
+					return out, err
+				}
+			}
 		} else if purpose == "timeline" {
 			timeline, err = sp.DecodeArchiveTimeline(content)
 			if err != nil {
@@ -759,6 +784,32 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 				if json.Unmarshal(bundle.Ledger, &previous) != nil {
 					return archiveConflict()
 				}
+				if r.HistoryContentPolicy != nil {
+					want := *r.HistoryContentPolicy
+					if want == "legacy" {
+						want = ""
+					}
+					if (want != "" && want != "task_body") || ledger.ContentPolicy != want {
+						return invalidArchiveFile(archiveConflict())
+					}
+				}
+				ledger.StoppedContentPolicy = previous.StoppedContentPolicy
+				ledger.WithoutActiveBundle = previous.WithoutActiveBundle
+				if previous.WithoutActiveBundle && ((r.HistoryContentPolicy == nil) != (previous.StoppedContentPolicy == "") || r.HistoryContentPolicy != nil && *r.HistoryContentPolicy != previous.StoppedContentPolicy) {
+					return invalidArchiveFile(archiveConflict())
+				}
+				if (previous.StoppedContentPolicy != "") != inventoryRequired {
+					return archiveConflict()
+				}
+				var inventoryOnline []sp.ImageOccurrence
+				if previous.StoppedContentPolicy != "" {
+					if r.HistoryContentPolicy == nil || *r.HistoryContentPolicy != previous.StoppedContentPolicy {
+						return invalidArchiveFile(archiveConflict())
+					}
+					if e = op.execution.reconcileStoppedCaptures(ctx, tx, r, ledger, capturedImages, &inventoryOnline); e != nil {
+						return e
+					}
+				}
 				if previous.HistoryID != "" {
 					if previous.ContentPolicy != ledger.ContentPolicy {
 						return invalidArchiveFile(archiveConflict())
@@ -788,8 +839,9 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 						return invalidArchiveFile(e)
 					}
 				}
-				if op.historyWriter == nil && previous.ContentPolicy == "task_body" {
-					if e = op.execution.retireOnlineImageReferences(ctx, tx, r, previous.OnlineImageOccurrences, ledger.Resources); e != nil {
+				if op.historyWriter == nil && ledger.ContentPolicy == "task_body" {
+					ledger.PendingImageRetirement, e = pendingImageRetirements(previous.PendingImageRetirement, previous.OnlineImageOccurrences, inventoryOnline)
+					if e != nil {
 						return e
 					}
 				}
@@ -891,6 +943,11 @@ func (op *ArchiveOperation) SealArchive(ctx context.Context) (out sp.ArchivePrep
 	}
 	ctx, cancelGate := op.GateContext(ctx)
 	defer cancelGate()
+	defer func() {
+		if err == nil {
+			op.retryArchiveStreamCleanup(ctx)
+		}
+	}()
 	if err = op.SettleExpiredUploads(ctx); err != nil {
 		return out, err
 	}
@@ -902,7 +959,7 @@ func (op *ArchiveOperation) SealArchive(ctx context.Context) (out sp.ArchivePrep
 		if bundle.Phase != "settling" || bundle.HistoryID == "" {
 			return archiveConflict()
 		}
-		history, e := dao.SessionArchiveFile(ctx, op.id, bundle.HistoryID)
+		history, e := archiveFileAny(ctx, dao, op.id, bundle.HistoryID)
 		if e != nil {
 			return e
 		}
@@ -988,6 +1045,21 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 	}
 	ctx, cancelGate := op.GateContext(ctx)
 	defer cancelGate()
+	archiveCtx := ctx
+	defer func() {
+		if err == nil && out.State == "ready" {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(archiveCtx), 5*time.Second)
+			if e := op.SettleExpiredUploads(cleanup); e != nil {
+				slog.ErrorContext(cleanup, "Ready archive upload settlement failed", "session_id", op.id, "error", e)
+			}
+			cancel()
+		}
+	}()
+	defer func() {
+		if err == nil {
+			op.retryArchiveStreamCleanup(archiveCtx)
+		}
+	}()
 	manifest, e := sp.DecodeArchiveManifest(data)
 	if e != nil {
 		return out, fault("invalid_input", "Invalid archive manifest.")
@@ -1028,7 +1100,7 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 			return archiveConflict()
 		}
 		var e error
-		file, e = dao.SessionArchiveFile(ctx, op.id, manifest.Timeline.FileID)
+		file, e = archiveFileAny(ctx, dao, op.id, manifest.Timeline.FileID)
 		if e != nil {
 			return e
 		}
@@ -1123,6 +1195,17 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 				return e
 			}
 		}
+		var ledger archiveLedger
+		if json.Unmarshal(bundle.Ledger, &ledger) != nil {
+			return archiveConflict()
+		}
+		if bundle.Phase != "committed" && bundle.Phase != "verified" && len(ledger.PendingImageRetirement) != 0 {
+			if e = op.execution.retirePendingImages(ctx, tx, r, ledger.PendingImageRetirement, ledger.Resources); e != nil {
+				return e
+			}
+			ledger.PendingImageRetirement = nil
+			bundle.Ledger = encode(ledger)
+		}
 		if e = dao.SetUnifiedSessionArchiveReady(ctx, op.id, digest, len(data), path, manifest.Completeness); e != nil {
 			return e
 		}
@@ -1215,7 +1298,7 @@ func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOpera
 		if json.Unmarshal(bundle.Ledger, &ledger) != nil {
 			return errors.New("invalid archive ledger")
 		}
-		file, e = dao.SessionArchiveFile(ctx, id, fileID)
+		file, e = archiveFileAny(ctx, dao, id, fileID)
 		if e != nil {
 			return e
 		}
@@ -1281,7 +1364,7 @@ func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOpera
 		if !jsonEqual(encode(currentBundle), encode(bundle)) {
 			return archiveConflict()
 		}
-		currentFile, e := dao.SessionArchiveFile(ctx, id, fileID)
+		currentFile, e := archiveFileAny(ctx, dao, id, fileID)
 		if e != nil {
 			return e
 		}
@@ -1330,12 +1413,18 @@ func resetArchivePreparation(ctx context.Context, tx *operationTx, dao store.Ses
 	if in.FailedFileID != bundle.TimelineID && in.FailedFileID != bundle.HistoryID {
 		return archiveConflict()
 	}
-	file, err := dao.SessionArchiveFile(ctx, bundle.SessionID, in.FailedFileID)
+	file, err := archiveFileAny(ctx, dao, bundle.SessionID, in.FailedFileID)
 	if err != nil {
 		return err
 	}
 	if file.State != "failed" || file.TimelineRevision != bundle.Revision {
 		return archiveConflict()
+	}
+	if file.UploadVersion == 2 {
+		var reason sp.ImageError
+		if json.Unmarshal(file.TerminalError, &reason) == nil && reason.Code == "staging_corrupt" {
+			return archiveConflict()
+		}
 	}
 	media, err := archiveMediaDAO(tx)
 	if err != nil {
@@ -1355,7 +1444,7 @@ func resetArchivePreparation(ctx context.Context, tx *operationTx, dao store.Ses
 	if leases != 0 {
 		return archiveConflict()
 	}
-	files, err := dao.SessionArchiveFiles(ctx, bundle.SessionID)
+	files, err := archiveFilesAny(ctx, dao, bundle.SessionID)
 	if err != nil {
 		return err
 	}

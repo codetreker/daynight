@@ -13,14 +13,16 @@ slow diagnostics from silently displacing other pending work.
 
 The pure credential usage sampler maintains bounded per-key state and selects
 due snapshots fairly. It retains a newer event that arrives during a write,
-limits retries, and uses monotonic scheduling independently of event timestamps.
+limits retries of confirmed uncommitted writes, and uses monotonic scheduling independently of event timestamps. Unknown outcomes are abandoned without replay; newer observations remain independent candidates.
 Unconfirmed, fixed-category fault summaries share the resident capacity and are
 acknowledged by revision. Exhausted keys retain a bounded marker until a newer
 event succeeds, preventing eviction from giving the same event a fresh budget.
 The [authentication design](../../../../docs/design/daynight-auth.md#凭据使用事件采样规则)
 describes the bounds and state transitions. The separate
 [persistence decision](2026-11-12-credential-usage-persistence.md) owns the
-ordered transactional writer and its database failure semantics.
+ordered transactional writer and its database failure semantics. The
+[retry decision](2026-11-23-credential-usage-lock-recovery.md) explains the
+unknown-outcome and lock-conflict treatment.
 
 ## Alternatives
 

@@ -7,7 +7,7 @@ export const auth: AuthMessages = {
   roles: { admin: "管理员", member: "成员" },
   shell: {
     sidebar: {
-      expand: "展开侧栏", collapse: "折叠侧栏", close: "关闭导航",
+      open: "打开导航", expand: "展开侧栏", collapse: "折叠侧栏", close: "关闭导航",
       readError: "无法读取侧栏偏好，当前使用展开布局。你仍可切换侧栏并重试保存。",
       invalidError: "保存的侧栏偏好无效，当前使用展开布局。请重新选择并保存。",
       writeError: "侧栏偏好尚未保存。当前布局仍可使用，请重试保存。",
@@ -113,7 +113,7 @@ export const auth: AuthMessages = {
       grantUnknown: "服务端未确认这次成员变更。请先读取当前成员，再审阅新的变更。",
       grantObserved: "已读取当前成员；原写入结果仍未确认。请审阅当前单独授权后再操作。",
       readCurrentMembers: "读取当前成员",
-      eyebrow: "项目设置", title: "项目成员", subtitle: ({ projectName }) => `${projectName} · 管理协作成员与加入邀请`, invite: "邀请成员", loading: "正在加载项目成员…",
+      title: "项目成员", invite: "邀请成员", loading: "正在加载项目成员…",
       memberNotice: "你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。", membersTitle: "成员", accessDescription: "所有成员都可以读写项目资源。", memberColumn: "成员", roleColumn: "项目角色", actionColumn: "操作",
       effectiveColumn: "有效角色", teamColumn: "Team 继承", personalTeam: "个人", directColumn: "单独授权", noGrant: "无单独授权", noAccess: "无访问权限",
       grantChange: ({ before, after, effective }) => `单独授权：${before} → ${after}。变更后的项目角色：${effective}。`,

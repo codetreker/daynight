@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +33,38 @@ func serverAPIPreviewSSONormalFlow(t *testing.T, f *fixture) {
 	}
 	if mainCookie == nil {
 		t.Fatal("main login did not establish its session cookie")
+	}
+	database, err := pgxpool.New(f.context, f.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	type sessionState struct {
+		user             string
+		created, expires time.Time
+		lastUsed         *time.Time
+	}
+	readSession := func() sessionState {
+		t.Helper()
+		var state sessionState
+		if err := database.QueryRow(f.context, `SELECT user_id,created_at,expires_at,last_used_at FROM sessions WHERE token_hash=$1`, secret.Hash(mainCookie.Value)).Scan(&state.user, &state.created, &state.expires, &state.lastUsed); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	initial := readSession()
+	if initial.expires.Sub(initial.created) != identitycore.SessionLifetime {
+		t.Fatal("new browser session did not use the 168-hour server lifetime")
+	}
+	activity, _ := usageRequest(t, f, browser, http.MethodPost, "/api/v1/auth/session/activity", `{"expectedUserId":"`+initial.user+`"}`, "application/json", "", http.StatusNoContent)
+	active := readSession()
+	if active.lastUsed == nil || !active.expires.Equal(active.lastUsed.Add(identitycore.SessionLifetime)) || len(activity.Cookies()) != 0 || activity.Header.Get("Daynight-User-ID") != initial.user {
+		t.Fatal("activity did not commit the shared rolling deadline without reissuing credentials")
+	}
+	usageRequest(t, f, browser, http.MethodPost, "/api/v1/auth/session/activity", `{"expectedUserId":"20000000-0000-4000-8000-000000000001"}`, "application/json", "", http.StatusConflict)
+	refused := readSession()
+	if !refused.expires.Equal(active.expires) || refused.lastUsed == nil || !refused.lastUsed.Equal(*active.lastUsed) {
+		t.Fatal("account refusal changed the browser session")
 	}
 	previewOrigin := testauth.PreviewOrigin(f.origin)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -95,7 +129,7 @@ func serverAPIPreviewSSONormalFlow(t *testing.T, f *fixture) {
 		completeURL := location(redeemed, previewOrigin, "/auth/sso/complete")
 		for _, cookie := range redeemed.Cookies() {
 			if cookie.Name == "daynight_preview_session" {
-				if cookie.Value == mainCookie.Value || !cookie.HttpOnly || cookie.Path != "/" || cookie.SameSite != http.SameSiteLaxMode {
+				if cookie.Value == mainCookie.Value || !cookie.HttpOnly || cookie.Path != "/" || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != int(authhttp.BrowserCookieLifetime.Seconds()) {
 					t.Fatal("preview credential or cookie properties differ")
 				}
 				return cookie, completeURL
@@ -120,12 +154,16 @@ func serverAPIPreviewSSONormalFlow(t *testing.T, f *fixture) {
 		t.Fatal(err)
 	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		before := readSession()
 		request, err := http.NewRequestWithContext(f.context, method, f.origin+previewPath, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Host = task.ID + "." + preview.Host
 		request.AddCookie(previewCookie)
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+		request.Header.Set("Sec-Fetch-Mode", "cors")
+		request.Header.Set("Sec-Fetch-Dest", "empty")
 		response, err := plain.Do(request)
 		if err != nil {
 			t.Fatalf("Task preview %s failed: %v", method, err)
@@ -140,24 +178,23 @@ func serverAPIPreviewSSONormalFlow(t *testing.T, f *fixture) {
 		if method == http.MethodGet && !bytes.Equal(body, content) || method == http.MethodHead && len(body) != 0 {
 			t.Fatalf("Task preview %s body differs", method)
 		}
+		after := readSession()
+		if after.lastUsed == nil || !after.lastUsed.After(*before.lastUsed) || !after.expires.Equal(after.lastUsed.Add(identitycore.SessionLifetime)) || len(response.Cookies()) != 0 {
+			t.Fatalf("Task preview %s did not renew the source session without reissuing its cookie", method)
+		}
 	}
-	database, err := pgxpool.New(f.context, f.databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
 	var sameSession bool
 	var expires time.Time
 	if err := database.QueryRow(f.context, `SELECT token_hash=$1,expires_at FROM sessions WHERE preview_token_hash=$2`, secret.Hash(mainCookie.Value), secret.Hash(previewCookie.Value)).Scan(&sameSession, &expires); err != nil {
 		t.Fatal(err)
 	}
-	if !sameSession || !previewCookie.Expires.Equal(expires.Truncate(time.Second)) {
-		t.Fatal("preview credential did not retain the main session and expiry")
+	if !sameSession || !previewCookie.Expires.After(expires) {
+		t.Fatal("preview credential did not retain the main session with its long-lived isolated cookie")
 	}
 	usageRequest(t, f, browser, http.MethodGet, "/api/v1/me", "", "", "", http.StatusOK)
 	latestCookie, pendingComplete := exchange()
 	usageRequest(t, f, browser, http.MethodPost, "/api/v1/auth/logout", "", "", "", http.StatusNoContent)
 	navigate(pendingComplete, []*http.Cookie{latestCookie}, http.StatusUnauthorized)
 	usageRequest(t, f, browser, http.MethodGet, "/api/v1/me", "", "", "", http.StatusUnauthorized)
-	t.Log("Explicit SSO retained the source session and expiry; main logout invalidated both credentials.")
+	t.Log("Main activity and authorized preview reads renewed the same 168-hour source session without reissuing credentials; account refusal preserved it, and main logout invalidated both credentials.")
 }

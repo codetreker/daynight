@@ -19,6 +19,7 @@ type listCursor struct {
 	TagFilterIdentity          string              `json:"tagFilter"`
 	Type                       model.TaskType      `json:"type,omitempty"`
 	Parent                     *string             `json:"parent,omitempty"`
+	ParentTask                 *string             `json:"parentTask,omitempty"`
 	Version                    int                 `json:"version"`
 	Kind                       string              `json:"kind"`
 	UserID                     string              `json:"userId,omitempty"`
@@ -44,6 +45,7 @@ type ListScope struct {
 	TagFilterIdentity          string
 	Type                       model.TaskType
 	Parent                     *string
+	ParentTask                 *string
 	Kind                       string
 	UserID                     string
 	ProjectID                  string
@@ -99,7 +101,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	}
 	id, err := model.CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
-		cursor.TagFilterIdentity != scope.TagFilterIdentity || cursor.CandidateTagFilterIdentity != scope.CandidateTagFilterIdentity || !model.EqualOptional(cursor.CandidateWorkerID, scope.CandidateWorkerID) || !model.EqualOptional(cursor.CandidateWorkerUserID, scope.CandidateWorkerUserID) || cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
+		cursor.TagFilterIdentity != scope.TagFilterIdentity || cursor.CandidateTagFilterIdentity != scope.CandidateTagFilterIdentity || !model.EqualOptional(cursor.CandidateWorkerID, scope.CandidateWorkerID) || !model.EqualOptional(cursor.CandidateWorkerUserID, scope.CandidateWorkerUserID) || cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || !model.EqualOptional(cursor.ParentTask, scope.ParentTask) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
 		!model.EqualOptional(cursor.Ready, scope.Ready) || !model.EqualOptional(cursor.AllowAgents, scope.AllowAgents) || !model.EqualOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !model.EqualOptional(cursor.PlatformSpecific, scope.PlatformSpecific) || cursor.AutomaticCandidate != scope.AutomaticCandidate || !model.EqualOptional(cursor.WorkerID, scope.WorkerID) || !model.EqualOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
@@ -116,7 +118,7 @@ func EncodeListCursor(scope ListScope, createdAt time.Time, id string) (string, 
 			return "", err
 		}
 		cursor.Version = 3
-		cursor.Type, cursor.Parent = scope.Type, scope.Parent
+		cursor.Type, cursor.Parent, cursor.ParentTask = scope.Type, scope.Parent, scope.ParentTask
 		cursor.AssignedTo, err = json.Marshal(assignment)
 		if err != nil {
 			return "", err

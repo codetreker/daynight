@@ -1,20 +1,23 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
-import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { upgradeControllerJournal } from "../../../src/commands/controller/storage-preparation.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCompatibleControllerSnapshot, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
-const journalVersion = currentSqliteVersion(controllerJournalFormat);
+const journalVersion = 19;
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
@@ -130,6 +133,54 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   proof.stopped.mockClear();
   expect(await recordStoppedControllerGeneration(f.file, f.ticket, {  })).toEqual(stopped);
   expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.each([17, 18] as const)("reads a shipped v%s stop receipt without mutation and preserves it when upgrading to v19", async version => {
+  const f = await windowsStopFixture();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  const old = new Database(f.file); restoreControllerJournalVersion(old, version);
+  if (version === 18) expect(old.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: null }); old.close();
+  const original = await readFile(f.file);
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  expect(await readFile(f.file)).toEqual(original);
+  const permit = acquireControllerStoragePermit(f.file);
+  try {
+    upgradeControllerJournal(f.file, permit, { onMigration: () => {} });
+  } finally { permit.release(); }
+  const upgraded = new Database(f.file, { readonly: true });
+  try {
+    expect(upgraded.pragma("user_version", { simple: true })).toBe(19);
+    expect(upgraded.prepare("SELECT online_mode FROM execution WHERE id=1").get()).toEqual({ online_mode: version === 17 ? "legacy" : null });
+    expect(upgraded.prepare("SELECT ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(controllerPayloadHash(f.ticket))).toEqual({ ticket_hash: controllerPayloadHash(f.ticket) });
+  } finally { upgraded.close(); }
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+});
+
+test.each([false, true])("preserves exact historical Windows stop evidence across recovery (upgrade v16: %s)", async upgrade => {
+  const f = await windowsStopFixture(), nativeSessionId = randomUUID();
+  const journal = new Database(f.file), row = journal.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+  journal.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...JSON.parse(row.snapshot), nativeSessionId })); journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  if (upgrade) {
+    const old = new Database(f.file);
+    restoreControllerJournalVersion(old, 16); old.close();
+  }
+  const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
+  const current = openControllerLifecycleStore(f.file, next, { onMigration: () => {} }); current.close();
+  expect(readControllerSnapshot(f.file)?.executionGeneration).toBe("2");
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, { ...f.ticket, launchId: randomUUID() }, Date.now() + 5000)).toBeNull();
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/conflicts/);
+});
+
+test("refuses changed historical stop evidence and never replaces an immutable receipt", async () => {
+  const f = await windowsStopFixture();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  const changed = { ...stopped, nativeProcesses: [{ pid: 456, parentPid: 123, processGroupId: null, startedAt: "another", commandHash: "b".repeat(64) }] };
+  const db = new Database(f.file); db.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify(changed), controllerPayloadHash(f.ticket)); db.close();
+  expect(() => readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow(/conflicts/);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/receipt conflicts/);
 });
 
 test("blocks legacy Windows stopped records without a lease proof", async () => {
@@ -260,7 +311,7 @@ const legacyCandidateSource = async (f: Awaited<ReturnType<typeof fixture>>) => 
 
 test("Windows stop-proof reads do not migrate an older journal", async () => {
   const f = await fixture(); historical(f.file, 1, f.ticket);
-  expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/current journal format/);
+  expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/supported read-only format/);
   const db = new Database(f.file, { readonly: true });
   expect(db.pragma("user_version", { simple: true })).toBe(1); db.close();
 });
@@ -276,6 +327,44 @@ test("current controller snapshot verifies the full ticket without writing the c
   expect(after.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get()).toEqual(row);
   expect(after.pragma("user_version", { simple: true })).toBe(journalVersion); after.close();
 });
+
+test("reads a live shipped v18 journal without mutation, blocks its upgrade and upgrades after its owner exits", async () => {
+  const f = await fixture(), journal = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+  const snapshot = journal.patchSnapshot({ lifecycle: "ready", activity: "idle" }); journal.close();
+  const owner = spawn(process.execPath, ["-e", "process.stdout.write('ready'); process.stdin.resume()"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const exited = once(owner, "close", { signal: AbortSignal.timeout(10_000) });
+  try {
+    await once(owner.stdout, "data", { signal: AbortSignal.timeout(5000) });
+    if (owner.pid === undefined) throw new Error("Journal owner fixture has no PID.");
+    const db = new Database(f.file);
+    const ddl = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
+    try {
+      restoreControllerJournalVersion(db, 18);
+      db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(owner.pid);
+      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(ddl);
+    } finally { db.close(); }
+    const original = await readFile(f.file);
+    expect(readCompatibleControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);
+    expect(await readFile(f.file)).toEqual(original);
+    expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/current journal format/);
+    const permit = acquireControllerStoragePermit(f.file);
+    try {
+      expect(() => upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toThrow(/upgrade-blocked/);
+      expect(await readFile(f.file)).toEqual(original);
+      owner.stdin.end(); await exited;
+      expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toMatchObject({ version: 19 });
+    } finally { permit.release(); }
+    const upgraded = new Database(f.file, { readonly: true });
+    try {
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(19);
+      expect(upgraded.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(ddl);
+    } finally { upgraded.close(); }
+    expect(readCurrentControllerSnapshot(f.file, f.ticket)).toEqual(snapshot);
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill();
+    await exited;
+  }
+}, 15_000);
 
 test("current controller snapshot rejects malformed retained process evidence and expired reads", async () => {
   const f = await currentStopFixture(), db = new Database(f.file);

@@ -4,7 +4,7 @@ import { parseTaskDetail } from "../../api/parse";
 import type { GraphTask, TaskDetail, TaskSummary } from "../../api/types";
 import { TaskCacheError, type DetailRecord, type ProjectRecord, type TaskIntrinsicDetail } from "../task-cache/database";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
-import { sameSummary } from "../task-cache/projection";
+import { sameDetailSummary, sameSummary } from "../task-cache/projection";
 
 export const DETAIL_CACHE_LIMITS = { records: 32, totalBytes: 8 * 1024 * 1024, recordBytes: 2 * 1024 * 1024 } as const;
 const intrinsic = ({ ready: _ready, blockedBy: _blockedBy, ...detail }: TaskDetail): TaskIntrinsicDetail => detail;
@@ -29,12 +29,12 @@ const validateRecord = (value: DetailRecord, ticket: SyncTicket, manifest: Proje
     if (value.byteSize !== detailByteSize(value.detail) || value.byteSize > DETAIL_CACHE_LIMITS.recordBytes) throw new Error("Invalid detail cache size.");
     const detail = intrinsic(parseTaskDetail({ ...value.detail, ready: false, blockedBy: [] }, ticket.projectId, value.taskId));
     const summary = summaries.get(value.taskId);
-    if (summary === undefined || !sameSummary(summary, summaryOf(detail))) throw new Error("Invalid detail cache content.");
+    if (summary === undefined || !sameDetailSummary(summary, summaryOf(detail))) throw new Error("Invalid detail cache content.");
     return { ...value, detail };
   } catch (error) { throw new TaskCacheError("corrupt", error); }
 };
 export const validateDetailSummary = (detail: TaskIntrinsicDetail, summary: TaskSummary): void => {
-  if (!sameSummary(summary, summaryOf(detail))) throw new ApiError("protocol");
+  if (!sameDetailSummary(summary, summaryOf(detail))) throw new ApiError("protocol");
 };
 
 export type DetailAdmission = { readonly kind: "matching"; readonly detail: TaskIntrinsicDetail } | { readonly kind: "older" } | { readonly kind: "newer" };
@@ -56,12 +56,14 @@ export const readCachedDetail = async (scope: TaskCacheScope, ticket: SyncTicket
     if (row === undefined) return null;
     const record = validateRecord(row, ticket, manifest, summaries);
     await store.put({ ...row, lastUsedAt: Date.now() });
-    return record.detail;
+    const { parentTaskId: _parentTaskId, ...detail } = record.detail;
+    return detail;
   }));
 
 export const saveDetail = async (scope: TaskCacheScope, ticket: SyncTicket, detail: TaskDetail, signal: AbortSignal): Promise<DetailAdmission> => {
   const body = intrinsic(parseTaskDetail(detail, ticket.projectId, detail.id));
-  const byteSize = detailByteSize(body);
+  const { parentTaskId: _parentTaskId, ...storedBody } = body;
+  const byteSize = detailByteSize(storedBody);
   return withDetailRecovery(scope, ticket, signal, () => scope.detailTransaction(ticket, signal, async (store, manifest, summaries) => {
     const summary = summaries.get(detail.id);
     if (summary === undefined) return { kind: "newer" };
@@ -77,7 +79,7 @@ export const saveDetail = async (scope: TaskCacheScope, ticket: SyncTicket, deta
       if (previous !== undefined) await store.delete([scope.userId, ticket.projectId, detail.id]);
       return { kind: "matching", detail: body };
     }
-    if (previous !== undefined) return { kind: "matching", detail: previous.detail };
+    if (previous !== undefined) return { kind: "matching", detail: body };
     const others = rows.filter((row) => row.taskId !== detail.id).sort((left, right) => left.lastUsedAt - right.lastUsedAt || left.taskId.localeCompare(right.taskId));
     let count = others.length + 1;
     let bytes = others.reduce((sum, row) => sum + row.byteSize, byteSize);
@@ -86,7 +88,7 @@ export const saveDetail = async (scope: TaskCacheScope, ticket: SyncTicket, deta
       await store.delete([scope.userId, ticket.projectId, row.taskId]); count--; bytes -= row.byteSize;
     }
     await store.put({ userId: scope.userId, projectId: ticket.projectId, taskId: detail.id,
-      userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail: body, byteSize, lastUsedAt: Date.now() });
+      userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail: storedBody, byteSize, lastUsedAt: Date.now() });
     return { kind: "matching", detail: body };
   }));
 };

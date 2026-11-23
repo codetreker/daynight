@@ -369,86 +369,43 @@ func TestWebhookCommittedFactsSurviveLostSourceReceipt(t *testing.T) {
 	}
 }
 
-func TestWebhookDeferredStepFailureRollsBackSourceAndCapture(t *testing.T) {
+func TestWebhookDeferredConstraintFailureRollsBackSourceAndCapture(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx := t.Context()
-	for i, id := range []string{"00000001", "00000002"} {
-		completion, err := f.db.WriteProject(ctx, f.project, func(sc store.ProjectWriteScope) error {
-			now, err := sc.TaskDAO().ObservedAt(ctx)
-			if err != nil {
-				return err
-			}
-			step := model.TaskStep{ID: id, Position: int64(i), Title: []string{"first", "second"}[i], Status: model.TaskStepTodo, CreatedAt: now, UpdatedAt: now}
-			if err = sc.TaskDAO().InsertTaskStep(ctx, f.task, step); err != nil {
-				return err
-			}
-			if err = sc.TaskDAO().TouchTask(ctx, f.task, now); err != nil {
-				return err
-			}
-			header, err := sc.TaskDAO().TaskHeader(ctx, f.task)
-			if err != nil {
-				return err
-			}
-			audience, err := sc.CaptureDAO().FreezeAudience(ctx, f.project, []string{protocol.StepUpdated})
-			if err != nil {
-				return err
-			}
-			event, deliveries, err := taskWebhookPrepared(protocol.Fact{Type: protocol.StepUpdated, ProjectID: f.project, TaskID: f.task, TaskVersion: header.Version, OccurredAt: now, StepID: id, Action: "created"}, audience)
-			if err != nil {
-				return err
-			}
-			return sc.CaptureDAO().SaveCapture(ctx, event, deliveries)
-		})
-		if err != nil || completion.Outcome != store.TransactionCommitted {
-			t.Fatalf("step fixture: %v %v", completion, err)
-		}
-	}
-	mustQueryExec(t, f.db, `CREATE FUNCTION task_capture_break_position() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE task_steps SET position=0 WHERE task_id=NEW.task_id AND id='00000002'; RETURN NEW; END $$;CREATE TRIGGER task_capture_break_position AFTER INSERT ON webhook_events FOR EACH ROW EXECUTE FUNCTION task_capture_break_position()`)
+	mustQueryExec(t, f.db, `CREATE TABLE capture_constraint_witness (id integer, UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)`)
 	completion, err := f.db.WriteProject(ctx, f.project, func(sc store.ProjectWriteScope) error {
-		steps, err := sc.TaskDAO().TaskSteps(ctx, f.task)
+		changed, err := sc.TaskDAO().UpdateTask(ctx, f.task, store.TaskWrite{Title: "changed", Status: model.TaskInProgress})
 		if err != nil {
 			return err
 		}
-		now, err := sc.TaskDAO().ObservedAt(ctx)
+		audience, err := sc.CaptureDAO().FreezeAudience(ctx, f.project, []string{protocol.StatusChanged})
 		if err != nil {
 			return err
 		}
-		changed := steps[0]
-		changed.Title, changed.UpdatedAt = "changed", now
-		if err = sc.TaskDAO().UpdateTaskStep(ctx, f.task, changed); err != nil {
-			return err
-		}
-		if err = sc.TaskDAO().TouchTask(ctx, f.task, now); err != nil {
-			return err
-		}
-		header, err := sc.TaskDAO().TaskHeader(ctx, f.task)
+		event, deliveries, err := taskWebhookPrepared(protocol.Fact{Type: protocol.StatusChanged, ProjectID: f.project, TaskID: f.task, TaskVersion: changed.Version, OccurredAt: changed.UpdatedAt, PreviousStatus: "todo", Status: "in_progress"}, audience)
 		if err != nil {
 			return err
 		}
-		audience, err := sc.CaptureDAO().FreezeAudience(ctx, f.project, []string{protocol.StepUpdated})
-		if err != nil {
+		if err = sc.CaptureDAO().SaveCapture(ctx, event, deliveries); err != nil {
 			return err
 		}
-		event, deliveries, err := taskWebhookPrepared(protocol.Fact{Type: protocol.StepUpdated, ProjectID: f.project, TaskID: f.task, TaskVersion: header.Version, OccurredAt: now, StepID: changed.ID, Action: "updated", ChangedFields: []string{"title"}}, audience)
-		if err != nil {
-			return err
-		}
-		return sc.CaptureDAO().SaveCapture(ctx, event, deliveries)
+		_, err = sc.(*ProjectTx).tx.Exec(ctx, `INSERT INTO capture_constraint_witness VALUES (1), (1)`)
+		return err
 	})
 	var failure *store.TransactionError
 	failed, state := store.DatabaseErrorFacts(err)
 	if completion.Outcome != store.TransactionUnknown || !errors.As(err, &failure) || !failure.CommitAttempted || !failed || state != "23505" {
-		t.Fatalf("deferred step commit: %v failure=%+v state=%s error=%v", completion, failure, state, err)
+		t.Fatalf("deferred commit: %v failure=%+v state=%s error=%v", completion, failure, state, err)
 	}
 	var version int64
-	var title string
-	var events, positions int
-	if err = f.db.Pool.QueryRow(ctx, `SELECT t.version,(SELECT title FROM task_steps WHERE task_id=t.id AND id='00000001'),(SELECT count(*) FROM webhook_events WHERE task_id=t.id),(SELECT count(DISTINCT position) FROM task_steps WHERE task_id=t.id) FROM tasks t WHERE id=$1`, f.task).Scan(&version, &title, &events, &positions); err != nil {
+	var title, status string
+	var events, witnesses int
+	if err = f.db.Pool.QueryRow(ctx, `SELECT t.version,t.title,t.status,(SELECT count(*) FROM webhook_events WHERE task_id=t.id),(SELECT count(*) FROM capture_constraint_witness) FROM tasks t WHERE id=$1`, f.task).Scan(&version, &title, &status, &events, &witnesses); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 || title != "first" || events != 2 || positions != 2 {
-		t.Fatalf("rollback version=%d title=%s events=%d positions=%d", version, title, events, positions)
+	if version != 1 || title != "source" || status != "todo" || events != 0 || witnesses != 0 {
+		t.Fatalf("rollback version=%d title=%s status=%s events=%d witnesses=%d", version, title, status, events, witnesses)
 	}
 }
 

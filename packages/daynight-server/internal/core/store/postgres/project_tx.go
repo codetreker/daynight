@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -38,6 +39,12 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 	return teamCompletion("project write", err)
 }
 
+func (s *Store) WriteProjectTransfer(ctx context.Context, projectID string, operation func(ProjectWriteScope) error) (Completion, error) {
+	return s.writeGoalProjectLifecycle(ctx, projectID, "project transfer", false, func(tx pgx.Tx) error {
+		return operation(&ProjectTx{tx: tx, projectID: projectID})
+	})
+}
+
 func (tx *ProjectTx) ProjectDAO() ProjectWriteDAO           { return project.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) EligibilityDAO() WebhookEligibilityDAO { return eligibility.New(tx.tx) }
 func (tx *ProjectTx) CaptureDAO() WebhookCaptureDAO {
@@ -58,6 +65,8 @@ func (tx *ProjectTx) GoalRelationDAO() GoalRelationEditor {
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }
+
+func (tx *ProjectTx) BotBarrierDAO() BotBarrierDAO { return bot.NewBarrier(tx.tx) }
 
 func (tx *ProjectTx) WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO {
 	return worker.NewClaimAdmission(tx.tx)

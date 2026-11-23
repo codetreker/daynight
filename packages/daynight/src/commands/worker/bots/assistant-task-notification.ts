@@ -56,9 +56,12 @@ export const createNotificationBatch = () => {
       if (isInbound) inboundBytes += added;
       return "added";
     },
-    text(): string {
+    /** Bytes still available for supplementary pieces, each joined by one newline. */
+    remaining: (): number => NOTIFICATION_BYTES - bytes,
+    /** Renders the batch; supplementary pieces must fit within remaining(). */
+    text(supplement: readonly string[] = []): string {
       const inboundText = inbound.flatMap(piece => typeof piece === "string" ? [piece] : [piece.header, ...piece.lines, piece.trailer]);
-      return [header, ...fragments, ...inboundText, footerTitle, ...[...taskIds].map(footerLine)].join("\n");
+      return [header, ...fragments, ...inboundText, ...supplement, footerTitle, ...[...taskIds].map(footerLine)].join("\n");
     },
   };
 };

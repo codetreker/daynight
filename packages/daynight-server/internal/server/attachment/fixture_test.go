@@ -52,7 +52,21 @@ func newAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Wri
 	return newAttachmentFixtureWithTimeout(t, files, output, attachmenthttp.DefaultBodyReadTimeout())
 }
 
+func newMainAttachmentFixture(t *testing.T, files filestorage.Storage, output io.Writer) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutes(mux, attachments, auth, logger, "https://preview.daynight.example")
+	})
+}
+
 func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, output io.Writer, timeout time.Duration) *attachmentFixture {
+	t.Helper()
+	return newAttachmentFixtureWithRoutes(t, files, output, func(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+		attachmenthttp.RegisterRoutesWithBodyReadTimeout(mux, attachments, auth, logger, timeout)
+	})
+}
+
+func newAttachmentFixtureWithRoutes(t *testing.T, files filestorage.Storage, output io.Writer, register func(*http.ServeMux, *attachmentservice.Attachments, *authhttp.Authentication, *slog.Logger)) *attachmentFixture {
 	t.Helper()
 	f := &attachmentFixture{t: t, mux: http.NewServeMux(), want: map[string]int{}, seen: map[string]int{}}
 	f.project = api.Project{ID: uuid.NewString(), Name: "Attachment project"}
@@ -69,7 +83,7 @@ func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, ou
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachmenthttp.RegisterRoutesWithBodyReadTimeout(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger, timeout)
+	register(f.mux, attachmentservice.NewAttachments(f.snapshots, f.mutations, files), auth, logger)
 	f.handler.Handler = httpx.RequestLogging(logger, attachmenthttp.PathGuard(f.mux, logger))
 	t.Cleanup(f.verify)
 	return f
@@ -614,22 +628,6 @@ func (s *unexpectedTaskReader) TaskHeader(context.Context, string, string) (mode
 	s.reject("TaskHeader")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	s.reject("TaskStep")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	s.reject("TaskSteps")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	s.reject("TaskStepPage")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	s.reject("TaskStepSummary")
-	panic("unreachable")
-}
 func (s *unexpectedTaskReader) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	s.reject("ThreadMessage")
 	panic("unreachable")
@@ -660,6 +658,11 @@ func (s *unexpectedTaskReader) TaskCacheEpoch(context.Context, string) (string, 
 }
 func (s *unexpectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	s.reject("TaskSyncTasks")
+	panic("unreachable")
+}
+
+func (s *unexpectedTaskReader) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	s.reject("TaskSyncGoalDependsOn")
 	panic("unreachable")
 }
 
@@ -791,7 +794,7 @@ func (s *unexpectedTaskReader) TaskWorkGroups(context.Context, string, store.Tas
 	s.reject("TaskWorkGroups")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	s.reject("TaskWorkTargets")
 	panic("unreachable")
 }

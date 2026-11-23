@@ -16,7 +16,7 @@ type groupDirectoryReader interface {
 
 // RegisterGroupDirectoryRoutes keeps grouped history and expiry metadata off the
 // original directory response, whose consumers reject unknown fields.
-func RegisterGroupDirectoryRoutes(mux *http.ServeMux, reader groupDirectoryReader, auth inspectionAuthentication, logger *slog.Logger) {
+func RegisterGroupDirectoryRoutes(mux httpx.RouteRegistrar, reader groupDirectoryReader, auth inspectionAuthentication, logger *slog.Logger) {
 	const base = "/api/v1/projects/{projectId}/history-directory"
 	for _, route := range []struct{ path, kind, target string }{
 		{base, "groups", ""},

@@ -12,7 +12,7 @@ import { TaskPlatformBadge } from './TaskPlatformBadge';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDescription, TaskExecutionDuration, TaskExecutionWarning } from '../task-execution/TaskExecutionPresentation';
 import { TaskPausedBadge } from '../task-pause/TaskPause';
-import { TaskSessionStatus } from './TaskSessionStatus';
+import { TaskRowStatus } from './TaskRowStatus';
 import { TaskTagList } from '../task-tags/TaskTagList';
 import { TagColorFeedback } from '../task-tags/TagColor';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
@@ -36,7 +36,7 @@ type TaskRowProps = {
 };
 
 export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, goal, onOpenTask, onOpenSession }: TaskRowProps) => {
-  const { locale, messages: { workspace: { standalone, project }, common, graph, inspection: { detail } }, format } = useI18n();
+  const { locale, messages: { workspace: { standalone, project }, graph, inspection: { detail } }, format } = useI18n();
   const usage = useTaskUsage(projectId, model.id, tagsActive);
   const usageSummary = usage.summary !== null && usageCompactMetric(usage.summary) !== null ? usage.summary : null;
   const usageHref = taskDetailUrl(projectId, model.id, { tab: 'usage', path: null });
@@ -128,13 +128,12 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
             event.preventDefault(); navigate(usageHref);
           }}><UsageSummaryView summary={usageSummary} compact /></a>
         </section>}
-        {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
+        {typeof model.tags === 'string' ? <span className="task-row-meta task-row-tag-state">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
         {model.paused && <TaskPausedBadge />}
-        <TaskSessionStatus title={model.title} status={model.status} observation={model.session} allowAgents={model.allowAgents} showTaskStatus={false}
+        <TaskRowStatus title={model.title} status={model.status} observation={model.session} allowAgents={model.allowAgents}
           {...(onOpenSession === undefined ? {} : { onActivate: (event: MouseEvent<HTMLButtonElement>) => onOpenSession(model.id, event.currentTarget) })} />
-        <span className={`root-status graph-status-${model.status}`}>{common.status[model.status]}</span>
         {model.ready && <span className="task-ready">{project.ready}</span>}
         {model.blocked && <span className="graph-blocked-badge">{project.blocked}</span>}
       </div>

@@ -8,6 +8,29 @@ const ref = (runKey: string): ExecutionRef => ({ owner, backend: "web", runKey }
 const stopped = (runKey: string): StopObservation & { kind: "stopped" } => ({ kind: "stopped", execution: ref(runKey), observedAt: 1 });
 
 describe("execution capacity facts", () => {
+  it("settles complete terminal inventory only for the current exact-owner cleanup attempt", () => {
+    const wake = vi.fn(), view = createExecutionCapacity(wake);
+    const attempt = { owner, attemptId: "local-cleanup" };
+    const cleared = { kind: "resources-cleared" as const, owner, observedAt: 3 };
+    view.observe(owner, view.beginObservation(owner), { kind: "running", execution: ref("retained"), observedAt: 1 });
+    view.observe(owner, view.beginObservation(owner), cleared);
+    expect(view.stopped(owner)).toBe(false);
+    view.beginAttempt(attempt);
+    view.notice({ attempt, observation: { ...cleared, owner: { ...owner, worktreeId: "successor" } } });
+    expect(view.stopped(owner)).toBe(false);
+    const stale = view.beginObservation(owner);
+    view.notice({ attempt, observation: cleared });
+    expect(view.stopped(owner)).toBe(true);
+    view.observe(owner, stale, { kind: "running", execution: ref("retained"), observedAt: 2 });
+    view.observe(owner, view.beginObservation(owner), { kind: "unknown", target: owner, error: new Error("Web journal missing"), observedAt: 4 });
+    expect(view.stopped(owner)).toBe(true);
+    expect(wake).toHaveBeenCalledExactlyOnceWith(owner, true);
+    view.invalidate(owner);
+    view.notice({ attempt, observation: cleared });
+    expect(view.stopped(owner)).toBe(false);
+    view.observe(owner, view.beginObservation(owner), { kind: "running", execution: ref("new"), observedAt: 5 });
+    expect(view.stopped(owner)).toBe(false);
+  });
   it("rejects stale reads and stale attempts, and deduplicates wakeups", () => {
     const wake = vi.fn(), view = createExecutionCapacity(wake);
     const attempt = { owner, attemptId: "one" };

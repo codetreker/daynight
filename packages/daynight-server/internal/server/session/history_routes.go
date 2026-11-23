@@ -37,7 +37,7 @@ func historyLimit(raw string) (int, error) {
 // RegisterHistoryRoutes exposes bounded original-content reads independently
 // of the browser timeline projection. A retained archive stays owned until the
 // response has finished writing, including cancellation and short writes.
-func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspectionAuthentication, logger *slog.Logger) {
+func RegisterHistoryRoutes(mux httpx.RouteRegistrar, reader HistoryReader, auth inspectionAuthentication, logger *slog.Logger) {
 	for _, operation := range []string{"messages", "message-content"} {
 		path := sessionBase + "/{sessionId}/" + operation
 		mux.HandleFunc("GET "+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {

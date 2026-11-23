@@ -11,7 +11,9 @@ Thread writes have a different lock order from Project writes.
 
 ## Decision
 
-`core/task` owns Task, claim, Steps, Thread and projection rules. `service/task`
+`core/task` owns Task, claim, Thread and projection rules. The
+[application retirement](../simplification/2026-11-23-retire-task-steps-application.md) removes Steps use
+cases and candidates while retaining PostgreSQL-dependent contracts and models. `service/task`
 selects snapshots and write scopes, combines Project admission with Task and
 Session effects, and interprets completion. `server/task` adapts Task HTTP
 resources. The [Task data decision](2026-11-05-task-data-ownership.md) owns the

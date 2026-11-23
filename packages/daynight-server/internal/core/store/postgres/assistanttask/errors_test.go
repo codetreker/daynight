@@ -41,13 +41,35 @@ func TestClosedTransactionRetainsDriverCauseAcrossAccessPatterns(t *testing.T) {
 		{"insert", func() error { _, e := d.InsertTask(ctx, f.task); return e }},
 		{"save", func() error { _, e := d.SaveTask(ctx, f.task, store.AssistantTaskCondition{}); return e }},
 		{"purge", func() error { return d.DeleteTaskContent(ctx, f.owner, f.task.ID) }},
+		{"retrospectives", func() error { _, e := d.RetrospectiveTasks(ctx, q, f.task.CreatedAt); return e }},
+		{"latest_outcome", func() error { _, e := d.LatestOutcomeAt(ctx, f.owner, f.task.ID); return e }},
+		{"mark_retrospective", func() error { _, e := d.MarkRetrospective(ctx, f.owner, f.task.ID, f.task.CreatedAt); return e }},
 		{"manuals", func() error { _, e := d.Manuals(ctx, q); return e }},
 		{"appendices", func() error { _, e := d.Appendices(ctx, q); return e }},
 		{"proposals", func() error { _, e := d.Proposals(ctx, q); return e }},
 		{"items", func() error { _, e := d.Items(ctx, q); return e }},
+		{"item_closure", func() error {
+			return d.InsertItemClosure(ctx, model.AssistantTaskItemClosure{ID: id, OwnerUserID: f.owner, TaskID: f.task.ID, ItemID: id})
+		}},
 		{"records", func() error { _, e := d.Records(ctx, q); return e }},
 		{"events", func() error { _, e := d.Events(ctx, q); return e }},
 		{"inquiries", func() error { _, e := d.Inquiries(ctx, q); return e }},
+		{"inbox_insert", func() error { _, e := d.InsertInbox(ctx, model.AssistantTaskInbox{InboxID: id}); return e }},
+		{"inbox_current", func() error { _, e := d.CurrentInbox(ctx, f.owner, f.task.ID); return e }},
+		{"inbox_identity", func() error { _, e := d.InboxIdentity(ctx, id); return e }},
+		{"inbox_lock", func() error { _, e := d.LockInbox(ctx, f.owner, f.task.ID, id); return e }},
+		{"inbox_save", func() error { _, e := d.SaveInbox(ctx, model.AssistantTaskInbox{InboxID: id}, 1); return e }},
+		{"inbox_suppressed", func() error { _, e := d.AddInboxSuppressed(ctx, f.owner, f.task.ID, id); return e }},
+		{"receipt", func() error { _, e := d.InboxReceipt(ctx, f.owner, id, "key"); return e }},
+		{"receipt_insert", func() error {
+			_, e := d.InsertInboxReceipt(ctx, model.AssistantTaskInboxReceipt{InboxID: id})
+			return e
+		}},
+		{"pending_inbound", func() error { _, e := d.PendingInboundEvents(ctx, f.owner, f.task.ID, id, 1); return e }},
+		{"received_inbound", func() error { _, e := d.ReceivedInbound(ctx, f.owner, id, id, time.Time{}, time.Time{}); return e }},
+		{"receipt_reclaim", func() error { _, e := d.ReclaimInboxReceipts(ctx, f.owner, f.task.ID, 1); return e }},
+		{"event_reclaim", func() error { _, e := d.ReclaimInboundEvents(ctx, f.owner, f.task.ID, time.Time{}, 1); return e }},
+		{"reclaim_tasks", func() error { _, e := d.InboundReclaimTasks(ctx, f.owner, time.Time{}, 1); return e }},
 		{"record_insert", func() error {
 			_, e := d.InsertRecord(ctx, model.AssistantTaskRecord{OwnerUserID: f.owner, TaskID: f.task.ID})
 			return e

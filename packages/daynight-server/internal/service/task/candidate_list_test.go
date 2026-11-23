@@ -83,13 +83,13 @@ func TestCandidateListReadsTargetWithinAuthorizedSelectionSnapshot(t *testing.T)
 					}}})
 				}}
 				checkSelection := func(actual context.Context, project string, selection taskcore.ListSelection) (store.TaskPage, *model.Fault, error) {
-					if !active || !authorized || !workerRead || actual != ctx || project != listOperationProject || !reflect.DeepEqual(selection.Query.CandidateTagFilter, tc.want) || selection.Scope.CandidateWorkerID == nil || *selection.Scope.CandidateWorkerID != workerID || selection.Scope.CandidateWorkerUserID == nil || *selection.Scope.CandidateWorkerUserID != principal.UserID {
+					if !active || !authorized || !workerRead || actual != ctx || project != listOperationProject || !reflect.DeepEqual(selection.Query.CandidateTagFilter, tc.want) || selection.Query.ParentTask == nil || *selection.Query.ParentTask != listOperationProject || selection.Scope.CandidateWorkerID == nil || *selection.Scope.CandidateWorkerID != workerID || selection.Scope.CandidateWorkerUserID == nil || *selection.Scope.CandidateWorkerUserID != principal.UserID {
 						t.Fatalf("selection changed or escaped snapshot: %#v", selection)
 					}
 					queried = true
 					return store.TaskPage{}, nil, selected
 				}
-				request := TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AutomaticCandidate: true, CandidateWorkerID: listOperationPointer(strings.ToUpper(workerID))}
+				request := TaskListRequest{ParentTask: listOperationPointer(listOperationProject), PageRequest: model.PageRequest{Limit: 1}, AutomaticCandidate: true, CandidateWorkerID: listOperationPointer(strings.ToUpper(workerID))}
 				var err error
 				if observed {
 					s := NewObservations(db, nil)

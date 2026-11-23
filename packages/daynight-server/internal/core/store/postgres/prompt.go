@@ -18,7 +18,9 @@ type promptTx struct {
 
 func NewPrompt(pool *pgxpool.Pool) *promptStore { return &promptStore{pool: pool} }
 func (s *promptStore) ReadPromptSnapshot(ctx context.Context, operation func(store.PromptSnapshot) error) error {
-	return ReadOnlySnapshot(ctx, s.pool, func(tx pgx.Tx) error { return operation(promptdao.NewDAO(tx)) })
+	return ReadOnlySnapshot(ctx, s.pool, func(tx pgx.Tx) error {
+		return operation(authorizedPromptSnapshot{promptdao.NewDAO(tx), credentialAuthorization{tx}})
+	})
 }
 func (s *promptStore) WritePrompt(ctx context.Context, operation func(store.PromptWriteScope) error) (store.Completion, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

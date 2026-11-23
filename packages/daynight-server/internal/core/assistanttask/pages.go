@@ -127,6 +127,7 @@ func readPage[T any](ctx context.Context, dao store.AssistantTaskDAO, actor Acto
 	return makePage(items, query.Limit, c, now, position)
 }
 func (m *Module) List(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input PageInput) (model.AssistantTaskPage[TaskResult], error) {
+	actor = actor.requiringBranches("List", "default")
 	var result model.AssistantTaskPage[TaskResult]
 	if input.State != "" && !validState(input.State, "active", "paused") {
 		return result, invalid("Task state filter is invalid.")
@@ -158,35 +159,47 @@ func (m *Module) List(ctx context.Context, dao store.AssistantTaskDAO, actor Act
 	})
 }
 func (m *Module) ListManuals(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskManual], error) {
+	actor = actor.requiringBranches("ListManuals", "default")
 	return readPage(ctx, dao, actor, taskID, "manuals", input, dao.Manuals, func(v model.AssistantTaskManual) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: strconv.FormatInt(v.Version, 10)}
 	})
 }
 func (m *Module) ListAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskAppendix], error) {
+	actor = actor.requiringBranches("ListAppendix", "default")
 	return readPage(ctx, dao, actor, taskID, "appendix", input, dao.Appendices, func(v model.AssistantTaskAppendix) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 	})
 }
 func (m *Module) ListProposals(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskProposal], error) {
+	actor = actor.requiringBranches("ListProposals", "default")
 	return readPage(ctx, dao, actor, taskID, "proposals", input, dao.Proposals, func(v model.AssistantTaskProposal) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 	})
 }
 func (m *Module) ListItems(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskItem], error) {
+	actor = actor.requiringBranches("ListItems", "default")
 	return readPage(ctx, dao, actor, taskID, "items", input, dao.Items, func(v model.AssistantTaskItem) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 	})
 }
 func (m *Module) ListRecords(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
+	actor = actor.requiringBranches("ListRecords", "default")
 	return readPage(ctx, dao, actor, taskID, "records", input, dao.Records, func(v model.AssistantTaskRecord) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 	})
 }
 func (m *Module) ListInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskInquiry], error) {
+	actor = actor.requiringBranches("ListInquiries", "default")
 	var result model.AssistantTaskPage[model.AssistantTaskInquiry]
 	query, c, err := pageQuery(actor, taskID, "inquiries", input)
 	if err != nil {
 		return result, err
+	}
+	// Scope admission must precede the maintenance writes performed by this read.
+	if actor.Authorization != nil {
+		if _, err = loadTask(ctx, dao, actor, taskID, false); err != nil {
+			return result, err
+		}
 	}
 	// Keep bounded background progress even when the requested state excludes
 	// expired questions, so open-only polling still produces timeout notices.
@@ -229,15 +242,38 @@ func (m *Module) ListInquiries(ctx context.Context, dao store.AssistantTaskDAO, 
 	})
 }
 func (m *Module) ListEvents(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskEvent], error) {
+	actor = actor.requiringBranches("ListEvents", "default")
 	var result model.AssistantTaskPage[model.AssistantTaskEvent]
 	query, c, err := pageQuery(actor, taskID, "events", input)
 	if err != nil {
 		return result, err
 	}
-	if err := m.expireInquiries(ctx, dao, actor, taskID, input.TargetBotID); err != nil {
+	// Preserve visibility for task-scoped reads before reporting a scope refusal.
+	if actor.Authorization != nil && taskID != "" {
+		if _, err = loadTask(ctx, dao, actor, taskID, false); err != nil {
+			return result, err
+		}
+	}
+	// A cross-task pull, such as the Worker delivery loop, also reclaims inbound
+	// material of a bounded set of the owner's tasks, so an inbox that stops
+	// receiving requests is still cleaned up without a per-task pull.
+	if err := m.maintain(ctx, dao, actor, taskID, input.TargetBotID, true, taskID == ""); err != nil {
 		return result, err
 	}
 	if taskID != "" {
+		// A task event pull also reclaims settled inbound material under the
+		// task lock, so an inbox without new requests is still cleaned up.
+		task, err := loadTask(ctx, dao, actor, taskID, true)
+		if err != nil {
+			return result, err
+		}
+		now, err := dao.Now(ctx)
+		if err != nil {
+			return result, err
+		}
+		if err = ReclaimInbound(ctx, dao, task.OwnerUserID, task.ID, now); err != nil {
+			return result, err
+		}
 		return readPage(ctx, dao, actor, taskID, "events", input, dao.Events, func(v model.AssistantTaskEvent) store.AssistantTaskPosition {
 			return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 		})

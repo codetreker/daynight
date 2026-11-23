@@ -6,9 +6,9 @@ import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as yieldEventLoop, setTimeout as delay } from "node:timers/promises";
@@ -16,9 +16,17 @@ import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
+import { recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
+import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
+import { createBotReconciliation } from "../../../src/commands/worker/bots/reconciliation.js";
+import { createBotRecoveryApi } from "../../../src/commands/worker/bots/recovery-api.js";
+import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
+import type { BotRecoveryGrant, BotRecoveryRegistration, BotRecoveryResult } from "../../../src/commands/worker/bots/recovery-protocol.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
@@ -27,6 +35,7 @@ import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -264,7 +273,7 @@ test.skipIf(process.platform !== "darwin")("waits through a real same-birth comm
   await waiting;
 }, 20_000);
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean; dedicatedStorage?: boolean } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; localRecovery?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -305,8 +314,13 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
   const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
-  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
-  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const workerPaths = resolveWorkerPaths(home), databaseFile = options.localRecovery ? workerPaths.databaseFile : path.join(home, "worker.sqlite");
+  if (options.localRecovery) {
+    await mkdir(workerPaths.workerDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(workerPaths.configFile, `workerId: ${owner.workerId}\n`, { mode: 0o600 });
+  }
+  const store = openBotStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const executions = openBotExecutionStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
   let bot: BotDefinition = { id: botId, ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
     resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: options.args ?? [] }, roleConfiguration: null, sessionId: null, testExecutionId: null,
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -383,7 +397,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   const observerJobs = new Map<string, ControllerJobLease>();
   const managers: ReturnType<typeof createControllerJobLeases>[] = [];
   const observerFor = (proof: ProcessProof): ControllerJobLease | undefined => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
-  const create = () => {
+  const create = (sessionApi: Parameters<typeof createBotProcess>[0]["sessionApi"] = api) => {
     const owned = createControllerJobLeases(); managers.push(owned);
     const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
       const lease = await owned.retain(launchId, proof, deadline);
@@ -393,7 +407,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       }
       return lease;
     } };
-    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
+    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
       ...(tools === undefined ? {} : { toolObservationFor: tools.toolObservationFor }), dependencies: { prepareEnvironment, stopProcesses } });
   };
   const botProcess = create();
@@ -402,7 +416,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   const controllers = new Set<WebSocket>();
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
-    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-relay-grant") { socket.close(1008); return; }
+    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== `Bearer ${options.relayToken?.() ?? "controlled-relay-grant"}`) { socket.close(1008); return; }
     controllers.add(socket); socket.once("close", () => controllers.delete(socket));
     socket.on("message", raw => {
       if (deleted) { socket.close(1008); return; }
@@ -478,11 +492,6 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
           expect(stopped).toBe(true);
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
-      const recordNow = current();
-      if (recordNow.intent !== null && process.platform !== "win32") {
-        const ticket = await botProcess.readTicket(recordNow).catch(() => null);
-        if (ticket !== null) await rm(path.dirname(ticket.ipcEndpoint), { recursive: true, force: true });
-      }
     } catch (error) {
       stopped = false; cleanupFailure = error;
       try { await collectEvidence(); } catch (diagnosticError) { diagnostic("read-original-startup-evidence", 0, diagnosticError); }
@@ -529,9 +538,9 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
     diagnostic("launch-observation-unknown", Date.now() - started, error);
   }
   const originalTicket = await f.process.readTicket(f.current());
-  // An interrupted parent can return before the child acquires its own proof,
-  // creates the Windows Job and captures native ownership. Reconciliation waits
-  // for that sequence through the original authenticated ticket.
+  // An interrupted parent can return after releasing the durable birth gate
+  // but before the child initializes its journal and native provider. Observe
+  // that same Controller through its original authenticated ticket.
   await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
@@ -630,7 +639,7 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
   const f = await fixture({ dedicatedStorage: true }), signal = AbortSignal.timeout(60_000);
-  if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  if (interruptedObservation) vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
@@ -647,7 +656,8 @@ test.each([false, true])("launches one real Controller with no user turn after u
   expect(f.browserConnections()).toBe(1);
   if (interruptedObservation) {
     expect((await f.create().advance(f.current(), signal)).controllerProcess).toEqual(first.controllerProcess);
-    await expect(f.create().shutdown(f.current(), signal)).rejects.toThrow(/no original spawn proof/);
+    await f.create().shutdown(f.current(), signal);
+    expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
     expect(await f.launches()).toHaveLength(1);
     return;
   }
@@ -680,11 +690,11 @@ test("rejects unsupported Provider arguments before registration or native proce
 
 test("recovers cleanup evidence from the original journal when the parent process observation fails first", async () => {
   const f = await fixture();
-  vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await expect(f.process.advance(f.current(), AbortSignal.timeout(30_000))).rejects.toThrow("Fixture parent observation interrupted");
-  expect(f.executions.get(f.current())!.controllerProcess).toBeNull();
-  // afterEach must wait for the child's durable evidence instead of retaining
-  // the empty snapshot taken before its process ownership was captured.
+  expect(f.executions.get(f.current())!.controllerProcess).not.toBeNull();
+  // Birth identity commits before dispatch. Cleanup also joins the child's
+  // journal so descendants published after the failed observation remain owned.
 }, 60_000);
 
 
@@ -719,6 +729,97 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
 
+
+test("registers an unregistered stopped Bot at its retained service generation before granting the prepared successor", async () => {
+  let relayToken = "controlled-relay-grant";
+  const f = await fixture({ hosted: true, dedicatedStorage: true, relayToken: () => relayToken });
+  const signal = AbortSignal.timeout(90_000), parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
+  const errors: string[] = [], calls: string[] = [], receipts: BotRecoveryResult[] = [];
+  let registered = false, serverGeneration = "1", serverInstance: string | null = null, stoppedAt: string | null = null;
+  f.http!.on("request", (request, response) => {
+    void (async () => {
+      response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+      const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+      const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (pathname === "/api/usage/v1/capabilities") {
+        response.statusCode = 503;
+        return send({ error: { code: "capability_error", message: "Usage is outside this fixture", requestId: randomUUID() } });
+      }
+      calls.push(`${request.method} ${pathname}`);
+      expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
+      const record = f.current(), intent = record.intent!, bot = f.getBot();
+      if (request.method === "GET" && pathname === `/api/v1/me/bots/${bot.id}/observation`) {
+        const observedAt = new Date().toISOString();
+        return send({ schemaVersion: 1, botId: bot.id, botVersion: bot.version, workerId: f.owner.workerId,
+          machine: { id: f.owner.workerId, name: "fixture-machine" }, provider: "codex", sessionId: bot.sessionId, testExecutionId: bot.testExecutionId,
+          nativeSessionId: f.nativeId, hostingGeneration: registered ? "1" : null, executionGeneration: serverGeneration, connectionEpoch: "1",
+          state: "offline", reason: "controller_stopped", observedAt, workerLastSeenAt: observedAt, sessionLastSeenAt: observedAt, freshUntil: null, currentTurnId: null });
+      }
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as BotRecoveryRegistration | BotRecoveryGrant;
+      expect(request.method).toBe("POST");
+      expect(body.sessionId).toBe(bot.sessionId); expect(body.testExecutionId).toBe(bot.testExecutionId); expect(body.nativeSessionId).toBe(f.nativeId);
+      // The real process manager has already persisted beginRecovery locally.
+      expect(intent.executionGeneration).toBe("2");
+      const kind = pathname.endsWith("/register") ? "register" : "grant";
+      expect(pathname).toBe(`/api/v1/me/workers/${f.owner.workerId}/bots/${bot.id}/recovery/v1/${kind}`);
+      if (kind === "register") {
+        expect(registered).toBe(false); expect(serverGeneration).toBe("1");
+        expect(body).not.toHaveProperty("grant");
+        expect((body as BotRecoveryRegistration).botVersion).toBe(bot.version);
+        registered = true; f.setBot({ ...bot, version: String(BigInt(bot.version) + 1n) });
+      } else {
+        const grant = (body as BotRecoveryGrant).grant;
+        expect(registered).toBe(true); expect(grant.previousGeneration).toBe("1"); expect(grant.executionGeneration).toBe("2");
+        expect(grant.stopProof).toEqual({ previousControllerInstanceId: serverInstance, recordId: intent.launchId, stoppedAt });
+        expect(grant.controllerInstanceId).not.toBe(serverInstance);
+        serverGeneration = grant.executionGeneration; serverInstance = grant.controllerInstanceId;
+        relayToken = (body as BotRecoveryGrant).controllerToken;
+      }
+      const result: BotRecoveryResult = { current: true, receipt: {
+        botRecoveryVersion: 1, operationId: body.operationId, kind, workerId: f.owner.workerId, hostingGeneration: "1", botVersion: f.getBot().version,
+        sessionId: bot.sessionId!, testExecutionId: bot.testExecutionId!, nativeSessionId: f.nativeId, executionGeneration: serverGeneration,
+        controllerId: intent.registration.controllerId, controllerInstanceId: serverInstance!,
+        grantExpiresAt: kind === "register" ? null : new Date(Date.now() + 900_000).toISOString(),
+        controllerTokenHash: kind === "register" ? null : createHash("sha256").update(relayToken).digest("hex"),
+      } };
+      receipts.push(result); return send(result);
+    })().catch(error => { errors.push(String(error)); response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Controlled recovery HTTP failed", requestId: randomUUID() } })); });
+  });
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!;
+  serverInstance = original.controllerInstanceId;
+  await f.process.shutdown(f.current(), signal);
+  expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true, nativeSessionId: f.nativeId });
+  stoppedAt = f.journal()!.stoppedAt;
+  const stateDirectory = resolveConfigurationPaths(f.home).stateDirectory, paths = resolveBotPaths(stateDirectory, f.getBot().id);
+  await chmod(paths.directory, 0o700);
+  const lock = acquireInstanceLockSync(paths.lockFile, paths.ownershipGateFile);
+  const store = openBotRecoveryStore({ stateDirectory, owner: f.owner, assertLocked: () => {
+    if (JSON.parse(readFileSync(paths.lockFile, "utf8")).owner !== lock.owner) throw new Error("Fixture lost its original Bot lock");
+  } });
+  expect(store.read(f.current())).toBeNull();
+  const recovery = createBotReconciliation({ owner: f.owner, store, api: createBotRecoveryApi({ owner: f.owner, serverToken: parentToken }), canSubmit: () => true });
+  const sessionApi = createBotSessionApi({ owner: f.owner, serverToken: parentToken, recovery, stateDirectory });
+  const restored = f.create(sessionApi);
+  cleanups.push(async () => { try { await restored.shutdown(f.current(), AbortSignal.timeout(30_000)); await restored.close(); } finally { lock.release(); } });
+  await restored.advance(f.current(), signal);
+  await vi.waitFor(async () => expect(await restored.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }), { timeout: 30_000, interval: 100 });
+  expect(receipts.map(result => [result.receipt.kind, result.receipt.executionGeneration, result.receipt.controllerInstanceId])).toEqual([
+    ["register", "1", original.controllerInstanceId], ["grant", "2", f.current().intent!.controllerInstanceId],
+  ]);
+  expect(store.read(f.current())).toMatchObject({ pending: null, registration: { receipt: { executionGeneration: "1", controllerInstanceId: original.controllerInstanceId } }, current: { receipt: { executionGeneration: "2" } } });
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, executionGeneration: "2" });
+  expect(f.register).toHaveBeenCalledOnce(); expect(await f.launches()).toHaveLength(2);
+  const nativeRequests = await f.requests();
+  expect(nativeRequests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  const resumes = nativeRequests.filter(request => request.method === "thread/resume");
+  expect(resumes).toHaveLength(1);
+  expect(resumes[0]!.params).toMatchObject({ threadId: f.nativeId, developerInstructions: original.roleConfiguration!.instructions, excludeTurns: true });
+  expect(nativeRequests.filter(request => request.method === "turn/start")).toHaveLength(0);
+  expect(calls.some(call => call.includes("/test-sessions/"))).toBe(false);
+  expect(errors).toEqual([]); expect(f.relayErrors).toEqual([]);
+}, 120_000);
 
 test("deletes every private generation after real Controller stop while preserving cwd, native history and an independent Task worktree", async () => {
   const f = await fixture({ aliases: true }), signal = AbortSignal.timeout(100_000);
@@ -796,6 +897,50 @@ test("deletes every private generation after real Controller stop while preservi
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
 
+
+test("explicit recovery stops a real journal-bound Controller after its Bot execution index is lost", async () => {
+  const f = await fixture({ hosted: true, localRecovery: true }), signal = new AbortController().signal;
+  await launchAndObserveReady(f, signal);
+  const ticket = await f.process.readTicket(f.current()), original = f.journal()!;
+  expect(original.controllerProcess).not.toBeNull(); expect(original.nativeStopped).toBe(false);
+  const proof = original.controllerProcess!;
+  const cleanupLease = process.platform === "win32" ? await acquireControllerJobLease(ticket.launchId, proof, Date.now() + 10_000) : undefined;
+  // Keep independently authenticated cleanup authority even if compensation fails.
+  cleanups.push(async () => {
+    try { await cleanupFixtureProcesses(proof, original.nativeProcesses, cleanupLease); }
+    finally { if (cleanupLease !== undefined) releaseControllerJobLease(cleanupLease); }
+  });
+  const paths = resolveWorkerPaths(f.home), db = new Database(paths.databaseFile);
+  try { db.prepare("DELETE FROM bot_executions").run(); } finally { db.close(); }
+  const bot = f.getBot();
+  const workerCleanup = { state: "failed", code: "execution_evidence_missing" } as const, serverCleanup = { state: "pending", code: null } as const;
+  const deleted: BotDeleted = { id: bot.id, workerId: bot.workerId, version: String(BigInt(bot.version) + 1n),
+    deletion: { deletionId: randomUUID(), requestedVersion: bot.version, workerCleanup, serverCleanup } };
+  f.store.observe(f.owner, deleted, Date.now());
+  const requests: string[] = [];
+  f.http!.on("request", (request, response) => {
+    requests.push(request.method!);
+    response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+    const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+    if (request.method !== "GET" || pathname !== `/api/v1/me/bots/${bot.id}`) {
+      response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Unexpected recovery request", requestId: "fixture" } })); return;
+    }
+    response.end(JSON.stringify(deleted));
+  });
+  const input = { homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd,
+    serverUrl: f.owner.serverOrigin, ownerUserId: f.owner.ownerUserId, serverToken: "fixture-parent-token", botId: bot.id, bot: deleted, signal };
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(await confirmControllerProcessesStopped(proof, original.nativeProcesses, undefined, cleanupLease)).toBe(true);
+  const stopped = f.journal()!;
+  expect(stopped).toMatchObject({ lifecycle: "stopped", nativeStopped: true, executionGeneration: original.executionGeneration, controllerInstanceId: original.controllerInstanceId });
+  if (process.platform === "win32") expect(readProvenWindowsStoppedControllerGeneration(f.current().intent!.journalPath, ticket)).toEqual(stopped);
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(f.journal()!.stoppedAt).toBe(stopped.stoppedAt);
+  expect(f.executions.get(f.current())).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+  expect(f.current().observed).toEqual(deleted); expect(existsSync(f.current().intent!.ticketPath)).toBe(true);
+  expect(existsSync(f.current().intent!.journalPath)).toBe(true); expect(existsSync(paths.lockFile)).toBe(false);
+  expect(requests).toEqual(["GET", "GET"]); expect(await f.launches()).toHaveLength(1);
+}, 120_000);
 
 test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
   const f = await fixture({ hosted: true }), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];

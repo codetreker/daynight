@@ -53,7 +53,7 @@ describe("task CLI protocol outcomes", () => {
     const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
     expect(diagnostic).toContain(code); expect(diagnostic).toContain("refused-request");
     if (status === 401) expect(diagnostic).toContain("daynight login");
-    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch).toHaveBeenCalledTimes(args[0] === "show" ? 1 : 2);
     for (const [, init] of f.fetch.mock.calls) expect(new Headers(init!.headers).get("Authorization")).toBe("Bearer fixture-token");
   });
 
@@ -86,6 +86,6 @@ describe("task CLI protocol outcomes", () => {
     f.context.stdout.mockClear();
     expect(await f.run(["show", taskId, "--json", "--project", projectId])).toBe(0);
     expect((parseApiJson(f.context.stdout.mock.calls[0]![0]) as Task).description).toBe(markdown);
-    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["GET", "PATCH", "GET", "GET"]);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["PATCH", "GET"]);
   });
 });

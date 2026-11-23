@@ -2,55 +2,6 @@ import type { ToolPathTelemetry } from "./worker-tool-paths.js";
 import type { TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
-export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
-export type TaskStep = {
-  readonly id: string;
-  readonly title: string;
-  readonly description: string;
-  readonly status: TaskStepStatus;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-};
-export type StepsResource = {
-  readonly projectId: string;
-  readonly taskId: string;
-  readonly version: bigint;
-  readonly steps: readonly TaskStep[];
-};
-export type StepResource = {
-  readonly projectId: string;
-  readonly taskId: string;
-  readonly version: bigint;
-  readonly step: TaskStep;
-};
-
-export type AddTaskStepInput = {
-  readonly version: bigint;
-  readonly id: string;
-  readonly title: string;
-  readonly description?: string;
-  readonly status?: TaskStepStatus;
-  readonly before?: string;
-  readonly after?: string;
-};
-export type DeleteTaskStepInput = { readonly version: bigint };
-export type TaskStepsReadOptions = { readonly requestId: string };
-export type TaskStepWriteOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
-export type AddTaskStepOptions = TaskStepWriteOptions;
-export type UpdateTaskStepInput = {
-  readonly version: bigint;
-  readonly title?: string;
-  readonly description?: string;
-};
-export type SetTaskStepStatusInput = { readonly version: bigint; readonly status: TaskStepStatus };
-export type MoveTaskStepInput = {
-  readonly version: bigint;
-  readonly before?: string;
-  readonly after?: string;
-  readonly position?: "first" | "last";
-};
-export type MoveTaskStepOptions = TaskStepWriteOptions;
-
 export type TaskPlatform = "windows" | "linux" | "macos";
 
 export type User = {
@@ -179,6 +130,27 @@ export type ProjectDeletionPreview = {
   readonly nextCursor: string | null;
 };
 export type ProjectDeletionReceipt = { readonly projectId: string; readonly deleted: true };
+
+export type ProjectRepositoryClassification = "unchanged" | "same_repository" | "different_repository" | "unverified";
+export type ProjectRepositoryPreview = {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly currentRepoUrl: string;
+  readonly repoUrl: string;
+  readonly repositoryVersion: string;
+  readonly ownershipVersion: string;
+  readonly classification: ProjectRepositoryClassification;
+  readonly targetGitHubRepositoryId: string | null;
+  readonly unverifiedReason: "unsupported_host" | "no_verified_repository" | "no_github_access" | "provider_unavailable" | null;
+  readonly bindingsInvalidated: boolean;
+};
+export type ProjectRepositoryReceipt = {
+  readonly projectId: string;
+  readonly repoUrl: string;
+  readonly repositoryVersion: string;
+  readonly changed: boolean;
+  readonly bindingsInvalidated: boolean;
+};
 
 export type ProjectTransferPreview = {
   readonly sourceTeam: TeamRef;
@@ -320,6 +292,7 @@ export type Task = {
   readonly id: string;
   readonly type: "task" | "goal";
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
@@ -364,7 +337,7 @@ export type TaskGraphSummary = {
 /** A complete ordinary chain with direct external prerequisites, whose own dependency references may lie outside the returned tasks. */
 export type TaskGraph = {
   readonly observedAt: string;
-  readonly project: Project;
+  readonly project: Project | { readonly id: string };
   readonly summary: TaskGraphSummary;
   readonly tasks: readonly GraphTask[];
 };
@@ -375,6 +348,7 @@ export type CreateTaskInput = {
   readonly title: string;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly status?: TaskStatus;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
@@ -398,7 +372,7 @@ export type UpdateTaskInput = {
   readonly tagIds?: readonly string[];
 };
 export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
-export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
+export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus; readonly cancelDescendants?: boolean };
 export type WorkerClaimDescriptor = {
   readonly claimId: string;
   readonly workerId: string;
@@ -425,6 +399,7 @@ export type TaskFilters = {
   readonly untagged?: boolean;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
@@ -441,17 +416,19 @@ export type TaskSearchItem = {
   readonly id: string;
   readonly type: "task" | "goal";
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
+  readonly parentTaskContext?: { readonly taskId: string; readonly title: string };
   readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "parentTaskId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;

@@ -274,3 +274,71 @@ func TestUsageHTTPErrorStatusAndRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestUsagePaginationQueryValidation(t *testing.T) {
+	const id = "10000000-0000-4000-8000-000000000001"
+	principal := model.Principal{UserID: "reader"}
+	for _, route := range []struct {
+		name, path, op string
+		args           []any
+	}{
+		{"task records", "/api/projects/" + id + "/tasks/" + id + "/usage/v1/records", "records", []any{id, id, "", app.PageRequest{Limit: 100}}},
+		{"test records", "/api/test-sessions/" + id + "/usage/v1/records", "records", []any{"", "", id, app.PageRequest{Limit: 100}}},
+		{"chain", "/api/projects/" + id + "/usage/v1/aggregates/chain/" + id, "aggregate", []any{id, "chain", id, ""}},
+		{"goal", "/api/projects/" + id + "/usage/v1/aggregates/goal/" + id, "aggregate", []any{id, "goal", id, ""}},
+	} {
+		for _, tc := range []struct {
+			name, query, code string
+			calls             int
+		}{
+			{"absent", "", "", 1},
+			{"empty", "?cursor=", "", 1},
+			{"malformed escape", "?cursor=secret&bad=%xx", "invalid_filter", 0},
+			{"semicolon", "?cursor=secret&bad=a;b", "invalid_filter", 0},
+			{"duplicates", "?cursor=secret&cursor=", "invalid_cursor", 0},
+			{"encoded duplicate", "?cursor=&%63ursor=secret", "invalid_cursor", 0},
+		} {
+			t.Run(route.name+"/"+tc.name, func(t *testing.T) {
+				ctx := t.Context()
+				service := &controlledOperations{t: t, ctx: ctx, name: route.op, principal: principal, args: route.args}
+				mux := http.NewServeMux()
+				registerRoutes(mux, service, principalAuth{principal}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, httptest.NewRequest("GET", route.path+tc.query, nil).WithContext(ctx))
+				want := http.StatusOK
+				if tc.code != "" {
+					want = http.StatusBadRequest
+				}
+				if w.Code != want || service.calls != tc.calls || tc.code != "" && !strings.Contains(w.Body.String(), `"code":"`+tc.code+`"`) || strings.Contains(w.Body.String(), "secret") {
+					t.Fatalf("status=%d calls=%d body=%s", w.Code, service.calls, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestUsagePaginationChecksAuthenticationAndResourceIDBeforeQuery(t *testing.T) {
+	const id = "10000000-0000-4000-8000-000000000001"
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, path := range []string{
+		"/api/test-sessions/not-a-uuid/usage/v1/records?cursor=a&cursor=b",
+		"/api/projects/" + id + "/usage/v1/aggregates/goal/not-a-uuid?bad=%xx",
+	} {
+		service := &controlledOperations{t: t}
+		mux := http.NewServeMux()
+		registerRoutes(mux, service, fixedAuth{}, logger)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 404 || service.calls != 0 {
+			t.Fatal(w.Code, service.calls, w.Body.String())
+		}
+		calls := 0
+		mux = http.NewServeMux()
+		registerRoutes(mux, service, rejectingAuth{&calls}, logger)
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 401 || calls != 1 || service.calls != 0 {
+			t.Fatal(w.Code, calls, service.calls)
+		}
+	}
+}

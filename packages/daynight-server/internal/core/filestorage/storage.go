@@ -78,6 +78,11 @@ const (
 
 type Gates interface {
 	ResidencyGate
+	// TryAcquireArchive reserves a nonblocking owner slot for a Session, or an
+	// exclusive owner slot for physical cleanup. The caller closes the permit
+	// after all protected work. Different Sessions share at most limit slots;
+	// the same Session and cleanup never overlap another conflicting permit.
+	TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error)
 	// AcquireGate waits for a permit and uses ctx only for acquisition.
 	AcquireGate(ctx context.Context, domain GateDomain, key string) (io.Closer, error)
 }

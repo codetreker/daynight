@@ -5,6 +5,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
@@ -27,8 +29,21 @@ func (d *DAO) IssueFamily(ctx context.Context, issue store.OAuthFamilyIssue) err
 		issue.AccessExpiresAt.After(g.ExpiresAt) {
 		return &model.Fault{Code: "invalid_input", Message: "Invalid OAuth credential family input."}
 	}
+	var scopes []scopepolicy.ScopeID
+	var version *int64
+	if g.ScopePolicy != nil {
+		if g.Scope != "daynight:mcp" || g.ScopePolicy.Kind() != scopepolicy.MCP || g.ScopePolicy.Version() != 1 {
+			return &model.Fault{Code: "invalid_input", Message: "Invalid OAuth grant scope policy."}
+		}
+		if _, err := scopepolicy.NewPolicy(scopepolicy.MCP, g.ScopePolicy.Scopes(), g.ScopePolicy.Version()); err != nil {
+			return &model.Fault{Code: "invalid_input", Message: "Invalid OAuth grant scope policy."}
+		}
+		scopes = g.ScopePolicy.Scopes()
+		v := g.ScopePolicy.Version()
+		version = &v
+	}
 	// All relationships are derived from the grant, not caller-supplied copies.
-	_, err := d.tx.Exec(ctx, `INSERT INTO oauth_grants (id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, g.ID, g.UserID, g.ClientID, g.ClientSnapshot, g.Resource, g.Scope, g.CreatedAt, g.ExpiresAt)
+	_, err := d.tx.Exec(ctx, `INSERT INTO oauth_grants (id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at,business_scopes,scope_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, g.ID, g.UserID, g.ClientID, g.ClientSnapshot, g.Resource, g.Scope, g.CreatedAt, g.ExpiresAt, scopes, version)
 	if err != nil {
 		return pg.AuthQueryError("insert OAuth grant", err)
 	}

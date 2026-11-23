@@ -147,11 +147,14 @@ func (s *PreviewSSO) Create(ctx context.Context, dao store.PreviewSSODAO, return
 	if err := s.ValidateReturnURL(returnURL); err != nil {
 		return model.PreviewSSOLogin{}, err
 	}
-	started := time.Now()
 	if err := dao.CleanupPreviewSSO(ctx, now); err != nil {
 		return model.PreviewSSOLogin{}, err
 	}
-	login := model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: returnURL, ExpiresAt: now.Add(time.Since(started)).Add(LoginLifetime)}
+	issuedAt, err := browserTime(ctx, dao)
+	if err != nil {
+		return model.PreviewSSOLogin{}, err
+	}
+	login := model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: returnURL, ExpiresAt: issuedAt.Add(LoginLifetime)}
 	if err := dao.InsertPreviewSSO(ctx, login); err != nil {
 		return model.PreviewSSOLogin{}, err
 	}
@@ -180,11 +183,10 @@ func (s *PreviewSSO) Authorize(ctx context.Context, dao store.PreviewSSODAO, id,
 	if err := ValidateSession(principal); err != nil {
 		return PreviewSSOAuthorization{}, err
 	}
-	started := time.Now()
 	if err := dao.CleanupPreviewSSO(ctx, now); err != nil {
 		return PreviewSSOAuthorization{}, err
 	}
-	issuedAt, err := dao.LockPreviewAuthorization(ctx, id, secret.Hash(state), principal, now.Add(time.Since(started)))
+	issuedAt, err := dao.LockPreviewAuthorization(ctx, id, secret.Hash(state), principal, now)
 	if err != nil {
 		return PreviewSSOAuthorization{}, authLookupError(err)
 	}
@@ -245,7 +247,6 @@ func (s *PreviewSSO) Retry(ctx context.Context, dao store.PreviewSSODAO, id, sta
 	if state != "" {
 		hash = secret.Hash(state)
 	}
-	started := time.Now()
 	old, err := dao.TakePreviewSSORetry(ctx, id, hash, principal, now)
 	if err != nil {
 		return "", authLookupError(err)
@@ -253,7 +254,11 @@ func (s *PreviewSSO) Retry(ctx context.Context, dao store.PreviewSSODAO, id, sta
 	if err := s.ValidateReturnURL(old.ReturnURL); err != nil {
 		return "", err
 	}
-	login := model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: old.ReturnURL, ExpiresAt: now.Add(time.Since(started)).Add(LoginLifetime)}
+	issuedAt, err := browserTime(ctx, dao)
+	if err != nil {
+		return "", err
+	}
+	login := model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: old.ReturnURL, ExpiresAt: issuedAt.Add(LoginLifetime)}
 	if err := dao.InsertPreviewSSO(ctx, login); err != nil {
 		return "", err
 	}

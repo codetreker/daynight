@@ -35,23 +35,33 @@ type adminHandler struct {
 
 // RegisterAdminRoutes installs the adapter only when its invitation reception
 // page is available. origin must be the configured trusted public origin.
-func RegisterAdminRoutes(mux *http.ServeMux, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+func RegisterAdminRoutes(mux httpx.RouteRegistrar, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+	registerAdminRoutes(NewRouteRegistry(mux, nil), ops, auth, origin, logger)
+}
+
+// RegisterAdminRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterAdminRoutesWithRegistry(routes *RouteRegistry, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+	registerAdminRoutes(routes, ops, auth, origin, logger)
+}
+
+func registerAdminRoutes(routes *RouteRegistry, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
 	h := &adminHandler{operations: ops, origin: origin, logger: logger}
 	for _, route := range []struct {
 		pattern, method, allow string
 		handler                httpx.AuthenticatedHandler
+		class                  routeClass
 	}{
-		{"/api/v1/github/apps/{id}/admins", "GET", "GET, HEAD", h.listAdmins},
-		{"/api/v1/github/apps/{id}/admin-invitations", "GET", "GET, HEAD, POST", h.listInvitations},
-		{"/api/v1/github/apps/{id}/admins/{userId}/remove", "POST", "POST", h.removeAdmin},
-		{"/api/v1/github/apps/{id}/admin-invitations/{inviteId}/revoke", "POST", "POST", h.revokeInvitation},
-		{"/api/v1/github-app-admin-invitations/inspect", "POST", "POST", h.inspectInvitation},
-		{"/api/v1/github-app-admin-invitations/accept", "POST", "POST", h.acceptInvitation},
+		{"/api/v1/github/apps/{id}/admins", "GET", "GET, HEAD", h.listAdmins, routeRead},
+		{"/api/v1/github/apps/{id}/admin-invitations", "GET", "GET, HEAD, POST", h.listInvitations, routeRead},
+		{"/api/v1/github/apps/{id}/admins/{userId}/remove", "POST", "POST", h.removeAdmin, routeManage},
+		{"/api/v1/github/apps/{id}/admin-invitations/{inviteId}/revoke", "POST", "POST", h.revokeInvitation, routeReadManage},
+		{"/api/v1/github-app-admin-invitations/inspect", "POST", "POST", h.inspectInvitation, routeRead},
+		{"/api/v1/github-app-admin-invitations/accept", "POST", "POST", h.acceptInvitation, routeReadManage},
 	} {
-		mux.HandleFunc(route.method+" "+route.pattern, auth.Require(route.handler))
-		mux.HandleFunc(route.pattern, auth.Require(httpx.ResourceMethodNotAllowed(logger, route.allow)))
+		routes.handle(route.method+" "+route.pattern, auth.Require(route.handler), route.class)
+		routes.handle(route.pattern, auth.Require(httpx.ResourceMethodNotAllowed(logger, route.allow)), routeFallback)
 	}
-	mux.HandleFunc("POST /api/v1/github/apps/{id}/admin-invitations", auth.Require(h.createInvitation))
+	routes.handle("POST /api/v1/github/apps/{id}/admin-invitations", auth.Require(h.createInvitation), routeReadManage)
 }
 
 func adminMembershipResponse(m githubpr.AdminMembership) api.GitHubAppAdminMembership {

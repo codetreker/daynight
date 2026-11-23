@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 )
@@ -16,6 +17,7 @@ func (s *DirectMembers) AddExistingMember(ctx context.Context, p model.Principal
 	}
 	var result core.ExistingMemberResult
 	err = s.strict(ctx, id, func(scope store.TeamWriteScope) error {
+		ctx := s.admission.writeContext(ctx, scope)
 		if err := s.lockCredential(ctx, scope, p); err != nil {
 			return err
 		}
@@ -28,7 +30,10 @@ func (s *DirectMembers) AddExistingMember(ctx context.Context, p model.Principal
 			return err
 		}
 		// Contention may outlast the initial credential check.
-		return s.lockCredential(ctx, scope, p)
+		if err := s.lockCredential(ctx, scope, p); err != nil {
+			return err
+		}
+		return s.admission.requireWrite(ctx, scope, p, scopepolicy.TeamMembers, scopepolicy.TeamRead)
 	})
 	if err != nil {
 		return core.ExistingMemberResult{}, err

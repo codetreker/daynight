@@ -11,6 +11,7 @@ import (
 )
 
 type previewOperations interface {
+	Renew(context.Context, store.PreviewSSODAO, string, model.Principal) error
 	Create(context.Context, store.PreviewSSODAO, string, time.Time) (model.PreviewSSOLogin, error)
 	Start(context.Context, store.PreviewSSODAO, string, time.Time) (core.PreviewSSOStart, error)
 	Authorize(context.Context, store.PreviewSSODAO, string, string, model.Principal, time.Time) (core.PreviewSSOAuthorization, error)

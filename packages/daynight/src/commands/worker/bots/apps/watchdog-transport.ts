@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { withLifecycleReservation } from "../../lifecycle-context.js";
+import { classifyLifecycleSessionOperation } from "../../lifecycle-request-recovery.js";
 import { ApiError, createApiClient, type ApiClient } from "../../../../api/client.js";
 import { unsupportedSessionObservation } from "../../../../api/task-observation.js";
 import { createOperation } from "../../../../api/operation.js";
@@ -140,10 +142,10 @@ const source: WatchdogSource = {
       || task.session.freshUntil === null || Date.parse(task.session.freshUntil) <= Date.now()) return "rejected";
     if (beforeSubmit !== undefined && !await beforeSubmit()) return "rejected";
     signal.throwIfAborted();
-    const result = await api.sendTaskSessionCommand({ projectId: observation.projectId, taskId: observation.taskId, sessionId, operationId }, {
+    const result = await withLifecycleReservation("assistant", { kind: "watchdog_input", projectId: observation.projectId, taskId: observation.taskId, sessionId, claimId, executionGeneration }, () => api.sendTaskSessionCommand({ projectId: observation.projectId, taskId: observation.taskId, sessionId, operationId }, {
       protocol: SESSION_PROTOCOL, sessionId, claimId, executionGeneration, operationId, requestId: randomUUID(), kind: "send_message",
       payload: { content: [{ type: "text", text }], expectedTurnId: currentTurnId, origin: "daynight" },
-    });
+    }), operationId, receipt => classifyLifecycleSessionOperation(receipt.operation));
     return result.operation.state;
   }),
   operation: (observation, operationId, signal) => withApi(signal, async api => {

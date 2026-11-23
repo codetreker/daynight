@@ -102,12 +102,8 @@ seal 只代表原生停止并排空采集，不等同 Task done。
 能力接口的 `profiles[].qualifiedVersions` 列出精确版本及其 capability；
 基准 capability 与未列出的版本仍未验证，登记和能力协商使用相同版本判定。
 
-游标签名使用所有副本共享、重启稳定的三十二字节 key。
-`DAYNIGHT_USAGE_CURSOR_KEY` 显式配置为规范、无 padding 的 base64url；
-未配置时从既有 S2S shared key 以 `daynight.usage.cursor.v1` 做 HMAC-SHA256
-用途分离。两种 key 都没有时不挂载用量接口；若同时请求开启写入则启动失败。
-非法显式配置也启动失败，不静默降级。key 更换使原游标失效，不使用进程随机 key
-伪装重启一致性。
+用量路由在装配成功后挂载，不需要分页密钥或 S2S shared key。写入开关和
+Provider 资格配置仍须有效；S2S 认证和上报授权独立于分页。
 
 ## 查询
 
@@ -136,8 +132,13 @@ revision 包含稳定顺序的行 ID/rowVersion；页面可能含 state 时，�
 没有改写 usage 行，也不能使旧页与新投影混合。只散列时钟影响的可见结果，
 不因每次请求的时间不同而无条件 reset；measurement-only 页面保持原集合语义。
 revision 不使用 Task.version 或单个最大时间代替这些事实。
-签名游标绑定查询、权限、集合与最后键，不保留跨请求事务、快照表或进程内游标缓存。
-集合变化要求 reset，不能悄悄把新值接到旧页。
+游标是无填充 Base64URL 编码的 JSON，保留 `binding`、`revision`、`lastTime`、
+`lastId` 和 `expiresAt`。它不签名，也不赋予权限；每页在同一快照重新授权并
+比较查询绑定与集合版本。首次使用数据库时钟设定 15 分钟期限，续页不续期；
+过期或集合变化要求重读，不保留跨请求事务、快照表或进程内游标缓存。
+识别到旧版双段游标时，授权后返回 `reset_required`，让客户端从第一页重读。
+版本切换期间单次连续分页应访问相同后端版本；回退到旧版时，刷新网页清除新游标，
+且旧版若需提供用量服务仍须具备其有效分页密钥。
 
 Chain 用普通依赖双向连通分量，Goal 用 parent_id 的直接普通子 Task。
 先 distinct 当前成员，排除删除，再一次关联账本；不将 Task summary 与其链二次加总。
@@ -155,7 +156,8 @@ Task 摘要由独立的批量读取状态分发给卡片和 Detail。相同 Proj
 普通 `TaskRow` 从同一读取状态取得摘要，与紧凑格式化共用 total、output、input 的
 已知指标选择逻辑；没有这些数字时不创建用量元素，有数字时仅展示摘要与用量页签链接。
 读取层保留的摘要可在刷新失败时继续展示，行内不附加查询诊断或重试；这些入口保留在
-Detail 与用量页签。图节点也复用同一读取状态，仅在有可显示数字时渲染用量行。
+Detail 与用量页签。提供用量的图节点复用同一读取状态，仅在有可显示数字时渲染
+`Token` 短值，并以精确整数生成图内完整指标和完整性提示；图内格式不改变普通行与详情。
 用量自己的读取失败不能阻断任务详情和 Session。
 
 `features/usage/` 拥有摘要、执行与来源明细。Detail 用既有的保留面板与路由机制
@@ -167,14 +169,37 @@ measurement，过滤后重启分页，延迟的旧过滤响应被取消。明细
 换行。摘要和分页各自显示观察时点。
 
 `features/usage-aggregate/` 直接读取服务端 Chain/Goal 汇总，不从可见图节点或
-Task 摘要再相加。Chain/Goal 图通过原生展开入口惰性加载，Goal Detail 提供用量
-页签。汇总显示当前成员政策、已知用量成员、未知成员和互斥完整性分类；
+Task 摘要再相加。项目任务链展开行提供弹窗入口，完整链使用代表任务、范围链使用
+可读的可见普通成员作为锚点。`ProjectPage` 固定所选锚点并在项目可访问且链视图活跃时
+管理弹窗；项目或账户变化销毁选择。查询始终使用服务端当前包含该锚点的连通分量，
+代表变动或拆链不会替换锚点，仍可读的单成员结果有效。锚点失效清除统计并报告不可用。
+弹窗复用 `DetailFrame`、`useDetailOverlay` 与 `UsageAggregatePanel` 的 `chain` 模式，
+仅在打开期间读取能力及汇总，关闭时取消读取。关闭恢复可用入口的焦点，入口失效时
+聚焦任务链标签。未完整成员沿既有详情导航和草稿保护打开，弹窗关联的子详情使用用量层
+作为浮层所有者；子详情显式关闭后返回用量层。已接纳的外部导航清理临时层，不写入或
+恢复历史项，不抢焦点；拒绝导航不清理。锚点失效解除父子关联，仍可访问的详情和草稿
+交给既有流程。
+
+图宿主显式选择用量展示。项目任务列表的普通及全屏链图均不提供汇总或节点用量订阅；
+Goal 详情中嵌套的普通链图和 Goal 整体图保留用量，Goal Detail 保留用量页签。汇总显示当前成员政策、已知用量成员、未知成员和互斥完整性分类；
 缺失成员按服务端游标继续读取，并通过既有 Task 导航定位。
 成员 revision 或摘要 ETag 变化时拒绝追加旧页，保留已读内容并提供刷新；
 权限或资源丢失则清除该范围的私有统计。账户代次和 scope 身份共同隔离组件状态，
 不能将前一个账户或范围的迟到响应用于当前汇总。
 
 ## Controller 采集与上传
+
+创建任何 Provider 的 usage runtime 前，先按 launch ticket 的执行范围准入。
+Task 沿用已有 claim 身份；独立 Test 启动器在新建和 resume 的新票据中明确写入
+`usageScope=standalone_test`。该可选字段仅允许在 testExecutionId 票据上出现，
+并与 Bot recovery 绑定互斥。Bot 同样使用 testExecutionId，且旧票据未必带 recovery
+绑定，不能仅凭 ID 类型或恢复目录判断用途。缺少明确用途的旧 Test/Bot 票据不创建
+usage runtime、不向 Provider 传递采集器；原生执行继续。resume 生成的新票据只建立
+本地用途准入，不补写旧票据，也不授予跨 Test 的用量来源归属。独立 Test resume
+按既有产品合同创建新 Session/URL并复用 nativeSessionId；如果该原生身份已在旧 Test
+登记 anchor，现有服务端返回 source_conflict，新 Test 不取得 grant、不上传计量。
+旧来源保持原归属，原生恢复继续，不能将这项注册缺口视为零用量或 unsupported。
+跨 Test 的恢复计量需要服务端可验证的恢复关系及来源授权，不能仅放宽 anchor 检查。
 
 Copilot SDK `1.0.11` 的实时 `assistant.usage` 在历史恢复缓冲之前进入独立用量入口。
 Provider 先公布原生 Session 和 `SDK/runtime` 精确版本；事件映射仅保留 UUID、
@@ -194,7 +219,11 @@ Controller journal 格式 014 包含独立的 `usage_sources`、`usage_outbox` �
 上传器使用独立 HTTP 请求，能力和注册使用原服务的 PAT，batch 只用该 state 的
 usage grant。只有 `qualifiedVersions` 精确匹配时才发送 measurement；未验证版本
 保留本地计量，只上报 unavailable/profile_unverified 状态。未发送 measurement
-不能阻挡这种状态事件。每次 flight 固定准确 eventId/hash 集合，完整核验每项回执
+不能阻挡这种状态事件。execution_state 的完整 capability 必须匹配本次服务能力；
+资格或其他能力字段变化后，旧状态仅从本次批次中过滤，不改写正文/hash、
+不持久隔离或伪造 ACK，也不阻挡当前允许的 measurement 独立上传与 ACK。
+每次重新读取服务能力后重新筛选；原能力恢复且原 grant 仍有效时，原始 final seal
+可以继续上传。筛选在批次上限之前完成，避免旧状态占满窗口。每次 flight 固定准确 eventId/hash 集合，完整核验每项回执
 后才能原子删除；未知、缺项或异文回执不清队列。stale state 额外核对服务器来源
 状态。明确来源冲突隔离具体 poison event，保留证据并上报 partial，其余来源继续。
 
@@ -213,30 +242,123 @@ Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失
 不把 assistant.idle 或 Task done 当作完整计量凭据。未知整数不能变成已知零；
 不安全 JS number 记录 native_integer_unrepresentable。停止后的未 seal state
 按已确认停止证据补 missing_final，而不是推断 complete。
+独立 Test 在本地确认停止后尝试原 journal/grant 的有界补传；
+controller archive 重试同样重放原执行。用量与服务端停止回执、历史上传及历史 ACK
+独立，任一路失败仍尝试另一路。未确认用量保留 journal；有效原 grant 仍有当前服务能力
+允许上传的待传事件时
+提供同一 archive 重试入口。无 grant、已过期/撤销或仅剩冲突证据时明确报告不可补传
+的覆盖缺口，历史成功不因这些保留证据而被判为归档失败。已知未资格 profile 仅允许
+execution_state，滞留 measurement 不承诺补传；能力请求暂时失败则保留可重试语义。
 
 ## Codex Controller 能力上报
 
 Codex 与 Copilot 使用同一 journal、上传器和 stopped 补传机制。state 中的 provider
 在代次首次准入时固定，恢复不能改写 Provider 身份；旧 Copilot journal 无需迁移。
-上传器按 provider 选择固定 profile，并核对注册回执的 profile/provider。
+上传器按 state 中固定的 profile/provider 选择能力，并核对注册回执；旧 state 缺少
+profileId 时使用其历史 Provider profile，不因 CLI 升级改写计量口径。
 
 Codex 从实际 App Server initialize 回执的 `daynight/<version>` userAgent 读取版本，
 只准入已核实的 0.169.0/0.169.1；版本未核实不冒充原生 unsupported。
-原 thread 身份和 cwd 验证后登记 `codex-snapshot-unaccountable-v1`，仅上传
-unsupported/provider_unsupported 的 execution_state，不读取累计或 last 快照生成
-measurement。停止和恢复保留 unsupported，不把无计量误写成零或采集失败。
-原生快照缺少可比较权威修订且含上下文估计，因此 turn/completed 不构成用量最终回执。
+新 `0.169.0` state 登记 `codex-response-0.169.0-v1`，其余已核实版本和旧 state
+保留 `codex-snapshot-unaccountable-v1`。新线程通过 experimentalRawEvents 接收
+rawResponse/completed，冷恢复保持原 thread/resume，不能另建线程获取通知。
+responseId 与 threadId 的固定摘要映射到 immutable 来源；通知与 rollout 的单响应
+指标共用映射器。cache/reasoning 的默认零值缺少可观测性，不提升为已知零；模型未知。
+
+CodexUsageRollout 只读取启动或恢复回执 thread.path 指向的物理 regular file，
+核对原 session_meta 的版本、原生身份、cwd 和非 fork/子线程来源，拒绝链接、文件替换
+和截断。按有界 buffer/单行/时间增量读完整 JSONL 行，不保存 transcript；末尾半行
+留给原 writer 完成。仅 token_usage_record.usage 入计量，累计与上下文事件不计。
+turn/started 先将原 turn→state 写入 journal，再接收响应；恢复保留原归属，未绑定
+历史只记录缺口。停止确认后先等待已有 scan，再有界读最终 tail，然后 seal 用量。
+原生 best-effort 持久化以及子线程不在此 reader 范围内，故完成能力始终 partial_only。
+
+Controller journal 格式 019 保留原 018 表结构，版本屏障保护新增 profileId 与
+turn 归属元数据。升级不补写旧 state 的 profile，不重建历史 turn 归属；旧 CLI 明确
+拒绝 019，回退需使用认识该格式且关闭新 profile 的构建。新 CLI 保留对原 016、017、018 的只读兼容，活跃 owner 的旧 journal 不因观察或停止请求而迁移；退出后的升级仍须原 storage permit。服务端保持单表及旧 profile。
+
+## Claude Controller 输入计量
+
+Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
+后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
+firstParty 且实际启动环境、原生全局配置 env、生效 settings、再合并 flag 后的
+环境分别通过官方 endpoint 检查且后端一致时才映射 anthropic。flag 不能覆盖
+生效 managed settings 中的端点差异来取得资格。全局配置按原生 legacy/当前文件选择顺序解析，
+只提取 env，不传输或保留其他全局字段；无法确定、读取或解析时保持 unknown。
+主机凭据文件可在启动后注入环境，custom OAuth 可改变默认请求端点，配置任一
+入口时保持 unknown；不读取独立凭据文件。
+实际启动环境或生效 settings/flag 环境中的非空 `ANTHROPIC_UNIX_SOCKET` 会覆盖
+模型请求的网络去向，必须拒绝 Anthropic 资格；即使 base URL 为官方值且读回
+firstParty 也不能授予。socket 路径按值处理，`0`、`false` 等非空路径不是布尔关闭。
+WIF profile 的 `base_url` 同样可以覆盖请求端点。按实际启动环境和合并后的配置
+分别解析原生配置选择；显式官方 base URL 优先，无显式值时核验选中 profile。
+选中配置非官方、无法读取或无法确定时保持 unknown；不读取凭据内容或执行配置助手。
+Mantle、Anthropic AWS、Anthropic Google Cloud 等选择器和缺失/矛盾的原生读回
+均不能借用 Anthropic qualification；Windows 的环境变量名按大小写不敏感语义核验，
+同名不同大小写的歧义环境不授予资格；账户其他字段不进入 profile。原生初始化不属于
+进程证明及版本探针的期限：helper 先完成后者，pending profile 不建立用量身份，
+实际初始化读回完成后发布最终 backend，再返回初始化结果。原生启动期限保持由
+Provider 的既有初始化入口负责，计量资格等待不能缩短它。
+`claude-message-input-0.3.247-v1` 仅接收实际 SDK=0.3.247、实际 CLI 版本已知、
+backend=anthropic 的实时 root 消息完成流；providerVersion 编码为
+`<sdk>/<cli>/<backend>`，服务端还必须精确公布该组合的 qualification。
+
+来源键为 `claude-message-input-v1:<message.id>`，immutable revision=1。
+规范 input 是原生 input/cache-read/cache-creation 三项已知值之和，cache 是 input
+分项；output/reasoning/total/providerTotal 保持 null，不采集包装消息的输出占位值，
+不叠加 result.usage 或 modelUsage。缺失字段保持 null，
+不安全整数逐字段变 null、保留其他已知值并记录 native_integer_unrepresentable。
+
+SDK 0.3.247 的流式 assistant 包装消息在每个 content_block_stop 后发出，
+stop_reason=null，之后的 message_delta 仍可修正输入和缓存，因此不能提前入账。
+采集器只缓存一个 root message_start 的原生 id、model 和输入三项白名单；
+message_delta 中存在且非 null 的输入项覆盖原值，未提供的项保持原值或未知，
+不采用 CLI 内部缺失转零或累计聚合。收到非空 stop_reason 后的 message_stop 才生成
+immutable 事实。子代理流不结束 root 缓冲；缺少 start、完成证明、原生身份或模型时
+记录 native_recovery_gap，不猜关联。新的 start 覆盖未完成消息、结果返回、取消、
+断连和停止均丢弃未完成缓冲并保留缺口。非流式包装消息仅在自身 stop_reason 非空、
+没有 aborted/error 标记且原生 ID 有效时可使用；如果其 ID 不同于待完成流，
+先为旧流记录缺口，再接收独立完成的新消息。CLI 的 streaming_fallback_began
+不会转发给 SDK 消费者，没有完成 block 的失败流也没有 tombstone，不能依赖这两种
+信号清理旧流。同 ID 包装消息不能替代待完成流；中途 block 包装消息不入账。
+CLI 本地命令（例如 /context）的完整 assistant 包装消息使用 model=`<synthetic>`，
+没有真实模型调用。collector 在替换 pending 前忽略该消息，mapper 同样拒绝计量；
+本地命令既不制造零用量事实，也不清除无关原生流。真实模型的合法零值仍可计量。
+原生流语义以固定发布包
+[SDK 0.3.247 类型](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.247/sdk.d.ts)
+中的 SDKAssistantMessage 与 SDKPartialAssistantMessage 为准。
+
+CLI 2.1.247 的服务端 refusal fallback 能在相同 message.id 下更换 model，内部
+fallback block 不保证出现在公开 stream_event 中。root 的 system
+model_refusal_fallback 通知，或 message_delta.usage.iterations 中的
+fallback_message，均使当前模型归属失去证明。采集器丢弃缓冲并保留
+native_recovery_gap，直到新的 message_start 才恢复接收；旧消息后续的 delta、stop
+及完整 assistant 包装消息都不能绕过抑制重新入账。明确 scope=local 或带子代理
+parent_tool_use_id 的通知不清除无关 root 消息。不从 fallback 提示猜测或拆分 token
+到新旧模型，也不以本地修订改写 immutable 事实。
+
+CLI 的客户端 refusal fallback 还会在通知转发之前，使用临时 usage 合成
+stop_reason=refusal 的 message_delta 和 message_stop。因此 refusal 关闭和完整包装
+消息均不准入，立即记录 native_recovery_gap 并抑制旧消息，直到新的 message_start。
+此限制也会排除无法与合成关闭区分的真实 refusal；保留部分覆盖，不把临时零值当作
+最终事实，不等待延迟通知来撤销已经入账的 immutable 来源。
+
+只有原生 profile 到达后才固定当前代次身份；提前到达的消息记录缺口。
+backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒充 Anthropic 语义。
+现有历史读取不提供原 SDK/backend provenance，因此不使用当前版本重新资格化历史
+消息；已落盘事实由原 journal 重放，未落盘窗口保留 native_recovery_gap。
+子 Agent 不纳入本平面，保留 subagent_scope_unknown，结束状态最多 partial。
 
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的
-Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只报告不支持。
+Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只有精确匹配资格配置的 0.169.0 response profile 提供部分覆盖，其余版本与旧 snapshot profile 报告不支持。
 关闭新能力不停止原生执行、不修改旧累计 ACK，也不删除账本。
 
 迁移与 schema snapshot 同步维护，既有历史迁移不可改写。
 回退构建必须仍认识新迁移；`appliedMigrations` 的已知前缀检查会拒绝任意旧二进制。
 不得删迁移账本、checksum 或数据来伪造可回退状态。
-Controller journal 同样保留格式 014；回退 CLI 必须认识该格式，即使关闭用量功能。
+Controller journal 使用格式 019；回退 CLI 必须认识该格式，即使关闭用量功能。
 
 ## 验证职责
 

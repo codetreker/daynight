@@ -33,7 +33,7 @@ func testTaskSyncActiveTasksSnapshot(t *testing.T, db *postgres.Store) {
 	readerTask(t, db, other.ID, 16, model.TaskInProgress)
 	readerExec(t, db, `UPDATE tasks SET type='goal' WHERE id=$1`, goal.ID)
 	readerExec(t, db, `UPDATE tasks SET type='goal',deleted_at=now() WHERE id=$1`, deletedGoal.ID)
-	readerExec(t, db, `UPDATE tasks SET parent_id=$2 WHERE id=$1`, hiddenChild.ID, deletedGoal.ID)
+	readerExec(t, db, `UPDATE tasks SET parent_id=$2,ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$2) WHERE id=$1`, hiddenChild.ID, deletedGoal.ID)
 	readerExec(t, db, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, deleted.ID)
 	readerExec(t, db, `UPDATE tasks SET version=9007199254740993 WHERE id=$1`, active.ID)
 

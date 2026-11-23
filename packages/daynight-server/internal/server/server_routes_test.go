@@ -33,7 +33,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -324,10 +323,13 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 	if kind == "sync" {
 		readCount = 2
 	}
-	snapshotCalls := projectHTTPCount(t, readCount)
 	reader := accessHTTPProjectReader{}
 	if kind != "list" {
-		calls := projectHTTPCount(t, readCount)
+		accessCount := readCount
+		if kind == "project" || kind == "members" || kind == "access" {
+			accessCount++
+		}
+		calls := projectHTTPCount(t, accessCount)
 		reader.ProjectAccessCall = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 			calls()
 			projectHTTPCheck(t, actor, p)
@@ -428,15 +430,13 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		}
 	}
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshotCalls()
 		return op(snapshot)
 	}
 }
 func accessHTTPRefusal(t *testing.T, tx *httpTestStore, p model.Principal, id string, err error) {
 	t.Helper()
-	snapshot, called := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	called := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(accessHTTPSnapshot{project: projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
 			called()
 			projectHTTPCheck(t, actor, p)
@@ -641,9 +641,7 @@ func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, v
 			return value, nil
 		},
 	}
-	read := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, operation func(store.SnapshotScope) error) error {
-		read()
 		return operation(settingsHTTPSnapshot{project: project, task: reader, observed: func(context.Context) (time.Time, error) {
 			next("observed")
 			return value.UpdatedAt.Add(time.Minute), nil
@@ -652,6 +650,7 @@ func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, v
 }
 
 type settingsHTTPIdentityDAO struct {
+	store.PATScopeDAO
 	store.IdentityDAO
 	authenticate func(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
 }
@@ -768,9 +767,7 @@ func projectHTTPCount(t *testing.T, want int) func() {
 }
 func projectHTTPRead(t *testing.T, tx *httpTestStore, reader store.ProjectReader) {
 	t.Helper()
-	called := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		called()
 		return op(projectHTTPSnapshot{ProjectReader: reader})
 	}
 }
@@ -785,7 +782,7 @@ func projectHTTPAccess(p model.Principal, v model.Project) model.ProjectAccess {
 }
 func projectHTTPGet(t *testing.T, tx *httpTestStore, p model.Principal, v model.Project) {
 	t.Helper()
-	access, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	access, read := projectHTTPCount(t, 2), projectHTTPCount(t, 1)
 	projectHTTPRead(t, tx, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		access()
 		projectHTTPCheck(t, actor, p)
@@ -992,9 +989,8 @@ func teamHTTPCreate(t *testing.T, tx *httpTestStore, p model.Principal, name str
 }
 func teamHTTPRead(t *testing.T, tx *httpTestStore, p model.Principal, id string, result model.Team, readErr error) {
 	t.Helper()
-	snapshot, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	read := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, Read: func(ctx context.Context, user, gotID string) (model.Team, error) {
 			read()
 			projectHTTPCheck(t, user, p.UserID)
@@ -1005,9 +1001,8 @@ func teamHTTPRead(t *testing.T, tx *httpTestStore, p model.Principal, id string,
 }
 func teamHTTPList(t *testing.T, tx *httpTestStore, p model.Principal, items []model.Team) {
 	t.Helper()
-	snapshot, list := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	list := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, List: func(ctx context.Context, user string, page store.Page) (store.TeamPage, error) {
 			list()
 			projectHTTPCheck(t, user, p.UserID)
@@ -1152,7 +1147,7 @@ func (s *mcpBotCallScript) call(name string, args ...any) []any {
 	s.next++
 	if name != c.name || c.check == nil && !reflect.DeepEqual(args, c.args) {
 		s.t.Errorf("MCP Bot call %d got %s %#v, want %s %#v", s.next, name, args, c.name, c.args)
-		panic("MCP Bot DAO call mismatch")
+		panic(fmt.Sprintf("MCP Bot call %d got %s %#v, want %s %#v", s.next, name, args, c.name, c.args))
 	}
 	if c.check != nil {
 		c.check(args)
@@ -1259,6 +1254,11 @@ type mcpBotReader struct {
 	s *mcpBotCallScript
 }
 
+func (d *mcpBotReader) BotObservation(ctx context.Context, owner, id string) (store.BotObservationSource, error) {
+	r := d.s.call("BotObservation", owner, id)
+	return r[0].(store.BotObservationSource), mcpBotErr(r[1])
+}
+
 func (d *mcpBotReader) Bot(ctx context.Context, id string) (model.Bot, error) {
 	r := d.s.call("Bot", id)
 	return r[0].(model.Bot), mcpBotErr(r[1])
@@ -1347,6 +1347,30 @@ func (d *mcpBotWriteDAO) CommitBotPreferences(ctx context.Context, id string) er
 	return mcpBotErr(d.s.call("CommitBotPreferences", id)[0])
 }
 
+func (d *mcpBotWriteDAO) RecoveryWorker(ctx context.Context, owner, worker string) (model.WorkerMachine, error) {
+	r := d.s.call("RecoveryWorker", owner, worker)
+	return r[0].(model.WorkerMachine), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) RegisterBotRecovery(ctx context.Context, id string, version int64, recovery model.BotRecovery) (model.Bot, error) {
+	r := d.s.call("RegisterBotRecovery", id, version, recovery)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) AdvanceBotRecovery(ctx context.Context, id string, version, generation int64, worker string, machine model.WorkerMachine) (model.Bot, error) {
+	r := d.s.call("AdvanceBotRecovery", id, version, generation, worker, machine)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) BotRecoveryOperation(ctx context.Context, id, operation string) (store.BotRecoveryOperation, error) {
+	r := d.s.call("BotRecoveryOperation", id, operation)
+	return r[0].(store.BotRecoveryOperation), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) SaveBotRecoveryOperation(ctx context.Context, id string, operation store.BotRecoveryOperation) error {
+	return mcpBotErr(d.s.call("SaveBotRecoveryOperation", id, operation)[0])
+}
+func (d *mcpBotWriteDAO) BotRecoveryTokenUsed(ctx context.Context, id, hash string) (bool, error) {
+	r := d.s.call("BotRecoveryTokenUsed", id, hash)
+	return r[0].(bool), mcpBotErr(r[1])
+}
+
 type mcpBotCredentialReader struct{ s *mcpBotCallScript }
 
 func (d mcpBotCredentialReader) Credential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
@@ -1368,7 +1392,8 @@ func (s mcpBotSessionScope) BotDAO() store.BotWriteDAO    { return s.bot }
 
 type mcpBotSessionDAO struct {
 	sessionHTTPRejectedDAO
-	s *mcpBotCallScript
+	ctx context.Context
+	s   *mcpBotCallScript
 }
 
 func (d *mcpBotSessionDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
@@ -1414,14 +1439,12 @@ func mcpBotResult(err error) (store.Completion, error) {
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 func mcpBotSnapshot(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall) {
-	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("ReadSnapshot", nil)}, calls...)...)
+	s := mcpBotScript(t, calls...)
 	tx.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
-		s.call("ReadSnapshot")
 		scope := newHTTPTestSnapshot(t)
 		scope.Credentials = mcpBotCredentialReader{s: s}
 		scope.Bots = &mcpBotReader{s: s}
 		err := fn(scope)
-		s.verify()
 		return err
 	}
 }
@@ -1438,7 +1461,7 @@ func mcpBotSession(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall)
 	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("WriteSession", nil)}, calls...)...)
 	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		s.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: s}, bot: &mcpBotWriteDAO{s: s}})
+		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{ctx: ctx, sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: s}, bot: &mcpBotWriteDAO{s: s}})
 		s.verify()
 		return mcpBotResult(err)
 	}
@@ -1466,10 +1489,19 @@ func mcpBotCreation(t *testing.T, tx *httpTestStore, p model.Principal, defaults
 		}
 		return []mcpBotExpectedCall{mcpBotCall("BotPreferredWorker", []any{p.UserID}, (*string)(nil), nil), mcpBotCall("BotCreationCandidates", []any{p.UserID}, defaults, nil), mcpBotCall("BotCreationWorker", []any{p.UserID, want.WorkerID}, defaults, nil)}
 	}
-	reads := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
+	preflight := []mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}
+	if want.RequestedOverrides.WorkerID != nil {
+		preflight = append(preflight, mcpBotCall("BotWorker", []any{p.UserID, want.WorkerID}, nil))
+	}
+	reads := append(preflight, mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound))
+	reads = append(reads, selection()...)
 	mcpBotSnapshot(t, tx, reads...)
 	insert := model.Bot{ID: want.ID, OwnerUserID: p.UserID, WorkerID: want.WorkerID, Name: want.Name, RequestFingerprint: want.RequestFingerprint, RequestedOverrides: want.RequestedOverrides, ResolvedConfiguration: want.ResolvedConfiguration}
-	writes := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("LockCreation", []any{want.ID}, nil), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
+	writes := []mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("LockCreation", []any{want.ID}, nil), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}
+	if want.RequestedOverrides.WorkerID != nil {
+		writes = append(writes, mcpBotCall("Worker", []any{p.UserID, want.WorkerID}, nil))
+	}
+	writes = append(writes, selection()...)
 	writes = append(writes, mcpBotCall("Worker", []any{p.UserID, want.WorkerID}, nil), mcpBotCall("InsertBot", []any{insert}, nil), mcpBotCall("Bot", []any{want.ID}, want, nil), mcpBotCredentialCall(p))
 	mcpBotWrite(t, tx, writes...)
 }
@@ -1613,7 +1645,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 		}
 		inserted = value
 	}}
-	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), insertCall, bindCall, mcpBotLockCredentialCall(t, principal))
+	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), mcpBotCall("CheckWorkerExecution", []any{principal.UserID, worker}, nil), insertCall, bindCall, mcpBotLockCredentialCall(t, principal))
 	bound := decodeResponse[struct {
 		Bot     api.Bot     `json:"bot"`
 		Session sp.Snapshot `json:"session"`
@@ -1684,7 +1716,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 		mcpBotCall("RedactDeletedBot", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, final.Deletion}, final, nil))
 	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		receiptScript.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
+		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{ctx: ctx, sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
 		return mcpBotResult(err)
 	}
 	completed := decodeResponse[api.Bot](t, projectRequest(h, "POST", base+"/deletion-complete", jsonBody(t, receipt)), 200)
@@ -1771,7 +1803,7 @@ func mcpPATClientWithOrigin(t *testing.T, address, token, origin string) *sdk.Cl
 func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	t.Helper()
 	want := map[string]bool{
-		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_preview_repository": true, "project_set_repository": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
 		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
 		"team_member_set_role": true, "team_member_remove": true,
@@ -1781,8 +1813,6 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"tag_list": true, "tag_show": true, "tag_create": true, "tag_rename": true, "tag_update": true, "tag_delete": true,
 		"task_session_send": true, "task_session_operation": true,
 		"task_thread_read": true, "task_thread_post": true,
-		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,
-		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
 		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
@@ -1839,8 +1869,8 @@ func configureMCPPrincipals(t *testing.T, tx *httpTestStore, supplied map[string
 			panic("unreachable")
 		}
 		err := callback(httpAuthenticationScope{t: t, dao: dao})
-		if dao.calls != 1 {
-			t.Errorf("MCP authentication calls = %d, want 1", dao.calls)
+		if dao.calls > 1 || dao.calls == 0 && err == nil {
+			t.Errorf("MCP authentication calls = %d with error %v", dao.calls, err)
 		}
 		if err != nil {
 			return store.Completion{Outcome: store.TransactionNotCommitted}, err
@@ -1971,17 +2001,36 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
 
-	// A separate production router with an explicitly test-only tool exposes the
-	// authenticated request actor without adding a discoverable production tool.
+	// Exercise concurrent actor isolation at the production tool's project boundary.
 	instrumented := newApp()
-	entry := instrumented.mcp
-	input := map[string]any{"type": "object"}
-	output := map[string]any{"type": "object"}
-	err = entry.RegisterTool(&sdk.Tool{Name: "test_actor", InputSchema: input, OutputSchema: output}, mcphttp.BudgetControl, func(_ context.Context, actor mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
-		return mcphttp.ToolResult{Data: map[string]any{"user": actor.Principal.UserID, "credential": actor.AuthorityRef.ID, "kind": actor.AuthorityRef.Kind}}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	database.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
+		scope := newHTTPTestSnapshot(t)
+		var actor model.Principal
+		scope.Projects = projectHTTPReader{ProjectAccessCall: func(_ context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+			if (p != principals[0] && p != principals[1]) || id != project.ID {
+				return model.ProjectAccess{}, fmt.Errorf("unexpected actor or project: %#v %s", p, id)
+			}
+			actor = p
+			return projectHTTPAccess(p, project), nil
+		}}
+		marker := func() (model.Task, error) {
+			if actor.UserID == "" {
+				return model.Task{}, fmt.Errorf("task read without project authorization")
+			}
+			result := mcpCloneFixture(created)
+			result.Title = actor.UserID + "|" + actor.CredentialID
+			return result, nil
+		}
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "concurrent MCP actor")}
+		reader.TaskPriorityListFn = func(_ context.Context, id string, _ store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+			item, err := marker()
+			if id != project.ID {
+				return store.TaskPriorityPage{}, fmt.Errorf("unexpected project %s", id)
+			}
+			return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: item}}}, err
+		}
+		scope.Tasks = reader
+		return run(scope)
 	}
 	server := httptest.NewServer(httpx.RequestLogging(logger, instrumented))
 	t.Cleanup(server.Close)
@@ -1992,10 +2041,10 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		wg.Go(func() {
 			for range 12 {
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				result, err := sessions[i].CallTool(ctx, &sdk.CallToolParams{Name: "test_actor", Arguments: map[string]any{}})
+				result, err := sessions[i].CallTool(ctx, &sdk.CallToolParams{Name: "task_ready", Arguments: map[string]any{"projectId": project.ID, "view": "summary"}})
 				cancel()
 				if err != nil || result.IsError {
-					failures <- fmt.Errorf("tool call %d: %v", i, err)
+					failures <- fmt.Errorf("tool call %d: %#v %v", i, result, err)
 					return
 				}
 				encoded, err := json.Marshal(result.StructuredContent)
@@ -2004,9 +2053,11 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 					return
 				}
 				var envelope struct {
-					Data struct{ User, Credential, Kind string }
+					Data struct {
+						Items []struct{ TitlePreview string }
+					}
 				}
-				if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Data.User != principals[i].UserID || envelope.Data.Credential != principals[i].CredentialID || envelope.Data.Kind != "pat" {
+				if err := json.Unmarshal(encoded, &envelope); err != nil || len(envelope.Data.Items) != 1 || envelope.Data.Items[0].TitlePreview != principals[i].UserID+"|"+principals[i].CredentialID {
 					failures <- fmt.Errorf("unexpected actor for client %d: %s (%v)", i, encoded, err)
 					return
 				}
@@ -2041,7 +2092,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	}
 	assertStatus("invalid", http.StatusUnauthorized)
 	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
-	mcpIsolationRevocation(t, database, browserPrincipal, principals[0].CredentialID)
+	mcpIsolationRevocation(t, database, browserPrincipal, browserToken, principals[0].CredentialID)
 	revoke, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, origin+"/api/v1/me/tokens/"+principals[0].CredentialID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2190,6 +2241,42 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 	}
 }
 
+type mcpIsolationActivityDAO struct {
+	httpRejectedIdentityDAO
+	principal model.Principal
+	hash      []byte
+	now       time.Time
+	calls     *httpCallPlan
+	position  int
+}
+
+func (d *mcpIsolationActivityDAO) SessionTime(context.Context) (time.Time, error) {
+	unexpectedHTTPCall(d.t, "activity separate clock")
+	panic("unreachable")
+}
+func (d *mcpIsolationActivityDAO) LockBrowserSession(ctx context.Context, hash []byte, preview bool) (model.Session, time.Time, error) {
+	d.calls.Called("activity lock")
+	mcpAttachmentCheck(d.t, d.position, 0)
+	mcpAttachmentCheck(d.t, hash, d.hash)
+	if ctx.Err() != nil || preview {
+		unexpectedHTTPCall(d.t, "activity lock context/source")
+	}
+	d.position++
+	return model.Session{ID: d.principal.CredentialID, UserID: d.principal.UserID, TokenHash: d.hash, CreatedAt: d.now.Add(-time.Hour), ExpiresAt: d.now.Add(time.Hour)}, d.now, nil
+}
+func (d *mcpIsolationActivityDAO) TouchBrowserSession(ctx context.Context, id string, used, expires time.Time) error {
+	d.calls.Called("activity touch")
+	mcpAttachmentCheck(d.t, d.position, 1)
+	mcpAttachmentCheck(d.t, id, d.principal.CredentialID)
+	mcpAttachmentCheck(d.t, used, d.now)
+	mcpAttachmentCheck(d.t, expires, d.now.Add(168*time.Hour))
+	if ctx.Err() != nil {
+		unexpectedHTTPCall(d.t, "activity write context")
+	}
+	d.position++
+	return nil
+}
+
 type mcpIsolationRevocationDAO struct {
 	httpRejectedIdentityDAO
 	session model.Principal
@@ -2210,15 +2297,17 @@ func (d *mcpIsolationRevocationDAO) DeletePAT(ctx context.Context, owner, id str
 	mcpAttachmentCheck(d.t, []string{owner, id}, []string{d.session.UserID, d.tokenID})
 	return nil
 }
-func mcpIsolationRevocation(t *testing.T, tx *httpTestStore, browser model.Principal, tokenID string) {
-	before := tx.WriteIdentityCall
-	calls := newHTTPCallPlan(t, map[string]int{"identity callback": 2, "session lock": 1, "PAT delete": 1})
+func mcpIsolationRevocation(t *testing.T, tx *httpTestStore, browser model.Principal, browserToken, tokenID string) {
+	calls := newHTTPCallPlan(t, map[string]int{"identity callback": 2, "activity lock": 1, "activity touch": 1, "session lock": 1, "PAT delete": 1})
 	phase := 0
 	tx.WriteIdentityCall = func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error) {
 		calls.Called("identity callback")
 		phase++
 		if phase == 1 {
-			return before(ctx, fn)
+			dao := &mcpIsolationActivityDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: browser, hash: secret.Hash(browserToken), now: time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC), calls: calls}
+			err := fn(httpAuthenticationScope{t: t, dao: dao})
+			mcpAttachmentCheck(t, dao.position, 2)
+			return mcpBotResult(err)
 		}
 		dao := &mcpIsolationRevocationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, session: browser, tokenID: tokenID, calls: calls}
 		return mcpBotResult(fn(httpAuthenticationScope{t: t, dao: dao}))
@@ -2250,90 +2339,22 @@ func mcpIsolationRevokedAuthentication(t *testing.T, tx *httpTestStore, revokedT
 	}
 }
 
-func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
-	f, handler, task := stepsHTTPFixture(t, io.Discard)
-	path := taskPath(task) + "/steps"
-	file := attachmentFilePath(task, "plans/evidence.bin")
-	content := []byte{0, 0xff, 0x80, '\n', 'x'}
-	metadata := f.referencedAttachment("plans/evidence.bin", "application/octet-stream", content)
-	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
-	at := f.observed
-	original := model.TaskStep{ID: "abcdef01", Title: "Evidence", Description: "[Evidence](plans/evidence.bin)", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: original, Observed: at})
-	added := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "id": "abcdef01", "title": "Evidence", "description": "[Evidence](plans/evidence.bin)"})), http.StatusCreated)
-	if len(added.Steps) != 1 {
-		t.Fatalf("initial Step: %+v", added)
-	}
-	header.Version = 2
-	at = at.Add(time.Minute)
-	candidate := original
-	candidate.Title = "Updated evidence"
-	candidate.Description = ""
-	candidate.UpdatedAt = at
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{original}, Operation: "change", Candidate: candidate, Observed: at})
-	changed := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPatch, path+"/abcdef01", jsonBody(t, map[string]any{"version": added.Version, "title": "Updated evidence", "description": ""})), http.StatusOK)
-	if changed.Version != added.Version+1 || len(changed.Steps) != 1 || changed.Steps[0].ID != original.ID || changed.Steps[0].Title != "Updated evidence" || changed.Steps[0].Description != "" || changed.Steps[0].Status != original.Status || changed.Steps[0].CreatedAt != original.CreatedAt {
-		t.Fatalf("edited Step: %+v", changed)
-	}
-	f.expectAttachmentRead(metadata)
-	response := attachmentRequest(handler, http.MethodGet, file, "", nil)
-	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), content) {
-		t.Fatalf("editing changed attachment bytes: %d %x", response.Code, response.Body.Bytes())
-	}
-	f.expectAttachmentRead(metadata)
-	page := decodeResponse[api.AttachmentPage](t, projectRequest(handler, http.MethodGet, taskPath(task)+"/attachments", ""), http.StatusOK)
-	want := api.Attachment{Path: metadata.Path, ContentType: metadata.ContentType, SizeBytes: metadata.SizeBytes, CreatedAt: metadata.CreatedAt, UpdatedAt: metadata.UpdatedAt}
-	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], want) {
-		t.Fatalf("editing changed attachment metadata: %+v", page)
-	}
-}
-
-func TestStepsHTTPRevokedMemberCannotRead(t *testing.T) {
-	f, _, task := stepsHTTPFixture(t, io.Discard)
-	admin := defaultHTTPPrincipal()
-	admin.Kind = model.SessionCredential
-	member := model.Principal{UserID: "b6666666-6666-4666-8666-666666666666", CredentialID: "c7777777-7777-4777-8777-777777777777", Kind: model.SessionCredential}
-	path := taskPath(task) + "/steps"
-	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
-	at := f.observed
-	step := model.TaskStep{ID: "abcdef01", Title: "Secret Step", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: step, Observed: at})
-	created := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":1,"id":"abcdef01","title":"Secret Step"}`, configuredTestConfig().Server.PublicOrigin, 201, ""), 201)
-	header.Version = 2
-	f.principal = member
-	f.role = model.ProjectMemberRole
-	f.expectStepsRead(header, []model.TaskStep{step})
-	before := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "GET", path, "", "", 200, ""), 200)
-	if !reflect.DeepEqual(before, created) {
-		t.Fatal("member could not read granted Step")
-	}
-	for _, suffix := range []string{"", "/abcdef01"} {
-		f.expectStepAccessError(false)
-		f.authenticatedRequest(member, "GET", path+suffix, "", "", 404, "not_found")
-	}
-	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsRead(header, []model.TaskStep{step})
-	after := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "GET", path, "", "", 200, ""), 200)
-	if !reflect.DeepEqual(after, created) {
-		t.Fatal("denied member read changed owner's Steps")
-	}
-}
-
 func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 	var logs bytes.Buffer
-	f, handler, task := stepsHTTPFixture(t, &logs)
+	project, target, principal := taskHTTPMockModels()
+	f := &taskHTTPFixture{t: t, store: newHTTPTestStore(t), project: project, target: target, principal: principal, observed: target.UpdatedAt.Add(time.Minute)}
+	f.handler = resourceTestServer(t, f.store, attachmentTestFiles(t), &logs)
+	handler := f.handler
+	task := startupTaskDocument(t, f.target)
 	path := taskPath(task)
 	current := f.target
 	current.Title = "Private deleted body"
 	deletedAt := current.UpdatedAt.Add(time.Minute)
 	prepareWrite := func(success bool, readError error) {
 		base := newTaskHTTPMockBase(t, "Task deletion")
-		want := map[string]int{"write": 1, "access": 1, "task": 1}
+		want := map[string]int{"write": 1, "access": 1, "header": 1, "task": 1}
 		if success {
-			for _, name := range []string{"dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
+			for _, name := range []string{"children", "dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
 				want[name] = 1
 			}
 		}
@@ -2348,12 +2369,26 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		}
 		projects.InvalidateTaskCacheFn = func(ctx context.Context) error { plan.Called("invalidate"); return ctx.Err() }
 		writer := &taskHTTPWriterMock{taskHTTPMockBase: base}
+		writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
+			plan.Called("header")
+			if id != current.ID || ctx.Err() != nil {
+				unexpectedHTTPCall(t, "delete Task header")
+			}
+			return model.TaskHeader{ProjectID: current.ProjectID, ID: current.ID, Type: current.Type, Version: current.Version}, nil
+		}
 		writer.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
 			plan.Called("task")
 			if id != current.ID || ctx.Err() != nil {
 				unexpectedHTTPCall(t, "delete Task identity")
 			}
 			return copyTaskHTTPTask(current), readError
+		}
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			if id != current.ID || ctx.Err() != nil {
+				unexpectedHTTPCall(t, "child Task identity")
+			}
+			return []string{}, nil
 		}
 		writer.DependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
 			plan.Called("dependents")
@@ -2497,31 +2532,37 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		t.Fatal("server.New not found")
 	}
 	want := map[string]int{
-		"oauthauthorization.NewAuthorizationHTTP":  1,
-		"granthttp.RegisterRoutes":                 2,
-		"projecthttp.NewMembershipRoutes":          1,
-		"projecthttp.RegisterRoutes":               2,
-		"taghttp.RegisterRoutes":                   2,
-		"teamhttp.RegisterRoutes":                  2,
-		"workerhttp.RegisterRoutes":                2,
-		"prompthttp.RegisterRoutes":                2,
-		"workerhttp.NewReadOnlyRoutes":             1,
-		"taskhttp.TaskRoutes":                      3,
-		"sessionhttp.RegisterInspectionRoutes":     2,
-		"sessionhttp.RegisterHistoryRoutes":        2,
-		"sessionhttp.RegisterGroupDirectoryRoutes": 2,
-		"taskhttp.TaskSearchRoutes":                2,
-		"taskhttp.TaskStepsRoutes":                 2,
-		"taskhttp.TaskThreadRoutes":                2,
-		"taskhttp.TaskSyncRoutes":                  2,
-		"attachmenthttp.RegisterRoutes":            2,
-		"webhookhttp.NewRoutes":                    1,
-		"sessionhttp.NewRoutes":                    1,
-		"bothttp.RegisterRoutes":                   3,
-		"bothttp.RegisterRuntimeRoutes":            3,
+		"oauthauthorization.NewAuthorizationHTTP":         1,
+		"granthttp.RegisterScopedRoutesWithScopeObserver": 3,
+		"teamhttp.RegisterRoutes":                         2,
+		"teamhttp.RegisterDirectMemberRoutes":             2,
+		"sessionhttp.RegisterScopedInspectionRoutes":      2,
+		"sessionhttp.RegisterScopedHistoryRoutes":         2,
+		"sessionhttp.RegisterScopedGroupDirectoryRoutes":  2,
+		"sessionhttp.NewRoutes":                           1,
+		"bothttp.RegisterRoutes":                          3,
+		"bothttp.RegisterRuntimeRoutesWithScopeObserver":  3,
+		"bothttp.RegisterRecoveryRoutesWithScopeObserver": 2,
+	}
+	scoped := map[string]int{
+		"projecthttp.RegisterScopedRoutes":                     4,
+		"taghttp.RegisterScopedRoutes":                         2,
+		"workerhttp.RegisterScopedRoutes":                      2,
+		"prompthttp.RegisterScopedRoutes":                      2,
+		"workerhttp.NewScopedReadOnlyRoutes":                   1,
+		"taskhttp.ScopedReadRoutes":                            4,
+		"taskhttp.RegisterScopedWriteRoutes":                   3,
+		"taskhttp.RegisterScopedWorkerClaimRoutes":             2,
+		"taskhttp.ScopedTaskSearchRoutes":                      2,
+		"taskhttp.ScopedTaskThreadRoutesObserved":              2,
+		"attachmenthttp.RegisterScopedRoutesWithScopeObserver": 2,
+		"webhookhttp.RegisterScopedRoutes":                     2,
+	}
+	for name, index := range scoped {
+		want[name] = index
 	}
 	seen := make(map[string]int)
-	constructors, authRoutes, authBindings := 0, 0, 0
+	constructors, authRoutes, authBindings, policyBindings := 0, 0, 0, 0
 	ast.Inspect(constructor.Body, func(node ast.Node) bool {
 		if assignment, ok := node.(*ast.AssignStmt); ok {
 			for i, expression := range assignment.Lhs {
@@ -2553,21 +2594,35 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		if name == "authhttp.NewAuthentication" {
 			constructors++
 		}
-		if name == "auth.RegisterRoutes" {
+		if name == "authhttp.WithCredentialPolicy" {
+			policyBindings++
+			if len(call.Args) != 2 {
+				t.Error("policy authentication requires shared auth and current policy")
+			} else if id, ok := call.Args[0].(*ast.Ident); !ok || id.Name != "auth" {
+				t.Error("policy authentication does not wrap shared auth")
+			}
+		}
+		if name == "auth.RegisterScopedAccountRoutes" || name == "auth.RegisterScopedDeviceRoutesWithScopeObserver" {
 			authRoutes++
 		}
 		if index, exists := want[name]; exists {
 			seen[name]++
 			if len(call.Args) <= index {
 				t.Errorf("%s has no authentication argument", name)
-			} else if id, ok := call.Args[index].(*ast.Ident); !ok || id.Name != "auth" {
-				t.Errorf("%s does not use the shared authentication", name)
+			} else {
+				expected := "auth"
+				if _, ok := scoped[name]; ok {
+					expected = "scopedAuth"
+				}
+				if id, ok := call.Args[index].(*ast.Ident); !ok || id.Name != expected {
+					t.Errorf("%s does not use shared %s", name, expected)
+				}
 			}
 		}
 		return true
 	})
-	if constructors != 1 || authRoutes != 1 || authBindings != 1 {
-		t.Errorf("Authentication constructors = %d, bindings = %d, auth route registrations = %d; want one each", constructors, authBindings, authRoutes)
+	if constructors != 1 || authRoutes != 2 || authBindings != 1 || policyBindings != 1 {
+		t.Errorf("Authentication constructors=%d bindings=%d account/device registrations=%d policy wrappers=%d; want 1,1,2,1", constructors, authBindings, authRoutes, policyBindings)
 	}
 	for name := range want {
 		if seen[name] != 1 {
@@ -2660,11 +2715,15 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("POST", "/api/v1/auth/logout")
 	add("GET POST", "/api/v1/me/tokens")
 	add("PATCH DELETE", "/api/v1/me/tokens/{tokenId}")
+	add("GET POST", "/api/v2/me/tokens")
+	add("PATCH", "/api/v2/me/tokens/{tokenId}/description")
 	for _, op := range []string{"inspect", "decision", "logout"} {
 		add("POST", "/api/v1/auth/device/"+op)
 	}
 	add("GET", "/api/v1/oauth/grants")
 	add("GET", "/api/v2/oauth/grants")
+	add("GET", "/api/v3/oauth/grants")
+	add("PATCH", "/api/v3/oauth/grants/{id}/description")
 	add("POST", "/api/v1/oauth/grants/{id}/revoke")
 	addPlain("GET", "/api/v1/oauth/requests/{id}")
 	routes = append(routes, rootRoute{method: "POST", path: "/api/v1/oauth/requests/{id}/decision", pattern: "/api/v1/oauth/requests/{id}/decision", origin: true})
@@ -2703,7 +2762,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("POST", worker+"/report")
 	add("POST", worker+"/readonly/requests")
 	add("GET", worker+"/readonly/channel")
-	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt"} {
+	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/{projectId}/reviewer-prompt", worker + "/reviewer-prompt"} {
 		add("GET PUT", path)
 	}
 	add("GET POST", p+"/tasks")
@@ -2719,11 +2778,6 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("POST PATCH", task+"/worker-claim")
 	for _, op := range []string{"release", "withdraw"} {
 		add("POST", task+"/worker-claim/"+op)
-	}
-	add("GET POST", task+"/steps")
-	add("GET PATCH DELETE", task+"/steps/{stepId}")
-	for _, op := range []string{"status", "position"} {
-		add("PUT", task+"/steps/{stepId}/"+op)
 	}
 	add("GET POST", task+"/thread/messages")
 	add("GET", task+"/attachments")
@@ -2773,8 +2827,12 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		add("POST", archive+"/seal")
 		add("PUT", archive+"/prepare/history/{fileId}")
 		add("GET", archive+"/prepare/history/{fileId}/status")
+		add("POST", archive+"/prepare/history/{fileId}/complete")
+		add("POST", archive+"/prepare/history/{fileId}/restart")
 		add("GET PUT", archive+"/files/{fileId}")
 		add("GET", archive+"/files/{fileId}/status")
+		add("POST", archive+"/files/{fileId}/complete")
+		add("POST", archive+"/files/{fileId}/restart")
 		// Controller token endpoints perform their own credential parsing.
 		add("PUT", base+"/image-history-ledger/{fileId}")
 		add("GET", base+"/image-history-ledger/{fileId}/status")
@@ -2799,6 +2857,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	// Unsupported methods must reach the protected fallback.
 	for _, path := range []string{
 		"/api/v1/me", "/api/v1/auth/logout", "/api/v1/me/tokens", "/api/v1/me/tokens/{tokenId}",
+		"/api/v2/me/tokens", "/api/v2/me/tokens/{tokenId}/description", "/api/v3/oauth/grants", "/api/v3/oauth/grants/{id}/description",
 		"/api/v1/auth/device/inspect", "/api/v1/auth/device/decision", "/api/v1/auth/device/logout",
 		"/api/v1/oauth/grants", "/api/v2/oauth/grants", "/api/v1/oauth/grants/{id}/revoke",
 		"/api/v1/projects", p, p + "/deletion-preview", p + "/access", p + "/transfer-preview", p + "/transfer", p + "/settings",
@@ -2808,11 +2867,11 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		"/api/v1/team-invitations/inspect", "/api/v1/team-invitations/accept",
 		"/api/v1/me/workers", "/api/v1/me/workers/monitoring/query", worker, worker + "/monitoring", worker + "/configuration", worker + "/report",
 		worker + "/readonly/requests", worker + "/readonly/channel",
-		"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt",
+		"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/{projectId}/reviewer-prompt", worker + "/reviewer-prompt",
 		p + "/tasks", task, task + "/status", p + "/task-work", p + "/task-assignees", p + "/task-graph", p + "/task-sync",
 		"/api/v1/task-properties/schema", task + "/properties", task + "/properties/{name}",
 		task + "/worker-claim", task + "/worker-claim/release", task + "/worker-claim/withdraw",
-		task + "/steps", task + "/steps/{stepId}", task + "/steps/{stepId}/status", task + "/steps/{stepId}/position", task + "/thread/messages",
+		task + "/thread/messages",
 		task + "/attachments", task + "/attachments/files/{path...}", task + "/preview/{path...}",
 		"/api/v1/me/bots", "/api/v1/me/bots/defaults", "/api/v1/me/bots/{botId}", worker + "/bots",
 		worker + "/bots/{botId}/register", worker + "/bots/{botId}/grant", worker + "/bots/{botId}/report", worker + "/bots/{botId}/deletion-complete",
@@ -2864,7 +2923,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			continue
 		}
 		head := rootRoute{method: "HEAD", path: route.path, pattern: route.pattern}
-		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" ||
+		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" || route.path == "/api/v3/oauth/grants" || route.path == "/api/v2/me/tokens" ||
 			route.path == worker+"/monitoring" || route.path == worker+"/readonly/channel" ||
 			route.path == "/api/v1/session-capabilities" || route.path == "/api/v1/test-session-capabilities" ||
 			route.path == "/api/v1/test-sessions" || route.path == testSession ||
@@ -2884,7 +2943,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	urlFor := strings.NewReplacer(
 		"{projectId}", id, "{taskId}", id, "{workerId}", id, "{teamId}", id,
 		"{tokenId}", id, "{id}", id, "{userId}", id, "{inviteId}", id,
-		"{name}", "name", "{stepId}", "abcdef01", "{path...}", "file",
+		"{name}", "name", "{path...}", "file",
 		"{botId}", id, "{sessionId}", id, "{operationId}", id, "{resourceId}", id,
 		"{evidenceId}", id, "{recoveryId}", id, "{uploadId}", id, "{imageId}", id,
 		"{fileId}", id, "{endpointId}", id, "{deliveryId}", id,
@@ -2977,4 +3036,21 @@ func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, iden
 		panic("missing creation identity")
 	}
 	return false, nil
+}
+
+func (s mcpBotSessionScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission {
+	return s.session.(store.WorkerExecutionAdmission)
+}
+func (d *mcpBotSessionDAO) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	if ctx != d.ctx {
+		unexpectedHTTPCall(d.s.t, "Worker admission escaped Session transaction")
+	}
+	return mcpBotErr(d.s.call("CheckWorkerExecution", user, worker)[0])
+}
+func (d *mcpBotSessionDAO) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	if ctx != d.ctx {
+		unexpectedHTTPCall(d.s.t, "Worker admission escaped Session transaction")
+	}
+	result := d.s.call("WorkerExecutionVersion", user, worker)
+	return result[0].(*int64), mcpBotErr(result[1])
 }

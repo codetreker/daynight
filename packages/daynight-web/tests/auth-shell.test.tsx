@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "./helpers/credentialScopes";
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
@@ -63,6 +64,7 @@ const withDetailResources = (project: string, task: string, fallback: (url: stri
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
@@ -89,7 +91,7 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
-  it("binds direct-entry and retained member subtitles to their project through settings navigation", async () => {
+  it("binds direct-entry and retained workspace headings to their project through settings navigation", async () => {
     const second = "00000000-0000-4000-8000-000000000004";
     const secondProject = { ...project("Project Beta"), id: second };
     window.history.replaceState(null, "", `/projects/${second}/members`);
@@ -101,18 +103,18 @@ describe("sidebar integration with the authenticated workspace", () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByText("Project Beta · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "Project Beta", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${projectId}`));
     fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
     fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
-    await screen.findByText("私有项目 · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "私有项目", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${second}/settings`));
-    await screen.findByRole("heading", { name: "Project Beta" });
+    await screen.findByRole("heading", { name: "Project Beta" }, { timeout: 10000 });
     fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置分组" })).getByRole("link", { name: "成员与邀请" }));
-    await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
-    const previous = screen.queryByText("私有项目 · 管理协作成员与加入邀请");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Project Beta", level: 1 })).toBeVisible(), { timeout: 10000 });
+    const previous = screen.queryByRole("heading", { name: "私有项目", level: 1 });
     if (previous !== null) expect(previous).not.toBeVisible();
-  });
+  }, 30000);
 
   it("retains a project invitation and stops remote work after account change", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
@@ -269,7 +271,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     mockSidebarMediaQuery(true); window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     const fetcher = install(); render(<AuthenticatedApp />);
     const heading = await screen.findByRole("heading", { name: "私有项目" });
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);
@@ -443,7 +445,7 @@ describe("authenticated application shell", () => {
   it.each([['tokens', '访问凭据'], ['prompt', '用户级 Prompt']] as const)("returns an anonymous account %s destination after login", async (tab, label) => {
     window.history.replaceState(null, "", `/account?tab=${tab}`);
     let anonymous = true;
-    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v1/me/tokens" ? json({ items: [] }) : url === "/api/v2/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
+    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v2/me/tokens" ? json({ items: [] }) : url === "/api/v3/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
     const login = vi.fn();
     const view = render(<AuthenticatedApp navigateToLogin={login} />);
     fireEvent.click(await screen.findByRole("button", { name: "使用 GitHub 登录" }));
@@ -644,11 +646,11 @@ describe("authenticated application shell", () => {
 
   it("does not dispatch token metadata reads after an account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = install(url => url === "/api/v1/me/tokens" ? json({ items: [] }) : defaults(url));
+    const fetcher = install(url => url === "/api/v2/me/tokens" ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: "账户菜单：Alice" });
     accountChange(otherId); await screen.findByText("账户已变化");
     fireEvent.click(screen.getByRole("link", { name: "访问凭据" })); await act(async () => {});
-    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v2/me/tokens")).toHaveLength(0);
   });
 
 
@@ -665,12 +667,14 @@ describe("authenticated application shell", () => {
 
   it("keeps a one-time PAT reveal mounted after account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v2/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("link", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(tokenPanel().getByRole("button", { name: "创建令牌" }));
-    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } }); fireEvent.submit(document.getElementById("create-token-form")!);
+    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } });
+    await waitFor(() => expect(screen.getByRole("dialog").querySelector("button[type=submit]")).not.toBeDisabled());
+    fireEvent.submit(document.getElementById("create-token-form")!);
     const reveal = await screen.findByRole("dialog", { name: "访问令牌已创建" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);

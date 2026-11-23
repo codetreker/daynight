@@ -66,11 +66,11 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 		_ = provider.Close(context.Background())
 		return err
 	}
-	a.GitHubApps = githubservice.NewAppManager(backend)
-	a.GitHubConfig = githubservice.NewConfigManager(backend)
+	a.GitHubApps = githubservice.NewScopedAppManager(backend, a.Scoped.Credentials.Refresh)
+	a.GitHubConfig = githubservice.NewScopedConfigManager(backend, a.Scoped.Credentials.Refresh)
 	a.GitHubAdmins = githubservice.NewAdminManager(backend)
-	a.GitHubGrants = githubservice.NewGrantManager(backend, backend)
-	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider, logger)
+	a.GitHubGrants = githubservice.NewScopedGrantManager(backend, backend, a.Scoped.Credentials.Refresh)
+	a.GitHubProject = githubservice.NewScopedProjectAppManager(backend, provider, logger, a.Scoped.Credentials.Refresh)
 	a.Application.Projects.SetRepositoryObserver(a.GitHubProject)
 	a.GitHubWebhook = receiver
 	g := &githubRuntime{runner: runner, provider: provider, logger: logger}

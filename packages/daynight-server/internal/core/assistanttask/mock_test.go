@@ -66,6 +66,9 @@ type daoStub struct {
 	insertTask           func(context.Context, model.AssistantTask) (bool, error)
 	saveTask             func(context.Context, model.AssistantTask, store.AssistantTaskCondition) (bool, error)
 	deleteTaskContent    func(context.Context, string, string) error
+	retrospectiveTasks   func(context.Context, store.AssistantTaskQuery, time.Time) ([]string, error)
+	latestOutcomeAt      func(context.Context, string, string) (*time.Time, error)
+	markRetrospective    func(context.Context, string, string, time.Time) (bool, error)
 	claimOperation       func(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error)
 	insertClaimOperation func(context.Context, model.AssistantTaskClaimOperation) error
 	manual               func(context.Context, string, string, int64) (model.AssistantTaskManual, error)
@@ -75,6 +78,9 @@ type daoStub struct {
 	appendices           func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskAppendix, error)
 	insertAppendix       func(context.Context, model.AssistantTaskAppendix) (bool, error)
 	saveAppendix         func(context.Context, model.AssistantTaskAppendix, int64) (bool, error)
+	insertValidation     func(context.Context, model.AssistantTaskAppendixValidation) (bool, error)
+	deleteValidations    func(context.Context, string, string, string) error
+	relatedAppendices    func(context.Context, store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error)
 	proposal             func(context.Context, string, string, string) (model.AssistantTaskProposal, error)
 	proposals            func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskProposal, error)
 	insertProposal       func(context.Context, model.AssistantTaskProposal) (bool, error)
@@ -84,6 +90,8 @@ type daoStub struct {
 	insertItem           func(context.Context, model.AssistantTaskItem) (bool, error)
 	saveItem             func(context.Context, model.AssistantTaskItem, int64) (bool, error)
 	transferOpenItems    func(context.Context, string, string, *string) error
+	insertItemClosure    func(context.Context, model.AssistantTaskItemClosure) error
+	metrics              func(context.Context, string, string, time.Duration) (model.AssistantTaskMetrics, error)
 	retargetInbound      func(context.Context, string, string, string) error
 	record               func(context.Context, string, string, string) (model.AssistantTaskRecord, error)
 	records              func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskRecord, error)
@@ -97,6 +105,21 @@ type daoStub struct {
 	inquiries            func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error)
 	insertInquiry        func(context.Context, model.AssistantTaskInquiry) (bool, error)
 	saveInquiry          func(context.Context, model.AssistantTaskInquiry, string) (bool, error)
+	reclaimReceipts      func(context.Context, string, string, int) (int64, error)
+	reclaimEvents        func(context.Context, string, string, time.Time, int) (int64, error)
+	reclaimTasks         func(context.Context, string, time.Time, int) ([]string, error)
+}
+
+func (d *daoStub) InboundReclaimTasks(a0 context.Context, a1 string, a2 time.Time, a3 int) ([]string, error) {
+	return d.reclaimTasks(a0, a1, a2, a3)
+}
+
+func (d *daoStub) ReclaimInboxReceipts(a0 context.Context, a1, a2 string, a3 int) (int64, error) {
+	return d.reclaimReceipts(a0, a1, a2, a3)
+}
+
+func (d *daoStub) ReclaimInboundEvents(a0 context.Context, a1, a2 string, a3 time.Time, a4 int) (int64, error) {
+	return d.reclaimEvents(a0, a1, a2, a3, a4)
 }
 
 func (d *daoStub) Credential(a0 context.Context, a1 model.Principal) error {
@@ -127,6 +150,23 @@ func (d *daoStub) SaveTask(a0 context.Context, a1 model.AssistantTask, a2 store.
 
 func (d *daoStub) DeleteTaskContent(a0 context.Context, a1 string, a2 string) error {
 	return d.deleteTaskContent(a0, a1, a2)
+}
+
+func (d *daoStub) RetrospectiveTasks(a0 context.Context, a1 store.AssistantTaskQuery, a2 time.Time) ([]string, error) {
+	return d.retrospectiveTasks(a0, a1, a2)
+}
+
+func (d *daoStub) LatestOutcomeAt(a0 context.Context, a1 string, a2 string) (*time.Time, error) {
+	return d.latestOutcomeAt(a0, a1, a2)
+}
+
+func (d *daoStub) MarkRetrospective(a0 context.Context, a1 string, a2 string, a3 time.Time) (bool, error) {
+	return d.markRetrospective(a0, a1, a2, a3)
+}
+
+// noRetrospectives configures an event pull that finds no due retrospective.
+func noRetrospectives(context.Context, store.AssistantTaskQuery, time.Time) ([]string, error) {
+	return nil, nil
 }
 
 func (d *daoStub) ClaimOperation(a0 context.Context, a1 string, a2 string, a3 string) (model.AssistantTaskClaimOperation, error) {
@@ -165,6 +205,18 @@ func (d *daoStub) SaveAppendix(a0 context.Context, a1 model.AssistantTaskAppendi
 	return d.saveAppendix(a0, a1, a2)
 }
 
+func (d *daoStub) InsertAppendixValidation(a0 context.Context, a1 model.AssistantTaskAppendixValidation) (bool, error) {
+	return d.insertValidation(a0, a1)
+}
+
+func (d *daoStub) DeleteAppendixValidations(a0 context.Context, a1, a2, a3 string) error {
+	return d.deleteValidations(a0, a1, a2, a3)
+}
+
+func (d *daoStub) RelatedAppendices(a0 context.Context, a1 store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error) {
+	return d.relatedAppendices(a0, a1)
+}
+
 func (d *daoStub) Proposal(a0 context.Context, a1 string, a2 string, a3 string) (model.AssistantTaskProposal, error) {
 	return d.proposal(a0, a1, a2, a3)
 }
@@ -199,6 +251,14 @@ func (d *daoStub) SaveItem(a0 context.Context, a1 model.AssistantTaskItem, a2 in
 
 func (d *daoStub) TransferOpenItems(a0 context.Context, a1 string, a2 string, a3 *string) error {
 	return d.transferOpenItems(a0, a1, a2, a3)
+}
+
+func (d *daoStub) InsertItemClosure(a0 context.Context, a1 model.AssistantTaskItemClosure) error {
+	return d.insertItemClosure(a0, a1)
+}
+
+func (d *daoStub) Metrics(a0 context.Context, a1, a2 string, a3 time.Duration) (model.AssistantTaskMetrics, error) {
+	return d.metrics(a0, a1, a2, a3)
 }
 
 func (d *daoStub) RetargetPendingInbound(a0 context.Context, a1 string, a2 string, a3 string) error {
@@ -273,6 +333,24 @@ func baseDAO(t *testing.T, task model.AssistantTask) *daoStub {
 			t.Fatalf("wrong task scope %s %s", owner, id)
 		}
 		return task, ctx.Err()
+	}
+	d.reclaimReceipts = func(ctx context.Context, owner, id string, limit int) (int64, error) {
+		if owner != ownerID || id != taskID || limit != InboundReclaimLimit {
+			t.Fatalf("wrong receipt reclamation %s %s %d", owner, id, limit)
+		}
+		return 0, ctx.Err()
+	}
+	d.reclaimTasks = func(ctx context.Context, owner string, before time.Time, limit int) ([]string, error) {
+		if owner != ownerID || limit != InboundReclaimTaskLimit || !before.Equal(epoch.Add(-InboundRetention)) {
+			t.Fatalf("wrong reclamation task scope %s %v %d", owner, before, limit)
+		}
+		return nil, ctx.Err()
+	}
+	d.reclaimEvents = func(ctx context.Context, owner, id string, before time.Time, limit int) (int64, error) {
+		if owner != ownerID || id != taskID || limit != InboundReclaimLimit || !before.Equal(epoch.Add(-InboundRetention)) {
+			t.Fatalf("wrong inbound reclamation %s %s %v %d", owner, id, before, limit)
+		}
+		return 0, ctx.Err()
 	}
 	return d
 }

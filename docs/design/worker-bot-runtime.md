@@ -20,17 +20,41 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 删除投影保留停止与精确清理所需的原责任，只有本地私有清理完成后才裁剪定义和执行资料。Task 表、maxConcurrent、收尾期限和容量计算不读取 Bot 执行行；保留的私有路径也不授予删除普通 cwd 或共享 native home 的权限。
 
+`bots/delete.ts` 每次推进先用既有 Bot GET 核对原 deletionId/requestedVersion。已持久观察到 `workerCleanup=failed/execution_evidence_missing` 时，自动推进只读对账；明确证据缺失通过原失败回执协议保存此状态，不增加服务端资源。null/never_started 回执收到 session_conflict 后须先读取原删除，确认 Worker 清理仍未完成才报告证据缺失，错误状态码本身不证明回执未提交。`stopForDeletion` 不把缺失执行行当作未提交，真实持久 not-submitted 或明确启动拒绝仍走原正常路径。
+
+`bots/deletion-local.ts` 为 `bot recover` 取得原 Worker/Bot 锁，重新读取普通 Bot 删除责任并核对本地原归属及已确认承载身份，再调用既有 `withDeletion` 和精确清理；新执行准入关闭。执行行缺失但原 intent、ticket、journal 有效时，显式补偿复用 Controller stop 与 `recordStoppedControllerGeneration`，Windows 仍要求真实 Job 停证。原 journal 保存该代停止事实并保留 stoppedAt；缺失历史资料不能支持完整私有清理，因此不补造 execution 行、cleanup 计划或完成回执。CLI 通过既有 `reason=evidence_missing` 和 hint 表达部分停止结果，`generationStopped` 仅是本机 Error 标记，不是协议或持久字段。自动调度和普通 Worker 不使用此补偿。证据仍不足时保持失败，服务端完成条件保持原协议。用法见[删除补偿手册](../../packages/daynight/src/commands/skill/skills/using-daynight/references/bot-deletion.md)，取舍见[证据丢失决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+
+既有 `BotCleanup` 仅新增可选 `workerId`：显式补偿核实 hosting、原停止证明和完整 cleanup 计划后，在任何 remove 前保存。never_started 只接受仍保留的第一代未提交或明确 OS 拒绝执行，逐项匹配原 Session、execution、generation、Controller、instance 和 launchId。未完成计划重试时重新验证，不能用已有绑定跳过缺失或矛盾的原执行；既有计划可在同样验证后补记身份。finishDeletion 仍在提交回执前裁剪执行资料，保留绑定供同一 Worker 续做原回执；历史 localCompleted 的无绑定 never_started 责任仍拒绝。若该回执收到 session_conflict 且 GET 确认 Worker 清理未完成，只撤销该已完成 never_started 责任的重试绑定，传输未知不撤销；其余已核实身份不得改绑。清理移除 `recovery.json` 后，续做须匹配本机 workerId、原 deletionId/requestedVersion 和停证，只继续原计划及回执；尚存 pending、stale 或其他 Worker 的 hosting 记录仍拒绝。process 的停止、启动和一般 hosting 准入保持原规则。旧责任缺少该字段时沿用 `hosting.ownsHosting`：原 owner.workerId 与当前 Worker 相同仍按既有规则准入；由其他 Worker 承载时须有现存可确认的 hosting，不能从 Bot 原归属推定接管身份。`completeDeletion` 在实际请求提交边界记录结果可能未知，保留提交前失败的区别。服务端先提交 Worker 回执，再于另一事务执行清理并重新认证，因此完整 401 等错误也可能发生在回执已保存之后。提交后的错误沿错误链保留 CLI 的 `outcomeUnconfirmed:true`，不推定确定拒绝，也不包装为 `stop_unproven`；匹配的成功响应才确认回执，后续核对仍使用既有 Bot GET。
+
 ## 启动与授权
 
 `createBotProcess` 按 Bot 串行化启动、续期、停止和删除。Host 将独立 `canAdmitNewExecution()` 传给 runtime/process，Worker 依据 manager 存储 readiness 与已生效 native/recovery 配置实现它；`configuration()` 仍只用于能力和配置采样。首次预检先验证参数及目标配置环境，在每个 awaited preparation 后以及持久 intent、初次 register 与 launch submission 前重查门禁，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。
 
 `BotAdmissionBlockedError` 表示新执行仍需等待，发现循环不将它报告为环境启动失败。已冻结但从未派发的初次 launch 仍检查门禁；已经提交、未知提交或带有原 native identity 的恢复继续核对原 ticket、journal 和 frozen configuration，不因为新的准入状态创建空白替代执行或撤销输入/停止权限。准备资源释放与未知清理沿原 handle 归属处理。
 
-`bots/session-api.ts` 用 Worker 正常 PAT 调用 Bot register/grant/report 和 deletion-complete；响应必须携带相同账号，字节数与请求时间有界。注册传递首次 `botVersion`，之后的 grant/report 使用当前观察版本。HTTP 客户端不自动重复 POST；运行时先 GET 原 Bot，再核对或继续原请求。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
+`bots/session-api.ts` 用 Worker 当前 PAT 建立首次 Bot Session，并为专属存储的 Bot 登记恢复身份；此后的 grant/report 使用独立恢复接口，未迁移的共享存储保留旧生命周期接口。响应必须携带相同账号，字节数与请求时间有界。首次 Session 注册传递冻结的 `botVersion`，恢复登记与 report 使用当前观察版本。每个新恢复操作先通过当前账号授权的 Bot observation 读取服务端已提交的 Session/native/execution 绑定，再核对持久 intent、原 Controller 的新鲜认证观察或停证。续期同样先更新原 Controller 的 IPC 观察，不能只用 Worker 缓存。普通 Session GET 不作为该绑定的来源：旧 parent PAT 失效时，普通读取仍应拒绝，而专用恢复接口使用当前有效 PAT 和恢复证明重新授权。客户端不伪造完整 `SessionSnapshot`；授信成功后才通过普通读取核对服务端同步状态。HTTP 客户端不自动重复变更请求；恢复操作按下述持久原请求查询，不能用 GET 管理定义代替回执。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
+
+服务端 native ID 为 null 而本地已知 ID 时，同代授信使用观察到的服务端绑定，保留本地原生身份，并由原 Controller 在新授权下同步。要求两者先相等会在旧 parent PAT 失效时形成循环等待。首条输入才创建 native ID 的 Provider 也可续期同代 null 绑定；它在观察与提交之间发生变化时，按服务端明确事务拒绝处理。换代恢复仍要求服务端已有相同的非空 native ID、原代停证及既有 Provider 材料。尚未登记恢复身份的专属 Bot 若已停止并在本地进入下一代，首次登记延续已核验的精确前代停证，允许服务端仍处于该前代；登记回执保持服务端原代，只有后续 grant 才推进代次。缺失或错误的前代证明不能放宽 generation 校验。
 
 ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，为独立 Session，不含 Task/claim/worktree，角色与初始输入分别编码。Controller 自身仍负责 Provider 适配与原生权限。准备出的环境和别名责任保留到原执行停止；提交前失败可以释放当前准备资源，提交后未知结果不能清理仍可能使用的目录。
 
 `backends/controller-process.ts` 被 Task 与 Bot 实际共享：日志准备、持久提交回调、detached spawn、process proof、认证 IPC 观察和按执行串行化。Task 的 worktree、claim、cleanup prompt、归档及回收仍由原 backend 持有。明确 OS 启动拒绝先持久化，再报告服务端；Provider 快速拒绝后 IPC 可能已关闭，此时只允许读取同 fence 的 journal 失败证据，旧 ready 记录不能作为当前在线证明。启动时的 Windows 进程证明通过本进程内的同一原 process handle 采集出生时间、父进程身份及完整命令行，保持证明字段结构与出生时间精度，完整 Unicode 命令行不再经过 PowerShell console 编码，并使用共享 15 秒预算；native 调用之间检查预算，已开始的调用仍须等待返回。POSIX 采集和日常身份复核仍为 5 秒；完整证明、认证 IPC 和资源责任由[Session 设计](task-session-protocol.md)拥有。
+
+## 本地发现与承载接回
+
+`bots/local-store.ts` 先扫描当前服务和账号所属的 Bot 专属目录并取得各自的真实独占锁，再进行远端 inventory 核对。每个本地记录保留创建时的 `owner.workerId`；数据库行、公开 DTO 与冻结配置不因当前 Worker 改变而重写。远端详情使用该原始 owner 解码，恢复请求使用当前有效账号认证。目录锁冲突或单个目录不可读按 Bot 报告；新 Worker 的空 inventory、列表请求失败或其它 Bot 的异常不能遮蔽仍可独立核对的本地记录。
+
+`bots/recovery-store.ts` 在 `bots/<botId>/recovery.json` 保存恢复证明、原登记、当前承载回执与待核对操作。存储操作要求 Bot 锁仍被持有，校验服务、账号、Bot 和原 Session。请求包含固定 operation ID；grant/takeover 的随机 token 也在 HTTP 派发前耐久保存。保存意图后即使尚未发出 HTTP，中断恢复也只查询原操作，不自动重新提交。回执核对 Worker、Session、Controller、代次与 token 摘要；回执落盘和待核对状态结束分开记录，文件发布失败不推断回滚。仅原提交收到完整验证的同账号 HTTP 409、结构化 resource_conflict、session_conflict、version_conflict 或 archive_conflict 响应时，依照服务端事务错误合同持久记录原操作和明确拒绝，才允许后续重新观察并以新 operation ID 和 token 发起新操作。原 operation 查询的任何失败、缺失回执、损坏响应、断连、超时和未知事务结果仍保留 pending，只能查询原请求；拒绝证据落盘失败也不能直接开始下一次提交。
+
+`bots/reconciliation.ts` 协调[恢复 v1 协议](assistant.md#服务端恢复-v1-协议)。登记沿原 Worker 路径，接管与后续 grant 使用当前承载 Worker 路径；`operations/<operationId>` 虽使用 POST，只读取原操作。已确认但 `current=false` 的历史授权不可写入 Controller credential；原操作结果解决后，续期或当前认证改变可申请独立的新 grant。未解决的请求不得分配替代 operation。
+
+新 Worker 在收到服务端对自身机器身份报告的成功回执之前，不准备或提交新的恢复登记、grant 或 takeover；本地配置可用、报告开始发送和新执行准入都不能代替该回执。门禁位于持久化 pending 意图之前，防止服务端因尚无机器身份而在保存回执前拒绝请求，留下只能查询不存在回执的操作。配置协议的 `reportConfiguration` 和普通报告路径都以真实服务回执确认；其后的本地配置应用失败不抹去已经确认的远端机器事实。已有 pending 和历史回执仍可查询，不受新操作门禁阻断。
+
+接回先由 process 验证原 Controller 的认证 IPC 与进程身份，再取得当前承载授权并更新其 credential。存活 Controller 保持 execution generation；需要新进程时仍执行原有完整停证、Provider 材料与恢复预算校验。承载 generation 独立于 Controller generation，未知命令和助手业务 claim 都保留原身份。当前运行实例必须实际确认原授权仍有效，磁盘上的历史 `current` 值不能直接开放助手任务维护或通知。服务端 grant 撤销旧连接资格，只有当前 Session 重新同步、在线且允许发送时才开放输入。接管回执、缓存或旧 ready 记录不能代替同步。
+
+接管后的删除回执沿当前承载 Worker 路径提交，仍按创建 owner 校验公开删除 DTO；通知发送使用当前授权，已有未知通知则独立查询其原操作，不因暂时不能发送而放弃核对。Host 关闭先等待 runtime 关停，失败时保留 Bot 锁及 Windows Job lease，避免另一个启动者在原 writer 状态未确认时取得本地排他权。
+
+实现取舍见[承载对账决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-worker-reconciliation.md)。
 
 ## Bot 专属位置与迁移责任
 
@@ -44,7 +68,7 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 复制和校验阶段持久化后，原 Worker SQLite 在同一事务内删除目标两行并写入绑定 manifest 摘要的迁移回执，作为唯一权威切换点。`019-bot-migration.sql` 引入回执表和源格式门槛。中断后按持久阶段与该回执核对，不能仅凭原行消失推断提交成功。源 schema 升级阻止旧 Worker 再次打开旧格式写入；未完成的迁移由本地存储路由拒绝，避免部分副本进入正常执行。
 
-本地提交保留独立的 `registration_pending` 状态。启动、观察、续期、停止和删除入口不再依据原 intent 访问旧目录；接管模块完成跨端恢复身份登记与回执核对后才能建立后续执行。`worker migrated-bot-history` 通过副本映射和原 ticket 校验读取保留历史，不启动 Provider，也不声明新增浏览器离线历史服务。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。迁移取舍由[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-bot-storage-migration.md)说明。
+本地提交保留独立的 `registration_pending` 执行屏障。对账可为已绑定 Session 完成跨端恢复登记并保存回执，但登记成功不解除该屏障；未具备经验证 Provider 恢复点及专属执行代次时明确报告 `recovery_material_missing`，启动、观察、续期、停止和删除不依据原 intent 访问旧目录。`worker migrated-bot-history` 通过副本映射和原 ticket 校验读取保留历史，不启动 Provider，也不声明新增浏览器离线历史服务。迁移副本的摘要在历史与恢复读取前核验；Controller v16/v17/v18 的只读兼容入口验证实际 schema 和完整原 snapshot 身份，timeline 使用同一格式检查。升级 CLI 后，已提交的 v16/v17 副本继续保持所有文件字节和 manifest 摘要，不在读取时迁移或重写；迁移源的只读检查沿用相同规则。未知、无版本、结构不符或身份冲突继续拒绝。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。迁移取舍由[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-bot-storage-migration.md)说明。
 
 新位置的精确删除使用同一归属解析器，Bot 私有原生副本随其私有资料处理，共享 native home 和 cwd 保留。最小删除责任必须在执行 journal 删除后仍可读取，直至两端确认；不能通过先删整个 Bot 目录丢弃原回执和未完成责任。存储、迁移、接管和 Provider 验证分别完成前，不声明该能力或同机恢复验收成功。
 
@@ -113,7 +137,7 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下先固定全部已知原 Controller/native 出生实例的进程句柄，再请求 Job 终止；同一 Job 成员清单为空且这些原句柄已 signaled，才能完成停止。成员先消失、退出码变化或 ESRCH 均不足以证明完成。已在退出的原实例继续沿同一句柄等待，不重新要求退出中的命令行；不同出生实例不会收到信号，未知状态或运行中的完整身份冲突继续失败。所有操作和等待共享调用方的原绝对 deadline，不按句柄或轮询重算；已开始的 native 调用须结束，因此不承诺 kernel 抢占式的总 wall-clock 上界。到期、未确认的权限、查询、wait 或关闭错误均保留失败、执行资料与删除责任，逐一释放已取得的进程句柄并保留同时发生的主要和关闭错误。完整机制由[Session 设计](task-session-protocol.md#关闭与清理)及[原进程退出决策](../../.agents/notes/implemented/bug-fix/2026-11-13-windows-controller-exit-completion.md)拥有。
 
-`shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 接入 Bot 执行所有者和 `assistantHost` 广告，保持 stores 与实例锁直到管理循环和所有停止尝试结束。
+`ExecutionScope` 汇总 Task、Bot 及其他执行 owner，以有界并行停止保留逐项结果。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。Bot 的 `closeAdmission` 同时取消四个 assistant 循环、application 与在途能力采集；全部 writer/jobs 和探测 join 后才关闭私有存储及锁。未闭合责任使 scope 受阻并禁止重建；管理根和具体资源归属见[Worker 执行作用域](daynight-worker.md#管理根与执行作用域)。
 
 ## 精确删除与失败保留
 
@@ -131,7 +155,7 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 ## 助手任务维护
 
-`createWorkerBotHost` 装配 `assistant-tasks.ts`，由 `createManagedAssistantRuntime` 同时启动和停止。助手及其助手任务不计入项目 Task 的 `maxConcurrent`。四个独立循环每 60 秒启动一轮，使用可注入的时钟；同一循环不重入，各 Bot 独立处理失败。网络请求有单次和操作预算；事件分页每页使用独立预算，避免合法历史累计超过一次操作的字节上限。慢请求不通过重叠执行追赶周期。它不包含 Watchdog 评估器。
+`createWorkerBotHost` 装配 `assistant-tasks.ts`，由 `createManagedAssistantRuntime` 同时启动和停止。助手及其助手任务不计入项目 Task 的 `maxConcurrent`。四个独立循环每 60 秒启动一轮，使用可注入的时钟；同一循环不重入，各 Bot 独立处理失败。Host 的本地候选列表仅排除迁移记录；删除、缺少 Session intent 和停止状态由助手任务 runtime 筛选。短暂 hosting-grant 校验不删除候选：每项新动作的健康检查先等待同 Bot 串行队列中的 process observation，再校验当前 recovery.ready 和认证 snapshot。grant 校验在途时仍立即撤销 ready；失效、未知或不匹配的授权继续拒绝新动作，Session transport 仍在 preflight 前后检查 hosting。网络请求有单次和操作预算；事件分页每页使用独立预算，避免合法历史累计超过一次操作的字节上限。慢请求不通过重叠执行追赶周期。它不包含 Watchdog 评估器。
 
 每个助手的 `DAYNIGHT_BOT_ID` 为自身 ID，`DAYNIGHT_BOT_STATE_DIR` 固定为 Worker 配置根下 `bots/<botId>/state`。目录沿用私有文件机制的归属、权限及符号链接检查；普通停止和恢复保留状态。认领与 CLI 共用[私有状态和锁](assistant-task-cli.md)，不另外保存或轮换令牌。同一进程内按 Bot 和任务串行协调各循环的认领读写，避免固定同拍的续约与触发反复争抢非阻塞文件锁；跨进程仍由原文件锁保护。应用启动、停止及其业务动作不持有这个本进程队列，避免取消与凭据读取互相等待。每轮先查询原待核对操作，再根据权威任务决定续约。原回执缺失不会直接清除意图或重发：共享认领状态机重新读取权威代次，只有旧操作可能产生的代次已被超越或失效，才允许退役旧意图；同代有效认领仍保留未知结果。转交的 pending 认领先绑定本地生成的凭据，再续约。只有原 Controller 的新鲜认证观察显示 ready/working、启动成功且未停止或出错，才维护租约。暂停任务继续续约，但不启动应用或定时事件。
 
@@ -147,10 +171,12 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 `inbound` 事件与其他事件在同一批次中选择与确认，按[助手任务收件箱设计](assistant-task-inbox.md#worker-通知渲染)渲染：负载严格解码，无法解读时只给出读取原事件的命令；同一项目 Task 的 `daynight` 事件合并为一段，`external` 正文只投递围栏内的 4 KiB 预览；入站正文每批最多 32 KiB，超出的 `inbound` 事件按原顺序留在 pending，不阻塞同批其他事件。每批末尾按助手任务给出读取当前手册和附录的命令。
 
-每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。只有 provider_accepted/confirmed 才确认事件；确认时只扫描目标 Bot 的 pending 事件，逐项确认该批引用，找齐即停止，不要求重新读取 delivered 历史；每次 ACK 使用独立有界操作。部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；该固定拒绝证明仅由服务端派发前的授权检查持久生成，普通 Controller 错误仍不落库；历史拒绝缺少证明时不补造证明。原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
+批次选定后、持久化命令前，Worker 按[经验沉淀设计](assistant-task-learning.md#附录验证与相关经验)查询相关经验：项目取自 `daynight` 入站负载或事件负载中的规范 `projectId`，事项类别通过负载中的 `itemId` 读取事项得到。读取前先按任务、事件类型、项目和事项去重，重复事件不产生请求；随后按事件顺序处理，每个不同事项只读取一次，每个不同的任务、事件类型、项目和事项类别组合只查询一次。每批的事项读取与相关经验查询共用 10 次请求预算，失败的请求同样计数，所有请求还共用 10 秒的总时间预算；到期时中止进行中的请求，不再等待忽略取消的读取。任一预算耗尽后其余组合不附摘要，因此相关经验最多把持久化和发送推迟 10 秒，不随批次中的事件数增长。每个组合至多列出 5 项，每项为折叠空白后不超过 1 KiB 的 UTF-8 安全预览，并附带读取完整附录的 `daynight assistant-task appendix related` 命令；命令中的选项值以 `--category=<值>` 形式与选项相连，因为 CLI 拒绝以 `-` 开头的独立取值，而自由文本类别可能以 `-` 开头。事项或经验读取失败时该组合不附摘要，批次照常投递；只有取消会中止投递。放不进批次剩余字节预算的组合整段省略。摘要写入持久化命令，因此重放和查询原操作不会再次查询。
+
+每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。`assistant-task-delivery.ts` 对 progressing 回执在本轮每隔 1 秒查询原 operation，使用包含等待和请求耗时的 10 秒绝对总期限；请求继承剩余总期限的取消 signal。本轮观察不重新扫描或提交事件，unknown、failed 等非 progressing 回执不短周期轮询。到期或查询失败保留原 journal、报告错误并等待下一分钟核对；只有原发送的明确 admission 拒绝可按既有规则撤销未派发意图，查询拒绝不能清除已提交 command。Bot 停止、runtime shutdown 与 lane 的原取消/join 责任包含这一观察，仍在请求和时钟等待结束后释放状态。只有 provider_accepted/confirmed 才确认事件；确认按意图中记录的任务与事件 ID 逐项直接 ACK，统一使用该批固定 operation ID，不分页读取 pending 事件，因此其他任务的待投递积压或投递后暂停的任务不会阻塞恢复；每次 ACK 使用独立有界操作。意图保留到全部事件结清，重试以原 operation ID 重放，服务端对已确认事件幂等返回；服务端明确答复事件已不在 pending、已删除或已由其他操作确认时视为结清。Session 接受后、ACK 前若任务被转移或接管，服务端会把仍 pending 的 `inbound` 事件改投新的负责 Bot，原 Bot 的 ACK 因目标校验得到 `forbidden`；该答复与 Bot 身份失效无法区分，因此 Worker 对同一任务做一次单条分页读取，它重复 ACK 的身份与任务归属校验：读取成功说明拒绝只来自事件目标，该事件视为结清；读取失败则保留意图并报告原拒绝，不掩盖真实授权失败。部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；该固定拒绝证明仅由服务端派发前的授权检查持久生成，普通 Controller 错误仍不落库；历史拒绝缺少证明时不补造证明。原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
 
 通知与触发 journal 位于 Bot 私有状态内，按 origin 和 owner 隔离。manifest 以原子替换指向带 SHA-256 校验的分块内容；两组交替写入的分块各自最多 4 MiB，只有新组完整落盘后才切换。中途失败保留原完整意图，每个 journal 的内容存储上限为两组，不随每轮替换无限增长。Bot 删除时连同其他私有状态精确清理。
 
 定时配置遵循[助手任务服务端](assistant-task.md)：interval 从任务创建时间按分钟计算，daily 使用 IANA 时区的本地日期与 HH:MM，每个本地日期最多一次，夏令时重复小时不重复触发。每轮只选择最近到期的一次，不回放离线期间的全部积压；暂停时不触发。事件 ID 由任务、配置和到期标识确定，跨重启或接手保持相同。本地 journal 已确认当前到期事件时不再扫描历史；否则逐页查找已存在的事件，找到即停止，再保存待核对意图；未知响应只读核对该事件，不重复 POST。同一到期事件已存在时，新的 holder 不重复生成它。
 
-实现取舍见[维护循环决策](../../.agents/notes/implemented/architecture/2026-11-13-assistant-task-worker-runtime.md)。
+候选与原操作观察的取舍见[投递时序决策](../../.agents/notes/implemented/bug-fix/2026-11-21-assistant-delivery-observation.md)。实现取舍见[维护循环决策](../../.agents/notes/implemented/architecture/2026-11-13-assistant-task-worker-runtime.md)。

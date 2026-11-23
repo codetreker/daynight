@@ -23,10 +23,11 @@ func workerProtocolRequired() error {
 }
 
 func workerProtocolContext(request *http.Request) context.Context {
+	ctx := service.WithTaskParentView(request.Context(), taskParentView(request))
 	if extendedWorkerProtocol(request) {
-		return request.Context()
+		return ctx
 	}
-	return taskcore.WithLegacyWorkerProtocol(request.Context())
+	return taskcore.WithLegacyWorkerProtocol(ctx)
 }
 
 // Legacy workers identify discovery with these filters. Ordinary lists preserve

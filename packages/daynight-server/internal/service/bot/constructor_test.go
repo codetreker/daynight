@@ -1,6 +1,10 @@
 package bot
 
 import (
+	"context"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"reflect"
 	"testing"
 	"time"
@@ -30,5 +34,27 @@ func TestConstructorsBindProductionOperations(t *testing.T) {
 	after := time.Now()
 	if now.Before(before) || now.After(after) {
 		t.Fatalf("production clock changed: %v", now)
+	}
+}
+
+func TestLegacyCreationRequesterPreservesTheOriginalDiscoveryCall(t *testing.T) {
+	p := testPrincipal()
+	request := ro.Request{RequestID: "original-request", Operation: "model.list"}
+	expected := ro.Message{Type: "result", RequestID: request.RequestID}
+	calls := 0
+	s := NewWithNativeDiscovery(nil, modelRequestFunc(func(ctx context.Context, got model.Principal, workerID string, gotRequest ro.Request) (ro.Message, error) {
+		calls++
+		if ctx != t.Context() || got != p || workerID != "selected-worker" || !reflect.DeepEqual(gotRequest, request) {
+			t.Fatalf("legacy discovery facts changed: %+v %s %+v", got, workerID, gotRequest)
+		}
+		return expected, nil
+	}))
+	got, err := s.creationModels.RequestForOperations(t.Context(), p, "selected-worker", request, scopepolicy.BotWrite)
+	if err != nil || !reflect.DeepEqual(got, expected) || calls != 1 {
+		t.Fatalf("legacy discovery response changed: %+v %v %d", got, err, calls)
+	}
+	unavailable := NewWithNativeDiscovery(nil, nil)
+	if unavailable.models != nil || unavailable.creationModels != nil {
+		t.Fatal("absent legacy discovery was installed")
 	}
 }

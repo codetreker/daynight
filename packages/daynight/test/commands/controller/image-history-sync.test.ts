@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { statfsSync } from "node:fs";
@@ -301,4 +302,132 @@ test("failed status observation keeps the frozen original and does not invent a 
     expect(f.journal.getImageHistorySyncFailure()).toBeNull();
     expect(await readFile(intent.filename)).not.toHaveLength(0);
   } finally { f.journal.close(); }
+});
+
+test("capacity retry replays the same ledger chunk and accepts an early Task body refusal", async () => {
+  const f = await fixture(1, "body", "task_body"), server = receiver();
+  const attempts: { url: string; headers: Headers; body: Buffer }[] = [], delays: number[] = [];
+  let now = 0;
+  const request: typeof fetch = async (input, init) => {
+    if (init!.method === "PUT") {
+      attempts.push({ url: String(input), headers: new Headers(init!.headers), body: Buffer.from(init!.body as Uint8Array) });
+      if (attempts.length === 1) return Response.json({ error: { code: "resource_busy" } }, { status: 429 });
+    }
+    return taskBodyResponse(server, input, init);
+  };
+  try {
+    await syncControllerImageHistory({ ...f, request, retryRuntime: { now: () => now, random: () => 0.5, wait: async ms => { delays.push(ms); now += ms; } } });
+    expect(delays).toEqual([1000]); expect(attempts).toHaveLength(2);
+    expect(attempts[1]!.url).toBe(attempts[0]!.url);
+    expect(attempts[1]!.body).toEqual(attempts[0]!.body);
+    for (const header of ["Daynight-Controller-Fence", "Daynight-File-SHA256", "Daynight-Chunk-SHA256", "Daynight-File-Byte-Length"]) expect(attempts[1]!.headers.get(header)).toBe(attempts[0]!.headers.get(header));
+    expect(f.journal.hasImageHistoryCheckpoint(f.journal.getLastSourceSequence())).toBe(true);
+  } finally { f.journal.close(); }
+});
+
+test("checkpoint advancement shares the retry budget while each request resets its delay", async () => {
+  const f = await fixture(), server = receiver();
+  const first = f.journal.prepareImageHistorySync()!;
+  f.journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "later" }] });
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const delays: number[] = [], attempts = new Map<string, number>(); let now = 0;
+  const request: typeof fetch = async (input, init) => {
+    if (init!.method === "PUT") {
+      const id = new URL(String(input)).pathname.split("/").at(-1)!;
+      const count = (attempts.get(id) ?? 0) + 1; attempts.set(id, count);
+      if (id === first.syncId ? count <= 3 : true) return Response.json({ error: { code: "resource_busy" } }, { status: 429 });
+    }
+    return server.request(input, init);
+  };
+  try {
+    await expect(syncControllerImageHistory({ ...f, requiredSourceThrough: f.journal.getLastSourceSequence(), request, retryRuntime: { now: () => now, random: () => 0.5, wait: async ms => { delays.push(ms); now += ms; } } })).rejects.toThrow();
+    expect(delays).toEqual([1000, 2000, 4000, 1000]);
+    expect(attempts.get(first.syncId)).toBe(4);
+    expect([...attempts.values()]).toEqual([4, 2]);
+  } finally { f.journal.close(); }
+});
+
+test("cancellation or a changed fence after a capacity wait prevents another send", async () => {
+  for (const mode of ["cancel", "fence"] as const) {
+    const f = await fixture(), abort = new AbortController(); let calls = 0, current = f.fence;
+    try {
+      await expect(syncControllerImageHistory({ ...f, currentFence: () => current, signal: abort.signal,
+        request: async () => { calls++; return Response.json({ error: { code: "resource_busy" } }, { status: 429 }); },
+        retryRuntime: { now: () => 0, random: () => 0.5, wait: async () => { if (mode === "cancel") abort.abort(new Error("cancelled")); else current = { ...current, connectionEpoch: "2" }; } },
+      })).rejects.toThrow(mode === "cancel" ? "cancelled" : "connection changed");
+      expect(calls).toBe(1);
+    } finally { f.journal.close(); }
+  }
+});
+
+test("status capacity retry obeys the first-refusal deadline and emits safe diagnostics", async () => {
+  const f = await fixture(); let now = 100, calls = 0;
+  const events: unknown[] = [];
+  try {
+    await expect(syncControllerImageHistory({ ...f, request: async () => { calls++; return Response.json({ error: { code: "resource_busy", message: "secret" } }, { status: 429, headers: { "X-Request-ID": "secret with spaces" } }); },
+      retryRuntime: { now: () => now, random: () => 0.5, wait: async () => { now += 30_000; } }, onRetry: event => events.push(event),
+    })).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+    expect(calls).toBe(1);
+    expect(events).toEqual([{ phase: "waiting", retry: 1, delayMs: 1000, classification: "resource_busy", requestId: null, sessionId: f.ticket.sessionId }, { phase: "exhausted", retry: 1, delayMs: null, classification: "resource_busy", requestId: null, sessionId: f.ticket.sessionId }]);
+    expect(JSON.stringify(events)).not.toContain("secret");
+  } finally { f.journal.close(); }
+});
+
+test("real HTTP ledger requests preserve their frozen identity after a capacity refusal", async () => {
+  const f = await fixture(), receiverState = receiver(), puts: { url: string; hash: string | undefined; bytes: Buffer }[] = [];
+  const http = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const bytes = Buffer.concat(chunks), url = `http://127.0.0.1${req.url}`;
+      if (req.method === "PUT") {
+        puts.push({ url, hash: req.headers["daynight-chunk-sha256"] as string | undefined, bytes });
+        if (puts.length === 1) { res.writeHead(429, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: { code: "resource_busy" } })); return; }
+      }
+      const headers = new Headers(); for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(key, value);
+      const response = await receiverState.request(url, { method: req.method!, headers, ...(req.method === "PUT" ? { body: bytes } : {}) });
+      res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
+    })().catch(error => { res.writeHead(500); res.end(String(error)); });
+  });
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  const address = http.address(); if (!address || typeof address === "string") throw new Error("Missing test server address");
+  try {
+    await syncControllerImageHistory({ ...f, ticket: { ...f.ticket, serverOrigin: `http://127.0.0.1:${address.port}` }, retryRuntime: { now: () => 0, random: () => 0.5, wait: async () => {} } });
+    expect(puts).toHaveLength(2); expect(puts[1]).toEqual(puts[0]);
+    expect(f.journal.hasImageHistoryCheckpoint(f.journal.getLastSourceSequence())).toBe(true);
+  } finally { await new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve())); f.journal.close(); }
+});
+
+test("an unknown PUT at the retry deadline still observes the original committed receipt", async () => {
+  const f = await fixture(), server = receiver(); let now = 0, first = true;
+  const request: typeof fetch = async (input, init) => {
+    if (init!.method === "GET" && first) { first = false; return Response.json({ error: { code: "resource_busy" } }, { status: 429 }); }
+    const response = await server.request(input, init);
+    if (init!.method === "PUT") { now = 31_000; throw new Error("lost committed response"); }
+    return response;
+  };
+  try {
+    await syncControllerImageHistory({ ...f, request, retryRuntime: { now: () => now, random: () => 0.5, wait: async () => {} } });
+    expect(server.calls.map(call => call.method)).toEqual(["GET", "PUT", "GET"]);
+    expect(new Set(server.calls.map(call => call.id)).size).toBe(1);
+    expect(f.journal.hasImageHistoryCheckpoint(f.journal.getLastSourceSequence())).toBe(true);
+  } finally { f.journal.close(); }
+});
+
+test("a connection change while reading a receipt cannot publish an old checkpoint", async () => {
+  const f = await fixture(), server = receiver(); let current = f.fence, release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const request: typeof fetch = async (input, init) => {
+    const response = await server.request(input, init);
+    if (init!.method === "PUT") {
+      const original = response.json.bind(response);
+      Object.defineProperty(response, "json", { value: async () => { entered(); await gate; return original(); } });
+    }
+    return response;
+  };
+  try {
+    const pending = syncControllerImageHistory({ ...f, currentFence: () => current, request });
+    const rejected = expect(pending).rejects.toThrow("original status observation failed");
+    await waiting; current = { ...current, connectionEpoch: "2" }; release(); await rejected;
+    expect(f.journal.hasImageHistoryCheckpoint(f.journal.getLastSourceSequence())).toBe(false);
+  } finally { release(); f.journal.close(); }
 });

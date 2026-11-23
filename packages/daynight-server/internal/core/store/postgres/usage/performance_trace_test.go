@@ -71,7 +71,6 @@ func traceUsageQueries(t *testing.T, f *workflowFixture) *usageQueryTrace {
 	f.service, err = app.New(&postgres.Store{Pool: pool}, app.Options{
 		WriteEnabled:      true,
 		QualifiedProfiles: []string{f.registration.ProfileID + "@" + f.registration.ProviderVersion},
-		CursorKey:         []byte(strings.Repeat("k", 32)),
 	})
 	if err != nil {
 		t.Fatal(err)

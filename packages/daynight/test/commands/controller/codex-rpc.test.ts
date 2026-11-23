@@ -213,6 +213,24 @@ test("an awaited response can retain image media before frame cleanup", async ()
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 
+test("a synchronous response consumer retains media and a consumer error does not stop the transport", async () => {
+  const s = storage(), child = transport(), rpc = new CodexRpc(child, () => {}, { createSpool: s.createSpool });
+  try {
+    const pending = rpc.request("thread/items/list", {}, undefined, result => codexMedia((result as any).data[0].item.result)!.retain());
+    child.stdout.write(JSON.stringify({ id: 1, result: { data: [{ item: { id: "image", type: "imageGeneration", status: "completed", result: "YQ==" } }] } }) + "\n");
+    const lease = await pending as { path: string; release(): void };
+    await new Promise(resolve => setImmediate(resolve));
+    expect(readFileSync(lease.path).toString()).toBe("a"); lease.release();
+    expect(s.files.every(file => !existsSync(file))).toBe(true);
+    const failed = rpc.request("thread/items/list", {}, undefined, () => { throw new Error("projection failed"); });
+    child.stdout.write('{"id":2,"result":{}}\n');
+    await expect(failed).rejects.toThrow("projection failed");
+    const next = rpc.request("thread/read", {});
+    child.stdout.write('{"id":3,"result":{"ok":true}}\n');
+    await expect(next).resolves.toEqual({ ok: true });
+  } finally { rpc.dispose(); await rpc.stopped; }
+});
+
 test("natural close drains response media and preserves a consumer's retained lease after EOF cleanup", async () => {
   const s = storage(), child = transport(), rpc = new CodexRpc(child, () => {}, { createSpool: s.createSpool });
   let lease: ReturnType<NonNullable<ReturnType<typeof codexMedia>>["retain"]> | undefined;

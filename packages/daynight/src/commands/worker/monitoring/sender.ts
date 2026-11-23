@@ -18,13 +18,14 @@ export type MonitoringSenderOptions = {
 };
 
 // Each attempt captures the current state; failed or uncertain writes are never replayed.
-export const createMonitoringSender = (options: MonitoringSenderOptions): { finish(signal?: AbortSignal): Promise<void> } => {
+export const createMonitoringSender = (options: MonitoringSenderOptions): { trigger(): void; finish(signal?: AbortSignal): Promise<void> } => {
   const cancellation = new AbortController();
   let finishing = false, failures = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<boolean> | null = null;
   let finishPromise: Promise<void> | undefined;
   let lastFailure: string | null = null;
+  let triggered = false;
 
   const failure = (phase: DeliveryPhase, error: unknown, requestId: string | null): void => {
     try { options.deliveryFailure(phase, error, requestId); } catch { /* Monitoring callbacks must not affect worker execution. */ }
@@ -68,11 +69,18 @@ export const createMonitoringSender = (options: MonitoringSenderOptions): { fini
     running = current;
     void current.then(() => {
       if (running === current) running = null;
-      schedule(failures > 1 ? 2 * PERIOD : PERIOD);
+      if (triggered) { triggered = false; start(); }
+      else schedule(failures > 1 ? 2 * PERIOD : PERIOD);
     });
   };
   start();
   return {
+    trigger: () => {
+      if (finishing || cancellation.signal.aborted) return;
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      if (running !== null) triggered = true;
+      else start();
+    },
     finish: (signal) => {
       if (finishPromise !== undefined) return finishPromise;
       finishing = true;

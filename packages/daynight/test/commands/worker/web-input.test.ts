@@ -9,14 +9,14 @@ import { createWebInput } from "../../../src/commands/worker/backends/web-input.
 const fixture = (initial: ControllerSnapshot["initialInputState"] = "confirmed") => {
   const executionId = randomUUID(), sessionId = randomUUID(), nativeSessionId = randomUUID(), controllerInstanceId = randomUUID();
   const projectId = randomUUID(), taskId = randomUUID(), claimId = randomUUID(), workerId = randomUUID(), worktreeId = randomUUID(), userId = randomUUID();
-  const ticket = { executionId, sessionId, controllerInstanceId, executionGeneration: "1", claimId, projectId, taskId, workerId, worktreeId, userId,
+  const ticket = { launchId: randomUUID(), executionId, sessionId, controllerInstanceId, executionGeneration: "1", claimId, projectId, taskId, workerId, worktreeId, userId,
     serverOrigin: "https://daynight.test", provider: "codex", initialOperationId: randomUUID(), initialPrompt: "original assignment", ipcSecret: "secret" } as ControllerLaunchTicket;
   const task = { projectId, taskId, claimId, workerId, worktreeId, userId, serverOrigin: ticket.serverOrigin, status: "active", cleanup: null, control: null,
     configuration: { agent: "codex" }, resources: { nativeSession: { source: "controller", sessionId: nativeSessionId } },
     webExecution: { executionId, sessionId, controllerInstanceId, executionGeneration: "1" } } as unknown as LocalTask;
   const snapshot = { executionId, sessionId, controllerInstanceId, executionGeneration: "1", claimId, lifecycle: "ready", nativeSessionId,
     initialInputState: initial, activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false },
-    nativeStopped: false, error: null, startup: { state: "ready", reasonCode: "ready" } } as ControllerSnapshot;
+    controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "ready", reasonCode: "ready" } } as ControllerSnapshot;
   const legacyAuthority = vi.fn(async () => null as "task_paused" | "claim_invalid" | null);
   const signal = new AbortController().signal;
   const input = { task, ticket, snapshot, signal, legacyAuthority, protocol: 1 as const };
@@ -32,12 +32,118 @@ const fixture = (initial: ControllerSnapshot["initialInputState"] = "confirmed")
     return { requestId: randomUUID(), ok: true, snapshot, inputResult: { kind: "operation", operation: operation("worker_input", action.operationId, action.prompt, "provider_accepted") } };
   });
   const report = vi.fn(), event = vi.fn();
-  const helper = createWebInput({ current: () => task, currentSnapshot: () => latestSnapshot, buildPrompt: () => "current assignment", now: () => now, request, report, event,
+  const helper = createWebInput({ current: () => task, currentSnapshot: () => latestSnapshot, initialSnapshot: () => latestSnapshot, buildPrompt: () => "current assignment", now: () => now, request, report, event,
     readOperation: (_task, id) => operations.get(id) ?? null });
   return { task, ticket, snapshot, input, legacyAuthority, helper, request, operations, operation, report, event, setNow: (value: number) => { now = value; }, setSnapshot: (value: ControllerSnapshot) => { latestSnapshot = value; } };
 };
 
 describe("Web automatic input", () => {
+  it.each((["dispatching", "unknown"] as const).flatMap(initial => ["1", "2"].map(generation => [initial, generation] as const)))("observes %s initial input from generation %s until a fresh receipt snapshot permits the assignment", async (initial, generation) => {
+    const f = fixture(initial);
+    (f.ticket as { executionGeneration: string }).executionGeneration = "2";
+    f.task.webExecution!.executionGeneration = "2";
+    f.snapshot.executionGeneration = "2";
+    const operation = f.operation("initial", f.ticket.initialOperationId, f.ticket.initialPrompt, initial);
+    operation.executionGeneration = generation;
+    f.operations.set(operation.operationId, operation);
+    for (let tick = 0; tick < 3; tick++) {
+      f.setNow(1_000 + tick * 100_000);
+      expect(await f.helper.step(f.input)).toMatchObject({ kind: "waiting", reason: "native_input" });
+    }
+    expect(f.request).not.toHaveBeenCalled();
+    operation.state = "confirmed";
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "waiting" });
+    expect(f.request).not.toHaveBeenCalled();
+    const accepted = { ...f.snapshot, initialInputState: "confirmed" as const };
+    f.setSnapshot(accepted);
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "observed", snapshot: accepted });
+    f.request.mockImplementationOnce(async (_ticket, action) => {
+      if (action.kind !== "submit_worker_input") throw new Error("Unexpected initial replay");
+      return { requestId: randomUUID(), ok: true, snapshot: accepted, inputResult: { kind: "operation", operation: { ...f.operation("worker_input", action.operationId, action.prompt, "confirmed"), executionGeneration: "2" } } };
+    });
+    expect(await f.helper.step({ ...f.input, snapshot: accepted })).toMatchObject({ kind: "observed" });
+    expect(f.request).toHaveBeenCalledTimes(1);
+    expect(f.request.mock.calls[0]![1]).toMatchObject({ kind: "submit_worker_input", prompt: "current assignment" });
+  });
+
+  it.each(["controller", "native", "lost-native"] as const)("rejects changed %s proof while refreshing an inherited accepted receipt", async conflict => {
+    const f = fixture("unknown");
+    (f.ticket as { executionGeneration: string }).executionGeneration = "2";
+    f.task.webExecution!.executionGeneration = "2"; f.snapshot.executionGeneration = "2";
+    const proof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+    f.snapshot.controllerProcess = proof;
+    f.snapshot.nativeProcesses = [{ ...proof, pid: 124 }];
+    const latest = { ...f.snapshot, initialInputState: "confirmed" as const };
+    if (conflict === "controller") latest.controllerProcess = { ...proof, pid: 999 };
+    if (conflict === "native") latest.nativeProcesses = [{ ...proof, pid: 999 }];
+    if (conflict === "lost-native") latest.nativeProcesses = [];
+    f.setSnapshot(latest);
+    f.operations.set(f.ticket.initialOperationId, f.operation("initial", f.ticket.initialOperationId, f.ticket.initialPrompt, "confirmed"));
+    await expect(f.helper.step(f.input)).rejects.toThrow(/receipt snapshot conflicts/);
+    expect(f.request).not.toHaveBeenCalled();
+    f.setSnapshot({ ...f.snapshot, initialInputState: "confirmed", nativeProcesses: [...f.snapshot.nativeProcesses, { ...proof, pid: 125 }] });
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "observed" });
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing-generation", "zero-generation", "future-generation", "operation", "kind", "hash", "payload"] as const)("rejects inherited initial %s evidence", async conflict => {
+    const f = fixture("unknown");
+    (f.ticket as { executionGeneration: string }).executionGeneration = "2"; f.task.webExecution!.executionGeneration = "2"; f.snapshot.executionGeneration = "2";
+    const operation = f.operation("initial", f.ticket.initialOperationId, f.ticket.initialPrompt, "unknown");
+    if (conflict === "missing-generation") delete operation.executionGeneration;
+    if (conflict === "zero-generation") operation.executionGeneration = "0";
+    if (conflict === "future-generation") operation.executionGeneration = "3";
+    if (conflict === "operation") operation.operationId = randomUUID();
+    if (conflict === "kind") operation.kind = "worker_input";
+    if (conflict === "hash") operation.payloadHash = "a".repeat(64);
+    if (conflict === "payload") operation.payload = { text: "different" };
+    f.operations.set(f.ticket.initialOperationId, operation);
+    await expect(f.helper.step(f.input)).rejects.toThrow(/conflicts/);
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an adopted current-generation initial operation after a lost response without replay", async () => {
+    const f = fixture("not_submitted");
+    (f.ticket as { executionGeneration: string }).executionGeneration = "2";
+    f.task.webExecution!.executionGeneration = "2"; f.snapshot.executionGeneration = "2";
+    f.request.mockRejectedValueOnce(new ControllerIpcOutcomeUnknownError("lost response"));
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "waiting", reason: "native_input" });
+    const operation = { ...f.operation("initial", f.ticket.initialOperationId, f.ticket.initialPrompt, "dispatching"), executionGeneration: "2" };
+    f.operations.set(operation.operationId, operation);
+    for (const state of ["dispatching", "unknown"] as const) {
+      operation.state = state;
+      expect(await f.helper.step(f.input)).toMatchObject({ kind: "waiting", reason: "native_input" });
+      expect(f.request).toHaveBeenCalledTimes(1);
+    }
+    operation.state = "confirmed";
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "waiting", reason: "native_input" });
+    const accepted = { ...f.snapshot, initialInputState: "confirmed" as const };
+    f.setSnapshot(accepted);
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "observed", snapshot: accepted });
+    f.request.mockImplementationOnce(async (_ticket, action) => {
+      if (action.kind !== "submit_worker_input") throw new Error("Unexpected initial replay");
+      return { requestId: randomUUID(), ok: true, snapshot: accepted, inputResult: { kind: "operation", operation: { ...f.operation("worker_input", action.operationId, action.prompt, "confirmed"), executionGeneration: "2" } } };
+    });
+    await f.helper.step({ ...f.input, snapshot: accepted });
+    expect(f.request).toHaveBeenCalledTimes(2);
+    expect(f.request.mock.calls[0]![1]).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
+    expect(f.request.mock.calls[1]![1]).toMatchObject({ kind: "submit_worker_input", prompt: expect.stringContaining("periodic check") });
+  });
+
+  it("accepts the current-generation confirmed receipt returned by the recovered initial submission", async () => {
+    const f = fixture("not_submitted");
+    (f.ticket as { executionGeneration: string }).executionGeneration = "2";
+    f.task.webExecution!.executionGeneration = "2"; f.snapshot.executionGeneration = "2";
+    const accepted = { ...f.snapshot, initialInputState: "confirmed" as const };
+    f.setSnapshot(accepted);
+    f.request.mockImplementationOnce(async (_ticket, action) => {
+      if (action.kind !== "submit_initial") throw new Error("Unexpected input");
+      return { requestId: randomUUID(), ok: true, snapshot: accepted, operation: { ...f.operation("initial", action.operationId, f.ticket.initialPrompt, "confirmed"), executionGeneration: "2" } };
+    });
+    expect(await f.helper.step(f.input)).toMatchObject({ kind: "observed", snapshot: accepted });
+    expect(f.request).toHaveBeenCalledOnce();
+  });
+
   it.each(["codex", "claude", "copilot"] as const)("sends an assignment and a new ping on every unchanged idle check for %s", async provider => {
     const f = fixture(); f.task.configuration!.agent = provider; (f.ticket as { provider: string }).provider = provider;
     for (let i = 0; i < 4; i++) expect((await f.helper.step(f.input)).kind).toBe("observed");
@@ -72,7 +178,7 @@ describe("Web automatic input", () => {
   it("waits for missing or oversized prompt data without sending", async () => {
     const f = fixture();
     const event = vi.fn();
-    const options = { current: () => f.task, currentSnapshot: () => f.snapshot, now: () => 1_000,
+    const options = { current: () => f.task, currentSnapshot: () => f.snapshot, initialSnapshot: () => f.snapshot, now: () => 1_000,
       readOperation: () => null, request: f.request, event };
     const unavailable = createWebInput({ ...options, buildPrompt: () => "assignment", promptSource: { current: () => null } });
     expect(await unavailable.step(f.input)).toMatchObject({ kind: "waiting", reason: "prompt_unknown" });

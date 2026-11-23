@@ -283,8 +283,10 @@ describe('task session transport lifecycle', () => {
     const check = vi.spyOn(f.client.imageDrafts, 'checkStatus').mockResolvedValue();
     await ready(f);
     expect(f.api.operation).not.toHaveBeenCalled();
+    vi.mocked(f.api.operation).mockResolvedValue(operation);
     await f.client.checkOperation(operation.operationId);
-    expect(check).toHaveBeenCalledOnce();
+    expect(check).not.toHaveBeenCalled();
+    expect(f.api.operation).toHaveBeenCalledWith(f.s.sessionId, operation.operationId, expect.any(AbortSignal));
     vi.mocked(f.api.operation).mockResolvedValue({ ...operation, state: 'provider_accepted', providerResult: 'started' });
     await f.client.observeImageOperation(f.s, operation.operationId);
     expect(f.client.snapshot().state.operations.get(operation.operationId)?.state).toBe('provider_accepted');

@@ -14,6 +14,8 @@ import (
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -36,6 +38,7 @@ var (
 )
 
 type Lifecycle struct {
+	scoped               bool
 	createRecord         func(context.Context, store.PrivateTransferDAO, model.PrivateTransfer) (model.PrivateTransfer, bool, error)
 	db                   store.PrivateTransferWriter
 	files                filestorage.Storage
@@ -52,6 +55,17 @@ type Lifecycle struct {
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	drained              chan struct{}
+}
+
+// NewScoped enables current credential policy checks at transfer admission.
+// The ordinary constructor retains the existing product assembly.
+func NewScoped(db store.PrivateTransferWriter, files filestorage.Storage, private filestorage.TransferStorage, budget, reservedFree int64) (*Lifecycle, error) {
+	s, err := New(db, files, private, budget, reservedFree)
+	if err != nil {
+		return nil, err
+	}
+	s.scoped = true
+	return s, nil
 }
 
 func New(db store.PrivateTransferWriter, files filestorage.Storage, private filestorage.TransferStorage, budget, reservedFree int64) (*Lifecycle, error) {
@@ -97,6 +111,45 @@ func authorize(ctx context.Context, d store.PrivateTransferDAO, a transfer.Actor
 	return projectcore.LookupError(d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, r.ProjectID, r.TaskID))
 }
 
+func (s *Lifecycle) requireScope(ctx context.Context, d store.PrivateTransferDAO, a Actor, op scopepolicy.Operation) error {
+	if !s.scoped {
+		return nil
+	}
+	reader, ok := d.(store.PrivateTransferCredentialScope)
+	if !ok {
+		return errors.New("current transfer credential authorization unavailable")
+	}
+	auth, err := reader.CurrentTransferAuthorization(ctx, a.Principal)
+	if err != nil {
+		return err
+	}
+	if auth.Principal != a.Principal || (a.AuthorityKind == "pat" && auth.Profile != model.ScopedPATProfile) || (a.AuthorityKind == "oauth" && auth.Profile != model.ScopedMCPProfile) {
+		return model.Unauthenticated(nil)
+	}
+	return scopeadmission.Require(auth, op)
+}
+
+func (s *Lifecycle) authorize(ctx context.Context, d store.PrivateTransferDAO, a Actor, r model.PrivateTransfer) error {
+	if err := authorize(ctx, d, a, r); err != nil {
+		return err
+	}
+	return s.authorizeScopeDirection(ctx, d, a, r.Direction)
+}
+
+func (s *Lifecycle) authorizeScopeDirection(ctx context.Context, d store.PrivateTransferDAO, a Actor, direction string) error {
+	switch direction {
+	case "download":
+		return s.requireScope(ctx, d, a, scopepolicy.AttachmentRead)
+	case "upload":
+		return s.requireScope(ctx, d, a, scopepolicy.AttachmentUpload)
+	default:
+		return ErrConflict
+	}
+}
+
+// Scoped reports whether transaction-bound policy admission is enabled.
+func (s *Lifecycle) Scoped() bool { return s.scoped }
+
 // OpenRecord commits the namespace owner before any private object can exist.
 // A duplicate ID only returns the matching record and never allocates a new slot.
 func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer.Binding) (model.PrivateTransfer, bool, error) {
@@ -117,7 +170,7 @@ func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer
 			if !transfer.SameBinding(existing, a, b, params) {
 				return transfer.ErrConflict
 			}
-			if err := authorize(ctx, d, a, existing); err != nil {
+			if err := s.authorize(ctx, d, a, existing); err != nil {
 				return err
 			}
 			result = existing
@@ -128,6 +181,9 @@ func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer
 		}
 		if err := d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, b.ProjectID, b.TaskID); err != nil {
 			return projectcore.LookupError(err)
+		}
+		if err := s.authorizeScopeDirection(ctx, d, a, b.Direction); err != nil {
+			return err
 		}
 		var e error
 		result, created, e = s.createRecord(ctx, d, input)
@@ -147,6 +203,20 @@ func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer
 
 // LookupBound revalidates the current credential and task permission on each call.
 func (s *Lifecycle) LookupBound(ctx context.Context, a transfer.Actor, id string) (model.PrivateTransfer, error) {
+	return s.lookupBound(ctx, a, id, true, false)
+}
+
+// LookupBoundForCleanup preserves the original authority checks for cleanup.
+func (s *Lifecycle) LookupBoundForCleanup(ctx context.Context, a Actor, id string) (model.PrivateTransfer, error) {
+	return s.lookupBound(ctx, a, id, false, false)
+}
+
+// LookupBoundForRead checks the current read permission before exposing metadata.
+func (s *Lifecycle) LookupBoundForRead(ctx context.Context, a Actor, id string) (model.PrivateTransfer, error) {
+	return s.lookupBound(ctx, a, id, false, true)
+}
+
+func (s *Lifecycle) lookupBound(ctx context.Context, a transfer.Actor, id string, directionScope, readScope bool) (model.PrivateTransfer, error) {
 	if err := transfer.ValidateActor(a); err != nil {
 		return model.PrivateTransfer{}, err
 	}
@@ -160,7 +230,16 @@ func (s *Lifecycle) LookupBound(ctx context.Context, a transfer.Actor, id string
 		if e != nil {
 			return projectcore.LookupError(e)
 		}
-		return authorize(ctx, d, a, r)
+		if directionScope {
+			return s.authorize(ctx, d, a, r)
+		}
+		if err := authorize(ctx, d, a, r); err != nil {
+			return err
+		}
+		if readScope {
+			return s.requireScope(ctx, d, a, scopepolicy.AttachmentRead)
+		}
+		return nil
 	})
 	if err != nil {
 		return model.PrivateTransfer{}, err
@@ -178,7 +257,10 @@ func (s *Lifecycle) Authorize(ctx context.Context, a Actor, projectID, taskID st
 		return ErrConflict
 	}
 	return s.transaction(ctx, func(d store.PrivateTransferDAO) error {
-		return projectcore.LookupError(d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID))
+		if err := d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID); err != nil {
+			return projectcore.LookupError(err)
+		}
+		return s.requireScope(ctx, d, a, scopepolicy.AttachmentRead)
 	})
 }
 
@@ -198,7 +280,7 @@ func (s *Lifecycle) Touch(ctx context.Context, a Actor, id string) (model.Privat
 		if e != nil {
 			return e
 		}
-		if e = authorize(ctx, d, a, r); e != nil {
+		if e = s.authorize(ctx, d, a, r); e != nil {
 			return e
 		}
 		if r.State == "cleanup_pending" || r.State == "closed" || r.State == "failed" {
@@ -235,7 +317,7 @@ func (s *Lifecycle) Reserve(ctx context.Context, a transfer.Actor, id string, ad
 		if e != nil {
 			return projectcore.LookupError(e)
 		}
-		if e = authorize(ctx, d, a, r); e != nil {
+		if e = s.authorize(ctx, d, a, r); e != nil {
 			return e
 		}
 		if !transfer.Live(r, time.Now()) || !transfer.ContentState(r.State) {
@@ -322,7 +404,7 @@ func (s *Lifecycle) transition(ctx context.Context, a Actor, id string, version 
 		if e != nil {
 			return projectcore.LookupError(e)
 		}
-		if e = authorize(ctx, d, a, r); e != nil {
+		if e = s.authorize(ctx, d, a, r); e != nil {
 			return e
 		}
 		if version == 0 {
@@ -515,7 +597,7 @@ func (s *Lifecycle) AcquirePermit(ctx context.Context, a transfer.Actor, id stri
 		if err != nil {
 			return projectcore.LookupError(err)
 		}
-		if err = authorize(opCtx, d, a, r); err != nil {
+		if err = s.authorize(opCtx, d, a, r); err != nil {
 			return err
 		}
 		now := time.Now().UTC()

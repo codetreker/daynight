@@ -18,6 +18,13 @@ type ProjectWriter interface {
 	WriteProject(context.Context, string, func(ProjectWriteScope) error) (Completion, error)
 }
 
+// ProjectTransferWriter locks the complete set of affected Goal Projects before
+// its callback. The caller must preflight source authorization and recheck it in
+// the transaction.
+type ProjectTransferWriter interface {
+	WriteProjectTransfer(context.Context, string, func(ProjectWriteScope) error) (Completion, error)
+}
+
 // ProjectDirectMemberWriter holds the Project, current ownership and Team roots
 // until the callback has completed, including the case of absent membership.
 type ProjectDirectMemberWriter interface {
@@ -66,6 +73,9 @@ type ProjectWriteScope interface {
 	GoalDependencyDAO() GoalDependencyDAO
 	SessionDAO() ProjectSessionDAO
 	WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO
+	// BotBarrierDAO verifies a declared Bot after Project write admission and
+	// before any Task Session lock, matching Bot deletion's Bot-then-Session order.
+	BotBarrierDAO() BotBarrierDAO
 }
 
 type ProjectWriteDAO interface {
@@ -93,25 +103,30 @@ type ProjectWriteDAO interface {
 
 type TaskWriteDAO interface {
 	Task(context.Context, string) (model.Task, error)
+	// TaskForStart locks the target and its directly owned todo Goal in UUID order.
+	TaskForStart(context.Context, string) (model.Task, error)
+	HasTerminalAncestorGoal(context.Context, string) (bool, error)
+	// TaskForDeletion locks the target, visible subtree and explicitly detached
+	// dependency sources in UUID order before returning the target.
+	TaskForDeletion(context.Context, string, bool) (model.Task, error)
 	// ParentTask reads under the Project write lock without acquiring a parent row lock.
 	ParentTask(context.Context, string) (model.Task, error)
 	GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TasksByID(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDs(context.Context, []string) ([]string, error)
 	ActiveDependentIDs(context.Context, string) ([]string, error)
+	// UnfinishedChildIDs reads visible, direct ordinary children under the Project lock.
+	UnfinishedChildIDs(context.Context, string) ([]string, error)
 	Reachable(context.Context, string, string, DependencyReplacement) (bool, error)
 	CreateTask(context.Context, string, TaskWrite) (model.Task, error)
 	UpdateTask(context.Context, string, TaskWrite) (model.Task, error)
 	ObservedAt(context.Context) (time.Time, error)
 	DependentIDs(context.Context, string) ([]string, error)
 	DeleteTask(context.Context, string, bool) (model.TaskTombstone, error)
+	// TaskVisibilityHeader reads visibility under the Project lock without a Task row lock.
+	TaskVisibilityHeader(context.Context, string) (model.TaskHeader, error)
 	TaskHeader(context.Context, string) (model.TaskHeader, error)
-	TaskSteps(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStep(context.Context, string, model.TaskStep) error
 	TouchTask(context.Context, string, time.Time) error
-	UpdateTaskStep(context.Context, string, model.TaskStep) error
-	MoveTaskStep(context.Context, string, string, int64, int64) error
-	DeleteTaskStep(context.Context, string, string, int64, int64) error
 }
 
 type TaskSessionDrain struct {

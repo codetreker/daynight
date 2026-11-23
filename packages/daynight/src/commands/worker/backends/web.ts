@@ -9,12 +9,12 @@ import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTi
 import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../controller/launch-tool-selection.js";
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
-import { readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readCompatibleControllerOperation, readControllerSnapshot, readCompatibleControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, readRecoverableInitialInput, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
-import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
 import { sameWorktreeLocation } from "../worktrees/paths.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
+import { continuingOriginalGeneration, healthyOriginalGeneration, recoveringInitialGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
@@ -191,7 +191,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     return ticket;
   };
   const request = options.request ?? requestController;
-  const observeExecutionStop = createWebStopObserver(options);
+  const observeExecutionStop = createWebStopObserver({ ...options, confirmStopped: confirmWithLease });
   const waiting = new Map<string, WebInputWaitingReason>();
   const upgrades = new Set<string>();
   const rejected = new Map<string, string>();
@@ -201,9 +201,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const autoInput = createWebInput({
     current, buildPrompt: task => options.buildPrompt(task, options.platform), request,
     currentSnapshot: (task, ticket) => readCurrentControllerSnapshot(journal(task), ticket),
+    initialSnapshot: (task, ticket) => readCompatibleControllerSnapshot(journal(task), ticket),
     ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }),
     ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }),
-    readOperation: (task, operationId) => readControllerOperation(journal(task), operationId), now: options.now,
+    readOperation: (task, operationId, ticket) => readCompatibleControllerOperation(journal(task), ticket, operationId), now: options.now,
     report: (task, error) => options.emit({ kind: "web-input-error", task, message: error.message, error }),
     event: (task, event) => options.emit({ kind: "web-input", task, message: JSON.stringify(event) }),
   });
@@ -242,6 +243,46 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     const execution = task.webExecution!;
     return snapshot.executionId === execution.executionId && snapshot.claimId === task.claimId && snapshot.sessionId === execution.sessionId
       && snapshot.executionGeneration === execution.executionGeneration && snapshot.controllerInstanceId === execution.controllerInstanceId;
+  };
+  const originalSnapshot = (task: LocalTask, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot & { controllerProcess: ProcessProof } => {
+    const execution = task.webExecution;
+    if (execution === null || ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.controllerId !== execution.controllerId
+      || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
+      || ticket.serverOrigin !== task.serverOrigin || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.claimId !== task.claimId
+      || ticket.workerId !== task.workerId || ticket.worktreeId !== task.worktreeId || ticket.userId !== task.userId) throw new ControllerLaunchJournalConflictError("The original controller ticket conflicts with its Web execution.");
+    const saved = readCompatibleControllerSnapshot(journal(task), ticket, deadline);
+    if (saved === null || saved.testExecutionId !== undefined || !matchesGeneration(task, saved) || saved.controllerProcess === null || execution.controllerProcess === null
+      || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
+      || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new ControllerLaunchJournalConflictError("The original controller generation or process evidence is unavailable.");
+    return { ...saved, controllerProcess: saved.controllerProcess };
+  };
+  const verifyRecoverableInitial = async (task: LocalTask, ticket: ControllerLaunchTicket, observed: ControllerSnapshot, capability: 1 | undefined, recoveryCapability: 1 | undefined): Promise<ControllerSnapshot | null> => {
+    const execution = task.webExecution;
+    if (recoveryCapability !== 1) throw new Error("The original Controller does not advertise safe recovered initial input; its execution is retained.");
+    if (execution === null || capability !== 1 || task.configuration === null || task.resources.worktree === null
+      || task.resources.nativeSession === null || ticket.cwd !== task.resources.worktree.worktreePath
+      || ticket.provider !== task.configuration.agent || !matchesLaunchConfiguration(ticket.configuration, task.configuration)
+      || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
+      || ticket.resumeNativeSessionId !== task.resources.nativeSession.sessionId || !recoveringInitialGeneration(task, observed)) {
+      throw new Error("Recovering the original initial input requires the original launch, native identity and queued input protocol.");
+    }
+    try {
+      const saved = originalSnapshot(task, ticket);
+      const evidence = await readRecoverableInitialInput(journal(task), ticket, options.homeDirectory);
+      if (!recoveringInitialGeneration(task, evidence.snapshot) || !preservesControllerEvidence(saved, evidence.snapshot, ticket.launchId)
+        || !preservesControllerEvidence(evidence.snapshot, observed, ticket.launchId)) {
+        throw new Error("The original initial input journal conflicts with the current Controller observation.");
+      }
+      return evidence.snapshot;
+    } catch (error) {
+      // A prior IPC may cross the durable dispatch boundary after observe. Wait
+      // for a fresh authenticated observation instead of pausing or resending.
+      const latest = originalSnapshot(task, ticket);
+      if (["dispatching", "provider_accepted", "confirmed", "failed", "unknown"].includes(latest.initialInputState)
+        && recoveringInitialGeneration(task, { ...latest, initialInputState: "not_submitted" })
+        && preservesControllerEvidence(observed, latest, ticket.launchId)) return null;
+      throw error;
+    }
   };
   const observeStartupReport = (input: LocalTask): SessionStartupReport | null => {
     const task = current(input), execution = task.webExecution;
@@ -345,18 +386,27 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || !matchesLaunchConfiguration(ticket.configuration, task.configuration!)) throw new Error("Orchestration verification found conflicting original launch ownership.");
     success(task, { kind: "execution", phase: "preparing" }, "web-orchestration-ticket");
     phase(task, { kind: "execution", phase: "agent-observation" });
-    const saved = readControllerSnapshot(journal(task));
+    const saved = originalSnapshot(task, ticket);
     const firstNativeObservation = blocker.source !== "legacy_worktree" && execution.executionGeneration === "1" && task.resources.nativeSession === null;
     if (saved === null || !matchesGeneration(task, saved) || (!firstNativeObservation && (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId))
       || saved.controllerProcess === null || execution.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
       || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Orchestration verification requires original generation and process evidence.");
     let observed: ControllerSnapshot | null = null;
     let capability: 1 | undefined;
+    let recoveryCapability: 1 | undefined;
     phase(task, { kind: "execution", phase: "agent-observation" });
-    try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); observed = response.snapshot; }
+    try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); recoveryCapability = response.recoveredInitialInputProtocol; observed = response.snapshot; }
     catch (error) { signal.throwIfAborted(); if (correctLegacyLatch || error instanceof ControllerIpcIdentityConflictError) throw error; }
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
-    const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+    const initialOperation = blocker.source !== "legacy_worktree" && observed !== null && BigInt(execution.executionGeneration) > 1n
+      && ["dispatching", "unknown"].includes(observed.initialInputState)
+      ? readCompatibleControllerOperation(journal(task), ticket, ticket.initialOperationId) : null;
+    const recoveredInitial = blocker.source !== "legacy_worktree" && observed !== null && recoveringInitialGeneration(task, observed);
+    if (recoveredInitial && await verifyRecoverableInitial(task, ticket, observed!, capability, recoveryCapability) === null) {
+      waiting.set(task.claimId, "native_input");
+      return { task, live: true };
+    }
+    const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && (continuingOriginalGeneration(task, observed, initialOperation) || recoveredInitial);
     const liveObservation = observed !== null && (healthyOriginalGeneration(task, observed) || initialContinuation);
     if (observed !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) throw new Error("The native observation conflicts with the original controller journal.");
     if (observed !== null && execution.controllerProcess !== null) await jobLeases.retain(ticket.launchId, execution.controllerProcess, Date.now() + 10_000);
@@ -387,7 +437,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     }
     signal.throwIfAborted();
     task = await verifyWorktree(task, signal, allowWorktreeRestore);
-    task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport);
+    const initialEvidence = recoveredInitial ? await verifyRecoverableInitial(task, ticket, observed, capability, recoveryCapability) : undefined;
+    if (initialEvidence === null) { waiting.set(task.claimId, "native_input"); return { task, live: true }; }
+    task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport, initialOperation, initialEvidence);
     task = remember(task, observed);
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
     if (observed.lifecycle === "ready" || observed.lifecycle === "working") success(task, { kind: "execution", phase: "agent-observation" });
@@ -427,11 +479,6 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       let recovering = retryAttempt;
       let capturedSignature: string | null = null;
       const pause = (error: unknown): LocalTask => options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : undefined);
-      const originalSnapshot = (): ControllerSnapshot => {
-        const saved = readControllerSnapshot(journal(task)), execution = task.webExecution!;
-        if (saved === null || saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.sessionId !== execution.sessionId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId) throw new Error("The original controller generation evidence is unavailable.");
-        return saved;
-      };
       try {
         if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
         if (!allowWorktreeRestore && !retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission === "not-submitted" && BigInt(task.webExecution.executionGeneration) > 1n) {
@@ -468,12 +515,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (!await confirmWithLease(previousLaunchId(previous.controllerProcess, task.webExecution!.launchId), previous.controllerProcess, previous.nativeProcesses, undefined, previous)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
             signal.throwIfAborted();
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
+            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
+            signal.throwIfAborted();
+            if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed before retry authorization consumption.");
+            // Consume this authorization after stop proof and before preparing a
+            // ticket, which may need renewal under the current Worker lifecycle.
+            task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
             const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
             prepareControllerLaunchStorage(options.homeDirectory, retryTicket);
-            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
-            task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
           } else {
-            const saved = originalSnapshot();
+            const saved = originalSnapshot(task, await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId));
             if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
             task = remember(task, saved, false);
             const proof = task.webExecution!.controllerProcess;
@@ -489,7 +540,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration!.recoveryLimit) {
           // Older versions recorded exhaustion without a pause. Inspect before any launch preparation.
           try {
-            const saved = originalSnapshot();
+            const saved = originalSnapshot(task, await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId));
             task = remember(task, saved, false);
             const proof = task.webExecution!.controllerProcess;
             if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence.");
@@ -543,9 +594,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         if (wasUnsubmitted && task.webExecution?.launchSubmission !== "not-submitted") { success(task, { kind: "execution", phase: "agent-start" }); phase(task, { kind: "execution", phase: "agent-start" }, true); }
         let snapshot: ControllerSnapshot;
         let capability: 1 | undefined;
+        let recoveryCapability: 1 | undefined;
         let capabilityObserved = false;
         phase(task, { kind: "execution", phase: "agent-observation" });
-        try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); capabilityObserved = true; snapshot = response.snapshot; }
+        try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); recoveryCapability = response.recoveredInitialInputProtocol; capabilityObserved = true; snapshot = response.snapshot; }
         catch (error) {
           signal.throwIfAborted();
           if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
@@ -581,22 +633,26 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           success(task, { kind: "execution", phase: "agent-start" });
           phase(task, { kind: "execution", phase: "agent-observation" });
           const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 });
-          capability = protocol(response); capabilityObserved = true; snapshot = response.snapshot;
+          capability = protocol(response); recoveryCapability = response.recoveredInitialInputProtocol; capabilityObserved = true; snapshot = response.snapshot;
           }
         }
         const observedProof = current(task).webExecution!.controllerProcess;
         if (observedProof !== null) await jobLeases.retain(ticket.launchId, observedProof, Date.now() + 10_000);
-        task = remember(current(task), snapshot);
+        task = current(task);
+        if ((snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") && snapshot.initialInputState === "not_submitted" && BigInt(task.webExecution!.executionGeneration) > 1n) {
+          recovering = true;
+          if (await verifyRecoverableInitial(task, ticket, snapshot, capabilityObserved ? capability : undefined, recoveryCapability) === null) {
+            waiting.set(task.claimId, "native_input");
+            return task;
+          }
+        }
+        task = remember(task, snapshot);
         if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "paused" || snapshot.lifecycle === "stopped" || snapshot.lifecycle === "stopping") {
           recovering = true;
           const error = new Error(snapshot.error ?? "The native controller is paused or stopped.");
           // A confirmed native lifecycle failure is independent of the number of orchestration attempts.
           pause(error);
           throw error;
-        }
-        if ((snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") && snapshot.initialInputState === "not_submitted" && BigInt(task.webExecution!.executionGeneration) > 1n) {
-          recovering = true;
-          throw new Error("Recovery cannot resubmit the original managed assignment.");
         }
         if (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") {
           if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, snapshot, options.now());
@@ -654,12 +710,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       try {
         const startedAt = options.now();
         let task = current(input);
+        if (task.webExecution !== null) await jobLeases.cleanupBirth(task.webExecution.launchId, Date.now() + 5000);
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.retryAuthorized && task.recovery.pauseReason === null) task = options.store.pauseRecovery(task, "The explicit recovery attempt stopped before a successful observation.", options.now());
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.pauseReason === null && task.configuration !== null && task.recovery.count >= task.configuration.recoveryLimit && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted") {
           // Shutdown provenance must not turn an already exhausted writer into a healthy orderly restart.
           try {
-            const saved = readControllerSnapshot(journal(task));
-            if (saved === null || !matchesGeneration(task, saved) || saved.controllerProcess === null) throw new Error("The exhausted execution has no original generation evidence before shutdown.");
+            const saved = originalSnapshot(task, await readLaunchTicket(options.homeDirectory, task.webExecution.launchId));
             if (["failed", "paused", "stopped", "stopping"].includes(saved.lifecycle) || await confirmWithLease(task.webExecution!.launchId, saved.controllerProcess, saved.nativeProcesses, undefined, saved)) task = options.store.pauseRecovery(task, "The execution recovery budget is exhausted.", options.now());
           } catch (error) {
             signal.throwIfAborted();
@@ -710,7 +766,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (observation.kind === "unknown") { treeEvidenceBlocked = bootstrapCompleted; throw new Error("The original controller process status is unknown during cleanup.", { cause: observation.cause }); }
             if (observation.kind === "running-unobserved") { treeEvidenceBlocked = true; throw new Error("The original controller remains running after bootstrap cleanup."); }
             if (observation.kind === "pre-writer-exited") { treeEvidenceBlocked = true; throw new Error(`The original controller exited before committing its generation (${observation.journal}); launch and resources are retained.`, replaced === undefined ? undefined : { cause: replaced }); }
-            saved = observation.kind === "observed" ? readControllerSnapshot(journal(task)) : observation.snapshot;
+            saved = observation.kind === "observed" ? originalSnapshot(task, ticket, stopDeadline) : observation.snapshot;
           }
           try {
             if (saved !== null && !matchesGeneration(task, saved)) {
@@ -738,7 +794,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               catch (error) {
                 signal.throwIfAborted();
                 if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
-                const observed = readControllerSnapshot(journal(task));
+                const observed = originalSnapshot(task, ticket, stopDeadline);
                 if (observed !== null) {
                   if (!matchesGeneration(task, observed)) { treeEvidenceBlocked = true; throw new Error("The original controller journal belongs to a different generation.", { cause: error }); }
                   if (saved !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) { treeEvidenceBlocked = true; throw new Error("The cleanup observation conflicts with the original controller journal."); }
@@ -766,16 +822,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                   if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process identity.");
                   if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
                   const operationId = task.webExecution!.cleanupOperationId!;
-                  let operation = readControllerOperation(journal(task), operationId);
+                  let operation = readCompatibleControllerOperation(journal(task), ticket, operationId, stopDeadline);
                   if (operation === null) {
                     try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, intent.deadline - options.now())) }); }
                     catch (error) {
                       if (hasUnsafeControllerObservationFailure(error)) throw error;
                       signal.throwIfAborted();
-                      operation = readControllerOperation(journal(task), operationId);
+                      operation = readCompatibleControllerOperation(journal(task), ticket, operationId, stopDeadline);
                       if (operation === null) throw error;
                     }
-                    operation = readControllerOperation(journal(task), operationId);
+                    operation = readCompatibleControllerOperation(journal(task), ticket, operationId, stopDeadline);
                   }
                   if (operation !== null && (operation.kind !== "cleanup" || operation.executionGeneration !== execution.executionGeneration)) throw new Error("The cleanup operation belongs to a different controller generation.");
                   if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return { task, complete: false };
@@ -920,6 +976,32 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   return {
     ...backend,
     observeExecutionStop,
+    // Native cancellation is independent of the serialized Task writer. It must
+    // neither persist cleanup state nor release the writer's original leases.
+    requestExecutionStop: async (input: LocalTask, deadline: number): Promise<void> => {
+      const execution = input.webExecution;
+      if (execution === null || execution.launchSubmission === "not-submitted" || execution.controllerProcess === null) throw new Error("The original submitted Web native boundary is unavailable.");
+      const assertOriginal = (): void => {
+        const latest = current(input);
+        if (latest.worktreeId !== input.worktreeId || latest.serverOrigin !== input.serverOrigin || latest.workerId !== input.workerId || latest.userId !== input.userId
+          || latest.webExecution === null || latest.webExecution.executionId !== execution.executionId || latest.webExecution.launchId !== execution.launchId
+          || latest.webExecution.controllerId !== execution.controllerId || latest.webExecution.controllerInstanceId !== execution.controllerInstanceId
+          || latest.webExecution.sessionId !== execution.sessionId || latest.webExecution.executionGeneration !== execution.executionGeneration) throw new Error("The original Web execution changed before native cancellation.");
+        if (Date.now() >= deadline) throw new Error("Web native cancellation exceeded its deadline.");
+      };
+      assertOriginal();
+      const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+      if (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.controllerId !== execution.controllerId
+        || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
+        || ticket.serverOrigin !== input.serverOrigin || ticket.projectId !== input.projectId || ticket.taskId !== input.taskId || ticket.claimId !== input.claimId
+        || ticket.workerId !== input.workerId || ticket.worktreeId !== input.worktreeId || ticket.userId !== input.userId) throw new Error("Web native cancellation ticket conflicts with the original execution.");
+      const saved = originalSnapshot(input, ticket, deadline);
+      if (saved === null || saved.testExecutionId !== undefined || !matchesGeneration(input, saved) || saved.controllerProcess === null
+        || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, execution.launchId)
+        || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Web native cancellation journal conflicts with the original process boundary.");
+      assertOriginal();
+      await stopWithLease(execution.launchId, saved.controllerProcess, saved.nativeProcesses, deadline);
+    },
     closeInput: autoInput.close,
     confirmUpgrade: async (original: LocalTask, authority: WebInputAuthority, signal: AbortSignal): Promise<WebAdvanceResult> => {
       let task = current(original);

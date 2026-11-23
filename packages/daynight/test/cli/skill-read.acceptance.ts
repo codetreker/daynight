@@ -21,6 +21,8 @@ it("reads the packed standalone manual through both aliases without configuratio
   const bundle = path.join(path.dirname(installed.receipt.entryPath), "commands/skill/skills/using-daynight");
   for (const [filename, original] of sources) expect(await readFile(path.join(bundle, filename))).toEqual(original);
   expect(contents.toString("utf8")).toContain("daynight tag delete <tag-id>");
+  expect(contents.toString("utf8")).not.toContain("daynight task step");
+  await expect(lstat(path.join(bundle, "references/steps.md"))).rejects.toMatchObject({ code: "ENOENT" });
   expect(contents.toString("utf8")).toContain("--assigned-to");
   expect(contents.toString("utf8")).toContain("--clear-assigned-to");
   const alias = path.join(path.dirname(installed.receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");
@@ -32,4 +34,25 @@ it("reads the packed standalone manual through both aliases without configuratio
   }
   expect(await readdir(fixture.home)).toEqual([]);
   await expect(lstat(fixture.agentLog)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("omits retired Steps from packed help and completion and rejects old commands", async () => {
+  const fixture = await createSkillFixture(path.join(installed.receipt.root, "Retired Steps discovery"), []);
+  const help = await skillPipe(installed.receipt, fixture, ["task", "--help"]);
+  expect(help.code, help.stderr).toBe(0);
+  expect(help.stdout).toContain("thread");
+  expect(help.stdout).not.toMatch(/\bstep\b/);
+  for (const shell of ["bash", "zsh"]) {
+    const completion = await skillPipe(installed.receipt, fixture, ["completion", shell]);
+    expect(completion.code, completion.stderr).toBe(0);
+    expect(completion.stdout).toContain("thread");
+    expect(completion.stdout).not.toMatch(/['"]step['"]|task step/);
+  }
+  for (const args of [["task", "step", "--help"], ["task", "step", "list", "bbbbbbbb-2222-4222-8222-222222222222"]]) {
+    const result = await skillPipe(installed.receipt, fixture, args);
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain("Unknown command");
+    expect(result.stdout).toBe("");
+  }
+  expect(await readdir(fixture.home)).toEqual([]);
 });

@@ -1,8 +1,6 @@
 package usage
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -59,21 +57,66 @@ func TestUsageRejectsInvalidRequestsBeforeOpeningTransactions(t *testing.T) {
 	code(t, err, "resource_unavailable")
 }
 
-func TestUsageCursorRejectsMalformedAuthenticatedPayloads(t *testing.T) {
+func TestUsageCursorFormatAndLegacyTransition(t *testing.T) {
 	s := newTestService(t, nil, Options{})
-	sign := func(raw string) string {
-		h := hmac.New(sha256.New, s.cursorKey)
-		h.Write([]byte(raw))
-		return base64.RawURLEncoding.EncodeToString([]byte(raw)) + "." + base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	now := time.Date(2026, 11, 20, 1, 2, 3, 0, time.UTC)
+	for _, lastTime := range []time.Time{now, {}} {
+		c := cursor{Binding: strings.Repeat("a", 64), Revision: strings.Repeat("b", 64), LastTime: lastTime, LastID: "10000000-0000-4000-8000-000000000001", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano)}
+		token, err := s.encodeCursor(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The old signed format used this JSON as its first segment.
+		lastTimeJSON := `2026-11-20T01:02:03Z`
+		if lastTime.IsZero() {
+			lastTimeJSON = `0001-01-01T00:00:00Z`
+		}
+		legacyJSON := `{"binding":"` + strings.Repeat("a", 64) + `","revision":"` + strings.Repeat("b", 64) + `","lastTime":"` + lastTimeJSON + `","lastId":"10000000-0000-4000-8000-000000000001","expiresAt":"2026-11-20T01:03:03Z"}`
+		if token != base64.RawURLEncoding.EncodeToString([]byte(legacyJSON)) {
+			t.Fatalf("payload changed: %q", token)
+		}
+		decoded, err := s.decodeCursor(token, now, !lastTime.IsZero())
+		if err != nil || decoded != c {
+			t.Fatalf("round trip: %#v %v", decoded, err)
+		}
+		_, err = s.decodeCursor(token, now.Add(time.Minute), !lastTime.IsZero())
+		code(t, err, "cursor_expired")
+		_, err = s.decodeCursor(token+"."+strings.Repeat("A", 43), now, !lastTime.IsZero())
+		code(t, err, "reset_required")
 	}
-	for _, token := range []string{
-		"missing-separator",
-		"%.AA",
-		"e30.%",
-		sign("{"),
-		sign(`{"expiresAt":"not-a-time"}`),
-	} {
-		_, err := s.decodeCursor(token, time.Now())
+	for _, token := range []string{". " + strings.Repeat("A", 43), "a." + strings.Repeat("A", 42), "a." + strings.Repeat("A", 43) + ".", strings.Repeat("a", 4097) + "." + strings.Repeat("A", 43)} {
+		_, err := s.decodeCursor(token, now, true)
+		code(t, err, "invalid_cursor")
+	}
+}
+
+func TestUsageCursorRejectsMalformedPayloads(t *testing.T) {
+	s := newTestService(t, nil, Options{})
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	binding, revision := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	valid := `{"binding":"` + binding + `","revision":"` + revision + `","lastTime":"2026-11-20T00:00:00Z","lastId":"10000000-0000-4000-8000-000000000001","expiresAt":"2026-11-20T00:15:00Z"}`
+	payloads := []string{
+		`{`, `[]`, `null`, valid + `{}`,
+		strings.Replace(valid, `"binding":"`+binding+`",`, "", 1),
+		strings.Replace(valid, `"binding":"`+binding+`"`, `"binding":null`, 1),
+		strings.Replace(valid, `"binding":"`+binding+`"`, `"binding":""`, 1),
+		strings.Replace(valid, binding, strings.Repeat("A", 64), 1),
+		strings.Replace(valid, `"revision":"`+revision+`"`, `"revision":17`, 1),
+		strings.Replace(valid, `"lastTime":"2026-11-20T00:00:00Z"`, `"lastTime":null`, 1),
+		strings.Replace(valid, `"lastTime":"2026-11-20T00:00:00Z"`, `"lastTime":"0001-01-01T00:00:00Z"`, 1),
+		strings.Replace(valid, `"lastId":"10000000-0000-4000-8000-000000000001"`, `"lastId":"invalid"`, 1),
+		strings.Replace(valid, `"expiresAt":"2026-11-20T00:15:00Z"`, `"expiresAt":"invalid"`, 1),
+		strings.Replace(valid, `"binding":`, `"unknown":true,"binding":`, 1),
+		strings.Replace(valid, `"binding":`, `"binding":"`+binding+`","binding":`, 1),
+	}
+	for _, payload := range payloads {
+		t.Run(payload, func(t *testing.T) {
+			_, err := s.decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(payload)), now, true)
+			code(t, err, "invalid_cursor")
+		})
+	}
+	for _, token := range []string{"%", "e30=", "e30\n", "e31", strings.Repeat("x", 4097)} {
+		_, err := s.decodeCursor(token, now, true)
 		code(t, err, "invalid_cursor")
 	}
 }

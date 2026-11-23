@@ -40,14 +40,15 @@ type lease struct {
 	validUntil  time.Time
 	closeOnce   sync.Once
 	closeErr    error
+	archive     bool
 }
 
-func (g *Gates) newLease(key, token string, validUntil time.Time) *lease {
+func (g *Gates) newLease(key, token string, validUntil time.Time, archive bool) *lease {
 	lifetime, endLifetime := context.WithCancelCause(context.Background())
 	renewal, stopRenewal := context.WithCancel(lifetime)
 	p := &lease{
 		gates: g, key: key, token: token, lifetime: lifetime, endLifetime: endLifetime,
-		stopRenewal: stopRenewal, renewalDone: make(chan struct{}), validUntil: validUntil,
+		stopRenewal: stopRenewal, renewalDone: make(chan struct{}), validUntil: validUntil, archive: archive,
 	}
 	go p.renew(renewal)
 	return p
@@ -72,7 +73,13 @@ func (p *lease) renew(ctx context.Context) {
 		p.validity.Unlock()
 		started := time.Now()
 		callCtx, cancel := context.WithDeadline(ctx, deadline)
-		renewed, err := renewLease.Run(callCtx, p.gates.client, []string{p.key}, p.token, p.gates.ttl.Milliseconds()).Int()
+		var renewed int
+		var err error
+		if p.archive {
+			renewed, err = archiveGate.Run(callCtx, p.gates.client, []string{p.key}, "renew", p.token, "", 0, p.gates.ttl.Milliseconds(), "false").Int()
+		} else {
+			renewed, err = renewLease.Run(callCtx, p.gates.client, []string{p.key}, p.token, p.gates.ttl.Milliseconds()).Int()
+		}
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -113,11 +120,21 @@ func (p *lease) VerifyGate(ctx context.Context) error {
 	if err := p.check(); err != nil {
 		return err
 	}
-	token, err := p.gates.client.Get(ctx, p.key).Result()
+	var matches bool
+	var err error
+	if p.archive {
+		var found int
+		found, err = archiveGate.Run(ctx, p.gates.client, []string{p.key}, "verify", p.token, "", 0, p.gates.ttl.Milliseconds(), "false").Int()
+		matches = found == 1
+	} else {
+		var token string
+		token, err = p.gates.client.Get(ctx, p.key).Result()
+		matches = token == p.token
+	}
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
-	if errors.Is(err, redisclient.Nil) || (err == nil && token != p.token) {
+	if errors.Is(err, redisclient.Nil) || (err == nil && !matches) {
 		p.endLifetime(filestorage.ErrGateLost)
 	} else if err != nil {
 		p.endLifetime(fmt.Errorf("%w: verify Redis storage gate: %w", filestorage.ErrGateLost, err))
@@ -170,7 +187,13 @@ func (p *lease) Close() error {
 		p.endLifetime(context.Canceled)
 		ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 		defer cancel()
-		released, err := releaseLease.Run(ctx, p.gates.client, []string{p.key}, p.token).Int()
+		var released int
+		var err error
+		if p.archive {
+			released, err = archiveGate.Run(ctx, p.gates.client, []string{p.key}, "release", p.token, "", 0, p.gates.ttl.Milliseconds(), "false").Int()
+		} else {
+			released, err = releaseLease.Run(ctx, p.gates.client, []string{p.key}, p.token).Int()
+		}
 		if err != nil {
 			err = fmt.Errorf("release Redis storage gate: %w", err)
 		} else if released != 1 && lost == nil {

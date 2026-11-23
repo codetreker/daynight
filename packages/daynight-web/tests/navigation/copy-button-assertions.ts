@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
 // Measure the rendered consumer, including surrounding styles and layout.
-export async function expectCopyButtonSkin(page: Page, button: Locator, labelled = false) {
+export async function expectCopyButtonSkin(page: Page, button: Locator, labelled = false, iconSize = 26) {
   await button.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
   const measure = () => button.evaluate(element => {
@@ -17,7 +17,7 @@ export async function expectCopyButtonSkin(page: Page, button: Locator, labelled
   await expect.poll(async () => (await measure()).background).toBe('rgba(0, 0, 0, 0)');
   const idle = await measure();
   expect(idle).toMatchObject({ background: 'rgba(0, 0, 0, 0)', border: 'rgba(0, 0, 0, 0)', shadow: 'none', icon: [16, 16] });
-  if (!labelled) expect([idle.width, idle.height]).toEqual([26, 26]);
+  if (!labelled) expect([idle.width, idle.height]).toEqual([iconSize, iconSize]);
   await button.hover();
   await expect.poll(async () => (await measure()).border).toBe('rgb(220, 224, 232)');
   const hover = await measure();

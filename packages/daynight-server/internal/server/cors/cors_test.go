@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestPreflightRunsOnlyRouteLookup(t *testing.T) {
@@ -107,6 +110,7 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		{"/mcp", "https://client.example", ""}, {"/healthz", "https://client.example", ""},
 		{"/assets/app.js", "https://client.example", ""}, {"/api/v1/oauth/s2s/token", "https://client.example", ""},
 		{"/api/v1/native-callback", "https://client.example", ""}, {"/api/v1/controller-channel", "https://client.example", ""},
+		{"/api/v1/assistant-task-inbox/22222222-2222-4222-8222-222222222222", "https://client.example", ""},
 	} {
 		r := httptest.NewRequest(http.MethodOptions, tc.path, nil)
 		r.Header.Set("Origin", "https://client.example")
@@ -114,6 +118,65 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		Wrap(mux, mux, tc.origin, logger, "/api/v1/native-callback").ServeHTTP(w, r)
 		if w.Code != 202 || w.Header().Get("Access-Control-Allow-Origin") != tc.want {
 			t.Fatalf("independent %s response changed: %d %v", tc.path, w.Code, w.Header())
+		}
+	}
+}
+
+func TestCredentialRouteCORSExclusions(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	h := Wrap(mux, mux, "https://client.example", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		path     string
+		excluded bool
+	}{
+		{"/api/v2/me/tokens", true}, {"/api/v2/me/tokens/id/description", true}, {"/api/v2/me/tokens/id/scopes", true},
+		{"/api/v1/me/credential-scope-catalog", true}, {"/api/v2/auth/device/inspect", true}, {"/api/v2/auth/device/decision", true},
+		{"/api/v2/auth/device/inspect/other", false},
+		{"/api/v3/oauth/grants", true}, {"/api/v3/oauth/grants/id/description", true}, {"/api/v3/oauth/grants/id/scopes", true},
+		{"/api/v2/me/tokens/id", false}, {"/api/v2/me/tokens/id/description/extra", false}, {"/api/v2/me/tokens/id/scopes/extra", false},
+		{"/api/v2/me/tokens-extra", false}, {"/api/v1/me/tokens", false}, {"/api/v2/oauth/grants", false},
+	} {
+		for _, method := range []string{"GET", "OPTIONS"} {
+			r := httptest.NewRequest(method, tc.path, nil)
+			r.Header.Set("Origin", "https://client.example")
+			r.Header.Set("Access-Control-Request-Method", "GET")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if got := w.Header().Get("Access-Control-Allow-Origin"); (got == "") != tc.excluded {
+				t.Errorf("%s %s CORS origin = %q", method, tc.path, got)
+			}
+		}
+	}
+}
+
+func TestScopeRefusalExposesStatusOnlyToConfiguredOrigin(t *testing.T) {
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux.HandleFunc("GET /api/v1/resource", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		httpx.WriteError(w, r, logger, "test", "read", &model.Fault{Code: "insufficient_scope", Message: "The credential has insufficient scope."})
+	})
+	h := Wrap(mux, mux, "https://client.example", logger)
+	for _, tc := range []struct {
+		origin  string
+		exposed bool
+	}{{"https://client.example", true}, {"https://other.example", false}} {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/resource", nil)
+		r.Header.Set("Origin", tc.origin)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden || w.Header().Get("Daynight-Scope-Status") != "insufficient_scope" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), `"code":"forbidden"`) {
+			t.Fatalf("scope refusal: %d %v %s", w.Code, w.Header(), w.Body.String())
+		}
+		hasExposure := false
+		for _, name := range strings.Split(w.Header().Get("Access-Control-Expose-Headers"), ",") {
+			if strings.EqualFold(strings.TrimSpace(name), "Daynight-Scope-Status") {
+				hasExposure = true
+			}
+		}
+		if hasExposure != tc.exposed || !strings.Contains(strings.ToLower(strings.Join(w.Header().Values("Vary"), ",")), "origin") {
+			t.Fatalf("origin %s exposure %v headers %v", tc.origin, hasExposure, w.Header())
 		}
 	}
 }

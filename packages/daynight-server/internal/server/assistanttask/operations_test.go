@@ -80,8 +80,22 @@ func (m *operationMock) AddAppendix(ctx context.Context, actor core.Actor, input
 	}
 	return value.(model.AssistantTaskAppendix), err
 }
+func (m *operationMock) RelatedAppendix(ctx context.Context, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	value, err := m.call(ctx, actor, "RelatedAppendix", taskID, input)
+	if value == nil {
+		return model.AssistantTaskRelatedAppendices{}, err
+	}
+	return value.(model.AssistantTaskRelatedAppendices), err
+}
 func (m *operationMock) UpdateAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error) {
 	value, err := m.call(ctx, actor, "UpdateAppendix", input)
+	if value == nil {
+		return model.AssistantTaskAppendix{}, err
+	}
+	return value.(model.AssistantTaskAppendix), err
+}
+func (m *operationMock) ValidateAppendix(ctx context.Context, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	value, err := m.call(ctx, actor, "ValidateAppendix", input)
 	if value == nil {
 		return model.AssistantTaskAppendix{}, err
 	}
@@ -135,6 +149,13 @@ func (m *operationMock) SaveItem(ctx context.Context, actor core.Actor, input co
 		return model.AssistantTaskItem{}, err
 	}
 	return value.(model.AssistantTaskItem), err
+}
+func (m *operationMock) Metrics(ctx context.Context, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	value, err := m.call(ctx, actor, "Metrics", taskID)
+	if value == nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	return value.(model.AssistantTaskMetrics), err
 }
 func (m *operationMock) ListRecords(ctx context.Context, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 	value, err := m.call(ctx, actor, "ListRecords", taskID, input)
@@ -203,4 +224,30 @@ func (m *operationMock) EnableWatchdog(ctx context.Context, actor core.Actor, id
 		return core.TaskResult{}, err
 	}
 	return value.(core.TaskResult), err
+}
+func (m *operationMock) GetInbox(ctx context.Context, actor core.Actor, taskID string) (core.InboxView, error) {
+	value, err := m.call(ctx, actor, "GetInbox", taskID)
+	if value == nil {
+		return core.InboxView{}, err
+	}
+	return value.(core.InboxView), err
+}
+func (m *operationMock) EnableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "EnableInbox", input)
+}
+func (m *operationMock) RotateInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "RotateInbox", input)
+}
+func (m *operationMock) DisableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "DisableInbox", input)
+}
+func (m *operationMock) InboxOperation(ctx context.Context, actor core.Actor, taskID, operationID string) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "InboxOperation", taskID, operationID)
+}
+func (m *operationMock) inboxResult(ctx context.Context, actor core.Actor, name string, args ...any) (core.InboxResult, error) {
+	value, err := m.call(ctx, actor, name, args...)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
 }

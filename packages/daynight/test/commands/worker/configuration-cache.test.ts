@@ -28,19 +28,23 @@ const correct = (cache: ActiveCache, target: WorkerCloudDesired): ActiveCache =>
   return transitionConfigurationDesired(cache, receiveWorkerDesired(JSON.stringify(modern(target, "12"))), new Set(), () => uuid(next++));
 };
 const failure = { code: "permission_denied" as const, category: "runtime" as const, phase: "stop" as const, occurredAt: "2026-11-04T01:00:00Z" };
-const value = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
+// The storage wire types are frozen at the shape of deployed checkpoints, so
+// they cannot name a member added afterwards. Fixtures for current envelopes
+// still need one, and the decoder reads them through the active key type.
+type FixtureKey = WorkerCloudItemKey | { readonly kind: "enableWindowsProcessCleanup" };
+const value = (key: FixtureKey): WorkerCloudItem["appliedValue"] => {
   switch (key.kind) {
     case "native": case "projectNative": return native;
     case "maxConcurrent": return 4;
     case "pollIntervalMs": return 1500;
     case "recoveryLimit": return 2;
-    case "archiveSessions": case "enableSudoCleanup": case "preferPlatformSpecificTasks": case "projectPreparation": case "projectRemoval": return true;
+    case "archiveSessions": case "enableSudoCleanup": case "enableWindowsProcessCleanup": case "preferPlatformSpecificTasks": case "projectPreparation": case "projectRemoval": return true;
     case "agentControlMode": return "web";
   }
 };
-const tracked = (n: number, key: WorkerCloudItemKey, revision = "10"): TrackedConfigurationItem => ({
+const tracked = (n: number, key: FixtureKey, revision = "10"): TrackedConfigurationItem => ({
   recordId: uuid(n), origin: { generation, targetRevision: revision, source: "application" },
-  value: { key, targetRevision: revision, appliedValue: value(key), state: "applied", error: null, lastFailure: null, nextAttemptAt: null },
+  value: { key: key as WorkerCloudItemKey, targetRevision: revision, appliedValue: value(key), state: "applied", error: null, lastFailure: null, nextAttemptAt: null },
   backoffStep: 0, failureId: null, started: false, nativeMode: key.kind === "native" || key.kind === "projectNative" ? "web" : null,
   actualSource: { kind: "observed", recordId: uuid(n), generation, targetRevision: revision }, blockedByRemovalId: null,
 });
@@ -75,7 +79,7 @@ afterEach(async () => { for (const folder of directories.splice(0)) await rm(fol
 describe("Worker configuration cache", () => {
   it("creates an immutable uninitialized cache with a fresh local generation", () => {
     const first = createConfigurationCache(identity), second = createConfigurationCache(identity);
-    expect(first).toMatchObject({ schemaVersion: 11, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
+    expect(first).toMatchObject({ schemaVersion: 13, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
     expect(first.authority.generation).not.toBe(second.authority.generation);
     expect(Object.isFrozen(first.authority)).toBe(true);
     expect(parseConfigurationCache(first, identity)).toEqual({ cache: first, migrated: false });
@@ -93,7 +97,7 @@ describe("Worker configuration cache", () => {
     const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson, pendingApplication: false }, currentItems, retainedItems: [stop], remoteObservation };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache.schemaVersion).toBe(11);
+    expect(result.cache.schemaVersion).toBe(13);
     expect(result.cache.authority).toMatchObject({ desiredJson, applicationRevision: "10", observationRevision: "9" });
     expect(result.cache.remoteObservation).toEqual(remoteObservation);
     expect(result.cache.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(currentItems);
@@ -114,7 +118,7 @@ describe("Worker configuration cache", () => {
     await first.receive(receiveWorkerDesired(raw), "9"); await first.settle();
     expect(first.current().effective.native).toBeNull();
     expect(first.current().retainedArchiveSessions).toBe(false);
-    expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(invalid).toHaveBeenCalledWith("10", "unsupported_configuration");
     await first.stop();
     const second = await createWorkerConfigurationManager(options);
@@ -124,14 +128,38 @@ describe("Worker configuration cache", () => {
     expect(saved.currentItems).toContainEqual(withoutMode(archive));
     expect(saved.currentItems).toContainEqual(withoutMode(sudo));
     expect(second.current().effective.native).toBeNull();
-    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(applyNative).not.toHaveBeenCalled();
     await second.receive(receiveWorkerDesired(JSON.stringify(modern({ ...desired, value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } }, "11"))), "9");
     await second.settle();
-    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(second.current().effective.archiveSessions).toBe(false);
     expect(applyNative).toHaveBeenCalledTimes(2);
     await second.stop();
+  });
+
+  it("reads each cleanup member from its own committed application", async () => {
+    // Every other assertion here leaves the Windows member absent, and the
+    // cleanup behaviour tests inject a policy rather than reading one. Without
+    // this, nothing proves the member reaches a policy at all, and nothing
+    // would notice the two members sharing one value or one revision again.
+    const original = cache();
+    const recorded = tracked(81, { kind: "enableSudoCleanup" });
+    const sudo = { ...recorded, value: { ...recorded.value, appliedValue: false } };
+    const processes = tracked(82, { kind: "enableWindowsProcessCleanup" }, "11");
+    // The members were committed by different targets. A fully applied cache
+    // requires every member to sit at the application revision, so differing
+    // revisions only exist while an application is still pending.
+    const raw = JSON.stringify(modern({ ...desired, value: { ...desired.value, enableSudoCleanup: false, enableWindowsProcessCleanup: true } }, "11"));
+    const source = { ...original, schemaVersion: 12, authority: { ...original.authority, desiredJson: raw, applicationRevision: "11", pendingApplication: true }, currentItems: withoutModeItems([...original.currentItems, sudo, processes]) };
+    const folder = await directory(), file = path.join(folder, "members.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, [JSON.stringify(source)], 0o600);
+    const manager = await createWorkerConfigurationManager({ file, identity, signal, applyNative: async () => {} });
+    try {
+      await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
+      // Opposite values and different revisions: a shared one cannot produce this.
+      expect(manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, sudoRevision: "10", enableWindowsProcessCleanup: true, windowsProcessRevision: "11" });
+    } finally { await manager.stop(); }
   });
 
   it.each([
@@ -154,7 +182,7 @@ describe("Worker configuration cache", () => {
       const manager = await createWorkerConfigurationManager(options);
       try {
         await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
-        expect(manager.readCleanupPolicy()).toEqual(expected === null ? null : { enableSudoCleanup: expected, revision: "10" });
+        expect(manager.readCleanupPolicy()).toEqual(expected === null ? null : { enableSudoCleanup: expected, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
         const saved = (await readConfigurationCache(file, identity, signal)).cache;
         expect(saved.authority.desiredJson).toBe(raw);
         expect(saved.currentItems).toContainEqual(withoutMode(sudo));
@@ -195,7 +223,7 @@ describe("Worker configuration cache", () => {
     const source = { ...original, schemaVersion: 10, authority: { ...original.authority, desiredJson: JSON.stringify(modern(desired)).replace('"value":{', '"value":{"future":1e+999,'), pendingApplication: false }, currentItems, retainedItems, remoteObservation };
     const migrated = parseConfigurationCache(source, identity);
     expect(migrated.migrated).toBe(true);
-    expect(migrated.cache).toMatchObject({ schemaVersion: 11, authority: { desiredJson: source.authority.desiredJson, pendingApplication: false }, currentItems, retainedItems, remoteObservation });
+    expect(migrated.cache).toMatchObject({ schemaVersion: 13, authority: { desiredJson: source.authority.desiredJson, pendingApplication: false }, currentItems, retainedItems, remoteObservation });
     expect(() => parseConfigurationCache({ ...source, currentItems: currentItems.filter(item => item.value.key.kind !== "maxConcurrent") }, identity)).toThrow(/missing target/);
     const file = path.join(await directory(), "schema10.json"), signal = new AbortController().signal;
     await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(migrated.cache), 0o600);
@@ -265,11 +293,53 @@ describe("Worker configuration cache", () => {
     expect(parseConfigurationCache(upgraded.cache, identity).migrated).toBe(false);
   });
 
+  it("keeps a schema 11 Windows process cleanup target opaque and reidentifies it as pending", () => {
+    const original = cache();
+    const desiredJson = JSON.stringify({ ...modern(desired), value: { ...modern(desired).value, enableWindowsProcessCleanup: true } });
+    const source = { ...original, schemaVersion: 11, authority: { ...original.authority, desiredJson, pendingApplication: false }, currentItems: withoutModeItems(original.currentItems) };
+    const { cache: upgraded, migrated } = parseConfigurationCache(source, identity);
+    expect(migrated).toBe(true);
+    // The writing binary could not apply this member, so the upgrade records an
+    // obligation rather than inheriting an application that never happened.
+    expect(upgraded.authority.desiredJson).toBe(desiredJson);
+    expect(upgraded.currentItems.find(item => item.value.key.kind === "enableWindowsProcessCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "10" });
+    expect(parseConfigurationCache(upgraded, identity).migrated).toBe(false);
+  });
+
+  it("keeps a schema 11 cache without the Windows process cleanup target unchanged apart from its version", () => {
+    const original = cache();
+    const source = { ...original, schemaVersion: 11, authority: { ...original.authority, desiredJson: JSON.stringify(modern(desired)), pendingApplication: false }, currentItems: withoutModeItems(original.currentItems) };
+    const { cache: upgraded } = parseConfigurationCache(source, identity);
+    expect(upgraded.schemaVersion).toBe(13);
+    expect(upgraded.currentItems.some(item => item.value.key.kind === "enableWindowsProcessCleanup")).toBe(false);
+    expect(upgraded.currentItems).toEqual(source.currentItems);
+  });
+
+  it("rejects a schema 11 envelope that already claims a Windows process cleanup result", () => {
+    const original = cache();
+    const desiredJson = JSON.stringify({ ...modern(desired), value: { ...modern(desired).value, enableWindowsProcessCleanup: true } });
+    const source = { ...original, schemaVersion: 11, authority: { ...original.authority, desiredJson, pendingApplication: false },
+      currentItems: [...withoutModeItems(original.currentItems), withoutMode(tracked(84, { kind: "enableWindowsProcessCleanup" }))] };
+    expect(() => parseConfigurationCache(source, identity)).toThrow("future application result");
+  });
+
+  it("leaves a schema 9 Windows process cleanup member opaque without inventing an obligation", () => {
+    const original = cache();
+    const desiredJson = JSON.stringify({ ...desired, value: { ...desired.value, enableWindowsProcessCleanup: true } });
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson, pendingApplication: false }, currentItems: withoutModeItems(original.currentItems) };
+    const { cache: upgraded, migrated } = parseConfigurationCache(source, identity);
+    expect(migrated).toBe(true);
+    // The envelope predates the member, so it stays raw authority. Only the
+    // next received document introduces it together with its ledger entry.
+    expect(upgraded.authority.desiredJson).toBe(desiredJson);
+    expect(upgraded.currentItems.some(item => item.value.key.kind === "enableWindowsProcessCleanup")).toBe(false);
+  });
+
   it("upgrades schema 6 without reidentifying an absent sudo target", () => {
     const source = { ...cache(), schemaVersion: 6 };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache).toEqual({ ...source, schemaVersion: 11, authority: { ...source.authority, generation: expect.any(String), pendingApplication: true }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
+    expect(result.cache).toEqual({ ...source, schemaVersion: 13, authority: { ...source.authority, generation: expect.any(String), pendingApplication: true }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
     expect(result.cache.currentItems.some(item => item.value.key.kind === "enableSudoCleanup")).toBe(false);
   });
 
@@ -526,7 +596,7 @@ describe("Worker configuration cache", () => {
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
     expect(result.cache).toEqual({
-      ...original, schemaVersion: 11, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: true },
+      ...original, schemaVersion: 13, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: true },
       currentItems: withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), retainedItems: [withoutMode(stop)],
     });
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);
@@ -574,7 +644,7 @@ describe("Worker configuration cache", () => {
   it.each([1, 2, 3, 4] as const)("explicitly upgrades schema %i without inventing a prior success revision", version => {
     const source = legacy(version), result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache.schemaVersion).toBe(11);
+    expect(result.cache.schemaVersion).toBe(13);
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual({ ...source.desired, value: { ...source.desired.value, preferPlatformSpecificTasks: version === 1 ? false : desired.value.preferPlatformSpecificTasks } });
     expect(result.cache.authority).toMatchObject({ applicationRevision: "10", observationRevision: "9" });
     expect(result.cache.remoteObservation).toBeNull();
@@ -637,7 +707,7 @@ describe("Worker configuration cache", () => {
   });
 
   const invalid: readonly [string, (input: WorkerConfigurationCache) => unknown][] = [
-    ["unknown schema", input => ({ ...input, schemaVersion: 11 })],
+    ["unknown schema", input => ({ ...input, schemaVersion: 14 })],
     ["unknown fields", input => ({ ...input, extra: true })],
     ["missing application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: null } })],
     ["future application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: "11" } })],
@@ -653,6 +723,7 @@ describe("Worker configuration cache", () => {
     ["duplicate current keys", input => ({ ...input, currentItems: [...input.currentItems, { ...input.currentItems[0], recordId: uuid(80) }] })],
     ["missing required row", input => ({ ...input, currentItems: input.currentItems.slice(1) })],
     ["sudo result without a target", input => ({ ...input, currentItems: [...input.currentItems, tracked(83, { kind: "enableSudoCleanup" })] })],
+    ["Windows process cleanup result in a schema 8 envelope", input => ({ ...input, currentItems: [...input.currentItems, tracked(84, { kind: "enableWindowsProcessCleanup" })] })],
     ["future current row", input => ({ ...input, currentItems: [...input.currentItems, tracked(81, { kind: "projectRemoval", projectId }, "11")] })],
     ["unselected current project", input => ({ ...input, currentItems: [...input.currentItems, tracked(82, { kind: "projectNative", projectId: previousProjectId })] })],
     ["mismatched origin revision", input => ({ ...input, currentItems: [{ ...input.currentItems[0], origin: { ...input.currentItems[0]!.origin, targetRevision: "9" } }, ...input.currentItems.slice(1)] })],

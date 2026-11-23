@@ -95,7 +95,9 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
     const repair = started ? { repaired: [], failures: [] } : await repairStoppedMarkdownProjections({ journalPath, ticket, signal: operation.signal, resolveImage: resolveStoppedMarkdownImage, beforeWrite: verify });
     if (repair.failures.length) return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, failures: repair.failures.map(item => ({ ...item, nextAction: repairNextAction(item.code) })), archive: "not-started" })}\n`, exitCode: 1, failureText: () => "Markdown repair results could not be printed; inspect the same original execution before retrying." };
     await verify();
-    const archive = await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: serverConfiguration.serverToken!, signal: operation.signal });
+    const archive = await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: serverConfiguration.serverToken!, signal: operation.signal,
+      onRetry: event => context.stderr(`Session archive capacity ${JSON.stringify(event)}\n`),
+    });
     return { kind: "known-session-operation" as const, output: `${JSON.stringify({ ...target, ...repair, archive, cleanup: "owned-by-worker" })}\n`, exitCode: 0, failureText: () => "Archive result output failed; reconcile the original archive receipt before retrying." };
     }, operation.signal);
   }, { operationLimits: { totalMs: 600_000 } });

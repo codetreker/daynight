@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -41,31 +42,41 @@ type handler struct {
 	logger  *slog.Logger
 }
 
-func RegisterRoutes(mux *http.ServeMux, service *app.Service, auth Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, service *app.Service, auth Authentication, logger *slog.Logger) {
+	RegisterRoutesWithScopeObserver(mux, service, auth, logger, nil)
+}
+
+// RegisterRoutesWithScopeObserver exposes classifications of the routes actually installed.
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, service *app.Service, auth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if service == nil {
 		return
 	}
-	registerRoutes(mux, service, auth, logger)
+	registerRoutesObserved(mux, service, auth, auth, logger, observe)
 }
-func registerRoutes(mux *http.ServeMux, service operations, auth Authentication, logger *slog.Logger) {
+func registerRoutes(mux httpx.RouteRegistrar, service operations, auth Authentication, logger *slog.Logger) {
+	registerRoutesObserved(mux, service, auth, auth, logger, nil)
+}
+func registerRoutesObserved(mux httpx.RouteRegistrar, service operations, auth, readAuth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	h := &handler{service, auth, logger}
-	mux.HandleFunc("GET /api/usage/v1/capabilities", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	routes := routeRegistry{mux, observe}
+	routes.handle("GET /api/usage/v1/capabilities", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 		h.write(w, r, http.StatusOK, service.Capabilities())
-	}))
-	mux.HandleFunc("POST /api/usage/v1/registrations", auth.Require(h.register))
-	mux.HandleFunc("GET /api/usage/v1/states/{stateId}", auth.Require(h.state))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/grant", auth.Require(h.rotate))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/revoke", auth.Require(h.revoke))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/batches", h.batch)
-	mux.HandleFunc("GET /api/usage/v1/states/{stateId}/sources", h.sources)
-	mux.HandleFunc("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/summary", auth.Require(h.taskSummary))
-	mux.HandleFunc("POST /api/projects/{projectId}/usage/v1/task-summaries", auth.Require(h.taskSummaries))
-	mux.HandleFunc("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/records", auth.Require(h.records))
-	mux.HandleFunc("GET /api/test-sessions/{sessionId}/usage/v1/summary", auth.Require(h.testSummary))
-	mux.HandleFunc("GET /api/test-sessions/{sessionId}/usage/v1/records", auth.Require(h.records))
-	mux.HandleFunc("GET /api/projects/{projectId}/usage/v1/aggregates/chain/{scopeId}", auth.Require(h.chain))
-	mux.HandleFunc("GET /api/projects/{projectId}/usage/v1/aggregates/goal/{scopeId}", auth.Require(h.goal))
+	}), routeCapability)
+	routes.handle("POST /api/usage/v1/registrations", auth.Require(h.register), routeProducer)
+	routes.handle("GET /api/usage/v1/states/{stateId}", auth.Require(h.state), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/grant", auth.Require(h.rotate), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/revoke", auth.Require(h.revoke), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/batches", h.batch, routeGrant)
+	routes.handle("GET /api/usage/v1/states/{stateId}/sources", h.sources, routeGrant)
+	routes.handle("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/summary", readAuth.Require(h.taskSummary), routeRead)
+	routes.handle("POST /api/projects/{projectId}/usage/v1/task-summaries", readAuth.Require(h.taskSummaries), routeRead)
+	routes.handle("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/records", readAuth.Require(h.records), routeRead)
+	routes.handle("GET /api/test-sessions/{sessionId}/usage/v1/summary", readAuth.Require(h.testSummary), routeRead)
+	routes.handle("GET /api/test-sessions/{sessionId}/usage/v1/records", readAuth.Require(h.records), routeRead)
+	routes.handle("GET /api/projects/{projectId}/usage/v1/aggregates/chain/{scopeId}", readAuth.Require(h.chain), routeRead)
+	routes.handle("GET /api/projects/{projectId}/usage/v1/aggregates/goal/{scopeId}", readAuth.Require(h.goal), routeRead)
 }
+
 func (h *handler) write(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if w.Header().Get("Cache-Control") == "" {
@@ -517,9 +528,12 @@ func (h *handler) records(w http.ResponseWriter, r *http.Request, p model.Princi
 		h.fail(w, r, core.Fault("resource_unavailable"))
 		return
 	}
-	q := r.URL.Query()
+	q, err := pageQuery(r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	limit := 100
-	var err error
 	if q.Has("limit") {
 		limit, err = strconv.Atoi(q.Get("limit"))
 		if err != nil {
@@ -552,10 +566,27 @@ func (h *handler) aggregate(w http.ResponseWriter, r *http.Request, p model.Prin
 		h.fail(w, r, err)
 		return
 	}
-	out, err := h.service.Aggregate(r.Context(), p, project, kind, id, r.URL.Query().Get("cursor"))
+	q, err := pageQuery(r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out, err := h.service.Aggregate(r.Context(), p, project, kind, id, q.Get("cursor"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	h.write(w, r, 200, out)
+}
+
+// pageQuery rejects malformed input before using any partial parse result.
+func pageQuery(raw string) (url.Values, error) {
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, core.Fault("invalid_filter")
+	}
+	if len(q["cursor"]) > 1 {
+		return nil, core.Fault("invalid_cursor")
+	}
+	return q, nil
 }

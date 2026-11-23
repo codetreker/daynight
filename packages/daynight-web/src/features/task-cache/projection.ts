@@ -22,13 +22,18 @@ const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
 export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
-  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.title === right.title && left.titlePreview === right.titlePreview &&
+  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId &&
+  (left.parentTaskId === undefined || right.parentTaskId === undefined || left.parentTaskId === right.parentTaskId) && left.title === right.title && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
   sameTaskProperties(left.properties, right.properties) && sameTaskTags(left.tags, right.tags) &&
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) && sameTime(left.cancelledAt, right.cancelledAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
+
+// Goal detail responses omit the acceptance edges carried only by TaskSync.
+export const sameDetailSummary = (synchronized: TaskSummary, detail: TaskSummary): boolean =>
+  sameSummary(synchronized, detail.type === "goal" ? { ...detail, dependsOn: synchronized.dependsOn, externalDependsOn: synchronized.externalDependsOn } : detail);
 
 export const sameProject = (left: Project, right: Project): boolean =>
   left.id === right.id && left.name === right.name && left.repoUrl === right.repoUrl &&

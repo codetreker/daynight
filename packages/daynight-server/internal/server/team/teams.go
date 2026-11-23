@@ -41,7 +41,7 @@ type teamHandler struct {
 	origin            string
 }
 
-func RegisterRoutes(mux *http.ServeMux, teams TeamOperations, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, teams TeamOperations, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &teamHandler{teams: teams, logger: logger, origin: auth.Origin()}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))

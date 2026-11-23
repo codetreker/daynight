@@ -47,6 +47,16 @@ describe('Worker configuration wire format', () => {
       expect(() => parseWorkerConfiguration(observed([{ ...outcome({ kind: 'preferPlatformSpecificTasks' }, false), appliedValue: invalid } as unknown as WorkerConfigurationOutcome]))).toThrow('invalid response');
     }
   });
+  it('parses negotiated modes and never treats a legacy observation as strict application', () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    for (const mode of ['all', 'prefer', 'only'] as const) {
+      const target = { desired: { revision: '1', updatedAt: WORKER_TIME, value: { ...base, platformTaskMode: mode } }, observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '1', items: [outcome({ kind: 'platformTaskMode' }, mode)], reportedAt: WORKER_TIME } };
+      const resource = parseWorkerConfiguration(target);
+      expect(resource.desired!.value.platformTaskMode).toBe(mode); expect(resource.observation!.items[0]!.appliedValue).toBe(mode);
+      expect(() => parseWorkerConfiguration({ ...target, observation: { ...target.observation, items: [outcome({ kind: 'preferPlatformSpecificTasks' }, true)] } })).toThrow();
+    }
+    expect(() => parseWorkerConfiguration({ desired: { revision: '1', updatedAt: WORKER_TIME, value: { ...base, platformTaskMode: 'future' } }, observationRevision: '0', observation: null })).toThrow();
+  });
   it('recognizes optional sudo target and strictly validates its observation', () => {
     expect(parseWorkerConfiguration(configurationResource()).desired!.value).not.toHaveProperty('enableSudoCleanup');
     for (const enabled of [false, true]) {
@@ -97,6 +107,19 @@ describe('Worker configuration wire format', () => {
 });
 
 describe('principal-admitted configuration API', () => {
+  it('negotiates mode on GET and writes only the selected protocol', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+    const wire = { ...base, platformTaskMode: 'prefer' };
+    const response = (revision: string, value: unknown) => { const r = configurationResponse({ desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null }); r.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return r; };
+    const fetch = vi.fn().mockResolvedValueOnce(response('1', wire)).mockImplementationOnce((_url, init) => response('2', JSON.parse(String(init.body)).value)); vi.stubGlobal('fetch', fetch);
+    const signal = new AbortController().signal, resource = await getWorkerConfiguration(workerId(1), signal, admission());
+    expect(fetch.mock.calls[0]![1].headers).toHaveProperty('Daynight-Worker-Platform-Task-Mode', '1');
+    const baseline = workerConfigurationBaseline(resource)!;
+    const submission = mergeConfigurationDraft(baseline, { ...baseline.known, platformTaskMode: 'only', preferPlatformSpecificTasks: true });
+    const result = await saveWorkerConfiguration(workerId(1), '1', submission, signal, { ...admission(), platformTaskModeSupported: true });
+    const sent = JSON.parse(String(fetch.mock.calls[1]![1].body)).value;
+    expect(sent).toHaveProperty('platformTaskMode', 'only'); expect(sent).not.toHaveProperty('preferPlatformSpecificTasks'); expect(result.desired!.value.platformTaskMode).toBe('only');
+  });
   it('retains the response document even for an uninitialized target', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(configurationResponse({ desired: null, observationRevision: '0', observation: null, future: { n: 9 } })));
     const resource = await getWorkerConfiguration(workerId(1), new AbortController().signal, admission());

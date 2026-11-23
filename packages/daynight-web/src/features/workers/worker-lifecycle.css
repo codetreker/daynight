@@ -1,0 +1,27 @@
+.worker-lifecycle { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 9px; background: #fff; font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
+.worker-lifecycle h2 { font-size: var(--text-lg); margin: 0; }
+.worker-lifecycle-header, .worker-lifecycle-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.worker-lifecycle-header { justify-content: space-between; margin-bottom: 12px; }
+.worker-lifecycle-state { color: #172132; font-weight: 600; }
+.worker-lifecycle p + p { margin-top: 6px; }
+.worker-lifecycle-actions { margin-top: 12px; }
+.worker-lifecycle button, .worker-lifecycle-dialog button { min-height: 44px; white-space: normal; }
+.worker-lifecycle button:focus-visible, .worker-lifecycle summary:focus-visible, .worker-lifecycle-dialog button:focus-visible { outline: 3px solid #344054; outline-offset: 3px; }
+.worker-lifecycle-stages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; padding: 0; list-style: none; }
+.worker-lifecycle-stages li { padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.worker-lifecycle-stages strong, .worker-lifecycle-stages span { display: block; }
+.worker-lifecycle-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0; }
+.worker-lifecycle-muted { color: #556176; }
+.worker-lifecycle-warning { color: #87400d; background: #fff6e8; padding: 10px; border-radius: 6px; }
+.worker-lifecycle-safe { color: #165b3d; background: #edf7f1; padding: 10px; border-radius: 6px; }
+.worker-lifecycle details { margin-top: 12px; }
+.worker-lifecycle summary { cursor: pointer; min-height: 44px; display: list-item; padding: 8px 0; }
+.worker-lifecycle-resources { padding-left: 20px; }
+.worker-lifecycle-resources li { margin-bottom: 8px; }
+.worker-lifecycle-resources code { font-size: var(--text-sm); overflow-wrap: anywhere; }
+.worker-lifecycle-dialog dl { margin: 12px 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 6px 12px; }
+.worker-lifecycle-dialog dt { color: #556176; }
+.worker-lifecycle-dialog dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.worker-lifecycle-dialog p { margin-top: 12px; }
+.worker-lifecycle-compact { padding: 16px; }
+@media (max-width: 500px) { .worker-lifecycle-stages { grid-template-columns: minmax(0, 1fr); } .worker-lifecycle-dialog dl { grid-template-columns: minmax(0, 1fr); } }

@@ -36,6 +36,7 @@ export type BotLaunchIntent = {
 };
 export type BotCleanup = {
   deletionId: string; requestedVersion: string;
+  workerId?: string;
   stop: import("./session-api.js").BotDeletionStop | null;
   targets: import("./delete-files.js").BotDeletionTarget[];
   localCompleted: boolean;

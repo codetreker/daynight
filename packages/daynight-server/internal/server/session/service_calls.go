@@ -46,9 +46,11 @@ type serviceCalls struct {
 	ArchiveContentReserved         func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
 	ArchiveStatus                  func(context.Context, model.Principal, string, string, string) (sp.ArchiveStatus, error)
 	AuthenticateController         func(context.Context, string) error
+	AuthenticateControllerOnline   func(context.Context, string, bool, bool) error
 	BeginArchiveReserved           func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (archiveOperation, error)
 	BrowserPoll                    func(context.Context, model.Principal, string, string, string, string) (sp.Snapshot, []map[string]any, string, error)
 	Connect                        func(context.Context, string, sp.ControllerMessage, string, int) (sp.Snapshot, error)
+	ConnectOnline                  func(context.Context, string, sp.ControllerMessage, string, int, bool, bool) (sessioncore.OnlineConnection, error)
 	Current                        func(context.Context, model.Principal, string, string) (map[string]any, error)
 	CurrentWithStartup             func(context.Context, model.Principal, string, string) (map[string]any, error)
 	Disconnect                     func(context.Context, sp.ControllerFence) error
@@ -94,9 +96,11 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		ArchiveContentReserved:         archiveContentCall(service.ArchiveContentReserved),
 		ArchiveStatus:                  service.ArchiveStatus,
 		AuthenticateController:         service.AuthenticateController,
+		AuthenticateControllerOnline:   service.AuthenticateControllerOnline,
 		BeginArchiveReserved:           archiveOperationCall(service.BeginArchiveReserved),
 		BrowserPoll:                    service.BrowserPoll,
 		Connect:                        service.ConnectWithContentRead,
+		ConnectOnline:                  service.ConnectWithOnlineMode,
 		Current:                        service.Current,
 		CurrentWithStartup:             service.CurrentWithStartup,
 		Disconnect:                     service.Disconnect,

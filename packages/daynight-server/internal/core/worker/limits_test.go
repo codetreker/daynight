@@ -61,7 +61,7 @@ func TestTelemetryFieldLimits(t *testing.T) {
 }
 
 func boundedConfiguration() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: MinConcurrent, PollIntervalMs: MinPollIntervalMs, RecoveryLimit: MinRecoveryLimit}
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: MinConcurrent, PollIntervalMs: MinPollIntervalMs, RecoveryLimit: MinRecoveryLimit}
 }
 
 func TestConfigurationRangesAndCollections(t *testing.T) {

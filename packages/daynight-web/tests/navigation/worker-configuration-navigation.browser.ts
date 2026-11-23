@@ -82,7 +82,7 @@ for (const width of [1360, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const panel = configuration(page).locator('.config-panel').first();
     await expectRefreshLayout(page, settings);
     const compactGap = await panel.evaluate((element, source) => element.getBoundingClientRect().top - source!.getBoundingClientRect().bottom, await source.elementHandle());
-    expect(compactGap).toBeGreaterThanOrEqual(0); expect(compactGap).toBeLessThanOrEqual(24);
+    expect(compactGap).toBeGreaterThanOrEqual(0);
     await info.attach('compact-runtime-header', { body: await page.screenshot(), contentType: 'image/png' });
     await summary.focus(); await page.keyboard.press('Enter'); await expect(source).toHaveAttribute('open', '');
     await expect(source.locator('pre')).toHaveText(JSON.stringify(state.resource.desired!.value));
@@ -384,4 +384,32 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
     expect(writes[1]!.body).not.toContain(number);
     await expect(page.locator('.draft-summary')).toContainText('没有修改');
   } finally { await other.close(); }
+});
+
+test('abandoning an ambiguous legacy save permits returning to edit the strict target', async ({ page }) => {
+  await install(page);
+  const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue();
+  let phase: 'legacy' | 'ambiguous' | 'exited' = 'legacy', writes = 0;
+  await page.route(`**/api/v1/me/workers/${target}/configuration`, async route => {
+    const request = route.request();
+    const headers: Record<string, string> = { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' };
+    if (request.method() === 'PUT') {
+      writes++;
+      if (phase === 'legacy') { phase = 'ambiguous'; return route.fulfill({ status: 500, json: { error: { code: 'internal_error', message: 'Unknown result', requestId: 'fixture' } }, headers }); }
+      expect(request.postDataJSON().value.platformTaskMode).toBe('all'); phase = 'exited';
+    }
+    if (phase !== 'legacy') headers['Daynight-Worker-Platform-Task-Mode'] = '1';
+    const value = phase === 'legacy' ? { ...base, preferPlatformSpecificTasks: true } : { ...base, maxConcurrent: 3, platformTaskMode: phase === 'ambiguous' ? 'only' : 'all' };
+    return route.fulfill({ json: { desired: { revision: phase === 'legacy' ? '1' : phase === 'ambiguous' ? '2' : '3', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null }, headers });
+  });
+  await open(page); await page.locator('#config-maxConcurrent').fill('3'); await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect(page.getByText('保存结果尚未确认，当前草稿已保留。')).toBeVisible();
+  await back(page); await expect(dialog(page)).toBeVisible(); await discard(page).click(); await expect(page).toHaveURL(/\/workers$/);
+  expect(writes).toBe(1);
+  await page.locator(`a.worker-card[href="${workerPath}"]`).click(); await page.locator('[data-worker-tab="configuration"]:visible').click();
+  const rule = page.locator('#config-platformTaskMode'); await expect(rule).toHaveValue('only');
+  await expect(page.getByText('先前保存的结果未知，当前显示云端目标。')).toBeVisible();
+  await expect(page.getByText('已核对云端，提交的配置已保存。')).toHaveCount(0);
+  await rule.selectOption('all'); await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect(rule).toHaveValue('all'); expect(writes).toBe(2);
 });

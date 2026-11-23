@@ -177,6 +177,7 @@ func TestAttentionAndEventReadsRetainPreconditionFailures(t *testing.T) {
 					}
 					return nil, nil
 				}
+				d.retrospectiveTasks = noRetrospectives
 				d.events = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 					return nil, sentinel
 				}

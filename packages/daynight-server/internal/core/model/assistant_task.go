@@ -13,8 +13,11 @@ type AssistantTask struct {
 	Version, ManualVersion, ClaimGeneration            int64
 	HolderBotID, ClaimTokenHash, CredentialOperationID *string
 	ClaimedAt, RenewedAt, LeaseUntil                   *time.Time
-	HolderDeleted                                      bool
-	CreatedAt, UpdatedAt, ObservedAt                   time.Time
+	// LastRetrospectiveAt is maintained only by periodic retrospectives and is
+	// not part of ordinary task writes.
+	LastRetrospectiveAt              *time.Time
+	HolderDeleted                    bool
+	CreatedAt, UpdatedAt, ObservedAt time.Time
 }
 
 type AssistantTaskClaim struct {
@@ -60,6 +63,31 @@ type AssistantTaskAppendix struct {
 	AuthorBotID                                              *string
 	Version                                                  int64
 	CreatedAt, UpdatedAt                                     time.Time
+	// Scope narrows where the experience applies; an empty set leaves that
+	// dimension unrestricted.
+	Scope AssistantTaskAppendixScope
+	// SuccessCount, FailureCount and LastValidatedAt summarize the registered
+	// validations and change only with them, never with the appendix Version.
+	SuccessCount, FailureCount int64
+	LastValidatedAt            *time.Time
+}
+
+type AssistantTaskAppendixScope struct {
+	ProjectIDs, EventTypes, ItemCategories []string
+}
+
+// AssistantTaskRelatedAppendices is the bounded, relevance-ordered result of a
+// related experience query; it has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix
+	ObservedAt time.Time
+}
+
+// AssistantTaskAppendixValidation registers one outcome record as evidence for
+// one appendix; the pair is unique.
+type AssistantTaskAppendixValidation struct {
+	OwnerUserID, TaskID, AppendixID, OutcomeRecordID, Outcome, ValidatorBotID string
+	CreatedAt                                                                 time.Time
 }
 
 type AssistantTaskProposal struct {
@@ -79,13 +107,29 @@ type AssistantTaskItem struct {
 	FollowerBotID                                                     *string
 	AppState                                                          json.RawMessage
 	CreatedAt, UpdatedAt                                              time.Time
+	// OpenedAt is the start of the current open period and ClosedAt the most
+	// recent close. Both are nil for items that predate lifecycle tracking.
+	OpenedAt, ClosedAt *time.Time
+}
+
+// AssistantTaskItemClosure is an append-only record of one open-to-closed
+// transition. OpenedAt is nil when the closed period began before lifecycle
+// tracking existed, so its duration is unknown.
+type AssistantTaskItemClosure struct {
+	ID, OwnerUserID, TaskID, ItemID string
+	Episode                         int64
+	OpenedAt                        *time.Time
+	ClosedAt                        time.Time
 }
 
 type AssistantTaskRecord struct {
 	ID, OwnerUserID, TaskID, Author, Kind, Text, RequestFingerprint string
 	ItemID, AuthorBotID                                             *string
-	Refs                                                            json.RawMessage
-	CreatedAt                                                       time.Time
+	// Outcome and ActionRecordID are set only on outcome records, which
+	// evaluate one action record of the same task.
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
+	CreatedAt               time.Time
 }
 
 type AssistantTaskEvent struct {
@@ -104,8 +148,48 @@ type AssistantTaskInquiry struct {
 	AnsweredAt                                                                               *time.Time
 }
 
+// AssistantTaskMetrics aggregates one task's capability window from a single
+// database snapshot. WindowEnd equals ObservedAt. AverageResolution covers only
+// closures whose open time is known; nil means no such closure in the window.
+// UntimedClosureCount counts closures excluded from that average.
+type AssistantTaskMetrics struct {
+	ObservedAt, WindowStart, WindowEnd                    time.Time
+	ActionCount                                           int64
+	EffectiveCount, IneffectiveCount, InconclusiveCount   int64
+	EscalationCount, ResultUnknownCount                   int64
+	ClosureCount, UntimedClosureCount, RecurringItemCount int64
+	AverageResolution                                     *time.Duration
+}
+
 type AssistantTaskPage[T any] struct {
 	Items      []T
 	NextCursor *string
 	ObservedAt time.Time
+}
+
+// Assistant task inbox states. A tombstone keeps only its identity after the
+// inbox was disabled or its task deleted, and never returns to enabled.
+const (
+	AssistantTaskInboxEnabled   = "enabled"
+	AssistantTaskInboxTombstone = "tombstone"
+)
+
+// AssistantTaskInbox is the stored inbox of an assistant task. Token fields hold
+// digests only; a tombstone has no digests or overlap deadline.
+type AssistantTaskInbox struct {
+	InboxID, OwnerUserID, TaskID, State string
+	TokenDigest, OverlapTokenDigest     *string
+	OverlapUntil, RotatedAt             *time.Time
+	SuppressedCount, Version            int64
+	CreatedAt                           time.Time
+}
+
+// AssistantTaskInboxReceipt records one accepted inbox request by idempotency
+// key. EventID is nil when the request was suppressed. SubjectTaskID is the
+// project Task of a verified Daynight event.
+type AssistantTaskInboxReceipt struct {
+	InboxID, IdempotencyKey, OwnerUserID, TaskID, BodySHA256, TargetBotID string
+	EventID, SubjectTaskID                                                *string
+	Suppressed                                                            bool
+	ReceivedAt, ExpiresAt                                                 time.Time
 }

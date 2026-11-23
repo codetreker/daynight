@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
@@ -30,6 +31,50 @@ func imageHTTPRequest(f *sessionHTTPFixture, method, path, body string, headers 
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestImageOccurrenceRouteClassification(t *testing.T) {
+	f := newTestSessionRouteFixture(t)
+	got := map[string]sessionhttp.ImageOccurrenceRoute{}
+	f.routes.RegisterRoutesWithImageOccurrenceObserver(http.NewServeMux(), func(route sessionhttp.ImageOccurrenceRoute) {
+		if _, ok := got[route.Pattern]; ok {
+			t.Fatalf("duplicate route %s", route.Pattern)
+		}
+		got[route.Pattern] = route
+	})
+	want := map[string]sessionhttp.ImageOccurrenceRoute{}
+	for _, base := range []string{"/api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
+		for _, method := range []string{"GET", "HEAD"} {
+			pattern := method + " " + base + "/image-occurrences/{imageId}"
+			want[pattern] = sessionhttp.ImageOccurrenceRoute{Pattern: pattern, Operations: []scopepolicy.Operation{scopepolicy.SessionRead}, RetryProjection: scopepolicy.SessionControl}
+		}
+		pattern := "POST " + base + "/image-occurrences/{imageId}/retry"
+		want[pattern] = sessionhttp.ImageOccurrenceRoute{Pattern: pattern, Operations: []scopepolicy.Operation{scopepolicy.SessionControl, scopepolicy.SessionRead}}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("classifications: got %#v want %#v", got, want)
+	}
+}
+
+func TestImageOccurrenceScopeRefusalDoesNotExposeReceipt(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	image := uuid.NewString()
+	path := f.base + "/" + f.snapshot.SessionID + "/image-occurrences/" + image
+	denied := &model.Fault{Code: "insufficient_scope", Message: "denied"}
+	f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+		c.GetImageOccurrence = func(ctx context.Context, p model.Principal, project, task, session, id string) (sp.ImageOccurrenceStatus, error) {
+			return sp.ImageOccurrenceStatus{ImageID: "private-image"}, denied
+		}
+		c.RetryImageOccurrence = func(ctx context.Context, p model.Principal, project, task, session, id string) (sp.ImageOccurrenceRetryReceipt, error) {
+			return sp.ImageOccurrenceRetryReceipt{Capture: sp.ImageCaptureReceipt{CaptureID: "private-capture"}}, denied
+		}
+	})
+	for _, req := range []struct{ method, path, body string }{{"GET", path, ""}, {"POST", path + "/retry", `{}`}} {
+		response := imageHTTPRequest(f, req.method, req.path, req.body, nil)
+		if response.Code != http.StatusForbidden || response.Header().Get("Daynight-Scope-Status") != "insufficient_scope" || strings.Contains(response.Body.String(), "private-") {
+			t.Fatalf("scope refusal: %d %v %s", response.Code, response.Header(), response.Body)
+		}
+	}
 }
 
 func TestControllerUpgradeAdvertisesDirectUpload(t *testing.T) {

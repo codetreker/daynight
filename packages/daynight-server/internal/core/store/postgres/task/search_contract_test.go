@@ -277,8 +277,8 @@ func testTaskSearchContextAndFence(t *testing.T, db *postgres.Store) {
 		if err != nil {
 			return err
 		}
-		if len(titles) != 0 {
-			t.Errorf("ordinary tasks returned as Goal titles: %v", titles)
+		if len(titles) != 3 {
+			t.Errorf("direct parent titles: %v", titles)
 		}
 		return nil
 	})
@@ -471,14 +471,11 @@ func testTaskSearchFenceTracksCommittedDAOMutations(t *testing.T, database *post
 		})
 	}
 
-	t.Run("step parent revision", func(t *testing.T) {
+	t.Run("touch task revision", func(t *testing.T) {
 		check(t, false, false, func(scope store.ProjectWriteScope) error {
 			dao := scope.TaskDAO()
 			observed, err := dao.ObservedAt(ctx)
 			if err != nil {
-				return err
-			}
-			if err := dao.InsertTaskStep(ctx, target.ID, model.TaskStep{ID: "abcdef01", Position: 0, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}); err != nil {
 				return err
 			}
 			return dao.TouchTask(ctx, target.ID, observed)

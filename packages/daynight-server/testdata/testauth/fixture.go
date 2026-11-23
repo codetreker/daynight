@@ -369,7 +369,36 @@ func Login(t testing.TB, browser *http.Client, origin, persona string) {
 
 func CreatePAT(t testing.TB, browser *http.Client, origin string) string {
 	t.Helper()
-	response := request(t, browser, http.MethodPost, origin+"/api/v1/me/tokens", `{"name":"Acceptance fixture","expiresAt":null}`, http.StatusCreated)
+	catalogResponse := request(t, browser, http.MethodGet, origin+"/api/v1/me/credential-scope-catalog", "", http.StatusOK)
+	var catalog struct {
+		PAT struct {
+			Revision string `json:"catalogRevision"`
+			Groups   []struct {
+				ScopeIDs []string `json:"scopeIds"`
+			} `json:"groups"`
+		} `json:"pat"`
+	}
+	if err := json.NewDecoder(catalogResponse.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	catalogResponse.Body.Close()
+	userResponse := request(t, browser, http.MethodGet, origin+"/api/v1/me", "", http.StatusOK)
+	var user struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(userResponse.Body).Decode(&user); err != nil {
+		t.Fatal(err)
+	}
+	userResponse.Body.Close()
+	scopes := []string{}
+	for _, group := range catalog.PAT.Groups {
+		scopes = append(scopes, group.ScopeIDs...)
+	}
+	body, err := json.Marshal(map[string]any{"expectedUserId": user.ID, "name": "Acceptance fixture", "expiresAt": nil, "catalogRevision": catalog.PAT.Revision, "scopes": scopes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, browser, http.MethodPost, origin+"/api/v2/me/tokens", string(body), http.StatusCreated)
 	defer response.Body.Close()
 	var result struct {
 		Token string `json:"token"`
