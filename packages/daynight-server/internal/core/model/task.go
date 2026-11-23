@@ -44,6 +44,7 @@ type Task struct {
 	Progress          *GoalProgress
 	Type              TaskType
 	ParentID          *string
+	ParentType        TaskType
 	ID                string
 	ProjectID         string
 	Title             string

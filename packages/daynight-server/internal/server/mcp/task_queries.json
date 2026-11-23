@@ -103,23 +103,47 @@
         "untagged": {
           "type": "boolean",
           "description": "Select resources without tags; conflicts with a nonempty tagIds set."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "parentTaskId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Select direct children of this visible ordinary Task in the same Project; conflicts with parentId."
         }
       },
       "required": [
         "projectId"
       ],
       "additionalProperties": false,
-      "not": {
-        "required": [
-          "all",
-          "status"
-        ],
-        "properties": {
-          "all": {
-            "const": true
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "all",
+              "status"
+            ],
+            "properties": {
+              "all": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "parentId",
+              "parentTaskId"
+            ]
           }
         }
-      }
+      ]
     },
     "annotations": {
       "readOnlyHint": true,
@@ -189,12 +213,34 @@
         "untagged": {
           "type": "boolean",
           "description": "Select resources without tags; conflicts with a nonempty tagIds set."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+        },
+        "parentTaskId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Select direct children of this visible ordinary Task in the same Project; conflicts with parentId."
         }
       },
       "required": [
         "projectId"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "parentId",
+              "parentTaskId"
+            ]
+          }
+        }
+      ]
     },
     "annotations": {
       "readOnlyHint": true,
@@ -225,6 +271,13 @@
             "full"
           ],
           "default": "summary"
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [

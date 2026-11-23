@@ -530,6 +530,10 @@ func (d *sourceTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) 
 	return d.Task(ctx, id)
 }
 
+func (d *sourceTaskDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
 func (d *sourceTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
 	return d.TaskHeader(ctx, id)
 }

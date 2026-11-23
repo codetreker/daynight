@@ -305,7 +305,7 @@ The [project Task search requirements](../../docs/spec/daynight-task-search.md)
 and [design](../../docs/design/daynight-task-search.md) define the read-only
 `POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
 IDs, complete titles and Markdown descriptions using literal expressions, returns ranked
-pages with their actual visible parent Goal context and tag references. Normalized
+pages with their actual visible direct-parent context and tag references. Default context remains Goal-only; the explicit Task-parent view provides ordinary-parent context. Normalized
 tag-set filters intersect the entire expression before ranking and pagination;
 continuation rejects a changed project Task fence. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
@@ -4093,6 +4093,14 @@ Discussion are separate consumers of this API.
 
 ## Task HTTP API
 
+Task reads and full write receipts preserve Goal-only `parentId` by default.
+`Daynight-Task-Relations: task-parent-v1` selects nullable `parentTaskId` on REST
+Task/list/search/graph/sync responses; MCP uses `taskParentView: "v1"`. Ordinary
+parent search context uses paired `parentTaskContext`, while default context remains
+Goal-only. Minimal receipts and My Tasks keep their original field sets. Responses
+retain no-store and vary on the relation header. The [parent read design](../../docs/design/daynight-task-parent-reads.md)
+owns filtering, byte admission and ancestor Goal eligibility.
+
 Worker operations return complete Task resources with 200 and no-store, preserving
 existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
@@ -4194,7 +4202,10 @@ Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
 `allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo`, UUID
 `workerId`, `candidateWorkerId`, `automaticCandidate`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
 `task` and can select `goal`; parentId
-accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
+accepts `none` for no direct Goal (including ordinary-parent children), or a canonical
+UUID for one direct Goal, and is omitted for all parents. `parentTaskId` accepts a
+visible same-project ordinary Task UUID and selects its direct children; it cannot
+accompany parentId. Both selections are bound to cursors. Goal lists
 cannot select a nonempty parent. The ready, allowAgents and platformSpecific
 filters accept literal `true` or `false`; compatibility accepts `windows`,
 `linux` or `macos` and includes null requirements and exact matches.
@@ -4230,7 +4241,7 @@ normalized IDs, mode and untagged state, keeping cursor size independent of the
 selected set. Existing 24 KiB query, 48 KiB request-target and 16 KiB cursor
 limits remain; no tag-count quota is added.
 
-Task cursor version 3 includes type, parent and the resolved assignee scope; me and its concrete
+Task cursor version 3 includes type, both parent selections and the resolved assignee scope; me and its concrete
 UUID may share that scope, but another account's me cannot. Account-owned Worker
 list cursors remain version 1.
 

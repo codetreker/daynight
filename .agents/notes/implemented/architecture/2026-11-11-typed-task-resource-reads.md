@@ -18,7 +18,9 @@ physical rows. Ordinary dependency invariants use retained physical Task rows
 and edges, while newly added dependency targets must be visible.
 
 List and search select a type and optional Parent scope. Their cursors bind both;
-search context identifies the actual visible parent Goal. Full Goal pages derive
+default search context identifies the actual visible parent Goal. The
+[Task-parent projection decision](2026-11-23-task-parent-read-projection.md) adds
+explicit ordinary-parent views and distinct cursor-bound direct-parent filters. Full Goal pages derive
 progress for selected IDs in one grouped query within their read snapshot.
 Summary and sync projections omit it. The [server design](../../../../docs/design/daynight-server.md)
 and [search design](../../../../docs/design/daynight-task-search.md) own the

@@ -277,8 +277,8 @@ func testTaskSearchContextAndFence(t *testing.T, db *postgres.Store) {
 		if err != nil {
 			return err
 		}
-		if len(titles) != 0 {
-			t.Errorf("ordinary tasks returned as Goal titles: %v", titles)
+		if len(titles) != 3 {
+			t.Errorf("direct parent titles: %v", titles)
 		}
 		return nil
 	})

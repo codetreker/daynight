@@ -136,7 +136,7 @@ func (h *taskHandler) observedGraph(w http.ResponseWriter, request *http.Request
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	graph := TaskGraphResponse(result.Graph)
+	graph := TaskGraphResponse(result.Graph, taskParentView(request))
 	response := observedGraphResponse{TaskGraph: graph, Tasks: make([]observedGraphNode, 0, len(graph.Tasks)), SessionSummary: result.Aggregation, Partial: result.Partial}
 	for _, task := range graph.Tasks {
 		response.Tasks = append(response.Tasks, observedGraphNode{GraphTask: task, Session: result.Sessions[task.ID], Relation: result.Relations[task.ID]})

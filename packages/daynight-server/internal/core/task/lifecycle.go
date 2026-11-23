@@ -32,6 +32,9 @@ func PrepareParentStart(ctx context.Context, dao store.TaskWriteDAO, child Mutat
 	if err != nil {
 		return Mutation{}, err
 	}
+	if parent.Type == model.TaskTypeTask {
+		return Mutation{}, nil
+	}
 	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
 		return Mutation{}, invalidInput("Parent must identify a visible Goal in this project.")
 	}

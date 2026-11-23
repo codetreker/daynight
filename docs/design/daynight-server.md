@@ -191,7 +191,7 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
 
-`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。内部读取携带真实直属 Parent ID 及类型；完整与摘要资源的默认映射保持 Goal-only `parentId`，显式扩展表示提供 `parentTaskId`。直属筛选、搜索上下文及读取兼容由[父项读取设计](daynight-task-parent-reads.md)拥有。窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
 
 `062_task_resource_rows.sql` 建立统一资源视图；迁移 `123_task_ancestor_visibility.sql` 增加内部 `ancestor_deleted_at` 并将有效删除改为 `COALESCE(deleted_at, ancestor_deleted_at)`，保留原视图列及直属 Parent 事实。历史 Goal-only 形状校验、回填和视图替换同事务完成。无需锁定的存在性和对外查询在排序、分页和聚合前过滤。资料和 Session 带锁入口锁定目标物理行并读取有效删除；Session 注册使用 UPDATE，其他资源使用 SHARE。祖先删除在项目锁内枚举仍可见后代，连同目标及显式解除引用源按 UUID 取得最终行锁，再同事务写入目标墓碑、继承标记、关联清理和一次 epoch 轮换。后代仅隐藏时保留业务版本及时间。机制与恢复由[删除设计](daynight-task-deletion.md)拥有，取舍见[子树可见性决策](../../.agents/notes/implemented/architecture/2026-11-23-task-subtree-visibility.md)。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
@@ -355,7 +355,7 @@ Task 与 Goal 写入共享下述项目事务步骤；显式 Goal 状态与直接
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
 
-Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前 Parent；若 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并同事务轮换 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 共用同项目递归祖先查询，排除任一祖先 Goal 已结束的 Task；自有库存不使用该筛选，普通 ready 与 blockedBy 不加入该条件。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前直属 Parent；普通父项直接保留状态，更高层 Goal 不自动启动。DAO 在首次 Task 锁前计划目标和本次实际要启动的直属 todo Goal，按 UUID 升序锁定，再进入 Worker configuration/execution 检查，保持 Project → Task → Worker 顺序。若直属 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并同事务轮换 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
 
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
@@ -499,7 +499,7 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `type`、互斥的 Goal `parentId` 和普通父项 `parentTaskId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 

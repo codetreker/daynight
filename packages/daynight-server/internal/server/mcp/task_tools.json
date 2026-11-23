@@ -93,6 +93,13 @@
             "format": "uuid"
           },
           "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -189,6 +196,13 @@
             "full"
           ],
           "default": "summary"
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -299,6 +313,13 @@
             "format": "uuid"
           },
           "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -400,6 +421,13 @@
             "receipt"
           ],
           "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -564,6 +592,13 @@
             "receipt"
           ],
           "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [
@@ -609,6 +644,13 @@
             "receipt"
           ],
           "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
+        },
+        "taskParentView": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
         }
       },
       "required": [

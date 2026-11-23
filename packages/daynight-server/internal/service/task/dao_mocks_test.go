@@ -952,6 +952,15 @@ func (mock *taskWriterMock) TaskForDeletion(ctx context.Context, id string, _ bo
 	return mock.Task(ctx, id)
 }
 
+func (mock *taskWriterMock) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskWriterMock) HasTerminalAncestorGoal(ctx context.Context, id string) (bool, error) {
+	parent, err := mock.ParentTask(ctx, id)
+	return parent.Status.IsTerminal(), err
+}
+
 func (d *taskWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
 	return d.TaskHeader(ctx, id)
 }

@@ -406,6 +406,14 @@ func (d *writeWitnessTaskDAO) TaskForDeletion(ctx context.Context, id string, _ 
 	return d.Task(ctx, id)
 }
 
+func (d *writeWitnessTaskDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) HasTerminalAncestorGoal(context.Context, string) (bool, error) {
+	panic(d.f.unexpected("TaskWriteDAO.HasTerminalAncestorGoal"))
+}
+
 func (d *writeWitnessTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
 	return d.TaskHeader(ctx, id)
 }

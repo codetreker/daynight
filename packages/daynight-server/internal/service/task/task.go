@@ -54,6 +54,7 @@ type TaskListRequest struct {
 	TagFilter  store.TagFilter
 	Type       model.TaskType
 	Parent     *string
+	ParentTask *string
 	AssignedTo *string
 	model.PageRequest
 	Status             *model.TaskStatus
@@ -159,7 +160,7 @@ func (s *Tasks) writeTask(ctx context.Context, principal model.Principal, projec
 			}
 			return err
 		}
-		if err := s.authorizeTaskWrite(ctx, tx, principal, deletion != nil); err != nil {
+		if err := s.authorizeTaskWrite(ctx, tx, principal); err != nil {
 			return err
 		}
 		actor, err := sourceActor(ctx, tx, principal)
@@ -321,10 +322,10 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, p
 }
 
 func (s *Tasks) versionedWriteTagged(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
-	return s.versionedWriteTaggedWithLocks(ctx, principal, projectID, id, version, requested, false, nil, prepare)
+	return s.versionedWriteTaggedWithLocks(ctx, principal, projectID, id, version, requested, false, false, nil, prepare)
 }
 
-func (s *Tasks) versionedWriteTaggedWithLocks(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, goal bool, deletion *bool, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
+func (s *Tasks) versionedWriteTaggedWithLocks(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, goal, start bool, deletion *bool, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return model.Task{}, err
@@ -343,6 +344,8 @@ func (s *Tasks) versionedWriteTaggedWithLocks(ctx context.Context, principal mod
 		var err error
 		if deletion != nil {
 			current, err = tx.TaskDAO().TaskForDeletion(ctx, id, *deletion)
+		} else if start {
+			current, err = tx.TaskDAO().TaskForStart(ctx, id)
 		} else {
 			current, err = tx.TaskDAO().Task(ctx, id)
 		}

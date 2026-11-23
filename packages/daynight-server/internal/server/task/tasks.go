@@ -57,7 +57,7 @@ func TaskRoutes(mux httpx.RouteRegistrar, tasks TaskService, observations Observ
 }
 
 func taskResponse(task model.Task, request *http.Request) (api.Task, error) {
-	return taskprotocol.RESTTask(task, extendedWorkerProtocol(request))
+	return taskprotocol.RESTTask(task, extendedWorkerProtocol(request), taskParentView(request))
 }
 
 func propertiesResponse(properties model.TaskProperties) api.TaskProperties {
@@ -95,6 +95,9 @@ func (h *taskHandler) resource(request *http.Request, principal model.Principal)
 
 func TaskResource(request *http.Request, principal model.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
 	logger := base.With("user_id", principal.UserID)
+	if err := validateTaskParentView(request); err != nil {
+		return "", "", logger, err
+	}
 	projectID, err := model.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
 		return "", "", logger, err
@@ -247,7 +250,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "automaticCandidate", "workerId", "candidateWorkerId", "assignedTo", "include", "type", "parentId", "tagIds", "tagMatch", "untagged")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "automaticCandidate", "workerId", "candidateWorkerId", "assignedTo", "include", "type", "parentId", "parentTaskId", "tagIds", "tagMatch", "untagged")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -271,6 +274,9 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 	}
 	if value, exists := values["parentId"]; exists {
 		result.Parent = &value[0]
+	}
+	if value, exists := values["parentTaskId"]; exists {
+		result.ParentTask = &value[0]
 	}
 	if value, exists := values["assignedTo"]; exists {
 		result.AssignedTo = &value[0]
@@ -321,6 +327,7 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 
 func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)
@@ -347,7 +354,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		values.ParentID = *input.ParentID
 	}
 	var metadata service.TaskWriteMetadata
-	task, err := h.tasks.Create(service.WithTaskWriteMetadata(request.Context(), &metadata), principal, projectID, values)
+	task, err := h.tasks.Create(service.WithTaskWriteMetadata(service.WithTaskParentView(request.Context(), taskParentView(request)), &metadata), principal, projectID, values)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
@@ -359,6 +366,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 
 func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "list", err)
@@ -401,6 +409,7 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 
 func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "get", err)
@@ -432,6 +441,7 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "update", err)
@@ -477,6 +487,7 @@ func committedResponseFailure(w http.ResponseWriter, request *http.Request, logg
 }
 
 func writeTaskMutation(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, location string, task model.Task) {
+	w.Header().Add("Vary", taskRelationsHeader)
 	logger = logger.With("tx_outcome", "committed")
 	if taskReceiptRequested(request.Context()) {
 		if location != "" {

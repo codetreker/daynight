@@ -103,6 +103,9 @@ type ProjectWriteDAO interface {
 
 type TaskWriteDAO interface {
 	Task(context.Context, string) (model.Task, error)
+	// TaskForStart locks the target and its directly owned todo Goal in UUID order.
+	TaskForStart(context.Context, string) (model.Task, error)
+	HasTerminalAncestorGoal(context.Context, string) (bool, error)
 	// TaskForDeletion locks the target, visible subtree and explicitly detached
 	// dependency sources in UUID order before returning the target.
 	TaskForDeletion(context.Context, string, bool) (model.Task, error)

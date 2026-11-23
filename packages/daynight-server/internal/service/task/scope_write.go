@@ -59,7 +59,7 @@ func scopedGoalLocked(ctx context.Context) bool {
 
 // authorizeTaskWrite establishes target visibility under the same project lock.
 // Goal operations take the team lock before locking the target, as in legacy.
-func (s *Tasks) authorizeTaskWrite(ctx context.Context, tx store.ProjectWriteScope, principal model.Principal, deletion bool) error {
+func (s *Tasks) authorizeTaskWrite(ctx context.Context, tx store.ProjectWriteScope, principal model.Principal) error {
 	if _, scoped := ctx.Value(taskWriteAuthorizationKey{}).(taskWriteAuthorization); !scoped {
 		return nil
 	}
@@ -74,13 +74,9 @@ func (s *Tasks) authorizeTaskWrite(ctx context.Context, tx store.ProjectWriteSco
 		}
 		var header model.TaskHeader
 		var err error
-		if deletion {
-			// The deletion planner owns the first Task row lock and its complete
-			// ordered write set; the project lock stabilizes this visibility read.
-			header, err = tx.TaskDAO().TaskVisibilityHeader(ctx, target.id)
-		} else {
-			header, err = tx.TaskDAO().TaskHeader(ctx, target.id)
-		}
+		// Mutation planners own the first Task row lock and their complete
+		// ordered write set; the project lock stabilizes this visibility read.
+		header, err = tx.TaskDAO().TaskVisibilityHeader(ctx, target.id)
 		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrTaskDeleted) {
 			return taskcore.NotFound(err)
 		}

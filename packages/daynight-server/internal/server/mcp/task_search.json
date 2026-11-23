@@ -96,13 +96,35 @@
       "query": {
         "type": "string",
         "description": "Nonempty text expression: AND, OR, NOT, parentheses, quoted terms and id:, title:, description: fields. Tag names are not text fields."
+      },
+      "taskParentView": {
+        "type": "string",
+        "enum": [
+          "v1"
+        ],
+        "description": "Select the ordinary Task parent projection. Omit to keep the default Goal-only parentId fields."
+      },
+      "parentTaskId": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Select direct children of this visible ordinary Task in the same Project; conflicts with parentId."
       }
     },
     "required": [
       "projectId",
       "query"
     ],
-    "additionalProperties": false
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "not": {
+          "required": [
+            "parentId",
+            "parentTaskId"
+          ]
+        }
+      }
+    ]
   },
   "annotations": {
     "readOnlyHint": true,

@@ -8,15 +8,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type graphInput struct {
-	ProjectID   string `json:"projectId"`
-	TaskID      string `json:"taskId"`
-	DependsOnly bool   `json:"dependsOnly"`
-	View        string `json:"view"`
+	ProjectID      string `json:"projectId"`
+	TaskID         string `json:"taskId"`
+	DependsOnly    bool   `json:"dependsOnly"`
+	View           string `json:"view"`
+	TaskParentView string `json:"taskParentView"`
 }
 
 type graphReader interface {
@@ -30,6 +32,7 @@ type graphNode struct {
 	ID                string                     `json:"id"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
+	ParentTaskID      **string                   `json:"parentTaskId,omitempty"`
 	TitlePreview      string                     `json:"titlePreview"`
 	TitleTruncated    bool                       `json:"titleTruncated"`
 	Status            model.TaskStatus           `json:"status"`
@@ -77,6 +80,10 @@ type dependencyNode struct {
 }
 
 func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader graphReader) (ToolResult, error) {
+	relations, viewErr := taskParentView(in.TaskParentView)
+	if viewErr != nil {
+		return ToolResult{}, viewErr
+	}
 	var graph model.TaskGraph
 	var observed taskservice.ObservedGraph
 	var err error
@@ -109,8 +116,9 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 		if in.DependsOnly {
 			item = dependencyNode{task.ID, deps, ext}
 		} else {
+			parentID, parentTaskID := taskprotocol.ParentRelation(task.ParentID, task.ParentType, relations)
 			observation := observed.Sessions[task.ID]
-			item = graphNode{Session: &observation, Relation: observed.Relations[task.ID], ID: task.ID, Type: task.Type, ParentID: task.ParentID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: task.Status,
+			item = graphNode{Session: &observation, Relation: observed.Relations[task.ID], ID: task.ID, Type: task.Type, ParentID: parentID, ParentTaskID: parentTaskID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: task.Status,
 				DependsOn: deps, ExternalDependsOn: ext, BlockedBy: append([]string{}, task.BlockedBy...),
 				RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents, Ready: task.Ready,
 				CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: utcTime(task.StartedAt), CompletedAt: utcTime(task.CompletedAt), CancelledAt: utcTime(task.CancelledAt)}

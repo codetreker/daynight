@@ -54,6 +54,7 @@ type taskArguments struct {
 	IfVersion         *string             `json:"ifVersion"`
 	View              string              `json:"view"`
 	ReturnView        string              `json:"returnView"`
+	TaskParentView    string              `json:"taskParentView"`
 	Status            model.TaskStatus    `json:"status"`
 	ClaimID           *string             `json:"claimId"`
 	RemoveDepends     bool                `json:"removeDepends"`
@@ -107,7 +108,7 @@ func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observati
 				return ToolResult{}, err
 			}
 			var input taskArguments
-			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "taskParentView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
 			if err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
 			}
@@ -182,21 +183,21 @@ func compileTaskDependencies(ordinary, external *[]string) (*[]string, *[]string
 	return taskservice.PartitionDependencies(ordinary, external)
 }
 
-func taskView(task model.Task, view string) any {
+func taskView(task model.Task, view string, relations ...bool) any {
 	if view == "receipt" {
 		return taskprotocol.MCPTaskReceipt(task)
 	}
 	if view == "full" {
-		return MapTaskFull(task)
+		return MapTaskFull(task, relations...)
 	}
-	return MapTaskSummary(task)
+	return MapTaskSummary(task, relations...)
 }
-func taskResult(task model.Task, view string, previous int64) ToolResult {
+func taskResult(task model.Task, view string, previous int64, relations ...bool) ToolResult {
 	outcome := "changed"
 	if task.Version == previous {
 		outcome = "unchanged"
 	}
-	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", SuccessMetadata: view == "receipt", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+	return ToolResult{Data: taskView(task, view, relations...), Outcome: outcome, WriteOutcome: "confirmed", SuccessMetadata: view == "receipt", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
 }
 func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOperations, input taskArguments) (int64, error) {
 	if input.IfVersion != nil {
@@ -214,6 +215,11 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOper
 	return task.Version, nil
 }
 func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, observations taskObservationGetter, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+	relations, err := taskParentView(in.TaskParentView)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	ctx = taskservice.WithTaskParentView(ctx, relations)
 	if actor.Authorization != nil && name != "task_show" && name != "task_properties" {
 		auth := *actor.Authorization
 		if auth.Principal != actor.Principal {
@@ -268,7 +274,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if err != nil {
 			return ToolResult{}, err
 		}
-		return taskResult(task, in.ReturnView, 0), nil
+		return taskResult(task, in.ReturnView, 0, relations), nil
 	case "task_show":
 		observed, err := observations.ObserveGet(ctx, actor.Principal, in.ProjectID, in.TaskID)
 		if err != nil {
@@ -279,12 +285,12 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 			data = struct {
 				TaskFull
 				Session sp.TaskSessionObservation `json:"session"`
-			}{MapTaskFull(observed.Task), observed.Session}
+			}{MapTaskFull(observed.Task, relations), observed.Session}
 		} else {
 			data = struct {
 				TaskSummary
 				Session sp.TaskSessionObservation `json:"session"`
-			}{MapTaskSummary(observed.Task), observed.Session}
+			}{MapTaskSummary(observed.Task, relations), observed.Session}
 		}
 		stamp := time.Time{}
 		if observed.Session.ObservedAt != nil {
@@ -359,5 +365,5 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 	if err != nil {
 		return ToolResult{}, err
 	}
-	return taskResult(task, in.ReturnView, version), nil
+	return taskResult(task, in.ReturnView, version, relations), nil
 }

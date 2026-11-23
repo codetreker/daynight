@@ -26,6 +26,10 @@ func (dao inputValidationDAO) Task(ctx context.Context, id string) (model.Task, 
 	return dao.readTask(ctx, id)
 }
 
+func (dao inputValidationDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return dao.Task(ctx, id)
+}
+
 func (dao inputValidationDAO) TasksByID(ctx context.Context, ids []string) ([]model.Task, error) {
 	if dao.dependencies == nil {
 		panic("unexpected dependency read during candidate preparation")

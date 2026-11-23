@@ -29,6 +29,15 @@ func (d *goalPolicyDAO) Task(_ context.Context, id string) (model.Task, error) {
 	d.lockedReads = append(d.lockedReads, id)
 	return d.read(id)
 }
+
+func (d *goalPolicyDAO) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *goalPolicyDAO) HasTerminalAncestorGoal(ctx context.Context, id string) (bool, error) {
+	parent, err := d.ParentTask(ctx, id)
+	return parent.Status.IsTerminal(), err
+}
 func (d *goalPolicyDAO) read(id string) (model.Task, error) {
 	if d.readErr != nil {
 		return model.Task{}, d.readErr

@@ -55,7 +55,7 @@ func (tx *Writer) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, e
 }
 
 func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT `+pg.TaskProjection+` FROM tasks t
+	rows, err := tx.tx.Query(ctx, `SELECT `+pg.PhysicalTaskProjection()+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, pg.QueryError(phase, err)

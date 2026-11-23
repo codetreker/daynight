@@ -5,6 +5,7 @@ import "time"
 type GraphTask struct {
 	Type              TaskType
 	ParentID          *string
+	ParentType        TaskType
 	Version           int64
 	ID                string
 	TitlePreview      string

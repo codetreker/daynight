@@ -15,6 +15,7 @@ type TaskViewRecord struct {
 	Tags              []TagReference
 	Type              TaskType
 	ParentID          *string
+	ParentType        TaskType
 	Properties        TaskProperties
 	ID                string
 	Title             string

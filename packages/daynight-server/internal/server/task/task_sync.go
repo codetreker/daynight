@@ -53,7 +53,7 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 	return result, nil
 }
 
-func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
+func TaskSyncResponse(sync model.TaskSync, relations ...bool) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), DependencyStates: make(map[string]api.TaskDependencyState, len(sync.DependencyStates)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
 	result.TaskObservations = make(map[string]api.TaskSyncObservation, len(sync.TaskObservations))
 	result.SessionPartial = sync.SessionPartial
@@ -76,13 +76,14 @@ func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 	}
 	for _, task := range sync.Tasks {
-		result.Tasks = append(result.Tasks, taskprotocol.RESTSyncRecord(task))
+		result.Tasks = append(result.Tasks, taskprotocol.RESTSyncRecord(task, relations...))
 	}
 	return result
 }
 
 func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", taskRelationsHeader)
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -101,7 +102,7 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 		httpx.WriteError(w, request, logger, "task_sync", "get", err)
 		return
 	}
-	response := TaskSyncResponse(result)
+	response := TaskSyncResponse(result, taskParentView(request))
 	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)

@@ -14,7 +14,7 @@ Goal 验收关系由下游持有，与普通 Task 依赖和 Parent 分开管理�
 
 普通子 Task 实际从其他状态进入 `in_progress` 时，无论由人工状态修改还是 Worker 领取触发，若其当前 Parent Goal 为 `todo`，服务端在同一事务中将 Goal 推进为 `in_progress`，按 Goal 自身生命周期更新起点、终态时间、更新时间和版本；任一写入失败时两者均不提交。Goal 已为 `in_progress`、`done` 或 `cancelled` 时保持原状态。没有 Parent 的 Task 正常开始；同状态请求、运行中修改其他字段或归属不触发该规则。子 Task 后续回退、完成、取消或释放领取不自动改变 Goal 状态，也不扫描或补改历史数据。Goal 的变更可由正常读取和增量同步观察，不产生执行 Task Webhook。
 
-Goal 按直接可见普通子 Task 汇总真实总数、done、cancelled 和未结束数量；Web 完成进度使用 done / (total - cancelled)，统计本身不派生 Goal 状态。完成进度的零分母及轨道遵守 [Web 进度规则](daynight-web.md#项目整体进度)。完成或取消 Goal 不改变、隐藏或停止孩子，但阻止后续自动领取；已有 claim 沿用自身规则。被其他未删除 Goal 引用的 Goal 不能直接删除。无入边时，删除 Goal 同事务移除其验收出边、推进实际变化的关系修订，软删除容器并轮换项目缓存 epoch；保留孩子的 Parent、状态、版本、普通 Task 依赖和执行归属；孩子及其资料从正常入口不可见，原执行由下次成功库存观察进入既有停止和归档流程。删除成功只表示删除已提交，不表示进程已停止。
+Goal 按直接可见普通子 Task 汇总真实总数、done、cancelled 和未结束数量；Web 完成进度使用 done / (total - cancelled)，统计本身不派生 Goal 状态。完成进度的零分母及轨道遵守 [Web 进度规则](daynight-web.md#项目整体进度)。完成或取消 Goal 不改变、隐藏或停止孩子，但阻止直属 Task 及其所有普通后代的后续自动领取；已有 claim 沿用自身规则。Goal 的直属进度不计入普通成员的孩子。被其他未删除 Goal 引用的 Goal 不能直接删除。无入边时，删除 Goal 同事务移除其验收出边、推进实际变化的关系修订，软删除容器并轮换项目缓存 epoch；保留孩子的 Parent、状态、版本、普通 Task 依赖和执行归属；孩子及其资料从正常入口不可见，原执行由下次成功库存观察进入既有停止和归档流程。删除成功只表示删除已提交，不表示进程已停止。
 
 MCP 复用现有 Task 工具管理 Goal，`task_list` 可按类型及 Parent 选择，`task_ready` 保持普通 Task 并可按 Parent 选择。查询 Parent 省略表示不限、null 表示未归属、UUID 表示直接孩子；续页绑定筛选条件。Goal 状态写入不需要额外确认凭证。
 

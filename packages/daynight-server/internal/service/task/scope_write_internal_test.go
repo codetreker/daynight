@@ -63,7 +63,7 @@ func (d scopeAdmissionTestTaskDAO) TaskVisibilityHeader(ctx context.Context, id 
 	return d.visible(ctx, id)
 }
 
-func TestScopedDeletionAuthorizationLeavesTaskLocksToPlanner(t *testing.T) {
+func TestScopedTaskAuthorizationLeavesTaskLocksToPlanner(t *testing.T) {
 	principal := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
 	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:delete"}, 1)
 	if err != nil {
@@ -84,10 +84,10 @@ func TestScopedDeletionAuthorizationLeavesTaskLocksToPlanner(t *testing.T) {
 				}
 				return model.TaskHeader{ID: id}, nil
 			}, header: func(context.Context, string) (model.TaskHeader, error) {
-				t.Fatal("deletion authorization acquired the locking Steps header")
+				t.Fatal("Task authorization acquired the locking Steps header")
 				return model.TaskHeader{}, nil
 			}}
-			err := (&Tasks{}).authorizeTaskWrite(ctx, scopeAdmissionTestScope{task: dao}, principal, true)
+			err := (&Tasks{}).authorizeTaskWrite(ctx, scopeAdmissionTestScope{task: dao}, principal)
 			if calls != 1 || (hidden && !errors.Is(err, model.ErrTaskDeleted)) || (!hidden && err != nil) {
 				t.Fatalf("visibility calls=%d hidden=%v error=%v", calls, hidden, err)
 			}
@@ -145,7 +145,7 @@ func TestScopedTaskWriteChecksVisibilityAndGoalLocks(t *testing.T) {
 				calls = append(calls, "lock")
 				return tc.lockErr
 			}}
-			tasks := scopeAdmissionTestTaskDAO{header: func(actual context.Context, id string) (model.TaskHeader, error) {
+			tasks := scopeAdmissionTestTaskDAO{visible: func(actual context.Context, id string) (model.TaskHeader, error) {
 				if actual != ctx || id != "task" {
 					t.Fatal("header target or context changed")
 				}
@@ -165,7 +165,7 @@ func TestScopedTaskWriteChecksVisibilityAndGoalLocks(t *testing.T) {
 				calls = append(calls, "access")
 				return model.ProjectAccess{}, tc.accessErr
 			}}}
-			err := service.authorizeTaskWrite(ctx, scope, principal, false)
+			err := service.authorizeTaskWrite(ctx, scope, principal)
 			if !reflect.DeepEqual(calls, tc.want) {
 				t.Fatalf("calls %v, want %v", calls, tc.want)
 			}
