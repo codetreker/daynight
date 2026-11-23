@@ -64,7 +64,7 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var beforeHistory string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)) FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&beforeHistory); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)-'history_content_policy') FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&beforeHistory); err != nil {
 		t.Fatal(err)
 	}
 	beforeTime := time.Now().UTC().Add(-time.Second)
@@ -84,8 +84,12 @@ func TestReleaseWorkerMigrationPreservesMaterialsAndHistory(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, other.ID).Scan(&afterOtherEpoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)) FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&afterHistory); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(a)) FROM task_attachments a),(SELECT jsonb_agg(to_jsonb(s)-'history_content_policy') FROM task_sessions s),(SELECT jsonb_agg(to_jsonb(a)) FROM session_archives a))::text`).Scan(&afterHistory); err != nil {
 		t.Fatal(err)
+	}
+	var boundPolicies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE history_content_policy IS NOT NULL`).Scan(&boundPolicies); err != nil || boundPolicies != 0 {
+		t.Fatalf("historical sessions acquired a policy: count=%d err=%v", boundPolicies, err)
 	}
 	if beforeFacts != afterFacts || beforeOther != afterOther || beforeHistory != afterHistory || epoch == afterEpoch || otherEpoch != afterOtherEpoch {
 		t.Fatal("migration changed unrelated task facts, history or project epochs")
