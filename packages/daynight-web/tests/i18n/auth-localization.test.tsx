@@ -38,6 +38,7 @@ const defaults = (url: string): Response => {
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
+  if (url === "/api/v1/me/browser-sessions") return json({ userId, current: { id: memberId, browser: null, os: null, createdAt: "2026-10-21T12:34:56Z", lastUsedAt: null, expiresAt: "2099-10-21T12:34:56Z" }, items: [], nextCursor: null });
   if (url === "/api/v2/me/tokens") return json({ items: [] });
   if (url === "/api/v3/oauth/grants") return json({ userId, grants: [] });
   if (url === `/api/v1/projects/${projectId}`) return json({ id: projectId, name: "Raw project", repoUrl: "https://example.test/repo", createdAt: timestamp, updatedAt: timestamp, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1n } });
