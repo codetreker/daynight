@@ -6,7 +6,7 @@
 
 Web Session 的 Controller 可以完成身份握手、事件确认和状态同步，随后因服务端操作失败而断开。页面显示“执行环境连接中断”，但 Worker 仍能观察原 Controller。Worker 在线、Controller 存活和 Session 通道可用是三个独立事实。
 
-当前服务端将 Controller 通道中不同阶段的失败统一记录为 `session/channel`。服务层可能把关联记录缺失转换为 `not_found: Session was not found.`，该错误不证明 Session 主记录不存在。Controller 的历史同步请求又只记录 HTTP 状态，因此连接失效引起的后续 `409` 容易被误认为最初原因。
+服务层可能把关联记录缺失转换为 `not_found: Session was not found.`，该错误不证明 Session 主记录不存在。Controller 的历史同步与归档共享业务错误解析和容量退避，但仅有 HTTP 状态不足以区分失败操作，因此连接失效引起的后续 `409` 容易被误认为最初原因。
 
 目标是在不改变权限、执行身份和历史完整性规则的前提下，保留足以定位首次失败的信息，并以确定性证据约束恢复。诊断改进与具体断连根因修复必须分别验证；增加日志本身不构成会话恢复。
 
@@ -36,15 +36,15 @@ HTTP/WebSocket 适配层拥有协议阶段名称，业务层和存储层继续�
 
 沿用现有 `httpx.LogFailure` 的错误分类、request ID 和脱敏规则。服务端日志额外保留存储错误的静态操作 phase，不能因包装为领域 `not_found` 丢掉这一定位信息。该字段只存在于服务端诊断日志，不加入公开错误响应。字段仅接受本通道实际调用的存储阶段白名单，并映射为固定标识符；不能仅靠字符过滤接纳任意错误文本，也不使用数据库驱动文本替代它。
 
-公开 WS 错误仍保持现有 code/message 和 fence。错误后继续按现有规则关闭连接，不将 `not_found` 吞掉，不新增自动替代 Session 或重放输入。
+公开 WS 错误仍保持现有 code/message 和 fence。普通和在线模式的连接准入失败统一记录 `controller_connect`；既有 `upgrade_required` 响应继续发送。错误后继续按现有规则关闭连接；`image_capture` 的可恢复拒绝仍返回原请求的失败结果并保留连接。不将 `not_found` 吞掉，不新增自动替代 Session 或重放输入。
 
 ## Controller 历史同步诊断
 
-失败的 `GET status` 和 `PUT chunk` 分别记录固定操作名、HTTP 状态，以及响应中可安全提取的错误 code 和 request ID。错误 code 限制为 1–64 个小写 ASCII 字母、数字和下划线；request ID 沿用产品规则，限制为 1–128 个 ASCII 字母、数字、下划线或连字符。任意 message、响应正文、URL查询、其他 header 和凭据均不得进入日志。
+失败的 `GET status` 和 `PUT chunk` 分别记录固定操作名、HTTP 状态，以及响应中可安全提取的错误 code 和 request ID。错误 code 限制为 1–64 个小写 ASCII 字母、数字和下划线；request ID 沿用产品规则，限制为 1–64 个 ASCII 字符，首字符只能为字母或数字，其后还允许点号、下划线和连字符。任意 message、响应正文、URL查询、其他 header 和凭据均不得进入日志。
 
-读取失败响应最多 16 KiB，并受原请求的 15 秒 deadline 和调用方取消信号共同约束；超限或取消时取消剩余响应流。空响应、非JSON、超限、不可读或不符合格式时保留“HTTP失败”的原始事实，不用解析失败覆盖它。诊断不触发额外网络请求或重复提交。
+既有 `readArchiveRequestError` 是错误响应的唯一读取者，保留 64 KiB 业务解析上限、原请求的 15 秒 deadline 和调用方取消信号。诊断不另读响应，也不扩大业务读取预算；只有完整响应体不超过独立的 16 KiB 诊断提取预算时，才从已解析 envelope 提取上述标识符。超过诊断预算、空响应、非法 JSON、错误 UTF-8 或字段格式不符时，诊断仅保留操作和 HTTP 状态。业务层已有的传输错误、取消和结果未知分类继续传播，不被诊断替换为普通 HTTP 拒绝。
 
-保留 `status` 属性及既有 `404` 查询分支，使原 intent 的查询、匹配回执、失败结算和结果未知处理不受诊断修改影响。日志中的业务码只用于定位，不作为绕过原 receipt/fence 校验的授权。
+诊断只更新原 `ArchiveRequestError` 的安全 message；保留实例、`status`、`code`、`payload`、上传版本和 `busy` 判定。原 `404` 查询分支、容量退避、PUT 失败后的原 syncId GET 核对、匹配回执和失败结算均继续执行。诊断不引发额外请求或重复提交；日志中的业务码只用于定位，不作为绕过原 receipt/fence 校验的授权。
 
 ## 具体根因修复的准入与范围
 
