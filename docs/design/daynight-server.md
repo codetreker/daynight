@@ -217,7 +217,7 @@ Tag 目录的显式授权入口 `service/tag.NewScoped` 共享上述快照和事
 
 `044_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
 
-Project 删除在 Read Committed 事务内先锁活跃 Project，再取得当前 owner Team 的事务级 Goal 图锁，之后按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
+Project 删除在 Read Committed 事务内依照[项目生命周期 Goal 边清理](#项目生命周期中的-goal-边清理)取得项目和图锁，再按 UUID 锁全部源项目 Task（包括已删除 Task）及受影响的存活远端 Goal；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
 
 删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 和请求条数分页，完整投影阻塞项，不按标题或响应字节缩短页面。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
 
@@ -317,9 +317,9 @@ Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_typ
 
 ### 项目生命周期中的 Goal 边清理
 
-基础 Projects 与生产 AppProjects 的转移和删除共享项目事务中的 Goal 边清理合同。四条入口先检查源项目 owner Team 管理员权限。事务收集源项目及现有入出边的下游项目，按 UUID 顺序锁定项目行，再读取稳定的当前 owner Team 并取得其图锁。取得图锁后重查影响集合；发现未锁定项目时先确认事务回滚，再在原 deadline 内重新收集并按序取锁，不持图锁补取项目锁。业务 callback 在锁集稳定后运行，并再次检查权限，随后取得原有 ownership、Team、Task 与 App 行锁。四条入口均以十五秒预算覆盖权限预检、连接池、锁等待、业务查询和提交，继承调用方取消。转移只需来源 Team 图锁；提交前目标 Team 的关系编辑会因归属不匹配拒绝，提交后项目已无旧边。
+基础 Projects 与生产 AppProjects 的转移和删除共享项目事务中的 Goal 边清理合同。四条入口先检查源项目 owner Team 管理员权限。事务收集源项目及现有入出边的下游项目，按 UUID 顺序锁定项目行，再读取稳定的当前 owner Team 并取得其图锁。取得图锁后重查影响集合；发现未锁定项目时先确认事务回滚，再在原 deadline 内重新收集并按序取锁，不持图锁补取项目锁。锁集稳定后，按 Task UUID 顺序锁定所有可能更新的存活下游 Goal；删除源项目时在同一次排序中纳入源项目的全部历史 Task。随后业务 callback 再次检查权限并取得原有 ownership、Team 与 App 行锁。Thread 持有 Task 共享锁后再读 ownership，因此生命周期须在 ownership 前取得这些 Task 锁。四条入口均以十五秒预算覆盖权限预检、连接池、锁等待、业务查询和提交，继承调用方取消。转移只需来源 Team 图锁；提交前目标 Team 的关系编辑会因归属不匹配拒绝，提交后项目已无旧边。
 
-实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不要求清理确认，也不修改任何边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。仅对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括其他项目内的下游；锁定受影响的远端 Project，不修改远端 Task 元数据版本。修订耗尽回滚全部操作。
+实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不要求清理确认，也不修改任何边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括已删除 Goal 及其他项目内的下游。仍可见的下游 Goal 去重后同事务推进 Task 版本及更新时间，使用全部项目锁取得后的数据库时间；已删除 Goal 和已删除项目内 Goal 不更新。删除源项目时其 Goal 随项目不可见，不再单独推进；转移源项目时其存活 Goal 仍须推进。关系修订或需更新的 Task 版本耗尽、任何写入失败均回滚全部操作。
 
 清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。REST 转移与删除适配器共同严格解析单值 `Daynight-Confirm-Goal-Dependency-Removal: true`，将结果透传 TransferInput 或 DeletionInput；缺少 header 透传 false，错误 header 在业务调用前以 `400 invalid_input` 拒绝。既有请求体字段、删除空正文、预览与回执保持原结构，CORS allow-list 允许该请求 header。
 

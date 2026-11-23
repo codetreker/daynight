@@ -32,25 +32,7 @@ func (s *Store) ReadProjectDeletion(ctx context.Context, id string, operation fu
 }
 
 func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation func(store.ProjectDeletionScope) error) (store.Completion, error) {
-	return s.writeGoalProjectLifecycle(ctx, id, "project deletion", func(tx pgx.Tx) error {
-		// Task rows are intentionally locked regardless of their deleted_at value.
-		rows, err := tx.Query(ctx, `SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE`, id)
-		if err != nil {
-			return pg.QueryError("lock project tasks for deletion", err)
-		}
-		for rows.Next() {
-			var taskID string
-			if err = rows.Scan(&taskID); err != nil {
-				break
-			}
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		rows.Close()
-		if err != nil {
-			return pg.QueryError("lock project tasks for deletion", err)
-		}
+	return s.writeGoalProjectLifecycle(ctx, id, "project deletion", true, func(tx pgx.Tx) error {
 		return operation(&deletionScope{projectDeletion{tx: tx, projectID: id}})
 	})
 }

@@ -8,9 +8,9 @@ Project transfer and deletion remove Goal relationships whose downstream may bel
 
 ## Decision
 
-The four Project lifecycle operations preflight source owner administration. A transaction discovers the source and downstream Projects of incident Goal edges, locks those Project rows in UUID order, and then acquires the source Team graph lock. It rechecks the affected set under the graph lock. If the set grew, the transaction rolls back and repeats discovery within the original operation deadline; the business callback runs only after the set is stable and checks authorization again. Only a confirmed rollback before the callback is retried. Unknown commit or cleanup outcomes are not replayed. The [server design](../../../../docs/design/daynight-server.md#项目生命周期中的-goal-边清理) owns the current transaction details.
+The four Project lifecycle operations preflight source owner administration. A transaction discovers the source and downstream Projects of incident Goal edges, locks those Project rows in UUID order, and then acquires the source Team graph lock. It rechecks the affected set under the graph lock. If the set grew, the transaction rolls back and repeats discovery within the original operation deadline; the business callback runs only after the set is stable and checks authorization again. Before the callback acquires ownership, it locks all potentially affected live Goals in Task UUID order; deletion includes every historical source Task in that same order. Thread holds its Task before reading ownership, so this order avoids a Task/ownership cycle. Only a confirmed rollback before the callback is retried. Unknown commit or cleanup outcomes are not replayed. The [server design](../../../../docs/design/daynight-server.md#项目生命周期中的-goal-边清理) owns the current transaction details.
 
-This revises the remote-lock choice in the [Project cleanup decision](2026-11-19-project-goal-dependency-cleanup.md). Cleanup still advances the relationship revision and does not yet change the downstream Task metadata version.
+This revises the remote-lock choice in the [Project cleanup decision](2026-11-19-project-goal-dependency-cleanup.md). The [cleanup watermark decision](2026-11-23-project-goal-cleanup-watermark.md) advances the live downstream Task versions under this lock set.
 
 ## Alternatives
 
@@ -20,4 +20,4 @@ This revises the remote-lock choice in the [Project cleanup decision](2026-11-19
 
 ## Consequences
 
-Lifecycle operations can wait on downstream Project writers and may retry if an edge arrives during acquisition. UUID ordering, cancellation and the existing deadline bound the acquisition; source authorization is rechecked in the committed transaction. The lock set enables a subsequent cleanup change to update downstream Task metadata atomically.
+Lifecycle operations can wait on downstream Project writers and may retry if an edge arrives during acquisition. UUID ordering, cancellation and the existing deadline bound the acquisition; source authorization is rechecked in the committed transaction. The lock set also orders downstream Task watermark updates with ordinary Project writes.

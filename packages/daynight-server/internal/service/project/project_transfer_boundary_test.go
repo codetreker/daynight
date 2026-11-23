@@ -406,7 +406,7 @@ func (s *transferBoundaryScope) HasProjectEdges(ctx context.Context) (bool, erro
 	}
 	return false, nil
 }
-func (s *transferBoundaryScope) RemoveProjectEdges(context.Context) error {
+func (s *transferBoundaryScope) RemoveProjectEdges(context.Context, bool) error {
 	s.t.Fatal("unexpected confirmed removal")
 	return nil
 }

@@ -18,4 +18,4 @@ A real direct relationship edit advances the downstream Goal's Task version and 
 
 ## Consequences
 
-A changed relationship also invalidates stale Task metadata versions. Existing synchronization records do not yet expose Goal edges; the versioned write supplies the watermark needed by a later reader. Project cleanup retains its existing behavior until its separate locking and update work is delivered.
+A changed relationship also invalidates stale Task metadata versions. Existing synchronization records do not yet expose Goal edges; the versioned write supplies the watermark needed by a later reader. [Project cleanup](2026-11-23-project-goal-cleanup-watermark.md) likewise advances the watermark of each live affected downstream Goal.

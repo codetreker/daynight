@@ -260,7 +260,7 @@ func TestGoalRelationsRevisionSurvivesEmptySetAndProjectRoundTrip(t *testing.T) 
 	add.IfRevision = 4
 	_, err = tasks.EditGoalDependencies(ctx, f.principal, f.downProject.ID, f.down, add)
 	assertGoalFault(t, err, "goal_dependency_revision_conflict")
-	if after := snapshotTask(t, f.db, f.downProject.ID, f.down); after.Version != before.Version+3 {
+	if after := snapshotTask(t, f.db, f.downProject.ID, f.down); after.Version != before.Version+4 {
 		t.Fatalf("unexpected Task version: before=%+v after=%+v", before, after)
 	}
 }

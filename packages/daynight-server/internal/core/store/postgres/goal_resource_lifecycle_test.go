@@ -258,7 +258,7 @@ func TestProjectDeletionWaitsForGoalChildAttachment(t *testing.T) {
 		})
 		deleted <- err
 	}()
-	testutil.WaitForQueryLock(t, db.Pool, `SELECT id FROM tasks WHERE project_id=`)
+	testutil.WaitForQueryLock(t, db.Pool, `WITH goals AS (SELECT id FROM tasks WHERE project_id=`)
 	close(release)
 	if err := testutil.ReceiveQueryResult(t, ctx, written); err != nil {
 		t.Fatalf("attachment commit: %v", err)

@@ -24,7 +24,7 @@ func (d mcpOrgGoalDependencies) HasProjectEdges(context.Context) (bool, error) {
 	d.inspect()
 	return false, nil
 }
-func (d mcpOrgGoalDependencies) RemoveProjectEdges(context.Context) error {
+func (d mcpOrgGoalDependencies) RemoveProjectEdges(context.Context, bool) error {
 	unexpectedHTTPCall(d.t, "MCP unconfirmed Project Goal cleanup")
 	return nil
 }

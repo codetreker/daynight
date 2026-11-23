@@ -363,9 +363,9 @@ func TestProjectDeletionTaskLockCancellationRollsBack(t *testing.T) {
 		completion, err := db.WriteProjectDeletion(operationCtx, project.ID, func(store.ProjectDeletionScope) error { called = true; return nil })
 		results <- deletionResult{completion: completion, err: err, called: called}
 	}()
-	waitTransferTeamLock(t, ctx, db, "SELECT id FROM tasks WHERE project_id=", blocker.Conn().PgConn().PID())
+	waitTransferTeamLock(t, ctx, db, "WITH goals AS (SELECT id FROM tasks WHERE project_id=", blocker.Conn().PgConn().PID())
 	var pid int32
-	if err = db.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM tasks WHERE project_id=%' AND $1=ANY(pg_blocking_pids(pid))`, blocker.Conn().PgConn().PID()).Scan(&pid); err != nil {
+	if err = db.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'WITH goals AS (SELECT id FROM tasks WHERE project_id=%' AND $1=ANY(pg_blocking_pids(pid))`, blocker.Conn().PgConn().PID()).Scan(&pid); err != nil {
 		t.Fatal(err)
 	}
 	var canceled bool
