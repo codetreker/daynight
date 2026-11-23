@@ -18,6 +18,7 @@ import (
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -200,6 +201,22 @@ func (h *handler[A]) put(w http.ResponseWriter, request *http.Request, principal
 			}
 		}()
 	}
+	if err != nil && definiteAttachmentRejection(err) {
+		// A native HTTP/1 body Close can read the remaining socket after its
+		// deadline and cancel the request. Deliver a known refusal first, while
+		// the original request is still responsible for its response.
+		defer func() {
+			if closeErr := body.Close(); closeErr != nil {
+				httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
+			}
+		}()
+		if request.Context().Err() != nil {
+			httpx.LogFailure(logger, request.Context(), "attachment", "put", err)
+			panic(http.ErrAbortHandler)
+		}
+		writeAttachmentRejection(w, request, logger, err)
+		return
+	}
 	if closeErr := body.Close(); closeErr != nil {
 		httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
 	}
@@ -213,6 +230,79 @@ func (h *handler[A]) put(w http.ResponseWriter, request *http.Request, principal
 	}
 	logger.InfoContext(request.Context(), "attachment saved", "type", "resource", "component", "attachment", "phase", "put", "request_id", httpx.RequestID(request.Context()))
 	httpx.WriteJSON(w, request, logger, status, attachmentResponse(attachment))
+}
+
+// Only known non-publication refusals qualify for response-before-close.
+// Independent failures and uncertain effects retain their existing handling.
+func definiteAttachmentRejection(err error) bool {
+	fault, ok := httpx.KnownFault(err)
+	if !ok || httpx.ErrorKind(err) != fault.Code {
+		return false
+	}
+	switch fault.Code {
+	case "path_conflict", "invalid_input", "invalid_path", "permission_denied", "forbidden", "insufficient_scope", "unauthenticated", "not_found", "task_deleted", "resource_busy", "quota_exceeded", "payload_too_large":
+	default:
+		return false
+	}
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if _, joined := current.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		if _, effect := current.(*attachmentservice.FileEffectError); effect {
+			return false
+		}
+		if tx, ok := current.(*store.TransactionError); ok && (tx.CommitAttempted || tx.CleanupFailed || tx.Phase != "operation" || tx.Outcome != store.TransactionNotCommitted) {
+			return false
+		}
+		if tx, ok := current.(*store.ThreadTransactionError); ok && (tx.CommitAttempted || tx.RollbackFailed || tx.OutcomeUnknown) {
+			return false
+		}
+		if publication, ok := current.(*filestorage.PublicationError); ok && publication.Outcome != filestorage.NotPublished {
+			return false
+		}
+	}
+	return true
+}
+
+func writeAttachmentRejection(w http.ResponseWriter, request *http.Request, logger *slog.Logger, err error) {
+	httpx.CloseUnreadBody(w, request)
+	controller := http.NewResponseController(w)
+	if deadlineErr := controller.SetWriteDeadline(time.Now().Add(time.Second)); deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+		httpx.LogFailure(logger, request.Context(), "attachment", "rejection write deadline", deadlineErr)
+		panic(http.ErrAbortHandler)
+	}
+	// WriteError encodes its complete JSON envelope in one Write. Sending its
+	// exact length makes the flushed response complete before lease cleanup,
+	// even when that cleanup outlives the connection's write deadline.
+	httpx.WriteError(&fixedLengthRejectionWriter{ResponseWriter: w}, request, logger, "attachment", "put", err)
+	if request.Context().Err() != nil {
+		panic(http.ErrAbortHandler)
+	}
+	if flushErr := controller.Flush(); flushErr != nil && !errors.Is(flushErr, http.ErrNotSupported) {
+		httpx.LogFailure(logger, request.Context(), "attachment", "rejection flush", flushErr)
+		panic(http.ErrAbortHandler)
+	}
+	if !request.Close {
+		if deadlineErr := controller.SetWriteDeadline(time.Time{}); deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+			httpx.LogFailure(logger, request.Context(), "attachment", "rejection clear deadline", deadlineErr)
+			panic(http.ErrAbortHandler)
+		}
+	}
+}
+
+type fixedLengthRejectionWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *fixedLengthRejectionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *fixedLengthRejectionWriter) WriteHeader(status int) { w.status = status }
+
+func (w *fixedLengthRejectionWriter) Write(body []byte) (int, error) {
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.ResponseWriter.WriteHeader(w.status)
+	return w.ResponseWriter.Write(body)
 }
 
 func (h *handler[A]) delete(w http.ResponseWriter, request *http.Request, principal A) {

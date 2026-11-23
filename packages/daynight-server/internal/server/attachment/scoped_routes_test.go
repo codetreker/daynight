@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -156,7 +157,8 @@ func TestScopedAttachmentRoutesPreserveRefusals(t *testing.T) {
 			if w.Code != http.StatusForbidden || body.Error.Code != "forbidden" || w.Header().Get("Daynight-Scope-Status") != "insufficient_scope" || o.seen != test.operation || auth.called != 1 {
 				t.Fatalf("refusal changed: %d %v %s calls=%d operation=%s", w.Code, w.Header(), w.Body, auth.called, o.seen)
 			}
-			if w.Header().Get("Content-Disposition") != "" || w.Header().Get("Content-Length") != "" || strings.Contains(w.Body.String(), "docs/") {
+			length := w.Header().Get("Content-Length")
+			if w.Header().Get("Content-Disposition") != "" || (length != "" && (test.method != http.MethodPut || length != strconv.Itoa(w.Body.Len()))) || strings.Contains(w.Body.String(), "docs/") {
 				t.Fatalf("refusal exposed attachment metadata: %v %s", w.Header(), w.Body)
 			}
 		})

@@ -383,6 +383,8 @@ Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHead
 
 确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
+附件上传在未读正文时得到确定的业务拒绝，可在关闭正文前通过原请求 context 发送并 flush 对应错误。handler 标记未读连接关闭并设置一秒写入期限，按完整 JSON 字节设置精确 `Content-Length`，使响应在可能超过期限的上传占用清理前完成 framing；之后关闭正文并释放占用。原生 body 关闭触发的读取超时不会先抑制可交付的拒绝。资格检查保留事务、发布和清理事实，排除独立的联合错误及已发布或结果未知的文件效果。业务操作不脱离原 context，真实断连或写入失败仍按传输失败处理。取舍见[附件拒绝响应决策](../../.agents/notes/implemented/bug-fix/2026-11-24-attachment-refusal-response.md)。
+
 MCP 产品手册以 Go embed 和固定十六项目录随服务发布，包括总览和十五篇专题。`productManualManifest` 是生产目录的
 唯一所有者，注册、正文加载和引用校验使用同一组声明；路径、Name 和 URI 保持一致，Title、
 Description、MIMEType 和严格 UTF-8 byte Size 随正文同步。Entry 在注册前校验完整目录、非空有效
