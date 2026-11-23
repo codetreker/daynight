@@ -127,3 +127,7 @@
 
 .goal-children-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px 12px;min-width:0}
 .goal-children-actions .completion-time-label{display:inline-block;white-space:nowrap}
+
+.task-node .task-node-details, .task-node .graph-status, .task-node .graph-blocked-badge, .task-node .task-node-expand { font-size:var(--text-xs); }
+.task-node-bottom { padding-right:calc(5.5 * var(--text-xs)); }
+.task-node-stuck .task-node-title { margin-right:calc(4.5 * var(--text-xs)); }

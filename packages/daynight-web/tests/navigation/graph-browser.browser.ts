@@ -14,6 +14,16 @@ for (const rootSize of [12, 16, 24]) test(`graph text and geometry remain indepe
   await expect(card).toBeVisible();
   await expect(card.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
   await expect(card.locator('.task-node-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  for (const selector of ['.task-node-id', '.task-node-bottom .graph-status', '.task-node-details']) {
+    await expect(card.locator(selector)).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  }
+  const blocked = page.locator('.react-flow__node[data-id="00000000-0000-4000-8000-000000000031"] .graph-blocked-badge');
+  await expect(blocked).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  const external = page.locator('.react-flow__node[data-id="00000000-0000-4000-8000-000000000017"] .task-node');
+  await expect(external.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  for (const selector of ['.task-external-label', '.task-node-id', '.task-node-bottom .graph-status', '.task-node-details', '.task-node-navigate span']) {
+    await expect(external.locator(selector)).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  }
   await expect(page.locator('.task-chain-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
   await expect(page.locator('.task-chain-meta > .graph-status')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
   await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(240 * Math.max(rootSize / 16, 1));
