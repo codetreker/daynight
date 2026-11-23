@@ -109,12 +109,29 @@ Controller journal schema 17 stores immutable full stopped snapshots keyed by
 ticket hash. The stop CAS saves its receipt in the same transaction, and a new
 writer preserves the validated preceding stopped snapshot before replacing the
 singleton. Original-ticket validation and all known process proofs remain
-required when consuming a historical Windows receipt. Existing current-format
-16 snapshots can be observed through a narrowly validated read-only inventory
-path; actual stopped maintenance performs the numbered migration under the
-original permit. Read-compatible format checks also preserve the immutable v16
-Bot migration copies described by the [migration decision](../architecture/2026-11-19-bot-storage-migration.md); raising the active writer format cannot invalidate a
-checksum-protected original copy. Already overwritten history without a full stop receipt remains
+required when consuming a historical Windows receipt. Validated v16 and current
+v17 journals have an explicit read-only path for retained inventory, ordinary
+exited-launch reconciliation, existing Windows stop-proof lookup, independent
+Web native cancellation and recovery-eligibility observation. Launch reads retain
+the empty-source pre-writer result and all original ticket, snapshot and
+process checks; unsupported nonempty formats remain conflicts. Windows stop reads
+still require the exact ticket and complete stored Job stop proof. Ordinary Bot
+advance and shutdown can therefore reconcile their original launch before
+permit-owned stop settlement performs the numbered migration. Writable and
+ordinary current-snapshot readers remain strict; observation neither migrates
+the journal nor infers a stopped boundary from a missing Job name. Independent
+Web cancellation reads the original ticket-bound snapshot without migrating a
+live v16 writer, preserves the Controller and known native process proofs, then
+rechecks original execution identity and deadline before stopping. It neither
+settles cleanup state nor releases the lease while a Task writer remains unjoined;
+later mutation retains its original permit and migration requirements. Web
+orchestration recovery and healthy exhausted-budget or explicit-retry snapshots
+use the same exact-ticket read path, preserving their process-proof and eligibility
+checks without admitting business writes. Read-compatible format checks also
+preserve the immutable v16 Bot migration copies described by
+the [migration decision](../architecture/2026-11-19-bot-storage-migration.md);
+raising the active writer format cannot invalidate a checksum-protected original
+copy. Already overwritten history without a full stop receipt remains
 unrecoverable from the retained data. Retained lifecycle proof still requires
 its own boundary check.
 

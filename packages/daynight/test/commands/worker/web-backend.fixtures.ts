@@ -52,6 +52,11 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     task = f.store.updateWebExecution(task, { ticketPath: await launchTickets.writeLaunchTicket(f.home, ticket) }, 5);
     const snapshot: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: ticket.sessionId, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: task.resources.nativeSession?.sessionId ?? null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: task.webExecution!.controllerProcess, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(lifecycle, "readCompatibleControllerSnapshot").mockImplementation(file => {
+      const current = lifecycle.readControllerSnapshot(file);
+      if (current === null) throw new Error("The original controller snapshot is unavailable.");
+      return current;
+    });
     vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
       const current = lifecycle.readControllerSnapshot(input.journalFile);
       return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };
@@ -95,6 +100,11 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     };
     vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(ticketFor(task));
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(lifecycle, "readCompatibleControllerSnapshot").mockImplementation(file => {
+      const current = lifecycle.readControllerSnapshot(file);
+      if (current === null) throw new Error("The original controller snapshot is unavailable.");
+      return current;
+    });
     vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
       const current = lifecycle.readControllerSnapshot(input.journalFile);
       return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };

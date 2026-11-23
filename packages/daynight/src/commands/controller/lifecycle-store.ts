@@ -648,7 +648,7 @@ export const readHistoricalWindowsStoppedControllerGeneration = (file: string, t
 
 export const readProvenWindowsStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {
   try {
-    const row = readControllerStopRow(file, deadline, true);
+    const row = readControllerStopRow(file, deadline, true, undefined, undefined, true);
     if (row === null) throw new Error("Original controller stop evidence is unavailable.");
     validateWindowsControllerStopProof(row.snapshot, ticket, row.ticketHash);
     if (deadline !== undefined && Date.now() >= deadline) throw new Error("Controller stop recording exceeded its deadline.");

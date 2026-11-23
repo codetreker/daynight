@@ -9,7 +9,7 @@ import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTi
 import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../controller/launch-tool-selection.js";
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
-import { readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerOperation, readControllerSnapshot, readCompatibleControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
@@ -345,7 +345,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || !matchesLaunchConfiguration(ticket.configuration, task.configuration!)) throw new Error("Orchestration verification found conflicting original launch ownership.");
     success(task, { kind: "execution", phase: "preparing" }, "web-orchestration-ticket");
     phase(task, { kind: "execution", phase: "agent-observation" });
-    const saved = readControllerSnapshot(journal(task));
+    const saved = readCompatibleControllerSnapshot(journal(task), ticket);
     const firstNativeObservation = blocker.source !== "legacy_worktree" && execution.executionGeneration === "1" && task.resources.nativeSession === null;
     if (saved === null || !matchesGeneration(task, saved) || (!firstNativeObservation && (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId))
       || saved.controllerProcess === null || execution.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
@@ -427,8 +427,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       let recovering = retryAttempt;
       let capturedSignature: string | null = null;
       const pause = (error: unknown): LocalTask => options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : undefined);
-      const originalSnapshot = (): ControllerSnapshot => {
-        const saved = readControllerSnapshot(journal(task)), execution = task.webExecution!;
+      const originalSnapshot = async (): Promise<ControllerSnapshot> => {
+        const execution = task.webExecution!, ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+        const saved = readCompatibleControllerSnapshot(journal(task), ticket);
         if (saved === null || saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.sessionId !== execution.sessionId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId) throw new Error("The original controller generation evidence is unavailable.");
         return saved;
       };
@@ -477,7 +478,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
             prepareControllerLaunchStorage(options.homeDirectory, retryTicket);
           } else {
-            const saved = originalSnapshot();
+            const saved = await originalSnapshot();
             if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
             task = remember(task, saved, false);
             const proof = task.webExecution!.controllerProcess;
@@ -493,7 +494,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration!.recoveryLimit) {
           // Older versions recorded exhaustion without a pause. Inspect before any launch preparation.
           try {
-            const saved = originalSnapshot();
+            const saved = await originalSnapshot();
             task = remember(task, saved, false);
             const proof = task.webExecution!.controllerProcess;
             if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence.");
@@ -944,7 +945,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
         || ticket.serverOrigin !== input.serverOrigin || ticket.projectId !== input.projectId || ticket.taskId !== input.taskId || ticket.claimId !== input.claimId
         || ticket.workerId !== input.workerId || ticket.worktreeId !== input.worktreeId || ticket.userId !== input.userId) throw new Error("Web native cancellation ticket conflicts with the original execution.");
-      const saved = readControllerSnapshot(journal(input));
+      const saved = readCompatibleControllerSnapshot(journal(input), ticket, deadline);
       if (saved === null || saved.testExecutionId !== undefined || !matchesGeneration(input, saved) || saved.controllerProcess === null
         || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, execution.launchId)
         || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Web native cancellation journal conflicts with the original process boundary.");
