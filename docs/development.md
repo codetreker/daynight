@@ -230,6 +230,15 @@ Real file operations, ownership records and lock observations stay in the
 production paths. The
 [observation deadline decision](../.agents/notes/implemented/testing/2026-11-23-worker-observation-deadline-fixtures.md)
 describes their clock and cleanup boundaries.
+Owned-command capture fixtures hold the original output consumer, observe the
+original launcher close and confirm native boundary closure before capturing
+its output join timer. They check the remaining cleanup budget and specific
+join error while the independent operation watchdog uses real time. Unknown
+responsibility, late errors and stopped persistence retain the original resource
+through release and reconciliation. Native termination grace and escalation
+keep real time. The
+[output join clock decision](../.agents/notes/implemented/testing/2026-11-23-owned-command-output-join-clock.md)
+owns this boundary.
 Worker lifecycle manager fixtures control the wait between observations. The
 local SQLite observer and cloud poll advance independently in ordering-sensitive
 cases. Real SQLite receipts, cancellation and writer joins remain part of
