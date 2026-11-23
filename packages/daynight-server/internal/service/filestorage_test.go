@@ -1,15 +1,169 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
 )
+
+type startupCredential struct {
+	calls  int
+	scopes []string
+}
+
+func (c *startupCredential) GetToken(_ context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	c.calls++
+	c.scopes = options.Scopes
+	return azcore.AccessToken{Token: "selected-token", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+type startupTransport func(*http.Request) (*http.Response, error)
+
+func (f startupTransport) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAzureStartupUsesSelectedCredentialAndContainer(t *testing.T) {
+	c := storageconfig.DefaultConfig()
+	c.Backend = "azure-blob"
+	c.Root = t.TempDir()
+	c.Azure.Endpoint = "https://account.blob.core.windows.net"
+	c.Azure.Container = "archives"
+	credential := &startupCredential{}
+	requests := 0
+	transport := startupTransport(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Method != http.MethodGet || req.URL.Path != "/archives" || req.URL.Query().Get("restype") != "container" || req.Header.Get("Authorization") != "Bearer selected-token" {
+			t.Errorf("unexpected container check: %s %s auth=%q", req.Method, req.URL, req.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"ETag": []string{"\"v1\""}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	options := &container.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: transport, Retry: policy.RetryOptions{MaxRetries: -1}}}
+	files, err := openAzureFileStorage(t.Context(), c, credential, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if requests != 1 || credential.calls != 1 || len(credential.scopes) != 1 || credential.scopes[0] != "https://storage.azure.com/.default" {
+		t.Fatalf("credential calls=%d scopes=%v requests=%d", credential.calls, credential.scopes, requests)
+	}
+	if _, ok := files.(filestorage.TransferStorage); !ok {
+		t.Fatal("Azure transfer capability unavailable")
+	}
+}
+
+func TestAzureStartupRedactsFailure(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		category string
+	}{{403, "access denied"}, {404, "container not found"}} {
+		t.Run(tc.category, func(t *testing.T) {
+			c := storageconfig.DefaultConfig()
+			c.Backend, c.Root = "azure-blob", t.TempDir()
+			c.Azure.Endpoint, c.Azure.Container = "https://account.blob.core.windows.net", "archives"
+			options := &container.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: startupTransport(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"X-Ms-Error-Code": []string{"SecretError"}}, Body: io.NopCloser(strings.NewReader("secret-response")), Request: req}, nil
+			}), Retry: policy.RetryOptions{MaxRetries: -1}}}
+			files, err := openAzureFileStorage(t.Context(), c, &startupCredential{}, options)
+			if files != nil || err == nil || !strings.Contains(err.Error(), tc.category) || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "account") {
+				t.Fatalf("unredacted or wrong result: files=%v error=%v", files, err)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := azureStartupError("container check", ctx.Err()); !strings.Contains(err.Error(), "canceled") {
+		t.Fatal(err)
+	}
+}
+
+func TestAzureStartupDeadline(t *testing.T) {
+	c := storageconfig.DefaultConfig()
+	c.Backend, c.Root = "azure-blob", t.TempDir()
+	c.Azure.Endpoint, c.Azure.Container = "https://account.blob.core.windows.net", "archives"
+	started := make(chan struct{})
+	options := &container.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: startupTransport(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	}), Retry: policy.RetryOptions{MaxRetries: -1}}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { _, err := openAzureFileStorage(ctx, c, &startupCredential{}, options); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("deadline result: %v", err)
+	}
+}
+
+func TestAzureStartupWithAzurite(t *testing.T) {
+	connection := os.Getenv("DAYNIGHT_TEST_AZURITE_CONNECTION_STRING")
+	if connection == "" {
+		t.Skip("requires an isolated Azurite instance")
+	}
+	name := "startup-" + strings.ToLower(rand.Text())
+	client, err := container.NewClientFromConnectionString(connection, name, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Create(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := client.Delete(context.Background(), nil); err != nil {
+			t.Errorf("delete container: %v", err)
+		}
+	})
+	c := storageconfig.DefaultConfig()
+	c.Backend, c.Root = "azure-blob", t.TempDir()
+	c.Azure.Container, c.Azure.ConnectionString = name, connection
+	files, err := openAzureFileStorage(t.Context(), c, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = files.Put(t.Context(), "session-archives", "test/object", strings.NewReader("startup-object")); err != nil {
+		t.Fatal(err)
+	}
+	o, err := files.Open(t.Context(), "session-archives", "test/object")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := io.ReadAll(o.Body)
+	if closeErr := o.Body.Close(); err != nil || closeErr != nil || string(contents) != "startup-object" {
+		t.Fatalf("read: %q, %v, %v", contents, err, closeErr)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c.Azure.Container = name + "-missing"
+	if files, err := openAzureFileStorage(t.Context(), c, nil, nil); files != nil || err == nil || !strings.Contains(err.Error(), "container not found") {
+		t.Fatalf("missing: files=%v error=%v", files, err)
+	}
+	c.Azure.Container = name
+	parts := strings.Split(connection, ";")
+	for i, part := range parts {
+		if strings.HasPrefix(strings.ToLower(part), "accountkey=") {
+			parts[i] = "AccountKey=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		}
+	}
+	c.Azure.ConnectionString = strings.Join(parts, ";")
+	if files, err := openAzureFileStorage(t.Context(), c, nil, nil); files != nil || err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("unauthorized: files=%v error=%v", files, err)
+	}
+}
 
 func TestConfiguredFileStorageSharesRedisGate(t *testing.T) {
 	redisURL := os.Getenv("DAYNIGHT_TEST_REDIS_URL")

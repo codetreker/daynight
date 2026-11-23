@@ -28,6 +28,10 @@ func verifyStorageCommand(ctx context.Context, root string, lookup func(string) 
 		httpx.LogFailure(logger, ctx, "configuration", phase, err)
 		return 1
 	}
+	if cfg.Storage.BackendName() != "local" {
+		fmt.Fprintln(stderr, "Storage backup verification requires a paired local volume.")
+		return 1
+	}
 	logger.InfoContext(ctx, "configuration_loaded", "event", "configuration_loaded", "component", "configuration", "local_override_loaded", cfg.LocalOverrideLoaded)
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()

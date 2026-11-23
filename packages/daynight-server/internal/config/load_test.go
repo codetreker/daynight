@@ -69,6 +69,31 @@ webhook:
 		t.Fatal("loading created storage")
 	}
 }
+
+func TestAzureStorageLayers(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "config.yml", validBase+`storage:
+  backend: azure-blob
+  azure:
+    endpoint: https://account.blob.core.windows.net
+    container: original
+    managed_identity_client_id: selected
+`)
+	writeLayer(t, root, "config.local.yml", "storage:\n  azure:\n    container: overridden\n")
+	c, err := LoadServer(root, lookupValues(nil))
+	if err != nil || c.Storage.Backend != "azure-blob" || c.Storage.Azure.Container != "overridden" || c.Storage.Azure.ManagedIdentityClientID != "selected" {
+		t.Fatalf("Azure layers: %+v %v", c.Storage, err)
+	}
+	_, err = LoadServer(root, lookupValues(map[string]string{"DAYNIGHT_STORAGE_BACKEND": ""}))
+	var failure *configvalue.ConfigurationError
+	if !errors.As(err, &failure) || failure.Field != "storage.backend" || failure.Origin.EnvName != "DAYNIGHT_STORAGE_BACKEND" {
+		t.Fatalf("empty backend: %#v", err)
+	}
+	_, err = LoadServer(root, lookupValues(map[string]string{"DAYNIGHT_STORAGE_AZURE_CONNECTION_STRING": "private-secret"}))
+	if err == nil || strings.Contains(err.Error(), "private-secret") {
+		t.Fatalf("mixed credentials: %v", err)
+	}
+}
 func TestInvalidYAMLNeverHiddenByLaterLayers(t *testing.T) {
 	for _, tc := range []struct{ name, base, field string }{
 		{"duplicate_unknown", "unknown: {secret: 1, secret: 2}", ""},

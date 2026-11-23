@@ -177,6 +177,13 @@ type streamTestStorage struct {
 	acquireErr error
 }
 
+type sizedStreamTestStorage struct {
+	*streamTestStorage
+	size int
+}
+
+func (s *sizedStreamTestStorage) ArchiveStagingChunkSize() int { return s.size }
+
 func (s *streamTestStorage) AcquireArchiveStaging(context.Context, sessionarchive.Namespace, bool) (filestorage.ArchiveStaging, error) {
 	if s.acquireErr != nil {
 		return nil, s.acquireErr
@@ -189,6 +196,7 @@ type streamTestHandle struct {
 	corrupt        bool
 	observeErr     error
 	appends        int
+	appendSizes    []int
 	closed         int
 	closeErr       error
 	deleteFailures int
@@ -242,6 +250,7 @@ func (h *streamTestHandle) Append(ctx context.Context, _ string, _ int64, expect
 		return h.offset, filestorage.ErrArchiveStagingOffset
 	}
 	h.appends++
+	h.appendSizes = append(h.appendSizes, len(b))
 	h.data = append(h.data, b...)
 	h.offset += int64(len(b))
 	return h.offset, nil
@@ -309,6 +318,32 @@ func TestArchiveStreamRetainsOnlyCompleteBlocksOnShortRead(t *testing.T) {
 	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, length, d.row.SHA256, input)
 	if !errors.Is(err, io.ErrUnexpectedEOF) || h.offset != sessionarchive.BlockSize || h.appends != 1 || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("short read: offset=%d appends=%d finishes=%d leases=%d err=%v", h.offset, h.appends, d.finishes, d.leases, err)
+	}
+}
+
+func TestArchiveStreamUsesBackendChunkSizeAndActualOffset(t *testing.T) {
+	const offset = 32*1024*1024 + 512*1024 + 17
+	const chunk = 1024 * 1024
+	const tail = 37
+	length := int64(offset + chunk + tail)
+	op, d, h := streamTestFixture(t, length)
+	op.execution.files = &sizedStreamTestStorage{streamTestStorage: op.execution.files.(*streamTestStorage), size: chunk}
+	h.offset = offset
+	body := streamTestBytes(bytes.Repeat([]byte("x"), chunk+tail))
+	receipt, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, offset, length, d.row.SHA256, body)
+	if err != nil || h.offset != length || len(h.appendSizes) != 2 || h.appendSizes[0] != chunk || h.appendSizes[1] != tail {
+		t.Fatalf("resume: receipt=%+v offset=%d sizes=%v err=%v", receipt, h.offset, h.appendSizes, err)
+	}
+}
+
+func TestArchiveStreamRejectsInvalidBackendChunkSize(t *testing.T) {
+	for _, size := range []int{0, -1, 4*1024*1024 + 1} {
+		op, d, h := streamTestFixture(t, 4)
+		op.execution.files = &sizedStreamTestStorage{streamTestStorage: op.execution.files.(*streamTestStorage), size: size}
+		_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
+		if err == nil || h.appends != 0 {
+			t.Fatalf("size=%d: appends=%d err=%v", size, h.appends, err)
+		}
 	}
 }
 func TestArchiveStreamRejectsDifferentImmutableIdentityBeforeWriting(t *testing.T) {

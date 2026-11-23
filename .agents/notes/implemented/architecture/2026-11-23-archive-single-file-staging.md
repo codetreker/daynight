@@ -47,5 +47,5 @@ Recovery can resume from an earlier paired volume offset and retransmit bytes.
 Partial prefixes have no independent proof; equal-length corruption is detected
 by the full-file digest before publication. Shared volumes require demonstrated
 cross-process locking, visibility and sync semantics before new writes are
-enabled. An object-storage adapter remains separate work; the storage contract
-retains conditional creation and expected-offset append for that consumer.
+enabled. The [Azure archive backend](2026-11-23-azure-archive-backend.md) uses
+conditional creation and expected-offset append for object storage.

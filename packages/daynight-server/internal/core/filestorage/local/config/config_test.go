@@ -74,3 +74,76 @@ func TestArchiveStagingPatchPreservesExplicitFalse(t *testing.T) {
 		t.Fatalf("patch did not preserve topology while disabling registration: %+v", c)
 	}
 }
+
+func TestBackendConfiguration(t *testing.T) {
+	c := DefaultConfig()
+	if c.BackendName() != "local" || c.Validate() != nil {
+		t.Fatalf("local default: %+v", c)
+	}
+	for _, value := range []string{"", "invalid", "LOCAL", " azure-blob"} {
+		c = DefaultConfig()
+		if err := (Patch{Backend: &value}).ApplyTo(&c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Validate() == nil {
+			t.Fatalf("accepted backend %q", value)
+		}
+	}
+	c = DefaultConfig()
+	c.Backend = "azure-blob"
+	c.Azure.Container = "container"
+	if c.Validate() == nil {
+		t.Fatal("Azure accepted without credentials")
+	}
+	c.Azure.Endpoint = "https://account.blob.core.windows.net"
+	c.ArchiveUploadV2Enabled = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Azure managed identity: %v", err)
+	}
+	c.Azure.ConnectionString = "secret"
+	if c.Validate() == nil {
+		t.Fatal("mixed credentials accepted")
+	}
+	c.Azure.Endpoint = ""
+	c.Azure.ManagedIdentityClientID = "client"
+	if c.Validate() == nil {
+		t.Fatal("connection string and identity accepted")
+	}
+	c.Azure.ManagedIdentityClientID = ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("connection string: %v", err)
+	}
+	c.Azure.ConnectionString = ""
+	for _, endpoint := range []string{"http://account", "https://user:secret@account", "https://account?secret=x"} {
+		c.Azure.Endpoint = endpoint
+		if c.Validate() == nil {
+			t.Fatalf("accepted endpoint %q", endpoint)
+		}
+	}
+}
+
+func TestBackendEnvironmentOverridesPatch(t *testing.T) {
+	c := DefaultConfig()
+	empty := ""
+	if err := (Patch{Backend: &empty}).ApplyTo(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Validate() == nil {
+		t.Fatal("explicitly empty backend accepted")
+	}
+	values := map[string]string{
+		"DAYNIGHT_STORAGE_BACKEND":                 "azure-blob",
+		"DAYNIGHT_STORAGE_AZURE_CONTAINER":         "test",
+		"DAYNIGHT_STORAGE_AZURE_CONNECTION_STRING": "secret",
+	}
+	fields := map[string]string{}
+	if err := c.ApplyEnvironment(func(key string) (string, bool) { value, ok := values[key]; return value, ok }, func(field, variable string) { fields[field] = variable }); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if fields["azure.container"] != "DAYNIGHT_STORAGE_AZURE_CONTAINER" || c.Azure.ConnectionString != "secret" {
+		t.Fatalf("override: %+v, %v", c, fields)
+	}
+}

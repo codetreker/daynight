@@ -48,7 +48,7 @@ func validStreamIdentity(purpose, fileID string, offset, length int64, digest st
 	}
 	id, err := model.CanonicalID(fileID)
 	_, digestErr := hex.DecodeString(digest)
-	if err != nil || id != fileID || digestErr != nil || len(digest) != 64 || strings.ToLower(digest) != digest || offset < 0 || offset > length || length < 0 || length > limit || (length == 0 && (purpose != "resource" || digest != archiveDigest(nil))) || (offset != length && offset%sessionarchive.BlockSize != 0) {
+	if err != nil || id != fileID || digestErr != nil || len(digest) != 64 || strings.ToLower(digest) != digest || offset < 0 || offset > length || length < 0 || length > limit || (length == 0 && (purpose != "resource" || digest != archiveDigest(nil))) {
 		return fault("invalid_input", "Invalid archive file identity or offset.")
 	}
 	return nil
@@ -378,7 +378,14 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 	if actual != offset {
 		return out, archiveConflict()
 	}
-	buffer := make([]byte, sessionarchive.BlockSize)
+	chunkSize := int(sessionarchive.BlockSize)
+	if policy, ok := op.execution.files.(filestorage.ArchiveStagingChunkSizer); ok {
+		chunkSize = policy.ArchiveStagingChunkSize()
+		if chunkSize < 1 || chunkSize > 4*1024*1024 {
+			return out, errors.New("invalid archive staging chunk size")
+		}
+	}
+	buffer := make([]byte, chunkSize)
 	for actual < length {
 		size := min(int64(len(buffer)), length-actual)
 		if _, err = io.ReadFull(body, buffer[:size]); err != nil {

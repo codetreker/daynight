@@ -999,7 +999,8 @@ echoing argument values. `verify-storage` validates only database and storage
 semantics and opens the backup storage read-only. It reports each receiving v2
 file’s Session ID, file ID, and recovery offset from the paired volume. Treat
 these observations as usable only when the entire command exits successfully
-(status 0); a later failure invalidates earlier output. Logs remain on stderr.
+(status 0); a later failure invalidates earlier output. It requires the local
+backend and refuses Azure configuration. Logs remain on stderr.
 
 Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
 selected root, then appends the same JSON records to stderr and
@@ -1023,8 +1024,13 @@ diagnostics and cause categories.
 | `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
+| `DAYNIGHT_STORAGE_BACKEND` | `local` or `azure-blob` | `local` |
+| `DAYNIGHT_STORAGE_AZURE_ENDPOINT` | HTTPS Blob service endpoint for Managed Identity | Empty |
+| `DAYNIGHT_STORAGE_AZURE_CONTAINER` | Existing Azure Blob container | Empty |
+| `DAYNIGHT_STORAGE_AZURE_MANAGED_IDENTITY_CLIENT_ID` | User-assigned Managed Identity client ID; omit for system-assigned identity | Empty |
+| `DAYNIGHT_STORAGE_AZURE_CONNECTION_STRING` | Test connection string for Azurite; mutually exclusive with endpoint and identity settings | Empty |
 | `DAYNIGHT_STORAGE_ARCHIVE_STAGING_TOPOLOGY_VERIFIED` | Declare that the actual archive volume topology has been verified and enable the local storage probe | `false` |
-| `DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED` | Advertise and accept new streaming archive uploads; requires verified staging topology | `false` |
+| `DAYNIGHT_STORAGE_ARCHIVE_UPLOAD_V2_ENABLED` | Advertise and accept new streaming archive uploads; local storage requires verified staging topology | `false` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin on a separate hostname; HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
@@ -1053,12 +1059,44 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
-Before enabling archive staging, verify locking, visibility and sync semantics on
+Select Azure explicitly with an existing container and a Managed Identity with
+Blob data access. The server checks container access within the startup timeout;
+the connection string and identity modes cannot be combined. `storage.root`
+remains a writable local scratch directory for request-scoped files.
+
+```yaml
+storage:
+  backend: azure-blob
+  archive_upload_v2_enabled: true
+  azure:
+    endpoint: "https://example.blob.core.windows.net"
+    container: "daynight"
+    # managed_identity_client_id: "<user-assigned-client-id>"
+```
+
+For isolated Azurite tests, use the test account's connection string instead:
+
+```yaml
+storage:
+  backend: azure-blob
+  archive_upload_v2_enabled: true
+  azure:
+    container: "daynight-test"
+    connection_string: "<Azurite connection string>"
+```
+
+Create the container before startup. Keep the connection string in private
+configuration or the corresponding environment variable.
+
+Before enabling local archive staging, verify locking, visibility and sync semantics on
 the actual volume across all participating instances. The topology flag records
 that declaration and runs the local probe; it does not replace multi-instance
 verification. Keep it enabled while version 2 files remain in flight. Disable
 new version 2 registration independently with `archive_upload_v2_enabled`;
-existing files still need their original protocol to settle. Streaming requests
+existing files still need their original protocol to settle. Set
+`archive_upload_v2_enabled` to `true` to accept new Azure streaming archives.
+Azure uses the Blob
+length for recovery and appends up to 1 MiB per operation. Streaming requests
 have a 30-second read-idle limit and a 30-minute total limit.
 
 The Session archive limits may be set independently as `session.archive_max_concurrent`

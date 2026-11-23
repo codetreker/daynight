@@ -40,5 +40,7 @@ storage operation, so a replacement writer or cleanup could race it.
 An interrupted stream resumes from the paired storage's observed offset,
 including an earlier restored prefix. Full-file hashing detects corruption
 before publication; partial prefixes have no independent checksum. Enabling
-new uploads requires verified local volume semantics. Completion and cleanup
+new uploads on local storage requires verified volume semantics; the [Azure
+backend](2026-11-23-azure-archive-backend.md) uses Blob-specific exclusion and
+offsets. Completion and cleanup
 are separate, so a cleanup failure does not invalidate a durable receipt.
