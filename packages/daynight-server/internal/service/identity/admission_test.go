@@ -37,7 +37,7 @@ func TestDirectAdmissionStopsBeforeTransaction(t *testing.T) {
 					f.equal(binding, "raw-binding")
 					return refusal
 				}
-				_, err = s.CompleteLogin(f.ctx, q, "raw-binding")
+				_, err = s.CompleteLogin(f.ctx, q, "raw-binding", "")
 			case "authenticate":
 				s.ops.validateCredential = func(kind model.CredentialKind, value string) error {
 					f.hit("admission")

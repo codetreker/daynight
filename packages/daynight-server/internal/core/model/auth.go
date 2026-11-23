@@ -103,6 +103,8 @@ type LoginTransaction struct {
 }
 
 type Session struct {
+	Browser          *string
+	OS               *string
 	LastUsedAt       *time.Time
 	ID               string
 	UserID           string

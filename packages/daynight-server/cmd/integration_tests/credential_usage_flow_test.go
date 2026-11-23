@@ -155,6 +155,7 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	f := newFixture(t)
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, f.origin, "alice")
+	browserSessionManagementNormalFlow(t, f, browser)
 	plain := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(plain.CloseIdleConnections)
 	_, catalogData := usageRequest(t, f, browser, http.MethodGet, "/api/v1/me/credential-scope-catalog", "", "", "", http.StatusOK)

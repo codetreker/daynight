@@ -86,7 +86,7 @@ func (m *strictIdentity) ValidateLogin(string, string) error { return m.unexpect
 func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
 	return identitycore.LoginStart{}, m.unexpected("StartLogin")
 }
-func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
+func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error) {
 	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
 }
 func (m *strictIdentity) User(context.Context, model.Principal) (model.User, error) {
@@ -100,6 +100,15 @@ func (m *strictIdentity) Logout(context.Context, model.Principal) error {
 }
 func (m *strictIdentity) CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error) {
 	return identitycore.MintedPAT{}, m.unexpected("CreatePAT")
+}
+func (m *strictIdentity) ListBrowserSessions(context.Context, model.Principal, string, int) (identitycore.BrowserSessionPage, error) {
+	return identitycore.BrowserSessionPage{}, m.unexpected("ListBrowserSessions")
+}
+func (m *strictIdentity) GetBrowserSession(context.Context, model.Principal, string) (model.Session, error) {
+	return model.Session{}, m.unexpected("GetBrowserSession")
+}
+func (m *strictIdentity) RevokeBrowserSession(context.Context, model.Principal, string, string, string) error {
+	return m.unexpected("RevokeBrowserSession")
 }
 func (m *strictIdentity) ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
 	return nil, m.unexpected("ListPATs")

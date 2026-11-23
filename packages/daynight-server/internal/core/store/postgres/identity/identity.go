@@ -95,7 +95,7 @@ func (s *scope) UpsertUser(ctx context.Context, user model.User, now time.Time) 
 	return user, pg.AuthQueryError("upsert user", err)
 }
 func (s *scope) InsertSession(ctx context.Context, session model.Session) error {
-	_, err := s.tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at,last_used_at) VALUES ($1,$2,$3,$4,$5,$6)`, session.ID, session.UserID, session.TokenHash, session.CreatedAt, session.ExpiresAt, session.LastUsedAt)
+	_, err := s.tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at,last_used_at,browser,os) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, session.ID, session.UserID, session.TokenHash, session.CreatedAt, session.ExpiresAt, session.LastUsedAt, session.Browser, session.OS)
 	return pg.AuthQueryError("insert session", err)
 }
 func (s *scope) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
