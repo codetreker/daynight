@@ -11,7 +11,7 @@ import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controll
 import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore, readControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
-import { captureProcessProof, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, inspectBootstrapProcessProof, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../../src/commands/controller/paths.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -31,6 +31,39 @@ const origin = "https://daynight.example";
 const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
 const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
 const gitCommand = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000 });
+
+type ProcessMismatch = Parameters<NonNullable<Parameters<typeof inspectBootstrapProcessProof>[2]>>[0];
+const expectOriginalProcessStopped = async (proof: ProcessProof, inspect = inspectBootstrapProcessProof) => {
+  let mismatch: ProcessMismatch | undefined;
+  const state = await inspect(proof, 5000, evidence => { mismatch = evidence; });
+  expect(state === "stopped" || (state === "replaced" && mismatch?.sameBirth === false),
+    JSON.stringify({ proof, state, mismatch })).toBe(true);
+};
+
+const proof: ProcessProof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "fixture-birth", commandHash: "fixture-command" };
+it.each([
+  { state: "stopped", mismatch: undefined, stopped: true },
+  { state: "replaced", mismatch: { sameBirth: false, sameParent: true, sameGroup: true, sameCommand: true, status: null }, stopped: true },
+  { state: "replaced", mismatch: { sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false, status: null }, stopped: false },
+  { state: "replaced", mismatch: { sameBirth: true, sameParent: true, sameGroup: false, sameCommand: true, status: null }, stopped: false },
+  { state: "replaced", mismatch: undefined, stopped: false },
+  { state: "running", mismatch: undefined, stopped: false },
+  { state: "exiting", mismatch: undefined, stopped: false },
+] as const)("checks original process completion for $state with $mismatch (stopped: $stopped)", async ({ state, mismatch, stopped }) => {
+  const inspect = vi.fn<typeof inspectBootstrapProcessProof>(async (_proof, _timeout, onMismatch) => {
+    if (mismatch !== undefined) onMismatch!(mismatch);
+    return state;
+  });
+  const result = expectOriginalProcessStopped(proof, inspect);
+  if (stopped) await expect(result).resolves.toBeUndefined();
+  else await expect(result).rejects.toThrow();
+  expect(inspect).toHaveBeenCalledExactlyOnceWith(proof, 5000, expect.any(Function));
+});
+
+it("preserves process observation failures when checking original completion", async () => {
+  const error = new Error("Native process identity is conflicting.");
+  await expect(expectOriginalProcessStopped(proof, vi.fn().mockRejectedValue(error))).rejects.toBe(error);
+});
 
 const nativeBoundary = async (launchId: string, cwd: string) => {
   const script = `
@@ -63,7 +96,7 @@ process.send('ready');setInterval(()=>{},1000);
     } catch (error) { failures.push(error); }
     if (provider !== undefined) try {
       await stopControllerBootstrap(provider, Date.now() + 10_000);
-      await expect.poll(() => inspectProcessProof(provider!), { timeout: 10_000 }).toBe("stopped");
+      await expect.poll(() => expectOriginalProcessStopped(provider!), { timeout: 10_000 }).toBeUndefined();
     } catch (error) { failures.push(error); }
     try { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await closed; }
     catch (error) { failures.push(error); }
@@ -195,7 +228,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
       await stopControllerProcesses(previous.leader, [previous.provider], deadline, lease);
       await recordStoppedControllerGeneration(journalPath, previousTicket, { deadline, ...(lease === undefined ? {} : { jobLease: lease }) });
       await leases.release(launchId); await previous.closed;
-      expect(await inspectProcessProof(previous.provider)).toBe("stopped");
+      await expectOriginalProcessStopped(previous.provider);
       if (previous.leader.jobObjectName !== undefined) expect(await inspectControllerJob(previous.leader.jobObjectName)).toEqual([]);
       previous.closeStoppedJob();
     }
@@ -226,7 +259,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
       globalConfiguration: configuration, maxConcurrent: 2, platformTaskMode: "all" as const, verifyWebUnregistered, emit: event => events.push(event) });
     if (mode === "shutdown") expect(await coordinator.shutdown({ deadline: Date.now() + 30_000 })).toBe(true);
     else { await coordinator.tick(); await expect.poll(() => store.getTask(owner)?.status, { timeout: 30_000 }).toBe("done"); }
-    expect(await inspectProcessProof(original.leader)).toBe("stopped"); expect(await inspectProcessProof(original.provider)).toBe("stopped"); await original.closed;
+    await expectOriginalProcessStopped(original.leader); await expectOriginalProcessStopped(original.provider); await original.closed;
     if (original.leader.jobObjectName !== undefined) expect(await inspectControllerJob(original.leader.jobObjectName)).toEqual([]);
     expect(readControllerSnapshot(journalPath)).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: original.leader, nativeProcesses });
     if (process.platform === "win32") expect(readControllerSnapshot(journalPath)?.windowsJobStopProof).toBeDefined();
@@ -292,7 +325,7 @@ it("stops every retained real generation without a journal and retries from dura
     expect(clearance).toMatchObject({ target: owner, owners: [owner], inventoryComplete: true, resourcesCleared: true });
     expect(clearance.stoppedExecutions.map(item => item.executionGeneration).sort()).toEqual(["1", "2"]);
     for (const boundary of boundaries) {
-      expect(await inspectProcessProof(boundary.leader)).toBe("stopped"); expect(await inspectProcessProof(boundary.provider)).toBe("stopped"); await boundary.closed;
+      await expectOriginalProcessStopped(boundary.leader); await expectOriginalProcessStopped(boundary.provider); await boundary.closed;
       if (boundary.leader.jobObjectName !== undefined) expect(await inspectControllerJob(boundary.leader.jobObjectName)).toEqual([]);
       boundary.closeStoppedJob();
     }
