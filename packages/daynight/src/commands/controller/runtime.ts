@@ -1,7 +1,7 @@
 import { assertProviderNativeDispatch } from "./native-lifecycle.js";
 import { bundledImageDecoder } from "./media/image-decoder.js";
 import { controllerManagementActive, openControllerWorkerLifecycle, withinControllerManagement } from "./worker-lifecycle.js";
-import { LifecycleAdmissionError } from "../worker/lifecycle-store.js";
+import { LifecycleAdmissionError, type LifecycleResource } from "../worker/lifecycle-store.js";
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
@@ -30,8 +30,8 @@ import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
 import { readLaunchToolSelection } from "./launch-tool-selection.js";
-import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
-import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
+import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { openControllerLifecycleStore, readRecoverableInitialInput, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay, waitForImageHistory } from "./relay.js";
@@ -200,13 +200,14 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     try { workerLifecycle?.settle(operation); }
     catch (error) { failLifecycle(error); throw error; }
   };
-  const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>): Promise<ControllerOperation> => {
+  const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>, recovered?: { resource: LifecycleResource; ticket: ControllerLaunchTicket }, retainPreparedOnAdmission = false): Promise<ControllerOperation> => {
     const running = active.get(operation.operationId); if (running) return running;
     if (operation.state !== "accepted") return Promise.resolve(operation);
     const execute = (async () => {
       if (["initial", "send_message", "worker_input", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) accountingBoundary(() => journal.assertInputCapacity());
-      try { workerLifecycle?.reserve(operation, journal.getSnapshot().nativeSessionId); }
+      try { workerLifecycle?.reserve(operation, journal.getSnapshot().nativeSessionId, recovered); }
       catch (error) {
+        if (retainPreparedOnAdmission && error instanceof LifecycleAdmissionError) return operation;
         if (!(error instanceof LifecycleAdmissionError)) failLifecycle(error);
         const saved = journal.recordOperation(operation.operationId, error instanceof LifecycleAdmissionError ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error));
         if (workerLifecycle?.hasReservation(operation)) settleLifecycleReceipt(saved);
@@ -535,23 +536,25 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const kind = initial ? "initial" : "worker_input";
     const payload = initial ? { text: prompt } : { content: [{ type: "text", text: prompt }], expectedTurnId: null, origin: "daynight" };
     const hash = controllerPayloadHash({ kind, payload });
-    const existing = journal.getOperation(operationId);
-    if (existing) {
-      if (existing.kind !== kind || existing.executionGeneration !== ticket.executionGeneration || existing.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
-      const running = active.get(operationId);
-      return running ? running.then(operation => ({ kind: "operation", operation })) : Promise.resolve({ kind: "operation", operation: existing });
-    }
+    const recoveringInitial = initial && BigInt(ticket.executionGeneration) > 1n;
     const pending = pendingWorkerInput.get(operationId);
     if (pending) {
       if (pending.hash !== hash) throw new Error("The operation ID has different content.");
       return pending.promise;
     }
+    const existing = journal.getOperation(operationId);
+    if (existing) {
+      if (existing.kind !== kind || existing.payloadHash !== hash || (!recoveringInitial && existing.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+      const running = active.get(operationId);
+      if (running) return running.then(operation => ({ kind: "operation", operation }));
+      if (!recoveringInitial || existing.state !== "accepted") return Promise.resolve({ kind: "operation", operation: existing });
+    }
     if (pendingWorkerInput.size >= 32) throw new Error("Controller IPC action capacity is unavailable.");
     const promise = queueNative("send_message", async (): Promise<WorkerInputResult> => {
       const nowExisting = journal.getOperation(operationId);
       if (nowExisting) {
-        if (nowExisting.kind !== kind || nowExisting.executionGeneration !== ticket.executionGeneration || nowExisting.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
-        return { kind: "operation", operation: nowExisting };
+        if (nowExisting.kind !== kind || nowExisting.payloadHash !== hash || (!recoveringInitial && nowExisting.executionGeneration !== ticket.executionGeneration)) throw new Error("The operation ID has different content or generation.");
+        if (!recoveringInitial || nowExisting.state !== "accepted") return { kind: "operation", operation: nowExisting };
       }
       let waiting = workerReady(deadline, initial);
       if (waiting) return waiting;
@@ -561,8 +564,35 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       waiting = workerReady(deadline, initial);
       if (waiting) return waiting;
       if (taskResult) return { kind: "waiting", reason: taskResult };
-      const prepared = accountingBoundary(() => journal.prepareOperation({ operationId, kind, payload }));
-      return { kind: "operation", operation: await dispatch(prepared, () => provider!.send(textNativeInput(prompt), operationId, null)) };
+      let previousTicket: ControllerLaunchTicket | undefined;
+      if (recoveringInitial) {
+        const evidence = await readRecoverableInitialInput(path.join(directory, "journal.sqlite"), ticket, options.homeDirectory, deadline, options.storageStateDirectory);
+        previousTicket = evidence.previousTicket;
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        const currentTask = await checkWorkerTask(ticket, options.homeDirectory, deadline);
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        if (currentTask) return { kind: "waiting", reason: currentTask };
+      }
+      const prepared = accountingBoundary(() => recoveringInitial ? journal.prepareRecoveredInitial(previousTicket!) : journal.prepareOperation({ operationId, kind, payload }));
+      let recovered: { resource: LifecycleResource; ticket: ControllerLaunchTicket } | undefined;
+      if (recoveringInitial && workerLifecycle) {
+        const resource = workerLifecycle.inputReservation(operationId);
+        if (resource !== null) {
+          if (typeof resource.identity.launchId !== "string") throw new Error("Recovered initial reservation has no original launch ticket.");
+          const reservationTicket = await readLaunchTicket(options.homeDirectory, resource.identity.launchId, options.storageStateDirectory);
+          journal.assertRecoveredInitialReservation(previousTicket!, reservationTicket);
+          waiting = workerReady(deadline, initial);
+          if (waiting) return waiting;
+          recovered = { resource, ticket: reservationTicket };
+        }
+        const currentTask = await checkWorkerTask(ticket, options.homeDirectory, deadline);
+        waiting = workerReady(deadline, initial);
+        if (waiting) return waiting;
+        if (currentTask) return { kind: "waiting", reason: currentTask };
+      }
+      return { kind: "operation", operation: await dispatch(prepared, () => provider!.send(textNativeInput(prompt), operationId, null), recovered, recoveringInitial) };
     });
     pendingWorkerInput.set(operationId, { hash, promise });
     void promise.finally(() => { if (pendingWorkerInput.get(operationId)?.promise === promise) pendingWorkerInput.delete(operationId); }).catch(() => {});
@@ -662,7 +692,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
               if (operation === null) return;
             }
           }
-          socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
+          socket.end(JSON.stringify({ requestId, ok: true, ...(workerLifecycle ? { workerLifecycleProtocol: 1 as const } : {}), snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const, recoveredInitialInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
         } catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
       })().catch(fail);
     });

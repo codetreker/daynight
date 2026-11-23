@@ -12,7 +12,7 @@ import * as imageHistory from "../../../src/commands/controller/media/history-sy
 import * as usageRuntime from "../../../src/commands/controller/usage/runtime.js";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 const historyRuntime = vi.hoisted(() => ({ flush: vi.fn(async () => {}), supported: false, connected: true }));
-const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
+const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), recoveryRead: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
 const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
 vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: (...args: unknown[]) => storage.prepare(...args) }));
@@ -24,7 +24,7 @@ vi.mock("../../../src/commands/controller/launch-ticket.js", async importOrigina
   controllerExecutionDirectory: () => "/private/controller", controllerPayloadHash: () => "fixture-hash"
 }));
 vi.mock("../../../src/commands/controller/worker-task.js", () => ({ checkWorkerTask: async () => null }));
-vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => { storage.open(...args); return fixture.journal(); } }));
+vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => { storage.open(...args); return fixture.journal(); }, readRecoverableInitialInput: (...args: unknown[]) => fixture.recoveryRead(...args) }));
 const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), coordinatorCreate: vi.fn(), coordinatorStop: vi.fn(async () => {}), pipelineCreate: vi.fn(), pipelineTick: vi.fn(async () => {}), pipelineStop: vi.fn(async () => {}), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
 vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
 vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorCreate(); externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: externalRuntime.coordinatorStop, invalidate: () => {} }; } }));
@@ -830,14 +830,14 @@ test.each(["native during startup", "native while running", "connection", "start
   } finally { if (delayed) opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
 });
 
-test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%s preserves accounting failure without native dispatch or a false rejection", async source => {
-  setup(); fixture.ticketOverrides = { initialOperationId: "00000000-0000-4000-8000-000000000012", initialPrompt: "original" };
+test.each(["IPC admission", "recovered IPC admission", "relay capacity", "native image patch"] as const)("%s preserves accounting failure without native dispatch or a false rejection", async source => {
+  setup(); fixture.ticketOverrides = { initialOperationId: "00000000-0000-4000-8000-000000000012", initialPrompt: "original", ...(source === "IPC admission" ? { executionGeneration: "1" } : {}) };
   const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
   const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back", cause: new Error("original cause") });
   const journal = fixture.journal(), send = vi.fn(), record = vi.fn(), mark = vi.fn();
   const operation = { operationId: "operation", kind: "send_message", state: "accepted" };
   Object.assign(journal, {
-    prepareOperation: vi.fn(() => operation), getOperation: vi.fn((id: string) => id === "00000000-0000-4000-8000-000000000012" ? null : operation), recordOperation: record, markDispatching: mark,
+    prepareOperation: vi.fn(() => operation), prepareRecoveredInitial: vi.fn(() => operation), getOperation: vi.fn((id: string) => id === "00000000-0000-4000-8000-000000000012" ? null : operation), recordOperation: record, markDispatching: mark,
     assertInputCapacity: vi.fn(), patchNativeImagePart: vi.fn(),
   });
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close, send });
@@ -847,8 +847,9 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
   try {
     await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
     fixture.relayCallbacks!.onConnection(true);
-    if (source === "IPC admission") {
-      journal.prepareOperation.mockImplementation(() => { throw failure; });
+    if (source === "IPC admission" || source === "recovered IPC admission") {
+      fixture.recoveryRead.mockResolvedValue({ previousTicket: {} });
+      (source === "IPC admission" ? journal.prepareOperation : journal.prepareRecoveredInitial).mockImplementation(() => { throw failure; });
       (fixture.options as ProviderOptions).onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false } });
       const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {}, destroy: () => {}, end: vi.fn() });
       fixture.socketHandler!(socket);

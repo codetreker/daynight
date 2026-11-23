@@ -73,6 +73,12 @@ const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot
 export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
   runningOriginalGeneration(task, snapshot) && ["provider_accepted", "confirmed"].includes(snapshot.initialInputState);
 
+/** A later generation may continue the original initial input only with separate journal evidence. */
+export const recoveringInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
+  task.webExecution !== null && BigInt(task.webExecution.executionGeneration) > 1n
+  && task.webExecution.initialInputState === "not_submitted" && snapshot.initialInputState === "not_submitted"
+  && runningOriginalGeneration(task, snapshot);
+
 /** An authenticated first-generation observation can establish its first native identity without creating another conversation. */
 export const continuingInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;
@@ -89,7 +95,8 @@ export const continuingOriginalGeneration = (task: LocalTask, snapshot: Controll
   return execution !== null && BigInt(execution.executionGeneration) > 1n && task.recovery.pauseReason === null
     && !task.recovery.retryAuthorized && !execution.restartAfterShutdown && runningOriginalGeneration(task, snapshot)
     && ["dispatching", "unknown"].includes(snapshot.initialInputState) && operation != null && execution.initialPrompt !== null
-    && matchesInitialOperation(operation, { ...execution, initialPrompt: execution.initialPrompt }, true);
+    && (matchesInitialOperation(operation, { ...execution, initialPrompt: execution.initialPrompt }, true)
+      || matchesInitialOperation(operation, { ...execution, initialPrompt: execution.initialPrompt }, false));
 };
 export const stoppedOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;

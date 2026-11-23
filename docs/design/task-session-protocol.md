@@ -96,6 +96,10 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、当前 timeline、投影状态及有界 outbox，资源 descriptor/blob/pin 继续由相邻文件拥有者保存。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
+受管 Task 换代后恢复未派发的首次输入时，Controller 在原生输入队列内重新核验当前 claim、就绪状态、冻结 ticket 与 journal 的当前快照和相邻前代停证。原 operation 缺失时创建原 ID，或在单写者事务中将正文、hash 和 kind 精确匹配且仍为 `accepted` 的记录绑定当前 generation；随后沿既有路径先持久化 `dispatching`，再调用 Provider。已进入派发、未知或终态的记录不能重新变为 `accepted`。重复 IPC 共享原操作，不能产生第二次可能的 native dispatch；journal 证据不完整或冲突时保留责任并拒绝发送。Worker 的工作树和恢复入口规则见 [Worker 设计](daynight-worker.md#web-backend-与执行证据)。
+
+Worker lifecycle 库的输入预留可能先于 journal 的派发记录落盘。换代时如原预留仍为 `reserved`，须核验其原 ticket、完整停证及输入归属，并在当前 lifecycle 准入围栏下条件接管；已有派发或终态证据的预留不能接管。两个库之间中断保留原 operation 和预留责任，后续代按持久归属重新核验，不推断跨库原子提交。停用对账先确认当前及历史 Controller 的完整停止，再核验同一 journal 的 prepared 操作并条件结算原预留为 `not_dispatched`。重新启用时保留该终态，以新资源身份承载原 operation 的后续责任；存在其他未结算或已受理责任时拒绝创建。迟到回执按原 operation 和 generation 定位责任。
+
 Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取 journal 的单次只读快照：空来源继续按 writer 未提交处理，已交付 v16/v17 或当前 v18 必须通过实际 schema 验证，再核对完整执行身份、generation、ticket 绑定和原进程证明。观察不迁移或改写 journal；不支持的非空格式和身份冲突明确失败。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
 
 同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。

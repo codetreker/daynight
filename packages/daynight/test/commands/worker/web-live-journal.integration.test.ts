@@ -1,6 +1,6 @@
 import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import Database from "better-sqlite3";
 import { expect, it, vi } from "vitest";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
@@ -8,7 +8,7 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import * as localClient from "../../../src/commands/controller/local-client.js";
-import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath, writeLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
@@ -213,4 +213,261 @@ it.each(["ticket", "native-prefix", "future"] as const)("retains a live v16 boun
   await expect(f.backend.requestExecutionStop(f.task, Date.now() + 5_000)).rejects.toThrow();
   expect(stop).not.toHaveBeenCalled(); expect(f.store.getTask(f.task)).toEqual(before);
   expect(readFileSync(f.file)).toEqual(bytes);
+});
+
+// The Worker reads the real current journal, including the preceding stopped
+// generation, before asking the current Controller to submit the frozen input.
+const recoveredInitial = async (prepared: boolean) => {
+  const f = await orchestrationFixture();
+  f.source.saved.mockRestore();
+  vi.mocked(lifecycle.readCompatibleControllerSnapshot).mockRestore();
+  const nativeId = f.task.resources.nativeSession!.sessionId;
+  const file = path.join(controllerExecutionDirectory(f.home, f.source.ticket.executionId), "journal.sqlite");
+  let journal = lifecycle.openControllerLifecycleStore(file, f.source.ticket);
+  const first = { ...f.source.snapshot, nativeSessionId: nativeId, initialInputState: "not_submitted" as const,
+    controllerProcess: process.platform === "win32"
+      ? { ...f.source.snapshot.controllerProcess!, jobObjectName: `Local\\Daynight-${f.source.ticket.launchId}` }
+      : f.source.snapshot.controllerProcess,
+    lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
+  journal.patchSnapshot({ lifecycle: first.lifecycle, activity: first.activity, nativeSessionId: first.nativeSessionId,
+    initialInputState: first.initialInputState, nativeStopped: first.nativeStopped, stoppedAt: first.stoppedAt,
+    controllerProcess: first.controllerProcess, nativeProcesses: first.nativeProcesses, error: first.error });
+  if (prepared) journal.prepareOperation({ operationId: f.source.ticket.initialOperationId, kind: "initial", payload: { text: f.source.ticket.initialPrompt } });
+  journal.close();
+  if (process.platform === "win32") {
+    vi.mocked(lifecycle.recordStoppedControllerGeneration).mockRestore();
+    await lifecycle.recordStoppedControllerGeneration(file, f.source.ticket, { jobLease: {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease });
+  }
+  let task = f.store.updateWebExecution(f.task, { initialInputState: "not_submitted", activity: "stopped", nativeProcesses: [] }, 10);
+  task = f.store.beginWebGeneration(task, first, 11);
+  const execution = task.webExecution!;
+  const ticket = { ...f.source.ticket, launchId: execution.launchId, executionGeneration: execution.executionGeneration,
+    controllerInstanceId: execution.controllerInstanceId, resumeNativeSessionId: nativeId };
+  const ticketPath = await writeLaunchTicket(f.home, ticket);
+  const controllerProcess = { ...first.controllerProcess!, pid: 989, startedAt: "recovered",
+    ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) };
+  const nativeProcess = { ...controllerProcess, pid: 990, parentPid: controllerProcess.pid, startedAt: "native-recovered" };
+  task = f.store.updateWebExecution(task, { ticketPath, launchSubmission: "acknowledged", controllerProcess, nativeProcesses: [nativeProcess] }, 12);
+  journal = lifecycle.openControllerLifecycleStore(file, ticket);
+  const snapshot = { ...journal.getSnapshot(), lifecycle: "ready" as const, activity: "idle" as const, nativeSessionId: nativeId,
+    controllerProcess, nativeProcesses: [nativeProcess], nativeStopped: false, stoppedAt: null, error: null,
+    startup: { state: "ready" as const, reasonCode: "ready" as const }, capabilities: { send: true, steer: false, cancel: false, respond: false } };
+  journal.patchSnapshot({ lifecycle: snapshot.lifecycle, activity: snapshot.activity, nativeSessionId: snapshot.nativeSessionId,
+    controllerProcess: snapshot.controllerProcess, nativeProcesses: snapshot.nativeProcesses, nativeStopped: snapshot.nativeStopped,
+    stoppedAt: snapshot.stoppedAt, error: snapshot.error, startup: snapshot.startup, capabilities: snapshot.capabilities });
+  journal.close();
+  f.launcher.prepare.mockResolvedValue(ticket);
+  const request = vi.fn<typeof localClient.requestController>();
+  request.mockImplementation(async (_ticket, action) => {
+    if (action.kind === "observe") return { requestId: ticket.launchId, ok: true, snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
+    throw new Error(`Unexpected ${action.kind} request`);
+  });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher,
+    platform: "macos", buildPrompt: () => "replacement must not be used", emit: vi.fn(), now: () => 50_000, request });
+  return { ...f, task, ticket, file, snapshot, backend, request };
+};
+
+it.each([false, true])("submits the frozen initial operation through ordinary Worker advance with a real recovered journal (prepared=%s)", async prepared => {
+  const f = await recoveredInitial(prepared);
+  const before = f.store.getTask(f.task)!;
+  f.request.mockImplementation(async (_ticket, action) => {
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
+    expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
+    const operation = { operationId: f.ticket.initialOperationId, executionGeneration: "2", kind: "initial" as const,
+      payload: { text: f.ticket.initialPrompt }, payloadHash: controllerPayloadHash({ kind: "initial", payload: { text: f.ticket.initialPrompt } }),
+      state: "confirmed" as const, result: null, error: null, createdAt: 0, updatedAt: 1 };
+    const confirmed = { ...f.snapshot, initialInputState: "confirmed" as const };
+    const db = new Database(f.file);
+    try {
+      db.prepare("INSERT INTO operations(id,value,acknowledged) VALUES(?,?,0) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(operation.operationId, JSON.stringify(operation));
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(confirmed));
+    } finally { db.close(); }
+    return { requestId: f.ticket.launchId, ok: true, snapshot: confirmed, operation };
+  });
+  const result = await f.backend.advanceResult(f.task, new AbortController().signal);
+  expect(result.kind).toBe("observed");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "submit_initial"]);
+  expect(result.task.claimId).toBe(before.claimId);
+  expect(result.task.resources).toEqual(before.resources);
+  expect(result.task.recovery).toEqual(before.recovery);
+  expect(result.task.webExecution).toMatchObject({ executionGeneration: "2", controllerInstanceId: f.ticket.controllerInstanceId,
+    initialOperationId: f.ticket.initialOperationId, initialPrompt: f.ticket.initialPrompt, initialInputState: "confirmed" });
+});
+
+it("retains an orchestration blocker until the same recovered journal and original worktree are proven", async () => {
+  const f = await recoveredInitial(true);
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
+  f.request.mockImplementation(async (_ticket, action) => {
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
+    expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
+    return { requestId: f.ticket.launchId, ok: true, snapshot: { ...f.snapshot, initialInputState: "confirmed" } };
+  });
+  const result = await f.backend.advanceResult(f.task, new AbortController().signal);
+  expect(result.kind).toBe("observed");
+  expect(f.store.getOrchestrationBlocker(f.task)).toBeNull();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "submit_initial"]);
+  expect(f.git.prepareWorktree).toHaveBeenCalled();
+  expect(result.task.recovery).toEqual(f.task.recovery);
+  expect(result.task.resources).toEqual(f.task.resources);
+});
+
+it.each(["missing-journal", "missing-ticket", "missing-stop", "stop-native", "stop-generation", "ticket", "snapshot-native", "snapshot-generation", "payload", "hash", "operation-id", "operation-generation", "operation-kind", "dispatching", "unknown", "confirmed", "failed"] as const)(
+  "never submits a recovered initial input when %s evidence is missing, contradictory, or possibly dispatched", async conflict => {
+    const f = await recoveredInitial(true);
+    if (conflict === "missing-journal") {
+      unlinkSync(f.file);
+    } else if (conflict === "missing-ticket") {
+      unlinkSync(controllerTicketPath(f.home, f.source.ticket.launchId));
+    } else {
+      const db = new Database(f.file);
+      try {
+        if (conflict === "missing-stop") db.prepare("DELETE FROM stopped_generations").run();
+        else if (conflict === "stop-native" || conflict === "stop-generation") {
+          const row = db.prepare("SELECT ticket_hash,snapshot FROM stopped_generations").get() as { ticket_hash: string; snapshot: string };
+          const value = JSON.parse(row.snapshot);
+          if (conflict === "stop-native") value.nativeSessionId = "different-native";
+          else value.executionGeneration = "9";
+          db.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify(value), row.ticket_hash);
+        } else if (conflict === "ticket") db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
+        else if (conflict === "snapshot-native" || conflict === "snapshot-generation") {
+          const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+          const value = JSON.parse(row.snapshot);
+          if (conflict === "snapshot-native") value.nativeSessionId = "different-native";
+          else value.executionGeneration = "9";
+          db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value));
+        } else {
+          const row = db.prepare("SELECT value FROM operations WHERE id=?").get(f.ticket.initialOperationId) as { value: string };
+          const value = JSON.parse(row.value);
+          if (conflict === "payload") value.payload.text = "different";
+          else if (conflict === "hash") value.payloadHash = "b".repeat(64);
+          else if (conflict === "operation-id") value.operationId = "other";
+          else if (conflict === "operation-generation") value.executionGeneration = "9";
+          else if (conflict === "operation-kind") value.kind = "send_message";
+          else value.state = conflict;
+          db.prepare("UPDATE operations SET value=? WHERE id=?").run(JSON.stringify(value), f.ticket.initialOperationId);
+        }
+      } finally { db.close(); }
+    }
+    await expect(f.backend.advanceResult(f.task, new AbortController().signal)).rejects.toThrow();
+    expect(f.request.mock.calls.every(([, action]) => action.kind !== "submit_initial")).toBe(true);
+    expect(f.store.getTask(f.task)!.resources.nativeSession).toEqual(f.task.resources.nativeSession);
+    expect(f.store.getTask(f.task)!.webExecution!.executionGeneration).toBe("2");
+  });
+
+it("retains the recovered operation after a lost response and never replays it after Worker restart", async () => {
+  const f = await recoveredInitial(false);
+  f.request.mockImplementation(async (_ticket, action) => {
+    if (action.kind === "observe") return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
+    expect(action).toEqual({ kind: "submit_initial", operationId: f.ticket.initialOperationId });
+    const operation = { operationId: f.ticket.initialOperationId, executionGeneration: "2", kind: "initial",
+      payload: { text: f.ticket.initialPrompt }, payloadHash: controllerPayloadHash({ kind: "initial", payload: { text: f.ticket.initialPrompt } }),
+      state: "dispatching", result: null, error: null, createdAt: 0, updatedAt: 1 };
+    const db = new Database(f.file);
+    try { db.prepare("INSERT INTO operations(id,value,acknowledged) VALUES(?,?,0)").run(operation.operationId, JSON.stringify(operation)); }
+    finally { db.close(); }
+    throw new localClient.ControllerIpcOutcomeUnknownError("The original input response was lost.");
+  });
+  expect(await f.backend.advanceResult(f.task, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "native_input" });
+  expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state: "dispatching", executionGeneration: "2" });
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal)).rejects.toThrow();
+  const restarted = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher,
+    platform: "macos", buildPrompt: () => "replacement must not be used", emit: vi.fn(), now: () => 50_001, request: f.request });
+  await expect(restarted.advanceResult(f.store.getTask(f.task)!, new AbortController().signal)).rejects.toThrow();
+  expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+  expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state: "dispatching", executionGeneration: "2" });
+});
+
+it("does not clear an orchestration blocker when the preceding stopped boundary is missing", async () => {
+  const f = await recoveredInitial(false);
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
+  const db = new Database(f.file);
+  try { db.prepare("DELETE FROM stopped_generations").run(); } finally { db.close(); }
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal)).rejects.toThrow(/preceding stopped generation/);
+  expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(f.request.mock.calls.every(([, action]) => action.kind !== "submit_initial")).toBe(true);
+});
+
+it.each(["ordinary", "orchestration"] as const)("waits without replay when journal dispatch advances after a stale %s observation", async mode => {
+  const f = await recoveredInitial(true);
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
+  f.request.mockImplementation(async (_ticket, action) => {
+    expect(action.kind).toBe("observe");
+    const db = new Database(f.file);
+    try {
+      const row = db.prepare("SELECT value FROM operations WHERE id=?").get(f.ticket.initialOperationId) as { value: string };
+      const operation = { ...JSON.parse(row.value), executionGeneration: "2", state: "dispatching" };
+      db.prepare("UPDATE operations SET value=? WHERE id=?").run(JSON.stringify(operation), f.ticket.initialOperationId);
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...f.snapshot, initialInputState: "dispatching" }));
+    } finally { db.close(); }
+    return { requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 };
+  });
+  expect(await f.backend.advanceResult(f.task, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "native_input" });
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)?.state).toBe("dispatching");
+  expect(f.store.getTask(f.task)!.recovery).toEqual(f.task.recovery);
+  if (mode === "orchestration") expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+});
+
+
+it.each(["ordinary", "orchestration"] as const)("does not submit recovered input to an older Controller during %s advance", async mode => {
+  const f = await recoveredInitial(true);
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 13);
+  f.request.mockResolvedValue({ requestId: f.ticket.launchId, ok: true, snapshot: f.snapshot, workerInputProtocol: 1 });
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal)).rejects.toThrow("does not advertise safe recovered initial input");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getTask(f.task)!.recovery).toEqual(f.task.recovery);
+  if (mode === "orchestration") expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state: "accepted", executionGeneration: "1" });
+});
+
+it.skipIf(process.platform === "win32")("retains the recovered fixture's preceding Windows Job stop proof", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const f = await recoveredInitial(true);
+    const evidence = await lifecycle.readRecoverableInitialInput(f.file, f.ticket, f.home);
+    expect(evidence.snapshot).toMatchObject({ executionGeneration: "2", nativeSessionId: f.ticket.resumeNativeSessionId });
+    expect(evidence.operation).toMatchObject({ operationId: f.ticket.initialOperationId, executionGeneration: "1", state: "accepted" });
+  } finally { Object.defineProperty(process, "platform", platform); }
+});
+
+it.each((["dispatching", "unknown"] as const).flatMap(state => ["1", "2"].map(generation => [state, generation] as const)))(
+  "observes %s original input from generation %s after an orchestration block without replay", async (state, generation) => {
+    const f = await recoveredInitial(true);
+    const snapshot = { ...f.snapshot, initialInputState: state };
+    const db = new Database(f.file);
+    try {
+      const row = db.prepare("SELECT value FROM operations WHERE id=?").get(f.ticket.initialOperationId) as { value: string };
+      db.prepare("UPDATE operations SET value=? WHERE id=?").run(JSON.stringify({ ...JSON.parse(row.value), executionGeneration: generation, state }), f.ticket.initialOperationId);
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
+    } finally { db.close(); }
+    const task = f.store.updateWebExecution(f.task, { initialInputState: state }, 13);
+    f.store.blockOrchestration(task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 14);
+    f.request.mockResolvedValue({ requestId: f.ticket.launchId, ok: true, snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 });
+    expect(await f.backend.advanceResult(task, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "native_input" });
+    expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+    expect(f.store.getOrchestrationBlocker(task)).toBeNull();
+    expect(f.store.getTask(task)!.recovery).toEqual(task.recovery);
+    expect(lifecycle.readControllerOperation(f.file, f.ticket.initialOperationId)).toMatchObject({ state, executionGeneration: generation });
+  });
+
+it.each(["hash", "payload", "future"] as const)("keeps the orchestration block for conflicting current initial %s evidence", async conflict => {
+  const f = await recoveredInitial(true);
+  const snapshot = { ...f.snapshot, initialInputState: "unknown" as const };
+  const db = new Database(f.file);
+  try {
+    const row = db.prepare("SELECT value FROM operations WHERE id=?").get(f.ticket.initialOperationId) as { value: string };
+    const operation = { ...JSON.parse(row.value), executionGeneration: "2", state: "unknown" };
+    if (conflict === "hash") operation.payloadHash = "b".repeat(64);
+    if (conflict === "payload") operation.payload = { text: "different" };
+    if (conflict === "future") operation.executionGeneration = "3";
+    db.prepare("UPDATE operations SET value=? WHERE id=?").run(JSON.stringify(operation), f.ticket.initialOperationId);
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
+  } finally { db.close(); }
+  const task = f.store.updateWebExecution(f.task, { initialInputState: "unknown" }, 13);
+  f.store.blockOrchestration(task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 14);
+  f.request.mockResolvedValue({ requestId: f.ticket.launchId, ok: true, snapshot, workerInputProtocol: 1, recoveredInitialInputProtocol: 1 });
+  await expect(f.backend.advanceResult(task, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getOrchestrationBlocker(task)).not.toBeNull();
+  expect(f.request.mock.calls.every(([, action]) => action.kind !== "submit_initial")).toBe(true);
 });

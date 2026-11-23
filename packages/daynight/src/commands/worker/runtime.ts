@@ -87,11 +87,13 @@ import { readWorkerClaim } from "../../api/task-properties.js";
 import { parseFrozenNative } from "./store.js";
 import { withWorkerLifecycle } from "./lifecycle-context.js";
 import { reconcileLifecycleRequest } from "./lifecycle-request-recovery.js";
+import { reconcilePreparedInitialReservation } from "./lifecycle-input-recovery.js";
 import { reportLifecycleHeartbeat, runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
 import { collectLifecycleRecovery, selectLifecycleRecoveryResources, type LifecycleRecoverySources } from "./lifecycle-recovery.js";
 import { requireWorkerNetworkToken, workerNetworkUnavailable } from "./management-network.js";
-import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation, readHistoricalStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "../controller/process-proof.js";
+import { preservesControllerProcessProof } from "./backends/orchestration.js";
 
 const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
   emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
@@ -464,14 +466,36 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
       if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
       if (resource.ownerKind !== "controller" || resource.processProof === null || typeof resource.identity.journalFile !== "string") continue;
       if (unresolvedTasks.has(`${resource.identity.projectId}/${resource.identity.taskId}`)) continue;
-      const saved = readControllerSnapshot(resource.identity.journalFile);
-      if (saved === null || saved.controllerProcess === null || saved.executionId !== resource.identity.executionId || saved.controllerInstanceId !== resource.identity.controllerInstanceId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
-      if (process.platform === "win32") {
+      const current = readControllerSnapshot(resource.identity.journalFile);
+      if (current === null || current.executionId !== resource.identity.executionId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+      const historical = current.controllerInstanceId !== resource.identity.controllerInstanceId
+        || typeof resource.identity.executionGeneration === "string" && current.executionGeneration !== resource.identity.executionGeneration;
+      let saved = current;
+      if (historical) {
         const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
         const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
-        readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        const stopped = readHistoricalStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        if (stopped === null || stopped.controllerProcess === null || !preservesControllerProcessProof(resource.processProof as ProcessProof, stopped.controllerProcess, ticket.launchId)) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+        saved = stopped;
+      }
+      if (saved.controllerProcess === null) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+      if (process.platform === "win32") {
+        if (!historical) {
+          const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
+          const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
+          readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+        }
       } else if (!await confirmControllerProcessesStopped(resource.processProof as ProcessProof, saved.nativeProcesses, activeDeadline)) throw new Error("Original lifecycle native boundary is not empty.");
       lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "controller_boundary", executionId: saved.executionId, controllerInstanceId: saved.controllerInstanceId, nativeSessionId: saved.nativeSessionId }, saveState: "durable" });
+    }
+  });
+  const settlePreparedInputs = step(async () => {
+    for (const resource of lifecycle.listResources()) {
+      if (resource.ownerKind !== "controller" || resource.identity.kind !== "input" || resource.identity.operationKind !== "initial"
+        || resource.stage !== "reserved" || typeof resource.identity.journalFile !== "string") continue;
+      const saved = readControllerSnapshot(resource.identity.journalFile);
+      if (saved === null || BigInt(saved.executionGeneration) <= 1n || saved.initialInputState !== "not_submitted") continue;
+      await reconcilePreparedInitialReservation({ homeDirectory: options.homeDirectory, identity, lifecycle, resource, deadline: activeDeadline });
     }
   });
   const closeArchive = step(async () => { await web?.archiveMaintenance.close(); });
@@ -488,6 +512,7 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
         const receipts = await Promise.allSettled([synchronizeCommandStopReceipts(root)]);
         const controllerStop = await Promise.allSettled([join(stopControllers, reobserve)]);
         throwFailures([...taskStop, ...receipts, ...controllerStop].flatMap(result => result.status === "rejected" ? [result.reason] : []));
+        await join(settlePreparedInputs, reobserve);
         await join(closeArchive, reobserve); await join(closeLeases, reobserve);
         await join(closeInput, reobserve); await join(closeStore, reobserve); await join(closeGit, reobserve);
       })(),

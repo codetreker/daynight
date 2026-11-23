@@ -86,7 +86,7 @@ it.each([
   } finally { f.db.close(); f.journal.close(); }
 });
 
-it.each(["missing", "operation", "kind", "hash", "payload", "current", "future", "zero", "unbound", "native", "controller", "process", "stopped", "accepted-regression"] as const)("retains orchestration blocking for inherited %s evidence", async conflict => {
+it.each(["missing", "operation", "kind", "hash", "payload", "future", "zero", "unbound", "native", "controller", "process", "stopped", "accepted-regression"] as const)("retains orchestration blocking for inherited %s evidence", async conflict => {
   const f = await inheritedFixture("unknown", true);
   try {
     if (conflict === "missing") f.db.prepare("DELETE FROM operations").run();
@@ -94,7 +94,6 @@ it.each(["missing", "operation", "kind", "hash", "payload", "current", "future",
     if (conflict === "kind") f.changeOperation({ kind: "worker_input" });
     if (conflict === "hash") f.changeOperation({ payloadHash: "a".repeat(64) });
     if (conflict === "payload") f.changeOperation({ payload: { text: "different" } });
-    if (conflict === "current") f.changeOperation({ executionGeneration: "2" });
     if (conflict === "future") f.changeOperation({ executionGeneration: "3" });
     if (conflict === "zero") f.changeOperation({ executionGeneration: "0" });
     if (conflict === "unbound") { delete f.operation.executionGeneration; f.changeOperation({}); }

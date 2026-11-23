@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +13,10 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
+import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
+import { resolveControllerStateDirectory } from "../../../src/commands/controller/paths.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as executionScope from "../../../src/commands/worker/execution-scope.js";
 
 const mocks = vi.hoisted(() => ({
@@ -260,4 +265,57 @@ describe("Worker lifecycle runtime assembly", () => {
       await released(f);
     } finally { gate.resolve(); runtime?.cancellation.abort(); await Promise.allSettled([running]); await manage(f); }
   });
+});
+
+
+it.skipIf(process.platform === "win32").each(["previous", "adopted", "retry"] as const)("management disable settles a recovered prepared input using the original stopped Controller (%s)", async scenario => {
+  const f = await fixture({ stopping: true }); controlledCloud();
+  const store = openLifecycleStore({ file: f.file, identity, allowCreate: false });
+  try {
+    const state = store.readState();
+    const binding = { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    const first: ControllerLaunchTicket = { schemaVersion: 2, lifecycleBinding: binding, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(),
+      controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", ...identity, projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID(),
+      provider: "codex", cwd: f.homeDirectory, nativeHome: path.join(f.homeDirectory, "native"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 },
+      initialOperationId: randomUUID(), initialPrompt: "frozen original", resumeNativeSessionId: null, credentialFile: path.join(f.homeDirectory, "grant.json"),
+      ipcEndpoint: path.join(f.homeDirectory, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+    await writeLaunchTicket(f.homeDirectory, first);
+    const file = path.join(controllerExecutionDirectory(f.homeDirectory, first.executionId), "journal.sqlite"); await mkdir(path.dirname(file), { recursive: true });
+    const oldProof = { pid: 987651, parentPid: 1, processGroupId: 987651, startedAt: "original", commandHash: "a".repeat(64) }, nativeId = randomUUID();
+    let journal = openControllerLifecycleStore(file, first, { controllerProcess: oldProof, onMigration: () => {} });
+    journal.prepareOperation({ operationId: first.initialOperationId, kind: "initial", payload: { text: first.initialPrompt } });
+    journal.patchSnapshot({ nativeSessionId: nativeId, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); journal.close();
+    const current = { ...first, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeId };
+    await writeLaunchTicket(f.homeDirectory, current);
+    const proof = { ...oldProof, pid: 987652, processGroupId: 987652, startedAt: "current" };
+    journal = openControllerLifecycleStore(file, current, { controllerProcess: proof });
+    journal.patchSnapshot({ lifecycle: "ready", activity: "idle", nativeSessionId: nativeId, startup: { state: "ready", reasonCode: "ready" },
+      capabilities: { send: true, steer: false, cancel: false, respond: false } });
+    journal.prepareRecoveredInitial(first);
+    journal.patchSnapshot({ lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); journal.close();
+    vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    await recordStoppedControllerGeneration(file, current, { deadline: Date.now() + 10_000 });
+    const resourceIdentity = (ticket: ControllerLaunchTicket) => ({ executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
+      controllerInstanceId: ticket.controllerInstanceId, controllerId: ticket.controllerId, launchId: ticket.launchId,
+      storageStateDirectory: resolveControllerStateDirectory(f.homeDirectory), ticketHash: controllerPayloadHash(ticket), journalFile: file,
+      projectId: ticket.projectId!, taskId: ticket.taskId!, claimId: ticket.claimId!, worktreeId: ticket.worktreeId! });
+    for (const [ticket, process] of [[first, oldProof], [current, proof]] as const) {
+      for (const [kind, resourceId] of [["launch", ticket.launchId], ["provider", ticket.controllerInstanceId]] as const) {
+        store.importResource({ binding, resourceId, operationId: ticket.launchId, ownerKind: "controller", identity: { ...resourceIdentity(ticket), kind },
+          stage: "running", processProof: process });
+      }
+    }
+    const source = scenario === "adopted" ? current : first;
+    store.importResource({ binding, resourceId: first.initialOperationId, operationId: first.initialOperationId, ownerKind: "controller", identity: { ...resourceIdentity(source), kind: "input", operationKind: "initial", nativeSessionId: nativeId }, stage: "reserved" });
+    if (scenario === "retry") {
+      vi.mocked(processProof.confirmControllerProcessesStopped).mockResolvedValueOnce(false);
+      await expect(manage(f)).rejects.toThrow();
+      expect(store.getResource(first.initialOperationId)?.stage).toBe("reserved");
+    }
+    await manage(f);
+    expect(store.getResource(first.initialOperationId)).toMatchObject({ stage: "not_dispatched", saveState: "durable" });
+    for (const id of [first.launchId, first.controllerInstanceId, current.launchId, current.controllerInstanceId]) expect(store.getResource(id)?.stage).toBe("stopped");
+    expect(readControllerOperation(file, first.initialOperationId)).toMatchObject({ state: "accepted", executionGeneration: "2" });
+    expect(f.state()).toMatchObject({ phase: "disabled", admission: "closed", inventoryComplete: true });
+  } finally { store.close(); }
 });
