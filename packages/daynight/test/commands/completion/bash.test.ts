@@ -5,6 +5,11 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
+  it("omits retired Step commands from completion", () => {
+    expect(taskDefinition.commands!.map(({ name }) => name)).not.toContain("step");
+    expect(renderBashCompletion(taskDefinition)).not.toContain("skipped");
+  });
+
   it("offers the standalone root skill flag without a value state", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("dn_options=('--skill' '-h' '--help' '-v' '--version')");
@@ -58,7 +63,7 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and Task status filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('session' 'goal-dependencies' 'create' 'list' 'search' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'tag' 'set-status' 'delete' 'graph' 'step' 'thread' 'attachment')");
+    expect(script).toContain("dn_children=('session' 'goal-dependencies' 'create' 'list' 'search' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'tag' 'set-status' 'delete' 'graph' 'thread' 'attachment')");
     expect(script).toContain("dn_value_choices=('proposed' 'todo' 'in_progress' 'done' 'cancelled')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
@@ -67,29 +72,6 @@ describe("Bash completion rendering", () => {
     expect(update).toContain("'--external-depends-on'");
   });
 
-  it("discovers delivered Step commands with separate operation options", () => {
-    const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
-    const script = renderBashCompletion(step);
-    expect(script).toContain("dn_children=('list' 'show' 'add' 'update' 'set-status' 'move' 'delete')");
-    const list = renderBashCompletion(step.commands!.find(({ name }) => name === "list")!);
-    expect(list).toContain("dn_options=('--project' '--json' '-h' '--help')");
-    expect(list).not.toContain("'--if-version'");
-    const add = renderBashCompletion(step.commands!.find(({ name }) => name === "add")!);
-    expect(add).toContain("'--id' '--before' '--after' '--if-version'");
-    expect(add).toContain("dn_value_choices=('todo' 'in_progress' 'done' 'skipped')");
-    const status = renderBashCompletion(step.commands!.find(({ name }) => name === "set-status")!);
-    expect(status).toContain("dn_choices=('todo' 'in_progress' 'done' 'skipped')");
-    const update = renderBashCompletion(step.commands!.find(({ name }) => name === "update")!);
-    expect(update).toContain("'--title' '--description' '--if-version'");
-    expect(update).not.toContain("'--status'");
-    const move = renderBashCompletion(step.commands!.find(({ name }) => name === "move")!);
-    expect(move).toContain("'--before' '--after' '--first' '--last' '--if-version'");
-    const remove = renderBashCompletion(step.commands!.find(({ name }) => name === "delete")!);
-    expect(remove).toContain("'--if-version'");
-    expect(remove).toContain("'--project'");
-    expect(remove).toContain("'--json'");
-    expect(remove).not.toContain("'--title'");
-  });
 
   it("discovers Thread read/post options through the registered command tree", () => {
     const thread = taskDefinition.commands!.find(({ name }) => name === "thread")!;

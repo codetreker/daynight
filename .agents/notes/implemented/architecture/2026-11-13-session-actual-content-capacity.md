@@ -38,6 +38,10 @@ archive](2026-11-05-session-image-archives.md) and [image protocol](2026-11-05-s
 decisions; their original identity, source, reference and recovery rationale
 remains applicable.
 
+The later [online relay decision](2026-11-23-session-online-relay.md)
+changes this online requirement for executions bound to relay mode; the
+legacy path retains the behavior described above.
+
 ## Alternatives
 
 **Keep global future reservations or change the safety watermark.** Both make

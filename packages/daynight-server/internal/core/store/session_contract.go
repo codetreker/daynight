@@ -40,6 +40,7 @@ type SessionOperationExistenceDAO interface {
 // SessionRecord contains only durable ledger state; transient content remains
 // owned by the Session engine.
 type SessionRecord struct {
+	OnlineMode                                          string
 	HistoryContentPolicy                                *string
 	BotID                                               *string
 	ServerInstance                                      *string

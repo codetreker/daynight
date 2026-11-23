@@ -318,7 +318,6 @@ for (const width of [320, 1280]) {
       if (detail) return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
       if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
       if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
-      if (path.endsWith('/steps')) return send({ projectId, taskId: taskId(1), version: 1, steps: [] });
       if (path.endsWith('/sessions')) return send({ items: [{ sessionId: taskId(80), claimId: taskId(81), executionGeneration: '1', agentControlMode: 'web', contentKind: 'native_timeline', createdAt: '2026-10-22T09:00:00Z', endedAt: '2026-10-22T10:00:00Z', archive: { state: 'pending', sha256: null, byteLength: null, completeness: null } }], nextCursor: null });
       if (path.endsWith('/archive')) return send({ archive: { state: 'pending', sha256: null, byteLength: null, errorCode: null } });
       return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
@@ -331,7 +330,7 @@ for (const width of [320, 1280]) {
     await expect(taskDialog).toBeVisible();
     await expect(taskDialog.getByText('Task description')).toBeVisible();
     await expect(taskDialog.getByRole('tab', { name: 'Attachments' })).toBeVisible();
-    for (const name of ['Attachments', 'Steps', 'Discussion', 'Session']) {
+    for (const name of ['Attachments', 'Discussion', 'Session']) {
       const tab = taskDialog.getByRole('tab', { name, exact: true });
       await tab.click();
       await expect(tab).toHaveAttribute('aria-selected', 'true');
@@ -410,7 +409,6 @@ for (const failedGraph of [false, true]) {
       if (detail) return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
       if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
       if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
-      if (path.endsWith('/steps')) return send({ projectId, taskId: path.split('/').at(-2), version: 1, steps: [] });
       if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
       return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
     });

@@ -19,7 +19,6 @@ current authorization.
 | Connect; select a Project; manage Teams, Projects or invitations | [Setup and projects](references/setup-and-projects.md) |
 | Manage the Project tag catalog | [Project tag catalog](references/setup-and-projects.md#project-tag-catalog) |
 | Create/query/change Tasks, status, properties or dependencies | [Tasks](references/tasks.md) |
-| Read/maintain ordered Task Steps | [Steps](references/steps.md) |
 | Organize Goal outcomes and progress; read/write descriptions, attachments or discussion Threads | [Materials](references/materials.md) |
 | Check versions; interpret write outcomes | [Write safety](references/write-safety.md) |
 | Locate Sessions; observe activity; read history | [Session reads](references/session-reads.md) |

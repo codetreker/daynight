@@ -127,7 +127,6 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
         if (state.holdDetail) { state.holdDetail = false; state.heldDetail = true; await new Promise<void>(resolve => { state.releaseDetail = resolve; }); state.heldDetail = false; }
         return send(state.tasks.find(item => item.id === detail.id)!, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       }
-      if (detail && parts[1] === 'steps') return send({ projectId, taskId: detail.id, version: detail.version, steps: [] });
       if (detail && (parts[1] === 'sessions' || parts[1] === 'attachments')) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);

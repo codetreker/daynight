@@ -1,6 +1,6 @@
 # 公共 Markdown 渲染设计
 
-[要求](../spec/shared-markdown.md)拥有公共渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供 document 和 chat 资源模式；Task、Goal、Steps 和附件通过 `MarkdownContent` 适配，Discussion、Session、PR 描述和提案通过同目录的 `ChatMarkdown` 薄适配器使用公共内核。
+[要求](../spec/shared-markdown.md)拥有公共渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供 document 和 chat 资源模式；Task、Goal 和附件通过 `MarkdownContent` 适配，Discussion、Session、PR 描述和提案通过同目录的 `ChatMarkdown` 薄适配器使用公共内核。
 
 ## 模块与资源
 

@@ -58,19 +58,19 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = db.Pool.Exec(ctx, `UPDATE task_sessions SET history_content_policy='task_body' WHERE id=$1`, snapshot.SessionID); err != nil {
-				t.Fatal(err)
-			}
 			grant, err := service.Grant(ctx, owner, project, task, snapshot.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: reg.ClaimID, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, ExecutionGeneration: snapshot.ExecutionGeneration, Kind: "bootstrap"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			epoch := uuid.NewString()
-			connected, err := service.Connect(ctx, grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, Provider: reg.Provider, SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+			connection, err := service.ConnectWithOnlineMode(ctx, grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, Provider: reg.Provider, SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString(), 0, false, true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = service.Disconnect(ctx, connected.ControllerFence); err != nil {
+			if connection.OnlineMode != "legacy" || connection.HistoryContentPolicy == nil || *connection.HistoryContentPolicy != "task_body" {
+				t.Fatalf("connection policy: %+v", connection)
+			}
+			if err = service.Disconnect(ctx, connection.Snapshot.ControllerFence); err != nil {
 				t.Fatal(err)
 			}
 			var version int64

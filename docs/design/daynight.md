@@ -44,13 +44,6 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
-daynight task step
-daynight task step list <task-id> [--json] [--project <project-id>]
-daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
-daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
-daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
-daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
-daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -101,7 +94,6 @@ src/
     operation.ts
     json.ts
     parse.ts
-    task-steps.ts
     client.ts
   repository/
     index.ts
@@ -125,7 +117,6 @@ src/
         references/
           setup-and-projects.md
           tasks.md
-          steps.md
           materials.md
           write-safety.md
           session-reads.md
@@ -136,14 +127,6 @@ src/
       definition.ts
       command.ts
       rendering.ts
-      step.ts
-      step-add.ts
-      step-update.ts
-      step-move.ts
-      step-write.ts
-      step-write-errors.ts
-      step-rendering.ts
-      step-diagnostics.ts
       attachment.ts
       attachment-rendering.ts
     project/
@@ -312,7 +295,7 @@ project 操作不读写仓库绑定或 ignore 规则。`rendering.ts` 使用完�
 操作的期限，在同一取消信号下完成引导；保存后的重新读取建立新操作及完整业务
 预算。回调返回字符串、void 或 `ConfirmedMutationOutput`：普通元数据返回完整字符串，
 在最终检查后一次写 stdout；附件 read 通过 `CliContext.stdoutBytes` 逐段输出。
-Thread 与 Step 写入的已确认结果交给现有受限字节输出生命周期，调用方提供
+Thread 写入的已确认结果交给现有受限字节输出生命周期，调用方提供
 `failureText(output|cleanup)`，保留各自的安全确认文本与原始原因。输出或清理失败
 不能抹去已确认事实，也不触发业务核对或重放。
 结束时先等待 `closeStdoutBytes` 关闭并回收已创建的输出辅助进程，再移除本次的信号
@@ -331,32 +314,7 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 分页。完整的请求、排序和输出机制见
 [project/task 设计](daynight-project-task.md#api-映射与更新机制)。
 
-`task step` 在普通 Task 操作前分派至独立 `step.ts`，组合 list/show 读取及
-Add/Update/Set-status/Move。`step-add.ts`、`step-update.ts` 与 `step-move.ts`
-各自编译参数与输出；`step-write.ts` 的 `executeStepWrite` 共用版本分支、带操作名的
-不可变提交身份和最多一次同操作当前事实读取，`step-write-errors.ts` 保留明确拒绝、
-unknown 与已确认本地失败的事实。
-`step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
-文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
-公开服务错误、结构化的项目发现失败及资源/阶段上下文，原始内部原因通过 cause 保留。
-`repository/discovery-error.ts` 只携带不存在/歧义类别与经验证的规范项目 ID；Step
-诊断从该类型生成恢复文本，不公开任意配置、Git、网络或清理错误的消息。
-`api/task-steps.ts` 拥有独立四状态 DTO 的严格资源解析和短 ID 输入正规化；
-客户端直接读取指定 Steps 路径，复用同一 server 操作的配置、认证、取消及字节/期限预算。
-显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。
-完整资源解析和渲染后才经 stdoutBytes 在同一取消信号下输出；输出失败可能留下
-部分 stdout，不能据此把不完整 JSON 当作成功资源。
-Add 的独立短 ID 与请求 UUID 在递交前确定；显式版本一次 POST，默认版本
-先 GET Steps 再 POST。完整 201/Location/principal/资源及 +1/目标/新时间/位置核对
-通过后保留 `confirmedMutationId`；同一 transport 标记也服务既有 Thread。
-Update/Set-status 分别提交一次 PATCH/PUT；完整 200 须匹配目标字段及原版本或 +1。
-有预读时验证省略字段、非目标、顺序和 no-op/真实变化的时间分支，显式版本不补加读取。
-Move 提交一次位置 PUT，确认首尾或锚点相邻位置及原版本或 +1；有预读时另核对
-全部记录的内容和时间、非目标相对顺序，以及实际移动或原位置 no-op 的精确版本分支。
-未知写入只在同一仍有效的 ServerSession/Operation 内尝试一次 UUID.r1 GET，
-仍以 unknown 非零退出，报告当前版本与 found/absent，不作历史归因或重放。
-取消或耗尽不创建脱离读取；确认后的清理/输出失败不降为 unknown。
-当前读写契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-添加与结果确认)拥有。
+CLI 的命令定义树、task 分派、API 导出和手册主题清单均不包含 Steps。未知 `task step` 调用在配置、Git 和网络之前失败。通用传输的确认事实与有界输出继续服务 Thread 等实际调用者；历史 Inbox 事件保留共同解码。已有 skill 通过常规更新机制刷新，首次安装及其他项目副本沿用 `skill install`。
 
 Task 的 `attachment.ts` 单独组合单文件上传、完整分页列表、原始读取和删除。
 API 客户端分别消费 JSON、字节流与 204 空响应，字节流不经过 UTF-8/JSON 解析或

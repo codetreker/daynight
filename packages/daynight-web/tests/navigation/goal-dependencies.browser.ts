@@ -95,10 +95,6 @@ const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en', crossGoal = fa
     }
     const detail = details.find(detail => path === `/api/v1/projects/${detail.projectId}/tasks/${detail.id}`);
     if (detail !== undefined) return revokedProjects.has(detail.projectId) ? fail(404, 'not_found') : send(detail, 200, true, { 'Daynight-Task-Epoch': taskSyncEpoch(detail.projectId) });
-    if (path.endsWith('/steps')) {
-      const taskId = path.split('/').at(-2)!;
-      return send({ projectId, taskId, version: details.find(item => item.id === taskId)!.version, steps: [] });
-    }
     if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });

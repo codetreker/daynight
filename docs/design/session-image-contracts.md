@@ -98,7 +98,7 @@ Provider 按实际 executable、SDK、backend、精确模型、平台和操作�
 
 服务[能力合成](../../packages/daynight-server/internal/core/session/image_capabilities.go)严格解析 Provider 报告，并与同一状态帧的 native 身份、模型及 controls 核对；Controller 传入的有效 Images 不是服务权威值。状态应用保留服务自己的有效 revision，使用该帧 controls 后重新合成。组件条件包括 content revision 2、完整 decoder、原件文件与清理能力，以及资源、输入意图和归档持久化能力；未知或关闭的原生动作不会因组件齐全而升级。三态按 send/steer 分别保留，MIME、字节、张数及 geometry 与服务通用限制取交集。
 
-历史是否已同步到当前 sourceThrough 是授权时的事实，不是静态组件能力；逐条历史推进不因此改变图片 capability revision。新图片操作授权在实际事务中经[历史准入](../../packages/daynight-server/internal/core/session/image_history_admission.go)的 `requireImageHistoryLedger(false)` 核验历史账本，再核对原图片和完整 intent。已经存在的 Submit operation 沿原查询分支返回持久事实，不能因之后的历史或资格变化改写原接受结果。
+历史是否已同步到当前 sourceThrough 是授权时的事实，不是静态组件能力；逐条历史推进不因此改变图片 capability revision。旧在线模式的新图片操作在实际事务中经[历史准入](../../packages/daynight-server/internal/core/session/image_history_admission.go)核验历史账本；relay 模式不依赖完整账本。两者均核对原图片和完整 intent。已经存在的 Submit operation 沿原查询分支返回持久事实，不能因之后的历史或资格变化改写原接受结果。
 
 Daynight 从不可变原件取得完整有序输入，通过原生图片接口一次交付；Base64 编码或稳定私有 localImage 文件不改变原字节身份。原生接口之后的转换图片是另一观察对象，不能替换已保存原件、改变原件计量或冒称相同摘要。原生接受与模型消费分别记录证据；接受后明确附件交付失败时保留原操作、原件与逐图失败，并停止问题资格的新输入，不撤回接受事实或自动重发。详细原生关联由[Provider 设计](session-image-providers.md#三者共同的发送屏障)拥有。
 
@@ -348,13 +348,15 @@ type ImageCaptureReceipt = {
 
 | action | 请求body | 成功result |
 | --- | --- | --- |
-| `submit` | `{request:ImageCaptureRequest,attemptId:UUID,outcome}`；outcome 为 `{kind:"validated",validated:ValidatedImage}`、`{kind:"resource"}` 或 `{kind:"failed",error:ImageError}` | validated 登记 copying 并由现有 writer 读取封存原件；resource 关联同 Session 已存且未回收的原件；failed 保存真实失败。均返回原 ImageCaptureReceipt，不调用兼容 register/commit。 |
+| `submit` | `{request:ImageCaptureRequest,attemptId:UUID,outcome,sourceEpoch?:UUID,sourceSeq?:Decimal}`；两个 source 字段须同时出现，relay 首次受理需要它们；outcome 为 `{kind:"validated",validated:ValidatedImage}`、`{kind:"resource"}` 或 `{kind:"failed",error:ImageError}` | validated 登记 copying 并由现有 writer 读取封存原件；resource 关联同 Session 已存且未回收的原件；failed 保存真实失败。均返回原 ImageCaptureReceipt，不调用兼容 register/commit。 |
 | `register` | ImageCaptureRequest | ImageCaptureReceipt；先核验消息关联/locator 来源并登记原身份；兼容 reserved 不代表容量预留 |
 | `commit` | `{captureId,attemptId,validated:ValidatedImage}` | receipt进入copying。服务对MIME/尺寸/限额再次校验，Controller须保留本地准备直到提交或释放 |
 | `query` | `{captureId}` | 原receipt；缺失的 capture 返回 `capture_not_found`，不证明先前 register 未发生，原身份先观察再决策 |
 | `failed` | `{captureId,attemptId,error:ImageError}` | 尚未committed者进入failed并保留原清理责任，保留ImageUnavailablePart；committed者拒绝回退 |
 
 reserved/copying时resourceId非null、resource=null、error=null；committed时resource非null且available、ID相同、error=null；failed时resourceId和resource均为null、error非null。revision 是服务单调正 Decimal。服务复制时通过image_request的 `read_capture` action发 `{captureId,attemptId,sha256,byteLength,offset,limit}`，Controller回PreparedImageChunk，preparationId 精确等于 attemptId。摘要和长度绑定原 attempt 的 validated 结果，offset 小于总长，其他块规则与 read_prepared 相同，支持 DisplayMime 五种格式。每个准备对象严格区分 upload/capture 命名空间，capture 文件按 attempt 隔离，旧 attempt 的块不能混入新准备。
+
+relay 的 sourceEpoch/sourceSeq 是本次准入证明，不属于不可变 request；服务核对当前授权连接、epoch 及已确认 sourceSeq 上界，Controller 负责核对原出现位置和修订。已受理的原 capture 先按身份及当前 attempt 对账，不因旧证明改变其回执。浏览器重试沿原 capture 的资格创建一次新 attempt，Controller 读取来源前重核位置与当前 ACK；validated 或 resource 结果须以带当前证明的 direct submit 接纳，retry 媒体成功响应本身不发布原件。其 validated 元数据与同一 attempt 的 direct submit 无论先后均须一致；已验证结果之后位置失效仍可结算为失败。位置失效或无法证明时，Controller 对原 capture 和 attempt 直接提交 failed，即使没有当前证明也可结算；retry 媒体的确定错误在原响应事务中结算，未知结果保留原 attempt。relay 不接受兼容 register、commit 或 failed 帧。
 
 submit 首次提交的顶层 attemptId 必须等于 request.attemptId；已有 capture 的完整 request 不变，顶层 attemptId 必须等于当前 receipt.attemptId。相同 attempt 的精确重放须保留原 occurrence、locator 和 outcome 内容；已 copying 的原 validated 不可替换，已 committed 或 failed 返回该 attempt 的真实结果，迟到旧 attempt 拒绝且不修改当前状态。resource 仅接受 resource locator 并在同一事务中取得消息引用；资源正在回收或引用冲突时不确认 committed。validated 的原件按现有完整读取、解码和实际容量发布后才变为 available。
 
@@ -370,9 +372,9 @@ submit 首次提交的顶层 attemptId 必须等于 request.attemptId；已有 c
 
 ### 出现登记顺序与原生来源键
 
-采用两阶段既有通道，不新增另一套source事件。第一阶段Controller持久entry/出现位置并经原sourceSeq/outbox发送timeline upsert，取得覆盖该位置的service ACK，实际上传必要完整历史；没有资源槽时该位置用ImageUnavailablePart或待采集表示。第二阶段本地按原来源权限封存实际 bytes，然后以 `image_capture action=submit` 提交原 request、当前 attempt 和 frozen outcome。ImageCaptureRequest 包含必填 `nativeSource:NativeImageSource|null`，ImageOccurrence 包含 `container:"reasoning"`及必填 `partId:UUID|null`、`sourceRevision:Decimal|null`、`sourceTextSha256:SHA256|null`；后三者对于Markdown/reasoning绑定必须完整非null，独立原生image part均null；tool_output必须callId，其他container的callId=null。sourceKey沿原规则绑定一次出现。NativeImageSource为 `{provider,nativeSessionId,nativeMessageId,nativePartId}`，值沿本设计 native locator限制，由受信Provider持久映射产生，不携URL/本地path；可信键不存在为null，不按相似文字/摘要臆造。它与locator分别表达“所属原生位置”和“取bytes的方法”，Markdown源也可带nativeSource。
+采用两阶段既有通道，不新增另一套source事件。第一阶段Controller持久entry/出现位置并经原sourceSeq/outbox发送timeline upsert，取得覆盖该位置的 service ACK；旧在线模式实际上传必要完整历史，relay 模式依赖 Controller 核对位置与 ACK；没有资源槽时该位置用ImageUnavailablePart或待采集表示。第二阶段本地按原来源权限封存实际 bytes，然后以 `image_capture action=submit` 提交原 request、当前 attempt 和 frozen outcome。ImageCaptureRequest 包含必填 `nativeSource:NativeImageSource|null`，ImageOccurrence 包含 `container:"reasoning"`及必填 `partId:UUID|null`、`sourceRevision:Decimal|null`、`sourceTextSha256:SHA256|null`；后三者对于Markdown/reasoning绑定必须完整非null，独立原生image part均null；tool_output必须callId，其他container的callId=null。sourceKey沿原规则绑定一次出现。NativeImageSource为 `{provider,nativeSessionId,nativeMessageId,nativePartId}`，值沿本设计 native locator限制，由受信Provider持久映射产生，不携URL/本地path；可信键不存在为null，不按相似文字/摘要臆造。它与locator分别表达“所属原生位置”和“取bytes的方法”，Markdown源也可带nativeSource。
 
-submit 在短事务内验证第一阶段已确认位置/revision/hash，持久 sourceKey/nativeSource/原出现映射（确定失败也持久相应出现失败身份），然后返回 ImageCaptureReceipt。本地 source IO 依赖原位置 ACK、实际历史确认、原来源授权及本机容量，不等待 register 或 reserved。receipt 沿同一扩展 ImageOccurrence 返回，nativeSource 不向 Web 公开。重放同 capture/出现必须精确匹配；sourceKey 与已有 nativeSource 不能改绑，Controller 可信 alias 只在同 canonical 出现的专用内部映射事务追加。第一阶段无法送达时 outbox 保留且不读源；submit 未知先 query 原 ID，后续重放遵守冻结业务与封存字节规则。服务归档冻结同一记录来源索引并核对每项原出现/资源 hash 与 timeline，manifest 不包含私有 locator。停止后的最终同步先确认原位置，再以原 stopped 权限登记已发生的本地来源与已有 validated 结果；不得启动新的来源 IO。自有上传图的原生回显也在位置 ACK 后以 locator={kind:"resource",resourceId:原上传资源} 和 outcome={kind:"resource"} submit，提交原 imageId 与可信 nativeSource；已 available 同 Session 资源直接返回 committed，仅原子增加出现引用和来源映射，不重新读源、不分配 blob、不重复计资源槽。captureId 仅标识这次关联事务而非第二次输入；它既不确认原生接受也不解除 unknown。服务离线 resume 读取该冻结索引；nativeSource=null 只影响无法证明的新 Session 导入，原记录图片仍可读。仅有未上报的本地映射且 Controller 已丢失时明确 context_unavailable，不伪造恢复。
+旧模式的 submit 在短事务内验证第一阶段已确认位置/revision/hash；relay 模式按上述 ACK 证明与 Controller 的位置核对准入。两者均持久 sourceKey/nativeSource/原出现映射（确定失败也持久相应出现失败身份），然后返回 ImageCaptureReceipt。本地 source IO 依赖原位置 ACK、原来源授权及本机容量，旧模式还需实际历史确认；不等待 register 或 reserved。receipt 沿同一扩展 ImageOccurrence 返回，nativeSource 不向 Web 公开。重放同 capture/出现必须精确匹配；sourceKey 与已有 nativeSource 不能改绑，Controller 可信 alias 只在同 canonical 出现的专用内部映射事务追加。第一阶段无法送达时 outbox 保留且不读源；submit 未知先 query 原 ID，后续重放遵守冻结业务与封存字节规则。服务归档冻结同一记录来源索引并核对每项原出现/资源 hash 与 timeline，manifest 不包含私有 locator。停止后的最终同步先确认原位置，再以原 stopped 权限登记已发生的本地来源与已有 validated 结果；不得启动新的来源 IO。自有上传图的原生回显也在位置 ACK 后以 locator={kind:"resource",resourceId:原上传资源} 和 outcome={kind:"resource"} submit，提交原 imageId 与可信 nativeSource；已 available 同 Session 资源直接返回 committed，仅原子增加出现引用和来源映射，不重新读源、不分配 blob、不重复计资源槽。captureId 仅标识这次关联事务而非第二次输入；它既不确认原生接受也不解除 unknown。服务离线 resume 读取该冻结索引；nativeSource=null 只影响无法证明的新 Session 导入，原记录图片仍可读。仅有未上报的本地映射且 Controller 已丢失时明确 context_unavailable，不伪造恢复。
 
 ### 图片读取
 
@@ -435,9 +437,9 @@ message 是 ≤256 UTF-8 bytes 的非空安全说明，不含 token、凭据 URL
 
 固定二进制单位：单图 `10485760` bytes，单消息图片合计 `20971520` bytes，最多8张。总量按每个附件实际长度求和，即使摘要相同也逐项计数。图片展示采集同样使用10 MiB文件上限，至少保留PNG/JPEG/GIF/WebP/AVIF；更大来源明确 image_too_large，不改变输入白名单。
 
-单 Session 的已接纳正文、索引、图片原件、已提交 descriptor 和已发布 manifest 合计不得超过 134217728 bytes。相同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同仍分别计。失败或 unavailable 出现作为正文的一部分计量，未提交暂存和不含内容的控制记录不计入总量。旧 prepare/register 不预留容量；实际发布在 Session 锁下重读最新事实并检查候选。已确认重放不重复计量，旧大记录保持可读，不能删历史腾空间。精确算法和失败责任见[归档设计](session-image-archives.md#容量预算与准入)。
+旧在线模式及最终归档的单 Session 已接纳正文、索引、图片原件、已提交 descriptor 和已发布 manifest 合计不得超过 134217728 bytes。relay 在线模式按 available 原件限制为 1073741824 bytes、1000 项，最终归档仍受组合上限约束。相同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同仍分别计。失败或 unavailable 出现作为正文的一部分计量，未提交暂存和不含内容的控制记录不计入总量。旧 prepare/register 不预留容量；实际发布在 Session 锁下重读最新事实并检查候选。已确认重放不重复计量，旧大记录保持可读，不能删历史腾空间。精确算法和失败责任见[归档设计](session-image-archives.md#容量预算与准入)。
 
-兼容 `ImageBudget` 保留七字段：`maxBytes=1073741824`、`maxResources=1000`，`committedBytes` 与 `committedResources` 反映真实已提交资源，`reservedBytes` 与 `reservedResources` 为零，`revision` 保持既有单调观测。该兼容值不是新写入的总量策略，实际计量不截断旧大记录。
+兼容 `ImageBudget` 保留七字段：`maxBytes=1073741824`、`maxResources=1000`，`committedBytes` 与 `committedResources` 反映真实已提交资源，`reservedBytes` 与 `reservedResources` 为零，`revision` 保持既有单调观测。relay 在线模式以同一原件口径执行写入准入；旧模式仍按组合容量准入，实际计量不截断旧大记录。
 
 图片内容走独立有界通道：512 KiB 原字节块，2 MiB 控制帧上限保持。每个 Session 至多两个媒体块同时在途，控制/receipt/历史请求优先；不能一次将整张图/Base64写入 command、事件批次或归档 JSON。服务/Controller按块持久化和摘要，不能每读一块全量解码图；浏览器允许为预览持有本次完整10 MiB Blob，但不得把全历史图片预加载到内存。全服务并发/背压/磁盘水位算法由 服务上传与鉴权模块/Controller 存储模块 设计，不能破坏这些单通道边界。
 
@@ -445,7 +447,7 @@ message 是 ≤256 UTF-8 bytes 的非空安全说明，不含 token、凭据 URL
 
 ## 协商与旧数据边界
 
-Controller hello 以 contentRevision2 协商媒体，服务为该连接保留实际revision。新welcome保持原limits；能力和预算位于同一snapshot中，不增加竞争的imageLimits常量。媒体不足时返回component_unsupported并提示升级，网络失败或权限失败都不是支持证据。
+Controller 可在 WebSocket upgrade 请求 `Daynight-Online-Relay-Version: 1`，支持的服务在响应中返回同名版本头。授权 hello 的事务首次绑定在线模式及正文策略；携带 `Daynight-Task-Body-History-Version: 1` 选择 task_body，否则选择 legacy，Test Session 使用 legacy。仅 opt-in 的 welcome 附 `onlineMode` 和 `historyContentPolicy`；迁移前未绑定正文策略的旧执行返回 `historyContentPolicy: null`，表示未知。严格公开 Snapshot 不包含它们。已有执行保持旧模式，重连、换代或 welcome 丢失均读取原决定；旧客户端连接已绑定 relay 的执行时，授权 grant 检查在 WebSocket 升级前返回 HTTP 426 与 `upgrade_required`；连接事务再次检查。Controller hello 以 contentRevision2 协商媒体，服务为该连接保留实际revision。新welcome保持原limits；能力和预算位于同一snapshot中，不增加竞争的imageLimits常量。媒体不足时返回component_unsupported并提示升级，网络失败或权限失败都不是支持证据。
 
 浏览器通过既有Session resolver调用 `GET {base}/image-capabilities`，携带 `Daynight-Session-Content-Revision: 2`，严格读取 `{contentRevision:2,capabilities:ImageCapabilities,budget:ImageBudget}`。共享资源客户端绑定origin、actor、完整fence和授权代次；代次失效先停止发布，取消并等待读取完成。媒体profile关闭不阻止授权读取已保存原件。
 

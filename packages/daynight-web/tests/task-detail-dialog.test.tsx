@@ -306,38 +306,21 @@ describe('task detail dialog', () => {
     expect(direct).not.toHaveBeenCalled();
   });
 
-  it.each(['direct', 'project-summary'] as const)('loads actual Steps across %s and the other Task observation source', async initialSource => {
+  it.each(['direct', 'project-summary'] as const)('opens Task detail without Steps requests across %s and the other observation source', async initialSource => {
     const reviewed = detail();
     await world.sync([reviewed]);
-    let stepsReads = 0;
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).endsWith('/steps')) {
-        stepsReads++;
-        return new Response(stringifyApiJson({ projectId, taskId: reviewed.id, version: reviewed.version,
-          steps: [{ id: '00000001', title: 'Actual step', description: '', status: 'todo', createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' }] }),
-          { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
-      }
-      return response(reviewed);
-    });
+    const fetcher = vi.fn(async (_url: RequestInfo | URL) => response(reviewed));
     vi.stubGlobal('fetch', fetcher);
     const current = snapshot([reviewed], 1);
-    const options = props({ snapshot: current, navigation: { tab: 'steps', path: null }, onNavigate: vi.fn() });
+    const options = props({ snapshot: current, navigation: { tab: 'overview', path: null }, onNavigate: vi.fn() });
     const observation = (kind: 'direct' | 'project-summary') => kind === 'direct' ? { kind: 'direct' as const }
       : { kind: 'project-summary' as const, revision: current.revision, task: current.index.nodes.get(reviewed.id) };
     const view = renderWithLocale(<TaskDetailDialog {...options} observation={observation(initialSource)} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    const firstReads = stepsReads;
-    const otherSource = initialSource === 'direct' ? 'project-summary' : 'direct';
-    view.rerender(<TaskDetailDialog {...options} observation={observation(otherSource)} />);
-    await waitFor(() => expect(stepsReads).toBeGreaterThan(firstReads));
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    const secondReads = stepsReads;
-    view.rerender(<TaskDetailDialog {...options} observation={observation(initialSource)} />);
-    await waitFor(() => expect(stepsReads).toBeGreaterThan(secondReads));
-    await screen.findByText('Actual step');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    await screen.findByRole('heading', { name: reviewed.title });
+    view.rerender(<TaskDetailDialog {...options} observation={observation(initialSource === 'direct' ? 'project-summary' : 'direct')} />);
+    await screen.findByRole('heading', { name: reviewed.title });
+    expect(screen.queryByRole('tab', { name: 'Steps' })).toBeNull();
+    expect(fetcher.mock.calls.every(([url]) => !String(url).includes('/steps'))).toBe(true);
   });
 
   it.each(['resource', 'access'] as const)('retains a direct member draft across history revalidation and clears it on %s loss', async loss => {
@@ -524,25 +507,24 @@ describe('task detail dialog', () => {
     expect(document.body.style.overflow).toBe('scroll');
   });
   it('keeps discard confirmation above the modal detail focus owner', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
-      ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/thread/messages')
+      ? new Response(JSON.stringify({ items: [], hasMoreBefore: false, hasMoreAfter: false }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
       : response(detail())));
-    await open(props(), 'en');
+    await open(props({ retainHistoryDraft: true }), 'en');
     await screen.findByRole('heading', { name: '任务 1' });
-    fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Discussion' }));
+    const draft = await screen.findByRole('textbox', { name: 'Discussion message' });
+    fireEvent.change(draft, { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close task details' }));
     const confirmation = screen.getByRole('alertdialog');
     const keep = within(confirmation).getByRole('button', { name: 'Keep editing' });
-    const discard = within(confirmation).getByRole('button', { name: 'Discard' });
+    const discard = within(confirmation).getByRole('button', { name: 'Discard and leave' });
     expect(keep).toHaveFocus();
     expect(document.querySelector('.task-detail-dialog')).toHaveAttribute('inert');
     await userEvent.tab(); expect(discard).toHaveFocus();
     await userEvent.tab({ shift: true }); expect(keep).toHaveFocus();
     fireEvent.click(keep);
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+    expect(draft).toHaveValue('Draft');
     expect(document.querySelector('.task-detail-dialog')).not.toHaveAttribute('inert');
   });
   it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {

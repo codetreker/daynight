@@ -826,7 +826,12 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 				return conflict()
 			}
 		} else if errors.Is(e, model.ErrNotFound) {
-			if e = checkContentPublication(ctx, tx, id, resourceContentChange{descriptor}); e != nil {
+			if r.OnlineMode == "relay" {
+				if usage.Resources >= sp.MaxSessionResources || usage.Bytes < 0 || number(validated.ByteLength) > sp.MaxSessionResourceBytes-usage.Bytes {
+					f := &model.Fault{Code: "quota_exceeded", Message: "Session image resource capacity is exhausted."}
+					return &definiteImageError{image: sp.ImageError{Code: f.Code, Message: f.Message}, cause: f}
+				}
+			} else if e = checkContentPublication(ctx, tx, id, resourceContentChange{descriptor}); e != nil {
 				var capacity *contentCapacityError
 				var f *model.Fault
 				if errors.As(e, &capacity) && errors.As(e, &f) && f.Code == "quota_exceeded" {

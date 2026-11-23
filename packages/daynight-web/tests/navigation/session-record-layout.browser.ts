@@ -89,7 +89,6 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
       if (path === `${root}/sessions/${item.sessionId}/archive/content`) return send({ archive: archive(item) });
     }
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
-    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
     return failure(404);
   });
   return Object.assign(state, {

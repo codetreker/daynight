@@ -2,55 +2,6 @@ import type { ToolPathTelemetry } from "./worker-tool-paths.js";
 import type { TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
-export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
-export type TaskStep = {
-  readonly id: string;
-  readonly title: string;
-  readonly description: string;
-  readonly status: TaskStepStatus;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-};
-export type StepsResource = {
-  readonly projectId: string;
-  readonly taskId: string;
-  readonly version: bigint;
-  readonly steps: readonly TaskStep[];
-};
-export type StepResource = {
-  readonly projectId: string;
-  readonly taskId: string;
-  readonly version: bigint;
-  readonly step: TaskStep;
-};
-
-export type AddTaskStepInput = {
-  readonly version: bigint;
-  readonly id: string;
-  readonly title: string;
-  readonly description?: string;
-  readonly status?: TaskStepStatus;
-  readonly before?: string;
-  readonly after?: string;
-};
-export type DeleteTaskStepInput = { readonly version: bigint };
-export type TaskStepsReadOptions = { readonly requestId: string };
-export type TaskStepWriteOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
-export type AddTaskStepOptions = TaskStepWriteOptions;
-export type UpdateTaskStepInput = {
-  readonly version: bigint;
-  readonly title?: string;
-  readonly description?: string;
-};
-export type SetTaskStepStatusInput = { readonly version: bigint; readonly status: TaskStepStatus };
-export type MoveTaskStepInput = {
-  readonly version: bigint;
-  readonly before?: string;
-  readonly after?: string;
-  readonly position?: "first" | "last";
-};
-export type MoveTaskStepOptions = TaskStepWriteOptions;
-
 export type TaskPlatform = "windows" | "linux" | "macos";
 
 export type User = {

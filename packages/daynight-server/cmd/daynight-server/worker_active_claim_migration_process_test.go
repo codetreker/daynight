@@ -36,9 +36,11 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=115").Scan(&expectedChecksum); err != nil {
 				t.Fatal(err)
 			}
-			// Migration 115 is purely additive, so removing its ledger entry and
-			// index restores the schema consumed by the preceding binary.
-			if _, err := observer.Exec(ctx, "DROP INDEX task_properties_worker_active_claim_idx; DELETE FROM schema_migrations WHERE version=115"); err != nil {
+			// Remove later additive migrations and their ledger entries to restore schema 114.
+			if _, err := observer.Exec(ctx, `DROP INDEX task_properties_worker_active_claim_idx;
+ALTER TABLE task_sessions DROP COLUMN online_mode;
+ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
+DELETE FROM schema_migrations WHERE version IN (115, 116, 117)`); err != nil {
 				t.Fatal(err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()

@@ -1,4 +1,4 @@
--- Schema snapshot version: 115
+-- Schema snapshot version: 117
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -809,7 +809,11 @@ CREATE TABLE "session_archive_files" (
     "byte_length" bigint NOT NULL,
     "accepted_offset" bigint NOT NULL,
     "state" "text" NOT NULL,
-    "object_path" "text" NOT NULL
+    "object_path" "text" NOT NULL,
+    "upload_version" integer DEFAULT 1 NOT NULL,
+    "prefix_proof" "bytea",
+    "successor_file_id" "uuid",
+    "terminal_error" "jsonb"
 );
 
 CREATE TABLE "session_archive_migrations" (
@@ -1127,6 +1131,7 @@ CREATE TABLE "task_sessions" (
     "terminal_state" "jsonb",
     "bot_id" "uuid",
     "history_content_policy" "text",
+    "online_mode" "text",
     CONSTRAINT "session_backend_content" CHECK (((("backend" = 'web'::"text") AND ("snapshot" IS NOT NULL) AND ("terminal_state" IS NULL)) OR (("backend" = 'herdr'::"text") AND ("scope" = 'task'::"text") AND ("snapshot" IS NULL) AND ("terminal_state" IS NOT NULL)))),
     CONSTRAINT "session_bot_scope" CHECK ((("bot_id" IS NULL) OR (("scope" = 'test'::"text") AND ("backend" = 'web'::"text")))),
     CONSTRAINT "session_scope_binding" CHECK (((("scope" = 'task'::"text") AND ("project_id" IS NOT NULL) AND ("task_id" IS NOT NULL) AND ("claim_id" IS NOT NULL) AND ("test_execution_id" IS NULL)) OR (("scope" = 'test'::"text") AND ("project_id" IS NULL) AND ("task_id" IS NULL) AND ("claim_id" IS NULL) AND ("test_execution_id" IS NOT NULL)))),
