@@ -12,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestBrowserActivityBindingRejectsMissingVerifier(t *testing.T) {
@@ -22,6 +23,41 @@ func TestBrowserActivityBindingRejectsMissingVerifier(t *testing.T) {
 		}
 	}()
 	h.BindBrowserActivity(nil)
+}
+
+func TestBrowserActivityMethodRejectionAuthenticatesWithoutRenewal(t *testing.T) {
+	for _, authenticated := range []bool{true, false} {
+		t.Run(map[bool]string{true: "authenticated", false: "rejected"}[authenticated], func(t *testing.T) {
+			reads := 0
+			h, err := NewRequestAuthentication(func(context.Context, model.CredentialKind, string) (model.Principal, error) {
+				reads++
+				if !authenticated {
+					return model.Principal{}, Failure()
+				}
+				return model.Principal{Kind: model.SessionCredential, UserID: "account", CredentialID: "session"}, nil
+			}, authconfig.AuthSettings{PublicOrigin: "https://daynight.test"}, slog.Default())
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.BindBrowserActivity(func(context.Context, string, string) (model.Principal, error) {
+				t.Fatal("method refusal renewed a browser session")
+				return model.Principal{}, nil
+			})
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/refused", httpx.MethodRejection(h.Require(httpx.ResourceMethodNotAllowed(slog.Default(), "POST"))))
+			r := httptest.NewRequest(http.MethodGet, "https://daynight.test/api/v1/refused", nil)
+			r.Header.Set("Origin", h.Origin())
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			r.Header.Set("Sec-Fetch-Mode", "cors")
+			r.Header.Set("Sec-Fetch-Dest", "empty")
+			r.AddCookie(&http.Cookie{Name: h.SessionCookieName(), Value: "original"})
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != map[bool]int{true: http.StatusMethodNotAllowed, false: http.StatusUnauthorized}[authenticated] || reads != 1 {
+				t.Fatalf("HTTP %d reads=%d", w.Code, reads)
+			}
+		})
+	}
 }
 
 func TestBrowserActivityEntryAdmission(t *testing.T) {

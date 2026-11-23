@@ -27,7 +27,7 @@ func TaskSearchRoutes(mux httpx.RouteRegistrar, search SearchOperation, auth Rou
 	h := &searchHandler{run: search, logger: logger, operationTimeout: 5 * time.Second}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", auth.Require(h.search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
 	}
 }
 func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) {

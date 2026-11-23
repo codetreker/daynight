@@ -26,6 +26,9 @@ func (h *RequestAuthentication) BindBrowserActivity(activity AuthenticateBrowser
 }
 
 func (h *RequestAuthentication) admitsBrowserActivity(r *http.Request) bool {
+	if httpx.IsMethodRejection(r) {
+		return false
+	}
 	method, pattern, qualified := strings.Cut(r.Pattern, " ")
 	if !qualified || !(method == r.Method || method == http.MethodGet && r.Method == http.MethodHead) || method == http.MethodHead || method == http.MethodOptions {
 		return false

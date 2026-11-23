@@ -21,6 +21,9 @@ use without backfill.
 
 Main-site activity is admitted only at registered application authentication
 entries with the configured authority and consistent same-origin evidence.
+Registered method refusals carry a request role before authentication and remain
+read-only, including qualified refusals that shadow wildcard business routes.
+Their authentication, policy and CSRF checks keep the same ordering.
 Preview activity follows protected content authorization and rechecks the
 original preview hash, with a constrained request-source matrix. The explicit
 activity API binds the intended account before writing. The
@@ -39,6 +42,12 @@ records the fixed session deadline that preceded activity-based expiry.
 **Renew while authenticating every request.** Generic authentication also serves
 public navigation, SSO steps, rejected methods and automatic cross-origin traffic.
 It would let those requests prolong browser authority without application use.
+
+**Infer business activity solely from a method-qualified route pattern.**
+Qualified GET, PATCH and DELETE refusals prevent a reserved action path from
+matching a wildcard resource handler. Such patterns identify the selected
+method but cannot distinguish business use from a registered refusal; an
+explicit request role must precede the authentication write.
 
 **Choose the timestamp before acquiring the row lock.** A request can wait until
 after the stored deadline and still revive the row using its stale timestamp.
