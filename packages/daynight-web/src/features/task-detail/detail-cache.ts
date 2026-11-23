@@ -4,7 +4,7 @@ import { parseTaskDetail } from "../../api/parse";
 import type { GraphTask, TaskDetail, TaskSummary } from "../../api/types";
 import { TaskCacheError, type DetailRecord, type ProjectRecord, type TaskIntrinsicDetail } from "../task-cache/database";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
-import { sameSummary } from "../task-cache/projection";
+import { sameDetailSummary, sameSummary } from "../task-cache/projection";
 
 export const DETAIL_CACHE_LIMITS = { records: 32, totalBytes: 8 * 1024 * 1024, recordBytes: 2 * 1024 * 1024 } as const;
 const intrinsic = ({ ready: _ready, blockedBy: _blockedBy, ...detail }: TaskDetail): TaskIntrinsicDetail => detail;
@@ -29,12 +29,12 @@ const validateRecord = (value: DetailRecord, ticket: SyncTicket, manifest: Proje
     if (value.byteSize !== detailByteSize(value.detail) || value.byteSize > DETAIL_CACHE_LIMITS.recordBytes) throw new Error("Invalid detail cache size.");
     const detail = intrinsic(parseTaskDetail({ ...value.detail, ready: false, blockedBy: [] }, ticket.projectId, value.taskId));
     const summary = summaries.get(value.taskId);
-    if (summary === undefined || !sameSummary(summary, summaryOf(detail))) throw new Error("Invalid detail cache content.");
+    if (summary === undefined || !sameDetailSummary(summary, summaryOf(detail))) throw new Error("Invalid detail cache content.");
     return { ...value, detail };
   } catch (error) { throw new TaskCacheError("corrupt", error); }
 };
 export const validateDetailSummary = (detail: TaskIntrinsicDetail, summary: TaskSummary): void => {
-  if (!sameSummary(summary, summaryOf(detail))) throw new ApiError("protocol");
+  if (!sameDetailSummary(summary, summaryOf(detail))) throw new ApiError("protocol");
 };
 
 export type DetailAdmission = { readonly kind: "matching"; readonly detail: TaskIntrinsicDetail } | { readonly kind: "older" } | { readonly kind: "newer" };

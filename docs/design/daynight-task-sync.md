@@ -153,6 +153,8 @@ type TaskSync = {
 
 属性读取直接装入已规范化的 `json.RawMessage` map，不重复定义注册表的结构校验或规范化；查询、扫描、自然解码与编码以及事务完成错误沿原链路传播。Session source 查询读取全项目进行中普通 Task 的 Worker 属性及所需 Session 标量。完整响应包含 `sessions` 和 `taskObservations`，不设置读取节点、边或字节预算；协议仍一次返回完整 snapshot/delta，不引入分页或中间发布。完整 assigneeVersions 及匹配摘要由当前请求物化，读取成本随实际集合增长，不承诺固定内存上限。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)拥有职责取舍。
 
+Web 的 `parseTaskSummary` 按资源 type 接纳依赖：普通 Task 继续使用执行前置，Goal 的 `dependsOn` 可为项目内验收前置集合，`externalDependsOn` 必须为空。Goal 不得出现在 `dependencyStates`，`projectSummaries` 先选择普通 Task 再构建执行图；typed 摘要集合保留 Goal 和其同步边。当前 Server 的 Goal 摘要仍输出空边，批量前置读取能力的公开输出启用与持久摘要重建共同交付，浏览器当前 schema 保持 13。该接纳与详情核对的职责见[Goal 摘要决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-summary-admission.md)。
+
 `dependencyStates` 是必填非 null 的普通 Task 派生状态 map。snapshot 覆盖全部可见普通 Task；delta 仅包含自身或直接前置的 updatedAt 命中同一窗口下界的可见普通 Task。每项 `taskVersion` 是所属 Task 的精确十进制版本，`blockedBy` 是未满足的直接前置 ID 数组，`ready` 沿用 Task 自身规则，不受父 Goal 状态影响。每条普通 Task 摘要都伴随同版本状态；空集合为 `{}`，空阻塞数组为 `[]`。一次批量 SQL 在相同快照读取保留的物理前置事实，隐藏的 done/cancelled 前置仍满足，隐藏的未结束前置仍阻塞。读取和事务失败使整个同步失败。Web 严格解码并持久化该 map，依照所属 Task 版本合并。
 
 map 的键和 `blockedBy` 元素是规范 Task UUID；`taskVersion` 为正 int64 的规范十进制字符串，`blockedBy` 按 ID 排序且属于该 Task 的 `dependsOn` 子集。普通 Task 的 `ready` 等价于 status 为 `todo` 且 `blockedBy` 为空。同版本状态可能反映不同前置观察，跨响应乱序时旧状态可能晚到；该协议不提供派生状态的严格全序。后续相关变化或完整 snapshot 可刷新它，但不保证下一轮轮询必然修正。
@@ -298,7 +300,7 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 写入接受时同步捕获确认所审阅的 cacheGeneration 与 mutation 对象身份；每次异步准备完成后及网络派发前，都要求该 owner、审阅历史和当前准入仍匹配。`beginSync` 在等待期间取得的新历史 ticket 不能替换旧确认的历史，即使任务 ID、版本相同也不足以派发。失效准备零写入，只 GET 刷新当前历史，取得 fresh GET 后要求新确认；被取代的准备不改变较新 mutation 的反馈或共享写锁。详情关闭本身保留仍属于同一 owner 和历史的已接受意图。提交准备和普通结果处理在同用户身份暂停时先经现有 `scope.ready` 等待，恢复后复核身份生命周期、原审阅 generation 与 owner，再读取受保护的实时投影或同步改变阶段；若又暂停则重新等待，不能在异常处理里重复访问受阻 getter。未发送的过期准备转为本地冲突或拒绝并 GET 当前历史；已发送的旧历史结果进入 unknown 与 GET 核对，被新 owner 取代的处理不再修改 entry。身份结束丢弃旧操作。
 
-同用户认证的 HTTP 200 或删除成功的 204 在解析正文前确认远端写响应，与正文是否可安装、是否持久化分开。正文无效仍要求 GET 核对，存储失败保留确认结果及错误，不重发操作。pending、unknown、reconciling、committed-version floor 与精确目标/版本检查继续归详情会话；关闭对话框不释放已提交写请求，身份失效仍使其结果无权发布。已确认写入回执生成即时视图摘要时，完整标题和精确 Task version 与项目 epoch 一起发布；该投影不修改持久集合，版本合并拒绝较旧的后台结果。单任务 GET 或写结果不能推进 M，因为它们不证明项目中其他任务的覆盖。附件目录与文件保持独立按需路径。
+同用户认证的 HTTP 200 或删除成功的 204 在解析正文前确认远端写响应，与正文是否可安装、是否持久化分开。正文无效仍要求 GET 核对，存储失败保留确认结果及错误，不重发操作。pending、unknown、reconciling、committed-version floor 与精确目标/版本检查继续归详情会话；关闭对话框不释放已提交写请求，身份失效仍使其结果无权发布。已确认写入回执由 `committed-task-projection` 生成即时视图摘要时，完整标题和精确 Task version 与项目 epoch 一起发布；该投影不修改持久集合，版本合并拒绝较旧的后台结果。Goal 详情回执的空依赖字段不表示其验收前置为空。投影将回执实际覆盖的字段与同步摘要核对，并为 Goal 保留当前摘要的 `dependsOn` 和 `externalDependsOn`；同版本核对和更新前基线核对使用相同规则。标题或状态等其它字段冲突仍为协议错误，Goal 边只能由项目同步更新。单任务 GET 或写结果不能推进 M，因为它们不证明项目中其他任务的覆盖。附件目录与文件保持独立按需路径。
 
 ## 7. 身份、错误与本地生命周期
 
