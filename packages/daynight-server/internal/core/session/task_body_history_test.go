@@ -513,3 +513,87 @@ func TestTaskBodyReusedResourceRetainsBodyAndOtherPinsAndReleasedOwner(t *testin
 		})
 	}
 }
+
+func TestPendingImageRetirementsDeduplicatesAndRejectsChangedIdentity(t *testing.T) {
+	first := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "image"}
+	second := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "another"}
+	pending, err := pendingImageRetirements([]sp.ImageOccurrence{first}, []sp.ImageOccurrence{first, second})
+	if err != nil || len(pending) != 2 || !jsonEqual(encode(pending), encode([]sp.ImageOccurrence{first, second})) {
+		t.Fatalf("deduplicated positions: %+v %v", pending, err)
+	}
+	changed := first
+	changed.SourceKey = "different"
+	pending, err = pendingImageRetirements([]sp.ImageOccurrence{first}, []sp.ImageOccurrence{changed})
+	var refusal *model.Fault
+	if len(pending) != 0 || !errors.As(err, &refusal) || refusal.Code != "archive_conflict" {
+		t.Fatalf("conflicting identity was accepted: %+v %v", pending, err)
+	}
+}
+
+func TestPendingImageRetirementChecksCaptureAndReadersBeforeMutation(t *testing.T) {
+	for _, scenario := range []string{"missing-capture", "capture-error", "changed-occurrence", "reserved", "copying", "missing-resource", "failed-capture", "lease-error", "matching-reader", "all-resource-reader", "other-reader", "body-reader"} {
+		t.Run(scenario, func(t *testing.T) {
+			id, resource := uuid.NewString(), uuid.NewString()
+			position := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "image"}
+			capture := store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: position}, Receipt: sp.ImageCaptureReceipt{State: "committed", ResourceID: &resource}}
+			d := &stoppedCaptureBoundaryDAO{onlineImageRetirementDAO: &onlineImageRetirementDAO{capture: capture, count: 1}}
+			failure := errors.New("controlled storage failure")
+			var body []sp.Resource
+			wantCode := ""
+			switch scenario {
+			case "missing-capture":
+				d.failure = model.ErrNotFound
+			case "capture-error":
+				d.failure = failure
+			case "changed-occurrence":
+				d.capture.Request.Occurrence.SourceKey = "changed"
+				wantCode = "archive_conflict"
+			case "reserved", "copying":
+				d.capture.Receipt.State = scenario
+				wantCode = "archive_incomplete"
+			case "missing-resource":
+				d.capture.Receipt.ResourceID = nil
+				wantCode = "archive_conflict"
+			case "failed-capture":
+				d.capture.Receipt.State = "failed"
+			case "lease-error":
+				d.leaseErr = failure
+			case "matching-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: resource}}
+				wantCode = "resource_busy"
+			case "all-resource-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read"}}
+				wantCode = "resource_busy"
+			case "other-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: uuid.NewString()}}
+			case "body-reader":
+				body = []sp.Resource{{ResourceID: resource}}
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: resource}}
+			}
+			r := &record{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}}}
+			err := (&Execution{}).retirePendingImages(t.Context(), &operationTx{dao: d}, r, []sp.ImageOccurrence{position}, body)
+			switch {
+			case wantCode != "":
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != wantCode {
+					t.Fatalf("expected %s: %v", wantCode, err)
+				}
+			case scenario == "capture-error" || scenario == "lease-error":
+				if !errors.Is(err, failure) {
+					t.Fatalf("storage error lost: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantRemoved := 0
+			if scenario == "other-reader" {
+				wantRemoved = 1
+			}
+			if len(d.removed) != wantRemoved || len(d.saved) != 0 {
+				t.Fatalf("unexpected ownership mutation: %+v %+v", d.removed, d.saved)
+			}
+		})
+	}
+}
