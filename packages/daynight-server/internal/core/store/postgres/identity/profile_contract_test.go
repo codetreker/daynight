@@ -358,7 +358,7 @@ func TestLoginMergedProfileAdmissionRollsBack(t *testing.T) {
 	svc := service.New(db, client, "https://daynight.example/auth/callback")
 	start, err := svc.StartLogin(ctx, "github", "/projects", secret.Random(""))
 	requireNoError(t, err)
-	result, err := svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding)
+	result, err := svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding, "")
 	var provider *model.IdentityProviderError
 	var violation *limit.Violation
 	if !errors.As(err, &provider) || provider.Code != "identity_unavailable" || !errors.As(err, &violation) || violation.Field != "profile" || result.LoginID != start.ID || result.Secret != "" {
@@ -374,7 +374,7 @@ func TestLoginMergedProfileAdmissionRollsBack(t *testing.T) {
 	if logins != 0 || sessions != 0 || teams != 0 {
 		t.Fatalf("pending=%d sessions=%d teams=%d", logins, sessions, teams)
 	}
-	_, err = svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding)
+	_, err = svc.CompleteLogin(ctx, url.Values{"state": {start.State}, "code": {"profile"}}, start.BrowserBinding, "")
 	if err == nil {
 		t.Fatal("consumed pending login replay succeeded")
 	}

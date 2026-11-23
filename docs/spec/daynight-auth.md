@@ -86,6 +86,10 @@ POST /api/v1/auth/session/activity 只接受有效主站 Cookie、精确主站 O
 
 普通活动响应不重发 Cookie。仅新登录和预览 SSO 请求 Cookie 持久保存 400 天，保留 host-only/预览 Domain、Secure、HttpOnly、SameSite=Lax 与两域隔离。浏览器可提前清除 Cookie；旧 Cookie 保留原期限，不转换，丢失后按既有主站登录或预览 SSO 恢复。
 
+浏览器会话管理只接受有效主站 Cookie，写入校验精确主站 Origin，响应使用 no-store。列表仅包含本账号尚未到期的会话，当前会话单列，其余按创建时间和 ID 倒序分页；游标绑定账号和调用会话。会话投影仅包含 ID、浏览器及系统分类、创建、最近使用和到期时间；分类与最近使用时间可为空，旧记录不回填，也不保存原始 User-Agent 或 IP。单条读取用于核对目标是否仍有效。撤销请求绑定预期账号和调用会话，身份变化或目标为当前会话返回 409，其他账号或无有效目标同形返回 404，确认成功返回 204。结果未知时只读取目标核对，不自动重发；不存在只证明目标不再活跃。当前浏览器仍通过 logout 退出。撤销后目标主站、预览及后续权限核验失效，其他浏览器会话、PAT 和 OAuth 凭据不受影响。
+
+`GET /api/v1/me/browser-sessions` 接受 `limit`（1–100，默认 50）及不透明 `cursor`，返回 `{userId,current,items,nextCursor}`，无下一页时 `nextCursor` 为 null。`current` 与各 `items` 包含必有的 `id`、`browser`、`os`、`createdAt`、`lastUsedAt`、`expiresAt`；时间为 UTC 时间字符串，未知分类与最近使用为 null。`GET /api/v1/me/browser-sessions/{id}` 返回同一投影。`POST /api/v1/me/browser-sessions/{id}/revoke` 接受必填 UUID 字段 `{expectedUserId,expectedSessionId}`，成功无正文。单条读取和撤销不接受 query；这些入口拒绝 HEAD 和显式 Authorization。无效输入返回 400 `invalid_input`，无效会话返回 401，身份或当前会话冲突返回 409 `identity_mismatch`，目标不可用返回 404 `not_found`，提交结果未知返回 503 `write_outcome_unknown`；错误采用现有 `{error:{code,message,requestId}}` 格式。
+
 PAT 由 Web 会话显式创建，或由该会话批准的
 设备授权在领取时自动创建；默认永不过期，以 `expiresAt:null` 表达。手工创建请求必须显式提供
 `name` 和 `expiresAt`，到期值为 null 或以 Z 结尾的未来 UTC 时间，不接受旧 `days` 输入。

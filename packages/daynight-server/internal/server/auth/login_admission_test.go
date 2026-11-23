@@ -193,7 +193,7 @@ func completeStrictLogin(t *testing.T, requestedReturnPath, resolvedReturnPath, 
 	callbackQuery := url.Values{"state": {state}, "code": {code}}
 	callbackPath := "/api/v1/auth/callback?" + callbackQuery.Encode()
 	response := h.request("GET", callbackPath, "", []*http.Cookie{binding}, nil, "",
-		authRequestCall{name: "CompleteLogin", args: []any{callbackQuery, bindingValue}, result: completed})
+		authRequestCall{name: "CompleteLogin", args: []any{callbackQuery, bindingValue, ""}, result: completed})
 	completionCookies := response.Result().Cookies()
 	if response.Code != http.StatusSeeOther || response.Header().Get("Cache-Control") != "no-store" || len(completionCookies) != 2 {
 		t.Fatalf("login callback: status=%d cookies=%d", response.Code, len(completionCookies))
