@@ -3452,7 +3452,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 3
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
       const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-state', '.task-node-details']
+      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-bottom .graph-status', '.task-stuck-label', '.task-node-details']
         .flatMap(selector => [...card.querySelectorAll(selector)].map(part => ({ selector, box: part.getBoundingClientRect() })));
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
       return { width: card.offsetWidth, height: card.offsetHeight, threeLines: title.offsetHeight >= lineHeight * 2.8 && title.offsetHeight <= lineHeight * 3.1,

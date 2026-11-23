@@ -186,7 +186,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 12
       expect(await node.locator('.task-node').evaluate(element => {
         const card = element.getBoundingClientRect(), timing = element.querySelector('.task-duration')!.getBoundingClientRect(), detail = element.querySelector('.task-node-details')!.getBoundingClientRect();
         const decorations = [...element.querySelectorAll('.task-stuck-label, .task-agent-permission')];
-        return (element as HTMLElement).offsetWidth === 240 && [124, 184].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
+        const warning = element.querySelector('.task-stuck-label')!.getBoundingClientRect();
+        const status = element.querySelector('.task-node-bottom .graph-status')!.getBoundingClientRect();
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+        return (element as HTMLElement).offsetWidth === 240 && [124, 184].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && separate(timing, detail) && separate(warning, detail) && separate(warning, status) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && box.top >= card.top && box.bottom <= card.bottom && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button', { name: locale === 'en' ? 'Close dependency graph' : '关闭依赖图' }).click();
@@ -969,7 +972,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 3
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
       const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-      const selectors = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-state', '.task-node-details', '.task-node-expansions'];
+      const selectors = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-bottom .graph-status', '.task-stuck-label', '.task-node-details', '.task-node-expansions'];
       const parts = selectors.flatMap(selector => [...card.querySelectorAll(selector)].map(part => ({ selector, box: part.getBoundingClientRect() })));
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
       return { width: card.offsetWidth, height: card.offsetHeight, threeLines: title.offsetHeight >= lineHeight * 2.8 && title.offsetHeight <= lineHeight * 3.1,

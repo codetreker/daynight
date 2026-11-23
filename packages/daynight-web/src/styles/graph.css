@@ -108,6 +108,12 @@
 .task-node-body { padding-block:2px 4px; }
 .task-node-meta { margin-bottom:0; }
 .task-node-details { bottom:4px; }
+/* An overdue card uses its reading row for Details, leaving the full footer
+   width to the status and its warning. */
+.task-node-stuck .task-node-details { bottom:calc(4px + 1.5 * var(--text-sm)); }
+.task-node-stuck:has(.task-node-expansions) .task-node-details { bottom:calc(3.75rem + 4px + 1.5 * var(--text-sm)); }
+.task-node-stuck .task-node-readings { margin-right:calc(5.5 * var(--text-sm)); }
+.task-node-stuck .task-node-bottom { padding-right:0; }
 .task-node-title { line-height:1.2; min-height:1.2em; }
 .task-node-bottom { padding-top:0; }
 .task-node-readings { padding-bottom:.4rem; }
