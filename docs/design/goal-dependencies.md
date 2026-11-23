@@ -12,6 +12,14 @@ Goal 边复用 `task_dependencies` 中固定的 `dependency_type='goal'`，每�
 
 后继查询先通过 Project access 关系和有效删除条件过滤，再按下游 UUID 排序、游标续页及 lookahead。默认 20、最多 50 条，不计算或暴露隐藏下游总数。游标绑定调用者身份、源 Project、Goal、页大小及排序位置；续页重新授权，不代表冻结的图快照。直接 Project grant 和 Team membership 均参与访问。
 
+## 项目内前置批量读取
+
+`TaskReader.TaskSyncGoalDependsOn(ctx, projectID, goalIDs)` 为摘要消费者提供同项目 Goal 前置的批量读取。在已有只读快照的 callback 内，调用方先用 `TaskSyncTasks` 选择完整或更新时间窗口内的摘要，再传入该批次的 Goal ID；查询不另建快照或时间水位。调用方负责项目读取准入。
+
+PostgreSQL 查询限定所选源 Goal 和前置 Goal 均为本项目、有效且 `type='goal'`，只读取 `dependency_type='goal'` 的边。目标不受摘要更新时间窗口限制，因此本批次有变化的 Goal 仍能取得未变化的直接前置。返回 map 仅包含选中的有效源 Goal，每项为按 UUID 排序的完整直接前置 ID；无边为非 nil 空数组。空输入返回非 nil 空 map；普通 Task、外项目、缺失及有效删除的源不产生条目。读取只投影 ID，复用现有下游关系主键，不新增索引或锁。
+
+此能力独立于公开 TaskSync 输出：现有 `TaskSyncTasks` 继续使用普通 Task 边投影，`TaskSyncDependencyStates` 和 ordinary graph 仍只处理普通执行依赖。跨项目 Goal 关系继续由上述独立关系读取提供。批量查询与摘要的组合由存储测试证明；服务端和浏览器同步格式的启用须共同满足[摘要同步设计](daynight-task-sync.md)的版本接纳约定。取舍见[批量读取决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-prerequisite-batch-reader.md)。
+
 ## 写入事务
 
 独立编辑操作先校验 principal、UUID、正 int64 修订及 edit/replace 的结构和容量。edit 至少有一项添加或移除；replace 必须给出整个 prerequisites 集合，允许空数组。保留臂使用当前下游的 edge UUID，新增臂使用 Project/Goal UUID。重复项、相互冲突的操作和其他下游的边均拒绝。
