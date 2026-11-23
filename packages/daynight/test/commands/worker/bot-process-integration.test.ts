@@ -492,11 +492,6 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
           expect(stopped).toBe(true);
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
-      const recordNow = current();
-      if (recordNow.intent !== null && process.platform !== "win32") {
-        const ticket = await botProcess.readTicket(recordNow).catch(() => null);
-        if (ticket !== null) await rm(path.dirname(ticket.ipcEndpoint), { recursive: true, force: true });
-      }
     } catch (error) {
       stopped = false; cleanupFailure = error;
       try { await collectEvidence(); } catch (diagnosticError) { diagnostic("read-original-startup-evidence", 0, diagnosticError); }
