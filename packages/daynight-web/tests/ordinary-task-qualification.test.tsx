@@ -176,3 +176,67 @@ it.each(['uncertain', 'retired'] as const)('handles a pending create when projec
     expect(writes).toBe(1);
   } finally { view.unmount(); root.remove(); scope.dispose(); vi.unstubAllGlobals(); }
 });
+
+it.each(['unknown', 'confirmed'] as const)('retains a late %s creation across a peer withdrawal and an allowed direct access recheck', async outcome => {
+  class Channel {
+    static readonly channels = new Set<Channel>();
+    onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+    constructor(readonly name: string) { Channel.channels.add(this); }
+    postMessage(value: unknown) { for (const peer of Channel.channels) if (peer !== this && peer.name === this.name) queueMicrotask(() => peer.onmessage?.({ data: value } as MessageEvent<unknown>)); }
+    close() { Channel.channels.delete(this); }
+  }
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const { scope } = await prepare();
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const peerTicket = await peer.beginSync(projectId, peer.signal);
+  const pendingWrite = Promise.withResolvers<Response>();
+  const pendingAccess = Promise.withResolvers<Response>();
+  const events: { peerHintWithdrawal?: true; accessRestored?: true; directAccessRecheck?: true }[] = [];
+  const unsubscribe = scope.subscribe(event => { if (event.projectId === projectId) events.push(event); });
+  let writes = 0, rechecks = 0, holdAccess = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const parsed = new URL(url, location.origin);
+    if (parsed.pathname.endsWith('/access')) {
+      if (holdAccess) { rechecks++; return pendingAccess.promise; }
+      return resourceResponse(directAccessFixture(projectId), TEST_VIEWER_ID);
+    }
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks/${parentId}`) return resourceResponse(parent, TEST_VIEWER_ID);
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks` && init?.method === 'POST') { writes++; return pendingWrite.promise; }
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks`) return resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID);
+    if (parsed.pathname.endsWith('/task-assignees')) return resourceResponse({ items: [], unresolvedUserIds: [] }, TEST_VIEWER_ID);
+    throw new Error(`Unexpected ${init?.method ?? 'GET'} ${url}`);
+  }));
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId} initialRead><OrdinaryTaskRelations projectId={projectId} detail={parent} history={scope.getHistoryGeneration(projectId)} active onRefreshGraph={() => {}} /></ProjectAccessBoundary>, { locale: 'en', taskCache: { scope }, container: root });
+  try {
+    await screen.findByText('No subtasks');
+    fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Peer withdrawal repair' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(writes).toBe(1));
+    holdAccess = true;
+    await act(async () => { expect(await peer.revokeProject(peerTicket, peer.signal)).toBe(true); });
+    await waitFor(() => expect(events.some(event => event.peerHintWithdrawal)).toBe(true));
+    await waitFor(() => expect(rechecks).toBeGreaterThan(0));
+    expect(screen.queryByRole('textbox', { name: 'Title' })).toBeNull();
+    await act(async () => {
+      if (outcome === 'unknown') pendingWrite.reject(new TypeError('connection lost'));
+      else {
+        const result = resourceResponse({ ...child, title: 'Peer withdrawal repair', status: 'proposed', ready: false, assignedTo: TEST_VIEWER_ID }, TEST_VIEWER_ID);
+        pendingWrite.resolve(new Response(result.body, { status: 201, headers: result.headers }));
+      }
+      await pendingWrite.promise.catch(() => {});
+    });
+    holdAccess = false;
+    await act(async () => { pendingAccess.resolve(resourceResponse(directAccessFixture(projectId), TEST_VIEWER_ID)); await pendingAccess.promise; });
+    await waitFor(() => expect(events.some(event => event.accessRestored && event.directAccessRecheck)).toBe(true));
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New subtask' })).toBeEnabled());
+    if (screen.queryByRole('textbox', { name: 'Title' }) === null) fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+    expect(await screen.findByText(outcome === 'unknown' ? /creation outcome is unknown/i : /Subtask created: Peer withdrawal repair/i)).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Peer withdrawal repair');
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    expect(writes).toBe(1);
+  } finally { view.unmount(); root.remove(); unsubscribe(); peer.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
+});

@@ -137,7 +137,7 @@ const entryFor = (scope: TaskCacheScope, key: string, projectId: string, userId:
     const owned = entry;
     const stop = scope.subscribe(event => {
       if (event.projectId !== projectId) return;
-      if (scope.isInvalidated || scope.hasIdentityMismatch || event.accessRevoked && denied(event.error) && !event.directAccessUncertain && !event.scopeSuspended || owned.fence !== null && !scope.isTaskHistoryPossiblyCurrent(owned.fence)) retireEntry(scope, key, owned);
+      if (scope.isInvalidated || scope.hasIdentityMismatch || event.accessRevoked && denied(event.error) && !event.directAccessUncertain && !event.scopeSuspended && !event.peerHintWithdrawal || owned.fence !== null && !scope.isTaskHistoryPossiblyCurrent(owned.fence)) retireEntry(scope, key, owned);
     });
     const abort = () => retireEntry(scope, key, owned);
     scope.signal.addEventListener('abort', abort);

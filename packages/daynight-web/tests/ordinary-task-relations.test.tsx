@@ -7,9 +7,9 @@ import { detailFixture } from './helpers/taskDetail';
 
 vi.mock('../src/app/polling', () => ({ pollingInterval: () => 500 }));
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), createTask: vi.fn(), getTask: vi.fn(), getTaskObservation: vi.fn(), listTaskChildren: vi.fn() }));
-const gate = vi.hoisted(() => ({ generation: 1, revision: 1, qualified: true, possible: true, verify: true, revoked: false, listeners: new Set<(event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; error?: unknown }) => void>(), ready: async () => {} }));
+const gate = vi.hoisted(() => ({ generation: 1, revision: 1, qualified: true, possible: true, verify: true, revoked: false, listeners: new Set<(event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void>(), ready: async () => {} }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => {
-  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, hasIdentityMismatch: false, isProjectSuspended: () => gate.revoked, principalMismatch: vi.fn(), getHistoryGeneration: () => gate.generation, getProjectRevision: () => gate.revision, ready: () => gate.ready(), subscribe: (listener: (event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; error?: unknown }) => void) => { gate.listeners.add(listener); return () => gate.listeners.delete(listener); }, beginTaskRead: async () => ({}), observeHistory: async () => 'current', verifyTaskRead: async () => gate.verify, isTaskReadCurrent: () => gate.qualified, isTaskHistoryPossiblyCurrent: () => gate.possible, isTaskHistoryConfirmedCurrent: () => gate.qualified };
+  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, hasIdentityMismatch: false, isProjectSuspended: () => gate.revoked, principalMismatch: vi.fn(), getHistoryGeneration: () => gate.generation, getProjectRevision: () => gate.revision, ready: () => gate.ready(), subscribe: (listener: (event: { projectId: string; accessRevoked?: true; directAccessUncertain?: true; scopeSuspended?: true; peerHintWithdrawal?: true; error?: unknown }) => void) => { gate.listeners.add(listener); return () => gate.listeners.delete(listener); }, beginTaskRead: async () => ({}), observeHistory: async () => 'current', verifyTaskRead: async () => gate.verify, isTaskReadCurrent: () => gate.qualified, isTaskHistoryPossiblyCurrent: () => gate.possible, isTaskHistoryConfirmedCurrent: () => gate.qualified };
   return { useTaskCacheScope: () => scope };
 });
 vi.mock('../src/features/task-detail/TaskDetailSession', () => ({ useTaskDetailSessions: () => sessions }));
@@ -148,5 +148,25 @@ it('retains the in-flight outcome across a temporarily uncertain history and res
   act(() => { gate.qualified = true; for (const listener of [...gate.listeners]) listener({ projectId: project }); });
   await screen.findByText(/creation outcome is unknown/i);
   expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Retained draft'); expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled(); expect(createTask).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'Create another subtask' })); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+});
+
+
+it('retains pending and unknown creation across a peer cache withdrawal', async () => {
+  vi.mocked(listTaskChildren).mockResolvedValue({ items: [], nextCursor: null });
+  const pending = Promise.withResolvers<never>(); vi.mocked(createTask).mockReturnValueOnce(pending.promise);
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  renderWithLocale(panel(), { locale: 'en', container: root }); await screen.findByText('No subtasks');
+  fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Peer retained draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' })); await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  const withdraw = () => { gate.qualified = false; for (const listener of [...gate.listeners]) listener({ projectId: project, accessRevoked: true, peerHintWithdrawal: true, error: new ApiError('server', 404, 'not_found') }); };
+  const restore = () => { gate.qualified = true; for (const listener of [...gate.listeners]) listener({ projectId: project }); };
+  act(withdraw); expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => pending.reject(new ApiError('network')));
+  act(restore); await screen.findByText(/creation outcome is unknown/i);
+  expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Peer retained draft');
+  act(withdraw); expect(screen.queryByRole('dialog')).toBeNull(); act(restore);
+  expect(await screen.findByText(/creation outcome is unknown/i)).toBeVisible(); expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled(); expect(createTask).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'Create another subtask' })); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 });
