@@ -1,6 +1,8 @@
 .auth-shell.shell { grid-template-columns: 190px minmax(0, 1fr); }
 .auth-shell.shell.sidebar-collapsed { grid-template-columns: 68px minmax(0, 1fr); }
 .auth-shell > .workspace { grid-column: 2; }
+.auth-shell.project-workspace-shell .topbar { min-height: 56px; padding-block: 8px; }
+.auth-shell.project-workspace-shell .content { padding-top: 16px; }
 .auth-shell .sidebar { height: 100vh; height: 100dvh; padding: 26px 14px 18px; overflow-y: auto; }
 .auth-shell .sidebar-main { flex: 1; min-height: 0; overflow-y: auto; }
 .auth-shell .sidebar .brand { padding: 0 12px 32px; white-space: nowrap; }
@@ -56,6 +58,8 @@
   .auth-shell .sidebar.sidebar-drawer-open :is(.brand-name, .nav-label, .nav-text) { display: block; }
   .auth-shell .sidebar.sidebar-drawer-open .nav-button { justify-content: flex-start; padding: 12px 14px; }
   .auth-shell .topbar { position: sticky; top: 0; z-index: 10; padding: 8px 18px; gap: 10px; min-height: 0; }
+  .auth-shell.project-workspace-shell .topbar { min-height: 0; padding-block: 6px; }
+  .auth-shell.project-workspace-shell .content { padding-top: 12px; }
   .auth-shell.test-session-shell .topbar { position: relative; flex-shrink: 0; }
   .auth-shell .workspace-heading { max-width: 100%; }
   .auth-shell .account-actions { max-width: 100%; }

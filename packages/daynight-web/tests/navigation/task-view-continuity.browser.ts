@@ -15,7 +15,7 @@ async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
   const revalidationGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, viewerName: 'Reader', project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId;
@@ -27,7 +27,7 @@ async function install(page: Page, initial: TaskDetail[]) {
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
     if (state.holdRevalidation && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) { state.heldReads++; await revalidationGate.promise; }
     if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
-    if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
+    if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: state.viewerName, email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === `/api/v1/projects/${targetProject}`) {
       if (state.projectMode === 'pending') await projectGate.promise;
@@ -67,6 +67,116 @@ const headingGap = (page: Page) => page.evaluate(() => document.querySelector('.
 const expectCompactHeading = async (page: Page) => {
   await expect.poll(async () => Math.abs(await headingGap(page) - 26), 'project heading to section layout gap is 26 CSS px').toBeLessThanOrEqual(1);
 };
+
+const projectTopSpacing = (page: Page) => page.evaluate(() => {
+  const shell = document.querySelector('.auth-shell')!, navigation = document.querySelector<HTMLElement>('.project-navigation')!;
+  const measure = () => {
+    const topbar = document.querySelector('.topbar')!.getBoundingClientRect(), heading = document.querySelector('.project-heading-container')!.getBoundingClientRect();
+    return { topbarHeight: topbar.height, titleGap: heading.top - topbar.bottom, overflow: Math.max(0, document.documentElement.scrollWidth - innerWidth) };
+  };
+  const candidate = measure(), originalMargin = navigation.style.marginBottom;
+  shell.classList.remove('project-workspace-shell');
+  navigation.style.marginBottom = innerWidth <= 600 ? '18px' : '21px';
+  try { return { candidate, baseline: measure() }; }
+  finally { navigation.style.marginBottom = originalMargin; shell.classList.add('project-workspace-shell'); }
+});
+
+for (const empty of [false, true]) test(`project top spacing moves the title upwards with ${empty ? 'no tasks' : 'tasks'}`, async ({ page }, info) => {
+  const state = await install(page, empty ? [] : [row(10, 'Task')]);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  await expect(page.locator('.auth-shell')).toHaveClass(/project-workspace-shell/);
+  const spacing = await projectTopSpacing(page);
+  expect(spacing.baseline.topbarHeight - spacing.candidate.topbarHeight).toBeGreaterThanOrEqual(18);
+  expect(spacing.baseline.titleGap - spacing.candidate.titleGap).toBeGreaterThanOrEqual(25);
+  expect(spacing.candidate.overflow).toBe(0);
+  await info.attach('project-top-spacing-1280', { body: JSON.stringify(spacing, null, 2), contentType: 'application/json' });
+  for (const section of ['overview', 'statistics', 'tasks', 'prs', 'tags']) {
+    await page.locator(`#project-section-tab-${section}`).click();
+    const current = (await projectTopSpacing(page)).candidate;
+    expect(current.topbarHeight).toBeCloseTo(spacing.candidate.topbarHeight, 0);
+    expect(current.titleGap).toBeCloseTo(spacing.candidate.titleGap, 0);
+  }
+  await page.setViewportSize({ width: 1920, height: 900 });
+  expect(await page.locator('.content').evaluate(element => {
+    const content = element.getBoundingClientRect(), workspace = element.parentElement!.getBoundingClientRect();
+    return { width: content.width, centered: Math.abs(content.left - workspace.left - (workspace.width - content.width) / 2) < 1 };
+  })).toEqual({ width: 1500, centered: true });
+  for (const destination of [`/projects/${projectId}/settings`, '/projects']) {
+    await page.goto(destination);
+    await expect(page.locator('.auth-shell')).not.toHaveClass(/project-workspace-shell/);
+    await expect(page.locator('.topbar')).toHaveCSS('min-height', '76px');
+    await expect(page.locator('.content')).toHaveCSS('padding-top', '34px');
+  }
+  expect(state.writes).toEqual([]);
+});
+
+for (const width of [320, 390]) for (const locale of ['en', 'zh-CN'] as const) test(`compact project header preserves narrow controls at ${width}px in ${locale}`, async ({ page }, info) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.viewerName = 'Long account name 需要完整识别的账户名称 '.repeat(3).trimEnd();
+  state.project = { ...state.project, name: 'Long project name 需要自然换行的项目名称 '.repeat(3).trimEnd() };
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  const language = page.getByRole('combobox', { name: '语言 / Language' });
+  await language.selectOption(locale);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  for (const scale of ['100%', '200%']) {
+    await page.evaluate(value => { document.documentElement.style.fontSize = value; }, scale);
+    const spacing = await projectTopSpacing(page);
+    expect(spacing.candidate.overflow).toBeLessThanOrEqual(spacing.baseline.overflow);
+    expect(spacing.candidate.overflow).toBe(0);
+    await info.attach(`project-top-spacing-${width}-${scale}`, { body: JSON.stringify(spacing, null, 2), contentType: 'application/json' });
+    const drawer = page.locator('.workspace-navigation-open');
+    const bounds = (await drawer.boundingBox())!;
+    expect(bounds.width).toBe(44); expect(bounds.height).toBe(44);
+    await page.keyboard.press('Tab'); await drawer.focus();
+    expect(await drawer.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Enter'); await expect(drawer).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('Escape'); await expect(drawer).toBeFocused();
+    await language.focus(); await expect(language).toBeFocused();
+    const account = page.locator('.account-button');
+    await account.focus(); await page.keyboard.press('Enter');
+    await expect(page.locator('.account-menu')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(account).toBeFocused();
+    await expect(page.locator('.project-navigation .back-link')).toHaveAttribute('href', '/projects');
+    const actions = page.getByRole('button', { name: locale === 'en' ? 'Project actions' : '项目操作', exact: true });
+    await actions.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('menu')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(actions).toBeFocused();
+  }
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  const previousTime = await page.locator('.snapshot-time time').getAttribute('datetime');
+  state.graphMode = 'error';
+  await page.getByRole('button', { name: locale === 'en' ? 'Project actions' : '项目操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: locale === 'en' ? 'Refresh' : '刷新', exact: true }).click();
+  const error = page.locator('.snapshot-error');
+  await expect(error).toBeVisible();
+  await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', previousTime!);
+  state.graphMode = 'normal'; await error.getByRole('button').click();
+  await expect(error).toHaveCount(0);
+  await page.locator('.project-navigation .back-link').click();
+  await expect(page).toHaveURL(/\/projects$/);
+  await expect(page.locator('.auth-shell')).not.toHaveClass(/project-workspace-shell/);
+  expect(state.writes).toEqual([]);
+});
+
+test('compact project loading omits refresh time until the first snapshot arrives', async ({ page }) => {
+  const state = await install(page, []);
+  state.graphMode = 'pending';
+  await page.setViewportSize({ width: 390, height: 844 });
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toBeVisible();
+    await expect(page.locator('.snapshot-time time')).toHaveCount(0);
+    await expect(page.locator('.auth-shell')).toHaveClass(/project-workspace-shell/);
+    await expect(page.locator('.content')).toHaveCSS('padding-top', '12px');
+    state.graphMode = 'normal'; state.releaseGraph();
+    await expect(page.locator('.snapshot-time time')).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Loading task graph', exact: true })).toHaveCount(0);
+    expect(state.writes).toEqual([]);
+  } finally { state.releaseGraph(); }
+});
 
 for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project heading has no label at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
@@ -918,7 +1028,10 @@ test('category switching preserves real scroll and only the browser clamps short
   });
   try {
     for (const width of [1100, 390]) {
-      await page.setViewportSize({ width, height: 700 }); await page.evaluate(() => window.scrollTo(0, 120));
+      await page.setViewportSize({ width, height: 700 });
+      await position(page);
+      await page.evaluate(() => window.scrollTo(0, 120));
+      await expect.poll(() => position(page)).toBe(120);
       for (const name of ['Task chains', 'Standalone tasks', 'Task chains', 'Standalone tasks']) {
         await trace.evaluate(value => value.reset()); await select(page, name);
         expect(await position(page)).toBe(120); expect(await trace.evaluate(value => value.count())).toBe(0);
