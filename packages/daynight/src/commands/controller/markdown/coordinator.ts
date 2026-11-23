@@ -7,7 +7,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
 import { nativeEntryId } from "../native-identity.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
-import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError, ImageCaptureRetrySettledError, isRetryableCaptureRefusal } from "../media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError, ImageCaptureRetrySettledError, ImageCaptureRetryUnknownError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import type { ExternalImagePolicyLease } from "./external-policy.js";
@@ -426,10 +426,25 @@ export const createMarkdownCaptureCoordinator = (options: {
           if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
           throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
         }
-        throw new ImageCaptureRetrySettledError(old.error);
       }
-      const existing = journal.media().captureStatus(request.captureId, request.attemptId); if (existing) { if (!hasAdmission(old, existing)) return refuse("source_unavailable"); return existing; }
-      if (old.request!.attemptId === request.attemptId && old.started) return refuse("source_unavailable");
+      const existing = journal.media().captureStatus(request.captureId, request.attemptId);
+      if (old.request!.attemptId === request.attemptId && existing && hasAdmission(old, existing)) return existing;
+      if (old.request!.attemptId === request.attemptId && (old.started || old.error || existing)) {
+        if (journal.getOnlineMode() !== "relay") return refuse(old.error?.code ?? "source_unavailable");
+        // A reserved receipt proves this exact retry has not been submitted.
+        // An interrupted writer or unadmitted stage cannot be read again.
+        const receipt = await hooks.queryImageCapture(request.captureId);
+        if (receipt.attemptId !== request.attemptId || receipt.state !== "reserved") {
+          if (receipt.attemptId === request.attemptId && receipt.state === "failed" && receipt.error) throw new ImageCaptureRetrySettledError(receipt.error);
+          throw new ImageCaptureRetryUnknownError(new Error("Original retry reservation is unavailable."));
+        }
+        old.error ??= failure("source_unavailable");
+        freeze(old, { kind: "failed", error: old.error });
+        await submit(old);
+        if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
+        if (old.dispatchPending) throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        throw new ImageCaptureRetryUnknownError(new Error("Original retry failure remains unresolved."));
+      }
       const remaining = Math.max(0, old.cooldownUntil - Date.now()), until = performance.now() + remaining;
       while (performance.now() < until) {
         joined.throwIfAborted(); checkContext(old.context, request.locator.kind === "local");

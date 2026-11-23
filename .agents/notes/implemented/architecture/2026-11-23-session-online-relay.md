@@ -54,3 +54,8 @@ decision. A peer that cannot support an already-bound mode cannot silently
 downgrade it. Native source capture uses the same bounded source owner and
 per-checkpoint authorization as Markdown capture; successful retry receipts
 update the original native slot without allowing an older attempt to overwrite it.
+Interrupted source retries settle their confirmed reserved attempt without reading
+the source again; unknown submissions still reconcile their original receipt.
+Codex history projection retains response media before the RPC frame is released,
+including when authority checks add asynchronous continuations. Socket closure and
+cancellation also end pending source authorization before shutdown joins it.

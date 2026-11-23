@@ -9,7 +9,7 @@ import { openControllerLifecycleStore } from "../../../../src/commands/controlle
 import { createControllerCaptureBridge } from "../../../../src/commands/controller/media/capture.js";
 import { waitForImageHistory } from "../../../../src/commands/controller/relay.js";
 import { migrateDirectCaptureState } from "../../../../src/commands/controller/media/capture-migration.js";
-import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError } from "../../../../src/commands/controller/media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError, ImageCaptureRetrySettledError, ImageCaptureRetryUnknownError } from "../../../../src/commands/controller/media/capture-error.js";
 import { createMarkdownCaptureCoordinator } from "../../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../../src/commands/controller/media/image-validation.js";
 import type { ControllerLaunchTicket } from "../../../../src/commands/controller/launch-ticket.js";
@@ -223,6 +223,26 @@ test("native retry admits only the current original request and never rereads an
   expect(reads).toBeGreaterThan(before);
   expect(f.coordinator.get(request.occurrence.imageId)?.sourceAdmission).toMatchObject({ attemptId, validated: result });
   await expect(f.coordinator.stageNative(request, new AbortController().signal)).rejects.toThrow("attempt conflict");
+});
+
+test.each([false, true])("interrupted native retry settles its reserved attempt without rereading (lost receipt=%s)", async lost => {
+  let checkpoints = 0;
+  const f = await fixture(() => { checkpoints++; }), original = registerNative(f);
+  await f.coordinator.stageNative(original, new AbortController().signal);
+  const attemptId = randomUUID(), retry = { ...original, attemptId }, record = f.coordinator.get(original.occurrence.imageId)!;
+  f.journal.markdownStore.put("source", original.occurrence.imageId, { ...record, request: retry, started: true, phase: "reading", sourceAdmission: null, sourceCleanup: null, error: null, receipt: null });
+  f.journal.bindOnlineMode("relay", f.journal.getHistoryContentPolicy());
+  f.receipts.set(original.captureId, { captureId: original.captureId, attemptId, revision: "1", occurrence: original.occurrence, state: "reserved", resourceId: randomUUID(), resource: null, error: null });
+  const fence = { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1", connectionEpoch: "1" };
+  const bridge = createControllerCaptureBridge({ journal: f.journal, beforeCapture: async () => {}, provider: () => null, writable: () => true, capture: f.capture, relayMode: () => true, currentFence: () => fence, currentAcknowledgedSequence: () => f.journal.getLastSourceSequence(), sourceEpoch: f.ticket.executionId, retrySource: (request, signal) => f.coordinator.retry(request, signal) });
+  const before = checkpoints; await rm(path.join(f.home, "original.png"));
+  if (lost) f.setLost();
+  await expect(bridge.retry({ captureId: original.captureId, attemptId }, new AbortController().signal)).rejects.toBeInstanceOf(lost ? ImageCaptureRetryUnknownError : ImageCaptureRetrySettledError);
+  expect(f.journal.getImageCaptureSubmission(original.captureId, attemptId)).toMatchObject({ request: original, attemptId, outcome: { kind: "failed", error: { code: "source_unavailable" } } });
+  expect(f.receipts.get(original.captureId)).toMatchObject({ attemptId, state: "failed", error: { code: "source_unavailable" } });
+  if (lost) await expect(bridge.retry({ captureId: original.captureId, attemptId }, new AbortController().signal)).rejects.toBeInstanceOf(ImageCaptureRetrySettledError);
+  expect(f.calls.filter(call => call === "submit")).toHaveLength(1);
+  expect(checkpoints).toBe(before);
 });
 
 test("native source cancellation joins the authorized writer and recovery never reopens it", async () => {

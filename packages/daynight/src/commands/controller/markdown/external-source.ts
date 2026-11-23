@@ -128,7 +128,7 @@ export interface ExternalImagePolicyOptions {
 const policies = new WeakMap<object, ExternalImagePolicyOptions>();
 async function authorized<T>(policy: ExternalImagePolicyOptions | undefined, signal: AbortSignal, action: () => T): Promise<T> {
   for (;;) {
-    checkSignal(signal); await policy?.waitCapture?.(signal); checkSignal(signal);
+    checkSignal(signal); if (policy?.waitCapture) await awaitAdmission(() => policy.waitCapture!(signal), signal); checkSignal(signal);
     try { policy?.assertCapture?.(); }
     catch (error) { if (policy?.waitCapture && isRetryableCaptureRefusal(error)) continue; throw error; }
     return action();
@@ -161,32 +161,39 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
   await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address }), signal);
   const socket = await authorized(policy, signal, () => { onStart(); const socket = connect({ host: address, port, family: isIP(address) === 6 ? 6 : 4, autoSelectFamily: false }); socket.on("error", () => {}); return socket; });
   let current: Socket = socket;
+  const connection = new AbortController();
+  const failConnection = (error?: Error) => { if (!connection.signal.aborted) connection.abort(error instanceof ExternalImageSourceError ? error : failure("source_unavailable")); };
+  const closed = () => failConnection();
+  const watch = (candidate: Socket) => { candidate.once("close", closed); candidate.once("error", failConnection); };
+  const unwatch = (candidate: Socket) => { candidate.off("close", closed); candidate.off("error", failConnection); };
+  watch(socket); if (socket.destroyed) failConnection();
+  const connectionSignal = AbortSignal.any([signal, connection.signal]);
   const abort = () => current.destroy(signal.reason instanceof Error ? signal.reason : failure("source_cancelled"));
   signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(() => current.destroy(failure("source_timeout")), 5000);
+  const timeout = setTimeout(() => { const error = failure("source_timeout"); failConnection(error); current.destroy(error); }, 5000);
   const connected = (candidate: Socket, event: "connect" | "secureConnect") => new Promise<void>((resolve, reject) => {
     const ok = () => { candidate.removeListener("error", bad); resolve(); }, bad = (error: Error) => { candidate.removeListener(event, ok); reject(error); };
     candidate.once(event, ok); candidate.once("error", bad);
   });
   try {
-    checkSignal(signal); await connected(socket, "connect");
+    checkSignal(connectionSignal); await awaitAdmission(() => connected(socket, "connect"), connectionSignal);
     if (socket.readableHighWaterMark > 65536 || socket.writableHighWaterMark > 65536) throw failure("policy_restricted");
     assertExternalImageSocketPeer(socket, address, boundary?.address);
-    await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), signal);
-    await assertPolicy(policy, signal);
+    await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), connectionSignal);
+    await assertPolicy(policy, connectionSignal);
     if (url.protocol === "https:") {
-      const tls = await authorized(policy, signal, () => { const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) }); tls.on("error", () => {}); current = tls; return tls; });
-      await connected(tls, "secureConnect");
+      const tls = await authorized(policy, connectionSignal, () => { if (socket.destroyed) throw failure("source_unavailable"); const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) }); tls.on("error", () => {}); current = tls; watch(tls); return tls; });
+      await awaitAdmission(() => connected(tls, "secureConnect"), connectionSignal);
       if (tls.readableHighWaterMark > 65536 || tls.writableHighWaterMark > 65536) throw failure("policy_restricted");
       if (!tls.authorized || (tls.alpnProtocol && tls.alpnProtocol !== "http/1.1")) throw failure("source_forbidden");
       assertExternalImageSocketPeer(tls, address, boundary?.address);
-      await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: tls.remoteAddress! }), signal);
+      await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: tls.remoteAddress! }), connectionSignal);
       // Node skips the identity callback when no SNI is supplied for an IP SAN.
       const identityError = checkServerIdentity(host, tls.getPeerCertificate()); if (identityError) throw failure("source_forbidden");
     }
-    checkSignal(signal); return current;
+    checkSignal(connectionSignal); if (current.destroyed) throw failure("source_unavailable"); return current;
   } catch (error) { await destroyAndJoin(current); if (current !== socket) await destroyAndJoin(socket); throw error; }
-  finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); }
+  finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); unwatch(current); if (current !== socket) unwatch(socket); }
 }
 function validateResponseHeaders(response: IncomingMessage): { length: number | null; contentType: string | null } {
   if (response.rawHeaders.length > 200) throw failure("source_unavailable");
@@ -264,19 +271,31 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       }
       if (!active) throw lastError ?? failure("source_unavailable");
       const socket = active, agent = new Agent({ keepAlive: false, maxSockets: 1 });
+      const connection = new AbortController();
+      const closed = () => { if (!connection.signal.aborted) connection.abort(failure("source_unavailable")); };
+      socket.once("close", closed); socket.once("error", closed); if (socket.destroyed) closed();
+      const connectionSignal = AbortSignal.any([signal, connection.signal]);
       // An explicit dedicated Agent prevents agent:false from discarding createConnection.
       agent.createConnection = () => socket;
       let response: IncomingMessage | null = null;
       try {
-        await assertPolicy(policy, signal);
-        response = await authorized(policy, signal, () => new Promise<IncomingMessage>((resolve, reject) => {
+        await assertPolicy(policy, connectionSignal);
+        response = await authorized(policy, connectionSignal, () => new Promise<IncomingMessage>((resolve, reject) => {
+          if (socket.destroyed) { reject(failure("source_unavailable")); return; }
           const req = request({ protocol: "http:", hostname, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), path: url.pathname + url.search, method: "GET", agent, maxHeaderSize: 32768, insecureHTTPParser: false, headers: { Host: url.host, Accept: "image/png,image/jpeg,image/webp,image/gif,image/avif", "Accept-Encoding": "identity", "User-Agent": "Daynight-Image-Source/1", Connection: "close" }, signal });
           req.maxHeadersCount = 0;
-          const timeout = setTimeout(() => req.destroy(failure("source_timeout")), Math.min(8000, Math.max(1, 30000 - (performance.now() - started!))));
-          req.once("response", incoming => { clearTimeout(timeout); resolve(incoming); });
-          req.once("error", error => { clearTimeout(timeout); reject(error); });
-          req.once("upgrade", incoming => { clearTimeout(timeout); incoming.destroy(); req.destroy(failure("source_unavailable")); reject(failure("source_unavailable")); });
-          req.once("connect", incoming => { clearTimeout(timeout); incoming.destroy(); reject(failure("source_unavailable")); });
+          let settled = false;
+          const cleanup = () => { clearTimeout(timeout); connectionSignal.removeEventListener("abort", onAbort); };
+          const fail = (error: Error) => { if (settled) return; settled = true; cleanup(); req.destroy(error); reject(error); };
+          const onAbort = () => fail(connectionSignal.reason instanceof Error ? connectionSignal.reason : failure("source_cancelled"));
+          const timeout = setTimeout(() => fail(failure("source_timeout")), Math.min(8000, Math.max(1, 30000 - (performance.now() - started!))));
+          connectionSignal.addEventListener("abort", onAbort, { once: true });
+          req.once("response", incoming => { if (settled) { incoming.destroy(); return; } settled = true; cleanup(); resolve(incoming); });
+          req.once("error", fail);
+          req.once("close", () => fail(failure("source_unavailable")));
+          req.once("upgrade", incoming => { incoming.destroy(); fail(failure("source_unavailable")); });
+          req.once("connect", incoming => { incoming.destroy(); fail(failure("source_unavailable")); });
+          if (connectionSignal.aborted) { onAbort(); return; }
           req.end();
         }));
         const { length, contentType } = validateResponseHeaders(response), status = response.statusCode;
@@ -318,7 +337,7 @@ export async function copyExternalImage(input: { url: string; outputPath: string
         if (end.dev !== stat.dev || end.ino !== stat.ino || finalStat.nlink !== 1n || finalStat.size !== BigInt(bytes)) throw failure("policy_restricted");
         await handle.sync(); await handle.chmod(0o400); await assertPolicy(policy, signal);
         return { inputPath: input.outputPath, byteLength: String(bytes), sha256: hash.digest("hex"), declaredMediaType };
-      } finally { response?.destroy(); agent.destroy(); await destroyAndJoin(socket); active = null; }
+      } finally { socket.off("close", closed); socket.off("error", closed); response?.destroy(); agent.destroy(); await destroyAndJoin(socket); active = null; }
     }
     throw failure("source_forbidden");
   } catch (error) {
