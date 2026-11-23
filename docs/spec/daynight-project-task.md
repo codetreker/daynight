@@ -355,9 +355,6 @@ daynight task list --status in_progress
 daynight task list --ready --assigned-to me
 daynight task list --assigned-to unassigned --json
 daynight task show <task-id>
-daynight task step list <task-id> [--json] [--project <project-id>]
-daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
-daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> --title "新的标题"
 daynight task update <task-id> --allow-agents true --if-version 3
 daynight task update <task-id> --description ""
@@ -477,9 +474,7 @@ CLI 自动读取并校验全部分页，保留服务顺序，所有页成功前�
 
 ## PT8. 输出、分页与错误
 
-Steps 使用独立的 `task step list/show` 读取与 `task step add`，具体资源由[Steps 资源契约](daynight-task-steps.md#cli-读取)拥有。list 一次读取完整有序资源；show 按 Task 内完整短 ID 读取单项。显式 project 直接指定路径，不执行隐藏的项目 GET；帮助与参数校验先于配置、Git 和网络。响应校验必填字段、精确父版本、匹配作用域、规范短 ID、集合内唯一性、状态、文本与时间，保持服务顺序，不修复或丢弃坏项。
-
-Step Add 的显式版本仅提交一次 POST，默认先 GET Steps 再提交一次 POST，预读失败不写入。提交前确定的短 ID 与独立请求 UUID 保持；成功核对完整资源、Location、父版本 +1、目标字段/新时间及位置。未知结果最多在仍有效的同一操作内以原 UUID 的 `.r1` 核对一次当前事实，仍非零退出且不输出成功资源；不自动重放、换 ID 或创建脱离核对。确认后本地清理或输出失败不丢失确认事实。详细结果和容量 details 由 [Steps 契约](daynight-task-steps.md#cli-添加与结果确认)拥有。
+CLI 不提供 Steps 专用操作。旧 `task step` 调用按未知命令明确非零退出，并在配置、Git 和网络之前终止；帮助、补全与公开手册均不发布旧入口。普通 Task 查询、修改、附件、Thread 与 Session 流程保持其原有契约。
 
 普通元数据查询提供可读结果；`project list` 和 `task list` 自动遍历全部匹配分页，
 `task ready` 只读取所选的前 N 项。每个操作在其全部必要读取、结构验证、渲染及
@@ -510,8 +505,6 @@ externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。
 版本、创建/更新时间、明确可空的 assignedTo 和 `startedAt`、`completedAt`、`cancelledAt`；图JSON 另外保留顶层 `observedAt`。
 这些计时字段不增加命令参数或改变可读输出的字段选择；外部依赖数组作为已知字段保留。
 ready 不添加分页 envelope，空列表为 `[]`。
-
-Step list 的可读结果另含父版本、总数与保存顺序的编号/完整短 ID/状态/完整标题；show 完整呈现单项标题、说明、状态及两端时间，不截断说明。两者沿用相同终端转义。Step list 的 JSON 为完整 StepsResource，show 为完整 StepResource，均保留项目/任务作用域、精确父版本及完整记录，不采用 Task 列表省略 description 的投影。
 
 JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用终端显示转义或插入诊断文字。写操作
 成功后输出服务确认的资源 ID 及结果；服务未确认成功时不得输出成功结果。
@@ -563,18 +556,17 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出由 CLI 模块验证，服务规则由 Go 模块验证 |
 | V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出由 CLI 模块验证，服务规则由 Go 模块验证 |
 | V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段由 CLI 模块验证，服务规则由 Go 模块验证 |
-| V17 | CLI 模块验证 Step list/show 的请求与完整输出，Go 模块验证持久读取；独立产品 E2E 验证一条普通 Step 双端读写；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
-| V18 | CLI 模块验证 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果；受控丢响应后仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认；Go 模块验证真实提交与响应丢失的持久结果；帮助/补全/手册与实际能力一致 |
+| V17 | 打包 CLI 的 Task 帮助、补全与可发现手册不包含 Steps；旧命令在配置/Git/网络前明确失败；普通 Task、Thread 和附件流程保持，已安装 skill 沿用现有更新机制刷新 |
 
 配置、HTTP、仓库关联与 Project/Task 行为由 CLI 模块测试承担；现有测试
 尚未逐项证明所有要求。安装入口验证
 打包、资源和 launcher；真实 shell 入口验证实际补全接入。当前入口不执行完整
 安装版行为矩阵或真实 Go 服务联调，历史结果不能代替当前源码的验收。
-V1–V18 继续约束完整 CLI 交付。CLI 模块测试使用受控 HTTP、真实 Git、文件锁和
+V1–V17 继续约束完整 CLI 交付。CLI 模块测试使用受控 HTTP、真实 Git、文件锁和
 必要本地进程；Git、锁与文件替换须有 Linux、macOS ARM64、Windows 原生证据。
 Go 模块以隔离 PostgreSQL 验证持久化、重启、版本竞争和服务规则。产品 E2E
 使用同一源码版本的安装 CLI、生产 Web、真实 Go 服务及隔离 PostgreSQL，仅验证
-正常登录、顺序创建与双端读写，并各选择一条 Step、讨论和附件普通成功链路。
+正常登录、顺序创建与双端读写，并各选择一条讨论和附件普通成功链路。
 
 生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和累计响应
 256 MiB，并由 CLI 模块测试单独断言。`bot list` 的单响应上限采用现有累计预算
