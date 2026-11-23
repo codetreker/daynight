@@ -458,6 +458,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const ids = statuses.map((_, index) => `00000000-0000-4000-8000-${String(60 + index).padStart(12, '0')}`);
     const platforms = ['windows', 'linux', 'macos', null, null] as const;
     const overdueId = '00000000-0000-4000-8000-000000000065', blockedId = '00000000-0000-4000-8000-000000000066';
+    const goalId = '00000000-0000-4000-8000-000000000067', memberId = '00000000-0000-4000-8000-000000000068';
     const details = statuses.map((status, index) => detailFixture(projectId, ids[index]!, {
       title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0, requiredPlatform: platforms[index] ?? null,
       completedAt: status === 'done' ? '2026-10-22T09:59:50Z' : null,
@@ -468,6 +469,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     details.push(detailFixture(projectId, taskId, { title: 'Proposed chain', version: 5n, status: 'proposed', ready: false, allowAgents: true, dependsOn: [ids[3]!, overdueId], externalDependsOn: [ids[3]!, overdueId] }));
     details.push(detailFixture(projectId, successorId, { title: 'Proposed successor', version: 5n, status: 'proposed', ready: false, dependsOn: [taskId], blockedBy: [taskId] }));
     details.push(detailFixture(projectId, blockedId, { title: 'Blocked task', version: 5n, dependsOn: [taskId], externalDependsOn: [taskId], ready: false, blockedBy: [taskId] }));
+    details.push(detailFixture(projectId, goalId, { title: 'Typography Goal', version: 5n, type: 'goal', ready: false }));
+    details.push(detailFixture(projectId, memberId, { title: 'Not ready Goal member · 未就绪成员长标题 '.repeat(5), version: 5n, parentId: goalId, dependsOn: [taskId], externalDependsOn: [taskId], ready: false, blockedBy: [taskId] }));
     const state = await install(page, false, false, 'Reading task', details);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/projects/${projectId}`);
@@ -516,31 +519,59 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await expectTextContrast(overdue.locator('.task-agent-permission'));
     await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
-    await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', '14px');
+    await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', '12px');
     await expect(blocked.locator('.task-ready')).toHaveCount(0);
+    const expectRowFits = async (row: Locator) => {
+      expect(await row.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
+        const status = element.querySelector('.task-row-status')!.getBoundingClientRect();
+        const badges = [...element.querySelectorAll('.task-row-primary-status, .task-ready, .graph-blocked-badge')].map(badge => badge.getBoundingClientRect());
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        return element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth &&
+          separate(title, status) && badges.every((badge, index) => badge.left >= bounds.left && badge.right <= bounds.right && badge.top >= bounds.top && badge.bottom <= bounds.bottom && badges.slice(index + 1).every(other => separate(badge, other)));
+      })).toBe(true);
+    };
     const ready = taskRow(page.locator(`#standalone-task-${ids[1]}`));
     for (const [rootSize, smallSize, titleSize] of [['16px', '12px', '14px'], ['24px', '18px', '21px']] as const) {
       await page.evaluate(size => { document.documentElement.style.fontSize = size; }, rootSize);
       await expect(ready.locator('.task-ready')).toHaveCSS('font-size', smallSize);
       await expect(ready.locator('.task-row-primary-status')).toHaveCSS('font-size', smallSize);
       await expect(ready.locator('.task-row-title')).toHaveCSS('font-size', titleSize);
-      await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', titleSize);
-      for (const row of [ready, blocked]) {
-        expect(await row.evaluate(element => {
-          const bounds = element.getBoundingClientRect();
-          const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
-          const status = element.querySelector('.task-row-status')!.getBoundingClientRect();
-          const badges = [...element.querySelectorAll('.task-row-primary-status, .task-ready, .graph-blocked-badge')].map(badge => badge.getBoundingClientRect());
-          const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
-          return element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth &&
-            separate(title, status) && badges.every((badge, index) => badge.left >= bounds.left && badge.right <= bounds.right && badge.top >= bounds.top && badge.bottom <= bounds.bottom && badges.slice(index + 1).every(other => separate(badge, other)));
-        })).toBe(true);
-      }
+      await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', smallSize);
+      await expect(blocked.locator('.task-row-primary-status')).toHaveCSS('font-size', smallSize);
+      for (const row of [ready, blocked]) await expectRowFits(row);
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     const paused = taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge');
     await expect(paused).toHaveCSS('color', roleColors.attention[3]);
     await expect(paused).toHaveCSS('font-size', '12px');
+    await page.getByRole('tab', { name: locale === 'en' ? 'Goals' : 'Goal', exact: true }).click();
+    const goal = page.locator(`[data-goal-id="${goalId}"]`), toggle = goal.locator('.goal-list-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const member = taskRow(page.locator(`#chain-task-goal-${goalId}-${memberId}`));
+    const notReady = member.locator('.graph-blocked-badge');
+    await expect(notReady).toBeVisible();
+    await expect(notReady).toHaveText(locale === 'en' ? 'Not ready' : '未就绪');
+    await expect(member.locator('.task-row-primary-status')).toHaveText(locale === 'en' ? 'To do' : '待处理');
+    await expect(member.locator('.task-ready')).toHaveCount(0);
+    for (const [rootSize, badgeSize] of [['16px', '12px'], ['24px', '18px']] as const) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = size; }, rootSize);
+      await expect(notReady).toHaveCSS('font-size', badgeSize);
+      await expect(member.locator('.task-row-primary-status')).toHaveCSS('font-size', badgeSize);
+      await expectRowFits(member);
+      for (const hover of [false, true]) {
+        if (hover) await member.hover(); else await page.mouse.move(0, 0);
+        await expect(member).toHaveCSS('background-color', roleColors.todo[hover ? 1 : 0]);
+        await expect(notReady).toHaveCSS('color', roleColors.attention[3]);
+        await expect(notReady).toHaveCSS('background-color', roleColors.attention[0]);
+        await expect(notReady).toHaveCSS('border-top-color', roleColors.attention[2]);
+        await expectTextContrast(notReady);
+      }
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
     const chain = page.locator(`[data-chain-id="${taskId}"]`), header = chain.locator('.goal-header');
     await expect(header).toHaveCSS('background-color', roleColors.proposed[0]);
@@ -564,6 +595,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const disabledNode = page.locator(`.react-flow__node[data-id="${successorId}"]`);
     await expect(disabledNode.locator('.task-agent-permission')).toHaveCount(0);
     await expect(disabledNode.locator('.task-node-body')).not.toHaveAccessibleName(new RegExp(locale === 'en' ? 'Automatic execution' : '自动执行'));
+    for (const [rootSize, badgeSize] of [['16px', '14px'], ['24px', '21px']] as const) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = size; }, rootSize);
+      await expect(disabledNode.locator('.graph-blocked-badge')).toHaveCSS('font-size', badgeSize);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await page.mouse.move(0, 0);
     await expect(node).toHaveCSS('background-color', roleColors.proposed[0]);
     await body.click();
