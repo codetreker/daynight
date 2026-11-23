@@ -19,8 +19,54 @@ func TestSubtreeDeletionStore(t *testing.T) {
 	suite.run(t, "OrdinaryRoot", func(t *testing.T, db *postgres.Store) { testSubtreeDeletion(t, db, false) })
 	suite.run(t, "GoalRoot", func(t *testing.T, db *postgres.Store) { testSubtreeDeletion(t, db, true) })
 	suite.run(t, "Rollback", testSubtreeDeletionRollback)
+	suite.run(t, "VisibilityHeaderWithoutTaskLock", testDeletionVisibilityHeaderWithoutTaskLock)
 	suite.run(t, "ResourceFirst", testSubtreeDeletionResourceFirst)
 	suite.run(t, "DeletionFirst", testSubtreeDeletionFirst)
+}
+
+func testDeletionVisibilityHeaderWithoutTaskLock(t *testing.T, db *postgres.Store) {
+	project := readerProject(t, db, 1)
+	goal := readerTask(t, db, project.ID, 20, model.TaskCancelled)
+	child := readerTask(t, db, project.ID, 10, model.TaskCancelled)
+	deleted := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	readerExec(t, db, `UPDATE tasks SET type='goal',deleted_at=$2 WHERE id=$1`, goal.ID, deleted)
+	readerExec(t, db, `UPDATE tasks SET parent_id=$2,ancestor_deleted_at=$3 WHERE id=$1`, child.ID, goal.ID, deleted)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	updater, err := db.Pool.Begin(ctx)
+	mustOK(t, err)
+	defer updater.Rollback(context.Background())
+	_, err = updater.Exec(ctx, `UPDATE tasks SET version=version+1 WHERE id=$1`, child.ID)
+	mustOK(t, err)
+	reader, err := db.Pool.Begin(ctx)
+	mustOK(t, err)
+	defer reader.Rollback(context.Background())
+	writer := taskdao.NewWriter(reader, project.ID)
+	// Authorization must read the committed visibility while another operation
+	// owns the row; only the later ordered deletion plan may wait for that lock.
+	header, err := writer.TaskVisibilityHeader(ctx, child.ID)
+	mustOK(t, err)
+	if header.ProjectID != project.ID || header.ID != child.ID || header.Type != model.TaskTypeTask || header.Version != child.Version || header.DeletedAt == nil || !header.DeletedAt.Equal(deleted) {
+		t.Fatalf("inherited visibility header under concurrent update: %+v", header)
+	}
+	physical, err := writer.TaskVisibilityHeader(ctx, goal.ID)
+	mustOK(t, err)
+	if physical.ID != goal.ID || physical.Type != model.TaskTypeGoal || physical.DeletedAt == nil || !physical.DeletedAt.Equal(deleted) {
+		t.Fatalf("physical tombstone header: %+v", physical)
+	}
+	if _, err := writer.TaskVisibilityHeader(ctx, readerID(999)); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing visibility target: %v", err)
+	}
+	if _, err := taskdao.NewWriter(reader, readerID(998)).TaskVisibilityHeader(ctx, child.ID); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("visibility header escaped project: %v", err)
+	}
+	mustOK(t, updater.Rollback(ctx))
+	probe, err := db.Pool.Begin(ctx)
+	mustOK(t, err)
+	defer probe.Rollback(context.Background())
+	// Keep the authorization transaction open to detect any retained row lock.
+	_, err = probe.Exec(ctx, `SELECT id FROM tasks WHERE id=$1 FOR UPDATE NOWAIT`, child.ID)
+	mustOK(t, err)
 }
 
 func testSubtreeDeletion(t *testing.T, db *postgres.Store, goal bool) {
