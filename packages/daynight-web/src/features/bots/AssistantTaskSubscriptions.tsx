@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } fro
 import { ApiError, listProjects } from '../../api/client';
 import { assistantTaskInboxUrl, type AssistantTask } from '../../api/assistant-tasks';
 import type { Project } from '../../api/types';
-import { getWebhook, listWebhooks, type WebhookActiveEndpoint, type WebhookAdmission, type WebhookEventType, type WebhookOwner, type WebhookSubscriptionInput } from '../../api/webhooks';
+import { getWebhook, getWebhookCatalog, listWebhooks, webhookEventTypes, type WebhookCatalog, type WebhookActiveEndpoint, type WebhookAdmission, type WebhookEventType, type WebhookOwner, type WebhookSubscriptionInput } from '../../api/webhooks';
 import { webhookUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -41,7 +41,6 @@ const zh: typeof en = {
 };
 const useMessages = () => useI18n().locale === 'zh-CN' ? zh : en;
 
-const EVENT_TYPES: readonly WebhookEventType[] = ['task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted'];
 const idle: WebhookIntentState = { phase: 'idle', prepared: null, result: null, error: null, reconciling: false, persistenceError: null };
 const inertSubscribe = () => () => {};
 
@@ -57,13 +56,13 @@ type Selection = Readonly<Record<string, readonly WebhookEventType[]>>;
 // appears once.
 const selectionOf = (endpoint: WebhookActiveEndpoint | null): Selection => {
   const result: Record<string, WebhookEventType[]> = {};
-  for (const item of endpoint?.subscriptions ?? []) result[item.projectId] = EVENT_TYPES.filter(event => result[item.projectId]?.includes(event) || item.eventTypes.includes(event));
+  for (const item of endpoint?.subscriptions ?? []) result[item.projectId] = webhookEventTypes.filter(event => result[item.projectId]?.includes(event) || item.eventTypes.includes(event));
   return result;
 };
 const serverCode = (error: unknown, code: string) => error instanceof ApiError && error.kind === 'server' && error.code === code;
 const errorCode = (error: unknown) => error instanceof ApiError && error.code ? ` ${error.code}` : '';
 
-type Directory = { readonly projects: readonly Project[]; readonly endpoint: WebhookActiveEndpoint | null };
+type Directory = { readonly catalog: WebhookCatalog; readonly projects: readonly Project[]; readonly endpoint: WebhookActiveEndpoint | null };
 
 const pages = async <T,>(read: (cursor: string | null) => Promise<{ readonly items: readonly T[]; readonly nextCursor: string | null }>): Promise<T[]> => {
   const items: T[] = [], seen = new Set<string>();
@@ -81,12 +80,13 @@ const webhookAdmission = (scope: TaskCacheScope): WebhookAdmission => ({ userId:
 /** Reads the accessible projects and the user's personal endpoint created for the inbox, if any. */
 async function loadDirectory(scope: TaskCacheScope, clientKey: string, signal: AbortSignal): Promise<Directory> {
   const admission = webhookAdmission(scope), personal: WebhookOwner = { kind: 'personal', id: scope.userId };
+  const catalog = await getWebhookCatalog(signal, admission);
   const projects = await pages(cursor => listProjects({ limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
   const summaries = await pages(cursor => listWebhooks(personal, { clientKey, limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission));
   // The service keeps the key unique among live endpoints, so more than one match breaks its contract.
   if (summaries.length > 1) throw new ApiError('protocol');
   const detail = summaries[0] === undefined ? null : await getWebhook(personal, summaries[0].id, signal, admission);
-  return { projects, endpoint: detail?.lifecycle === 'active' && detail.clientKey === clientKey ? detail : null };
+  return { catalog, projects, endpoint: detail?.lifecycle === 'active' && detail.clientKey === clientKey ? detail : null };
 }
 
 /**
@@ -168,7 +168,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
   });
   const toggleEvent = (projectId: string, event: WebhookEventType, checked: boolean) => edit(projects => {
     const events = projects[projectId] ?? [];
-    return { ...projects, [projectId]: checked ? EVENT_TYPES.filter(item => item === event || events.includes(item)) : events.filter(item => item !== event) };
+    return { ...projects, [projectId]: checked ? webhookEventTypes.filter(item => item === event || events.includes(item)) : events.filter(item => item !== event) };
   });
   const save = () => {
     if (data === null) return;
@@ -215,7 +215,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
             return <div key={id} className="assistant-task-subscription-project">
               <label><input type="checkbox" checked={events !== undefined} onChange={event => toggleProject(id, event.target.checked)} /><span>{name}</span></label>
               {events === undefined ? null : <div className="assistant-task-subscription-checks" role="group" aria-label={m.eventsFor(name)}>
-                {EVENT_TYPES.map(event => <label key={event}><input type="checkbox" checked={events.includes(event)} onChange={changed => toggleEvent(id, event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
+                {data.catalog.items.map(item => item.key).toSorted((left, right) => webhookEventTypes.indexOf(left) - webhookEventTypes.indexOf(right)).map(event => <label key={event}><input type="checkbox" checked={events.includes(event)} onChange={changed => toggleEvent(id, event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
               </div>}
             </div>;
           })}
