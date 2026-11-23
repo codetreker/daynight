@@ -20,9 +20,10 @@ Task and Thread operations. Historical events retain the common decoder.
 The existing update path refreshes installed User and current-worktree Project
 skills; first installations and other Project copies use skill installation.
 Ordinary changes preserve the package version and use the existing release
-workflow for publication. HTTP and Web Steps lifecycles remain owned by their
-respective implementations; [MCP retirement](2026-11-23-retire-mcp-task-steps.md)
-separately removes its tools and dedicated manual.
+workflow for publication. REST Steps remains available. The
+[Web retirement](2026-11-23-retire-web-task-steps.md) removes its Steps workspace,
+and [MCP retirement](2026-11-23-retire-mcp-task-steps.md) removes its tools and
+dedicated manual.
 
 The CLI-specific [text process proof](../testing/2026-11-10-step-cli-text-process-proof.md),
 [layered test migration](../testing/2026-11-10-step-cli-test-layered-removal.md)
@@ -45,6 +46,6 @@ processing of stored records.
 CLI users receive an explicit failure for retired commands. Updating a CLI also
 refreshes its existing installed guidance through the established mechanism.
 Steps-specific tests disappear with the behavior they own; shared validations
-must remain covered through ordinary callers. The CLI decision leaves server
-routes, Web behavior and persisted Steps data with their respective owners;
-MCP tools retire under their separate decision.
+must remain covered through ordinary callers. The CLI decision leaves REST
+routes and persisted Steps data with their respective owners; Web and MCP entry
+points retire under their separate decisions.

@@ -28,7 +28,7 @@ flowchart LR
 
 Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服务的消息关联与原件是页面历史来源。原生事件按同一 sourceKey 重放，只更新原出现；historyEpoch、分页、工具折叠和网络重连不分配新 imageId。
 
-出现采用两个持久阶段。Controller 先保存 entry/出现位置与原 request，通过 sourceSeq/outbox 的 timeline upsert 取得覆盖该位置的服务 ACK，并实际上传必要完整历史；当前来源权限和本机容量有效时读取并封存 bytes，再以原 request、当前 attempt 和 frozen outcome 直接 submit。服务核验已确认位置、revision/hash、sourceKey、可信 nativeSource 与原身份；source IO 不等待 register 或 reserved。ACK 未知保留 outbox 且不先读源；submit 未知先查询原 capture，只有当前授权、Session 和 fence 有效且明确 capture_not_found 才重放同一冻结业务与封存字节。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 和 resource outcome submit，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
+出现采用两个持久阶段。Controller 先保存 entry/出现位置与原 request，通过 sourceSeq/outbox 的 timeline upsert 取得覆盖该位置的服务 ACK；旧在线模式还需实际上传必要完整历史。当前来源权限和本机容量有效时读取并封存 bytes，再以原 request、当前 attempt 和 frozen outcome 直接 submit。旧模式由服务核验完整历史中的位置、revision/hash、sourceKey、可信 nativeSource 与原身份；relay 模式由 Controller 核对位置和当前 ACK，服务核验当前 source epoch 与确认上界，source IO 不等待 register 或 reserved。ACK 未知保留 outbox 且不先读源；submit 未知先查询原 capture，只有当前授权、Session 和 fence 有效且明确 capture_not_found 才重放同一冻结业务与封存字节。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 和 resource outcome submit，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
 
 资源与已确认出现的提交原子可见；原生接受和消息关联尚未结算的意图持有原 pin 和关联身份，不广播虚构消息。终结前必须处理全部待挂接关联，不能把资源未出现在最后显示页误当无引用。停止后的完整同步先确认原位置，再按原 stopped 权限登记已经发生的来源与已有 validated 结果，不重新启动来源 IO。冻结的记录来源索引不保存正文、路径或 Base64，须与 timeline 的原出现和 resource hash 相符；Controller 已丢失且只有未上报本地映射时明确 context_unavailable，不能伪造恢复。
 
@@ -70,7 +70,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 | 对象 | 上限、计量与结果 |
 | --- | --- |
 | 新图片 | 每图 10485760 bytes；输入最多 8 张且合计 20971520 bytes，原生更小限制取交集。 |
-| Session 实际内容 | `T+I+R+D+M ≤ 134217728` bytes；各项采用实际已接纳内容或最终事务中的实测候选。 |
+| Session 实际内容 | 旧在线模式及最终归档：`T+I+R+D+M ≤ 134217728` bytes；各项采用实际已接纳内容或最终事务中的实测候选。relay 在线模式只按不同 available resourceId 的原件计量，上限 1073741824 bytes、1000 项。 |
 | schema3 timeline | 完整 UTF-8 编码最多 134217728 bytes、100000 entries；仍须满足 Session 总量。schema1/2 保持旧 67108864 bytes 边界。 |
 | manifest | 原字节最多 4194304、resources 最多 1000 项；available 项引用外置 blob，失败项没有 blob。 |
 | Controller 本地 | 不设本地累计容量或卷空闲准入；真实存储错误独立于服务端内容限制；详见[公共协议与存储设计](session-image-contracts.md)。 |
@@ -78,13 +78,13 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 `T` 是完整规范 `{"entries":[...]}` 的字节数，已接受空正文为 14；完整索引可计算 `14 + sum(entry.b) + max(0,n−1)`。`I` 是规范 entries/occurrences 索引的字节数，不含 epoch、来源截止点等协调状态。`R` 按不同 available resourceId 求实际原件长度，`D` 是按 resourceId 排序的已提交 descriptor 规范集合，`M` 是实际发布的 manifest 长度；缺少对应已接纳内容的分量为零。相同 resourceId 的多处引用只算一次原件，不同 resourceId 即使摘要相同也分别计量。临时副本、数据库内部空间及不含内容的控制记录不计入总量。
 
-完整历史由 Controller 在短 SQL 快照固定源身份和截止点后上传；显示页或尚未上传的本机正文不能代替完整测量。服务保存 entry 的身份、序号、修订、摘要、规范长度和 occurrence 索引，最终 timeline 按条核验同一闭包，不重复计量正文。活动 checkpoint 的同 epoch 序号和修订不得回退；跨 epoch 使用准确的交接证明，不能比较无关联的裸序号。每次实际 resource、history 或 manifest 发布的最终短事务锁定 Session，重读 ledger、资源和已发布 manifest，用实测候选替换相应分量并原子保存事实与回执。manifest 仅 committed/verified 的长度作为既有值；提前登记长度不证明发布成功。网络、解码和文件操作在事务外完成。
+旧在线模式的活动历史及最终归档的完整历史由 Controller 在短 SQL 快照固定源身份和截止点后上传；显示页或尚未上传的本机正文不能代替完整测量。服务保存 entry 的身份、序号、修订、摘要、规范长度和 occurrence 索引，最终 timeline 按条核验同一闭包，不重复计量正文。活动 checkpoint 的同 epoch 序号和修订不得回退；跨 epoch 使用准确的交接证明，不能比较无关联的裸序号。每次实际 resource、history 或 manifest 发布的最终短事务锁定 Session，旧模式重读 ledger、资源和已发布 manifest，用实测候选替换相应分量并原子保存事实与回执。relay 在线图片发布在同一 Session 锁下查询 available 原件及候选，按原件字节与数量准入；确认回执重放不重复计量。最终归档仍按组合上限核算。manifest 仅 committed/verified 的长度作为既有值；提前登记长度不证明发布成功。网络、解码和文件操作在事务外完成。
 
 旧 prepare/register 保留身份、权限、来源与生命周期校验，容量申请不为未来内容预留字节或资源槽；其兼容 `reserved` 状态不证明占额。实际内容超过上限返回 `quota_exceeded`，实际磁盘失败按存储错误返回；已接纳内容不被截断或删除。文件已发布而数据库结果未知时保留原身份、路径及清理责任，沿原结果协调；确认重放不重复计量。独立媒体 lease 和实际清理屏障仍有效。
 
 ### 无活动账本的停止准备
 
-无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。该可空字段只提供存储与归档读取，当前不提供协商写入；策略的首次绑定必须在执行授权连接时完成，不能在停止准备后改变或补填。已有活动账本继续核对其已确认前缀。
+无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。新执行的策略在授权连接时与在线模式一同绑定，不能在停止准备后改变或补填；迁移前未绑定策略的旧执行保留空值。已有活动账本继续核对其已确认前缀。
 
 已绑定策略且无活动 bundle 时，服务读取 capture 库存核对最终正文中的已提交图片出现及其原 resourceId。`task_body` 的工具和 reasoning 图片仅在线保留；正文复用同一原件时保留其引用，其他 pin 和 lease 继续保护原件。读取租约仍持有待退休图片时，最终同步返回 `resource_busy`，保留引用并允许原文件重试。未结算的 capture 保持原状态，返回 `archive_incomplete`，不能封存或伪造缺图。停止后对账和提交已冻结图片结果的入口尚未实现；补充该能力须沿原 attempt、停止身份、实际提交证据和本机正文同步恢复，不得重新启动来源读取。
 
@@ -219,7 +219,9 @@ historyEpoch 沿既有 history key：非空白、合法 Unicode、无 NUL、UTF-
 
 PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久确认和时间边界；不能加入 JSON fence 或改成普通 timeline 显示页。syncId 是 Controller 为一份冻结本地文件生成的 UUID，首次 offset="0" 固定完整 byteLength/sha256；同 ID 不换文件，块可以跨任意合法 entry。
 
-活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。原生runtime在welcome取得currentFence，初始同步和events/sync ACK后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
+活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。旧模式的原生 runtime 在 welcome 取得 currentFence，初始同步和 events/sync ACK 后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
+
+relay 模式不建立 active bundle，活动 ledger 的 PUT 和状态 GET 明确拒绝；停止归档仍使用上述最终历史入口。当前 Controller 仍使用旧在线模式。
 
 活动 ledger 的状态 GET 与相同身份、offset、hash 和字节的 PUT 复用归档容量退避。仅精确的 HTTP 429 `resource_busy` 可重放；旧服务的早期容量拒绝可缺少 Task body 版本头，成功及其他需校验的响应仍须提供版本。每次请求最多 15 秒，同步轮次从首次拒绝起最多 30 秒、总共最多重试四次；连续 checkpoint 共用预算，每个成功后的新请求从第一档退避开始。发送前与等待后核对连接代次和取消，未知 PUT 结果仍查询原 syncId 的状态；即使重试预算已耗尽，也允许一次最多 15 秒的原身份状态观察，保留原写入错误及未知结果。诊断只记录受限 request ID、Session、等待阶段、次数、延时和错误类别。
 

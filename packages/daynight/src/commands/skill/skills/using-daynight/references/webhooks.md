@@ -17,7 +17,13 @@ daynight webhook subscription reconfirm <endpoint-id> --personal --if-version <v
 Except catalog, every leaf requires exactly one explicit owner: `--personal`
 for the authenticated User or `--team <team-id>` for a Team UUID. Neither Git nor
 the default Team selects it; `--team personal` is invalid here. Catalog supplies
-registered events/service limits; leaf help lists complete options.
+registered events/service limits; leaf help lists complete options. Catalog accepts
+the five continuing Task events with optional `task.step_updated`, preserving
+service order and rejecting missing, duplicate, unknown or malformed entries.
+Known Steps subscriptions and delivery history remain readable independently of
+the catalog. The service decides which events it accepts for subscription input;
+the CLI retains `task.step_updated` input for services that support it.
+Configuration writes do not prefetch the catalog.
 
 IDs are canonical UUIDs. All writes except create require the endpoint
 configuration version through [`--if-version`](write-safety.md#decisions-and-versions);

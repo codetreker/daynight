@@ -47,7 +47,7 @@ describe('scoped application authorization editing', () => {
     expect(transport.updateScopes).toHaveBeenCalledOnce(); expect(transport.updateScopes.mock.calls[0]?.[1]).toEqual({ expectedUserId: user.id, expectedScopeVersion: '1', catalogRevision: catalog.catalogRevision, scopes: ['team:read', 'team:write'] });
     expect(screen.getByText('Current permissions: team:read, team:write')).toBeInTheDocument();
   });
-  it.each([['conflict', new ApiError('server', 409, 'version_conflict', null, undefined, undefined, undefined, 'not_committed')], ['unknown', new ApiError('network')]])('reads back %s without resending and retains the draft for review', async (_kind, failure) => {
+  it.each([['conflict', new ApiError('server', 409, 'version_conflict', null, undefined, undefined, 'not_committed')], ['unknown', new ApiError('network')]])('reads back %s without resending and retains the draft for review', async (_kind, failure) => {
     const transport = fixture(); transport.updateScopes.mockImplementation(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw failure; });
     transport.list.mockResolvedValueOnce([grant]).mockResolvedValueOnce([{ ...grant, scopePolicy: { scopeVersion: '2', scopes: ['team:write'] } }]);
     render(page(transport)); await screen.findByText('App'); edit(); expand(); change(); save();

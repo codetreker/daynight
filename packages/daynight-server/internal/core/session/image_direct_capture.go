@@ -33,6 +33,7 @@ func (s *Execution) submitImageCapture(ctx context.Context, tx *operationTx, r *
 		return refuse()
 	}
 	capture, err := d.SessionCapture(ctx, r.Snapshot.SessionID, request.CaptureID)
+	existing := err == nil
 	if err == nil {
 		if !jsonEqual(encode(capture.Request), encode(request)) || capture.Receipt.AttemptID != input.AttemptID {
 			return refuse()
@@ -49,14 +50,16 @@ func (s *Execution) submitImageCapture(ctx context.Context, tx *operationTx, r *
 		} else if !onlyCaptureMissing(err) {
 			return empty, err
 		}
-		if err = verifyImageOccurrence(ctx, tx, r, request.Occurrence); err != nil {
-			if f, ok := err.(*model.Fault); ok && f.Code == "resource_conflict" {
-				return empty, captureRefusal(f.Code, f.Message)
+		if r.OnlineMode != "relay" {
+			if err = verifyImageOccurrence(ctx, tx, r, request.Occurrence); err != nil {
+				if f, ok := err.(*model.Fault); ok && f.Code == "resource_conflict" {
+					return empty, captureRefusal(f.Code, f.Message)
+				}
+				if onlyCaptureMissing(err) {
+					return empty, captureRefusal("capability_changed", "Complete source metadata is unavailable for image capture.")
+				}
+				return empty, err
 			}
-			if onlyCaptureMissing(err) {
-				return empty, captureRefusal("capability_changed", "Complete source metadata is unavailable for image capture.")
-			}
-			return empty, err
 		}
 		if err = requireImageHistoryLedger(ctx, tx, r, true); err != nil {
 			if f, ok := err.(*model.Fault); ok && (f.Code == "capability_changed" || f.Code == "component_unsupported") {
@@ -66,6 +69,32 @@ func (s *Execution) submitImageCapture(ctx context.Context, tx *operationTx, r *
 		}
 		resourceID := uuid.NewString()
 		capture = store.SessionCaptureRecord{SessionID: r.Snapshot.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: input.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resourceID}}
+	}
+	if r.OnlineMode == "relay" && capture.Receipt.State == "reserved" && !(existing && input.Outcome.Kind == "failed") {
+		// A reserved retry has not accepted an outcome. Its current connection
+		// must prove the position again; accepted outcomes reconcile by identity.
+		if input.SourceEpoch == "" || input.SourceEpoch != sourceEpoch(r) || number(input.SourceSeq) <= 0 || number(input.SourceSeq) > r.SourceSeq {
+			return empty, captureRefusal("capability_changed", "The source position is not acknowledged in the current epoch.")
+		}
+	}
+	if r.OnlineMode == "relay" && existing && capture.Receipt.State == "reserved" && input.AttemptID != request.AttemptID && input.Outcome.Kind == "validated" {
+		media, e := mediaDAO(tx)
+		if e != nil {
+			return empty, e
+		}
+		row, e := media.SessionMediaRequest(ctx, r.Snapshot.SessionID, mediaIdentity(input.AttemptID, "retry_capture"))
+		if e != nil {
+			return empty, e
+		}
+		if row.Complete {
+			if row.Error != nil {
+				return refuse()
+			}
+			validated, e := sp.DecodeValidatedImage(row.Result)
+			if e != nil || !jsonEqual(encode(validated), encode(input.Outcome.Validated)) {
+				return refuse()
+			}
+		}
 	}
 
 	var reference *store.SessionResourceReference

@@ -78,6 +78,10 @@ permission to begin its first read after an exact same-attempt reserved receipt.
 Frozen old outcomes can resume submission after that receipt or replay after a
 correlated capture-not-found. Neither path recreates an interrupted source.
 
+The later [online relay decision](2026-11-23-session-online-relay.md)
+changes this online requirement for executions bound to relay mode; the
+legacy path retains the behavior described above.
+
 ## Alternatives
 
 **Require the existing preparation and registration exchange.** This preserves

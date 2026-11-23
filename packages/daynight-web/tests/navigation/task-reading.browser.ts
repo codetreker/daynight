@@ -49,7 +49,7 @@ async function install(page: Page, timing = false, completion = false, title = '
   await page.context().route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (request.method() === 'GET') state.reads.push(path);
-    if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve') && !path.endsWith('/tags/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
@@ -57,12 +57,21 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') return send({ items: [{ id: '00000000-0000-4000-8000-000000000099', projectId, name: 'Draft label', version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: '00000000-0000-4000-8000-000000000098', nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      return send({ catalogEpoch: '00000000-0000-4000-8000-000000000098', items: ids.map(id => ({ id, state: 'found', version: 1, color: '#9AA3B2' })) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tags/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      const known = [...details.flatMap(detail => detail.tags), { id: '00000000-0000-4000-8000-000000000099', name: 'Draft label' }];
+      return send({ items: known.filter(tag => ids.includes(tag.id)) });
+    }
     if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, tagsForTask: row => details.find(detail => detail.id === row.id)!.tags, ...(sessionObservations ? { sessions: { [successorId]: 'notice' as const }, taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'working' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       if (path === `${base}/thread/messages`) return send({ items: url.searchParams.has('afterId') ? [] : [message], hasMoreBefore: false, hasMoreAfter: false });
-      if (path === `${base}/steps` && request.method() === 'GET') return send({ projectId, taskId: detail.id, version: detail.version, steps: [] });
       if (path === `${base}/attachments`) return send({ items: withAttachment ? [{ path: 'reading.txt', contentType: 'text/plain', sizeBytes: 4, createdAt: time, updatedAt: time }] : [], nextCursor: null });
       if (path === `${base}/attachments/files/reading.txt`) return route.fulfill({ body: 'text', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
       if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });
@@ -128,6 +137,39 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(state.writes).toEqual([]);
   });
 }
+
+for (const width of [320, 1280]) test(`retired Steps routes preserve Task and attachment navigation at ${width}px`, async ({ page }) => {
+  const stepsRequests: string[] = [];
+  page.on('request', request => { if (/\/tasks\/[^/]+\/steps(?:\/|$)/.test(new URL(request.url()).pathname)) stepsRequests.push(`${request.method()} ${request.url()}`); });
+  const state = await install(page, false, false, 'Reading task', undefined, false, true);
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+  const root = page.locator('.task-detail-page');
+  await expect(root.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(root.getByRole('tab', { name: 'Steps', exact: true })).toHaveCount(0);
+  await root.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await root.getByRole('button', { name: /^reading\.txt/ }).click();
+  await expect(root.locator('.attachment-file-selected')).toContainText('reading.txt');
+  await page.goBack();
+  await expect(root.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goForward();
+  await expect(root.locator('.attachment-file-selected')).toContainText('reading.txt');
+  await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/reading.txt?tab=steps`);
+  await expect(root.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(root.locator('.attachment-file-selected')).toContainText('reading.txt');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
+  await page.locator(`#standalone-task-${taskId}`).click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('tab', { name: 'Steps', exact: true })).toHaveCount(0);
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: /^reading\.txt/ }).click();
+  await expect(dialog.locator('.attachment-file-selected')).toContainText('reading.txt');
+  expect(stepsRequests).toEqual([]);
+  expect(state.writes).toEqual([]);
+});
 
 test('selected attachment keeps its new-tab target while copy uses overview', async ({ page, context }) => {
   const state = await install(page, false, false, 'Reading task', undefined, false, true);
@@ -836,7 +878,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
 });
 
 
-test('project section history protects a real task draft through cancellation and departure', async ({ page }) => {
+test('project section history protects a Task tag draft through cancellation and departure', async ({ page }) => {
   const state = await install(page); await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.goto(`/projects/${projectId}?tab=overview`);
   await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
@@ -845,14 +887,11 @@ test('project section history protects a real task draft through cancellation an
   await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
   await page.locator(`#standalone-task-${taskId}`).click();
   const dialog = page.locator('.task-detail-dialog');
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
-  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
-  await draft.fill('Project task draft');
-  await dialog.getByRole('tab', { name: 'Overview', exact: true }).click();
-  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
-  await expect(draft).toHaveValue('Project task draft');
-  await draft.focus();
+  await dialog.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const draft = dialog.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await draft.check();
+  const focus = dialog.locator('.task-tags-editor').getByRole('textbox', { name: 'Name', exact: true });
+  await focus.focus();
   const original = await page.evaluate(id => ({ url: location.href, state: JSON.stringify(history.state), length: history.length,
     preference: localStorage.getItem(`daynight:project-section:${id}`), index: history.state.__daynightNavigation.index as number }), projectId);
   expect(original.preference).toBe(JSON.stringify('tasks'));
@@ -862,9 +901,9 @@ test('project section history protects a real task draft through cancellation an
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
   await expect.poll(() => page.url()).toBe(original.url);
-  await expect(draft).toHaveValue('Project task draft');
-  await expect(draft).toBeFocused();
-  expect(await draft.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+  await expect(draft).toBeChecked();
+  await expect(focus).toBeFocused();
+  expect(await focus.evaluate(element => element.matches(':focus-visible'))).toBe(true);
   expect(await page.evaluate(id => ({ state: JSON.stringify(history.state), length: history.length,
     preference: localStorage.getItem(`daynight:project-section:${id}`) }), projectId)).toEqual({ state: original.state, length: original.length, preference: original.preference });
   await goToOverview();

@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,7 +14,11 @@ import (
 func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 116 })
+	if index < 1 {
+		t.Fatal("archive upload version migration missing")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	session, owner, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
