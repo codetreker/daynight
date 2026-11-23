@@ -27,6 +27,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   unsupportedFields: '已保存配置包含不再支持或缺少的字段。', unsupportedFieldsDetail: '请检查配置并保存以替换目标。读取页面不会修改原配置。',
   permissionError: '没有此配置的访问权限。', retainedDraft: '当前草稿已保留。', saved: '已保存到云端，生效结果以 Worker 上报为准。',
   reconciled: '已核对云端，提交的配置已保存。', notSaved: '云端没有提交的配置，请核对最新值后再保存。',
+  abandonedUnknown: '先前保存的结果未知，当前显示云端目标。',
   uncertain: '保存结果尚未确认，当前草稿已保留。', verifySave: '核对保存结果', conflict: '云端配置已被其他页面修改。',
   savedSource: '查看已保存的配置响应', sourceProjection: '此响应可能因能力协商而省略部分字段。', viewLatest: '查看最新云端配置响应', loadLatest: '载入最新配置', settings: '运行设置', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔',
   recoveryLimit: '自动恢复次数上限', milliseconds: '毫秒', defaultNative: '默认 Agent', agent: 'Agent', model: 'Model', args: '启动参数',

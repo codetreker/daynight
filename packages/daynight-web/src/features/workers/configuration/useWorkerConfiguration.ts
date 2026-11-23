@@ -10,7 +10,7 @@ import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCac
 import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
-export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
+export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | 'abandonedUnknown' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
 type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly toolPathsChanged: boolean; readonly archiveSessionsSupported: boolean; readonly archiveSessionsChanged: boolean; readonly platformTaskModeSupported: boolean; readonly enablingOnly: boolean; readonly sudoCleanupChanged: boolean; readonly windowsProcessCleanupChanged: boolean; readonly tagFilterOmitted: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
 type State = {
@@ -198,6 +198,10 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         const strictMismatch = !submitted.platformTaskModeSupported && observedBaseline?.known.platformTaskMode === 'only' && submitted.source.baseline.known.platformTaskMode !== 'only';
         const projectedMatches = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { archiveSessions: submitted.archiveSessionsSupported, platformTaskMode: submitted.platformTaskModeSupported, semanticTagFilter: true });
         if (strictMismatch && projectedMatches && submitted.source.baseline.known.platformTaskMode === undefined && submitted.source.baseline.known.preferPlatformSpecificTasks && submitted.value.preferPlatformSpecificTasks) {
+          if (old.abandoned && incoming.desired?.revision === resource.desired?.revision && resource.desired !== null) {
+            const draft = draftFromValue(resource.desired.value);
+            return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: observedBaseline, refreshing: false, error: null, errorSource: null, notice: 'abandonedUnknown', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+          }
           return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         }
         const matchesSubmitted = !strictMismatch && projectedMatches;
@@ -420,7 +424,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource!.desired!.revision, baseline: workerConfigurationBaseline(old.resource!), error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null, abandoned: false, protectedDraft: false };
       }
       const protectedDraft = old.protectedDraft;
-      return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: old.notice === 'conflict' ? 'conflict' : null, abandoned: false, protectedDraft };
+      return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: old.notice === 'conflict' || old.notice === 'abandonedUnknown' ? old.notice : null, abandoned: false, protectedDraft };
     }), refresh: () => { void requestRead(true, true); }, loadLatest: replaceDraft, abandon: abandonDraft, save: saveDraft };
     const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === scope.userId) void requestRead(); });
     const unsubscribePause = subscribeAuthPause(() => { write?.abort(); read?.abort(); });

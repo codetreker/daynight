@@ -444,6 +444,32 @@ describe('Worker configuration form', () => {
     expect(screen.getByText('The cloud confirms the submitted configuration.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
   });
+  it('adopts the current strict target after abandoning an ambiguous save without replaying it', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let phase: 'legacy' | 'ambiguous' | 'exited' = 'legacy';
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') {
+        if (phase === 'legacy') { phase = 'ambiguous'; return configurationError(500, 'internal_error'); }
+        expect(JSON.parse(String(init.body)).value.platformTaskMode).toBe('all'); phase = 'exited';
+      }
+      const value = phase === 'legacy' ? { ...base, preferPlatformSpecificTasks: true } : { ...base, maxConcurrent: 3, platformTaskMode: phase === 'ambiguous' ? 'only' : 'all' };
+      const response = configurationResponse({ desired: { revision: phase === 'legacy' ? '1' : phase === 'ambiguous' ? '2' : '3', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (phase !== 'legacy') response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    const Fixture = () => {
+      const state = useWorkerConfiguration(workerId(1), { readEnabled: true });
+      const review = useWorkerReviewParticipation(workerId(1), false);
+      return <><button onClick={state.abandon}>Abandon draft</button><WorkerConfigurationPanel workerId={workerId(1)} readEnabled online tasks={[]} visible state={state} review={review} confirming={false} /></>;
+    };
+    renderWithLocale(<Fixture />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Abandon draft' })); await advance();
+    expect(screen.getByText('The previous save result is unknown. The current cloud target is shown.')).toBeInTheDocument();
+    expect(screen.queryByText('The cloud confirms the submitted configuration.')).toBeNull();
+    expect(screen.queryByText('The cloud does not contain the submitted configuration. Review the latest values before saving again.')).toBeNull();
+    const rule = screen.getByRole('combobox', { name: 'Task claim rule' }); expect(rule).toHaveValue('only'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.change(rule, { target: { value: 'all' } }); expect(screen.getByText('The previous save result is unknown. The current cloud target is shown.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled(); save(); await flush();
+    expect(rule).toHaveValue('all'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(2);
+  });
   it('keeps strict application unconfirmed when an external revision arrives through a legacy view', async () => {
     const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = true;
     install(() => {

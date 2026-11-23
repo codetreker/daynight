@@ -42,6 +42,7 @@ export type WorkerConfigurationMessages = {
   readonly saved: string;
   readonly reconciled: string;
   readonly notSaved: string;
+  readonly abandonedUnknown: string;
   readonly uncertain: string;
   readonly verifySave: string;
   readonly conflict: string;
