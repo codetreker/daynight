@@ -66,8 +66,15 @@ result Promise. Cleanup candidates include pending reservations as well as saved
 Task rows. Each Task awaits its own reconciliation before classifying ownership
 or stopping, including pending rows saved by a late claim result. Successful
 current Task reads are reused; failed reconciliation retains that Task without
-making independent Tasks await its request. Controller lifecycle reconciliation
-follows the Task stop attempt, skips unresolved Task records and consumes actual
+making independent Tasks await its request. After original native stopping,
+management-only terminal file cleanup checks that the original retained repository
+directory exists, validates its repository and worktree format, and prepares its
+fresh Git manager before inspecting or removing the original worktree. A missing
+directory cannot trigger a clone, and format preparation does not query Session
+registration or authorize business execution. An already formatted repository does
+not populate that manager's preparation state. Failed preparation retains that
+Task's cleanup responsibility for retry while independent stopping continues. Controller lifecycle reconciliation follows the Task
+stop attempt, skips unresolved Task records and consumes actual
 stopped journals and native-boundary results for the remaining resources.
 Independent Controller checks continue after a Task stop failure. Management
 Task cleanup and stopJournal retries synchronize actual command stop receipts

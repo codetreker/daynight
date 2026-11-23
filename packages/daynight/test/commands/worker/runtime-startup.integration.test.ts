@@ -204,6 +204,75 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("prepares a fresh management Git manager before removing a retained retired Web worktree", async () => {
+    const f = await fixture(true, false);
+    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
+    await mkdir(f.repository.path);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
+    const owner = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(74) };
+    const project = f.store!.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
+    const operation = createOperation();
+    try { await migrateLegacyWorktrees({ repositoryPath: project.localPath, commonDirectory: binding.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } }); }
+    finally { operation.dispose(); }
+    run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+    const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+    web.bindWorktree(record, binding, Date.now()); web.close();
+    const successorPath = path.join(project.localPath, ".worktrees", "daynight", uuid(75));
+    run(["worktree", "add", "--force", successorPath, binding.branch]);
+    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
+    const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
+    const saved = openLifecycleStore({ file, identity, allowCreate: true });
+    saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" }); saved.close();
+    mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
+    mocks.coordinator.mockImplementation(createWorkerCoordinator);
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
+    const time = "2026-11-21T00:00:00Z";
+    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
+      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+    const unexpected = vi.fn(async () => { throw new Error("Unexpected management business request."); });
+    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
+      read: async () => cloud,
+      register: async request => {
+        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+      },
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
+    });
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
+    const messages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
+    try {
+      await vi.waitFor(() => expect(f.store!.getTask(owner)?.status, messages.join("; ")).toBe("done"), { timeout: 15000 });
+      expect(f.store!.getCleanupSchedule(owner)).toBeNull();
+      expect(run(["worktree", "list", "--porcelain"])).not.toContain(owner.worktreeId);
+      expect(run(["worktree", "list", "--porcelain"])).toContain(uuid(75));
+      await expect(readFile(path.join(binding.worktreePath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+      const check = openLifecycleStore({ file, identity, allowCreate: false });
+      try { await vi.waitFor(() => expect(check.listResources().filter(row => row.identity.kind === "retained_task").map(row => row.stage)).toEqual(["stopped"])); }
+      finally { check.close(); }
+      expect(mocks.git).toHaveBeenCalledOnce();
+      expect(remote.readTask).toHaveBeenCalledOnce();
+      expect(remote.configuration).not.toHaveBeenCalled();
+      expect(unexpected).not.toHaveBeenCalled();
+    } finally {
+      cancellation.abort();
+      try { await running.catch(error => { if (error?.name !== "AbortError") throw error; }); }
+      finally { client.mockRestore(); network.mockRestore(); }
+    }
+  }, 25000);
+
   it.each(["initial", "retry"] as const)("joins a retained claim before reading pending inventory and settles Task and Controller receipts on %s cleanup", async attempt => {
     const f = await fixture(true, false);
     if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);

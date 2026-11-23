@@ -2959,7 +2959,14 @@ verifies the Worker account. Candidates include original pending claim
 reservations; each Task awaits its own reconciliation before classifying ownership
 or stopping, without making independent Tasks await that request. Matching
 Controller lifecycle checks follow the Task stop attempt and retain unresolved
-Task records. A
+Task records. After original native stopping, management-only terminal file cleanup
+checks that the retained repository directory exists, validates its repository and
+worktree format, and prepares the current Git manager before inspecting or removing
+the original worktree. A missing directory does not trigger a clone; format
+preparation does not query Session registration or start business execution. An
+existing on-disk format does not prepare a fresh manager. Preparation failures
+retain that Task's visible, retryable responsibility while independent stopping
+continues; they do not establish recovery readiness. A
 timed-out native stop keeps its original owner rather than dispatching another
 stop. The repository owner waits for that shared Task stop before closing its
 Git manager. Unconfirmed Task stopping retains the manager for the original

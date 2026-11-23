@@ -397,7 +397,21 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
   if (local.serverUrl !== identity.serverOrigin) throw new Error("Original Worker service identity is unavailable for management.");
   const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const emit = (event: WorkerEvent): void => options.log?.(`${event.message}\n`);
-  const git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit) });
+  const repository = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
+    prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: root.store!, project, repository, operation,
+      workerId: identity.workerId, serverOrigin: identity.serverOrigin }),
+  });
+  const git: ReturnType<typeof createWorkerGitManager> = { ...repository,
+    resolveWorktreeBinding: async (project, owner, operation) => {
+      const retained = root.store!.getProject(project);
+      if (retained === null || retained.repoUrl !== project.repoUrl || retained.localPath !== project.localPath)
+        throw new Error("Original Task repository binding is unavailable for management cleanup.");
+      const directory = await lstat(retained.localPath);
+      if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Original Task repository must be an ordinary directory.");
+      await repository.prepareRepository(retained, operation);
+      return repository.resolveWorktreeBinding(retained, owner, operation);
+    },
+  };
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let bots: WorkerBotHost | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;

@@ -107,8 +107,16 @@ cannot settle a cloud request or authorize recovery. Task candidates include
 original pending claim reservations. Each Task joins its own claim-request
 reconciliation before classifying ownership or stopping and reuses its successful
 current Task read. Independent Tasks do not await one another's requests. Failed
-reconciliation retains that Task; matching Controller lifecycle checks follow the
-Task stop attempt and skip unresolved Task records.
+reconciliation retains that Task. After original native stopping, management-only
+terminal file cleanup checks that the retained repository directory exists,
+validates its repository and worktree format, and prepares the fresh Git manager
+before inspecting or removing its worktree. Existing disk format alone does not
+establish preparation. A missing directory does not trigger a clone; format
+preparation does not query Session registration or start business execution. A
+failed preparation retains that Task's cleanup responsibility while independent
+stopping continues and cannot establish activation readiness. Matching
+Controller lifecycle checks follow the Task stop attempt and skip unresolved Task
+records.
 The [retired Web claim decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
 owns terminal removal after confirmed ownership loss; normal lifecycle stopping
 continues to preserve current or unknown execution.
