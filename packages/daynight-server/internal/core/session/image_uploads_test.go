@@ -335,6 +335,11 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 			t.Error(e)
 		}
 	})
+	return newImageRuleFixtureWithStorage(t, raw, storage)
+}
+
+func newImageRuleFixtureWithStorage(t *testing.T, raw []byte, storage filestorage.Storage) imageRuleFixture {
+	t.Helper()
 	d := &imageRuleDAO{media: map[string]store.SessionMediaRequest{}, captures: map[string]store.SessionCaptureRecord{}, uploads: map[string]store.SessionUploadRecord{}, chunks: map[string][]store.SessionUploadChunk{}, resources: map[string]store.SessionResourceRecord{}, references: map[store.SessionResourceReference]bool{}, leases: map[string]store.SessionResourceLease{}}
 	files := &imageRuleStorage{Storage: storage, free: 1 << 45, total: 1 << 46}
 	engine := NewEngine(files)

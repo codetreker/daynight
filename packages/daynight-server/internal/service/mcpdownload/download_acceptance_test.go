@@ -24,7 +24,7 @@ import (
 
 type acceptanceFixture struct {
 	db          *postgres.Store
-	files       *local.Storage
+	files       acceptanceStorage
 	attachments *attachment.Attachments
 	lifecycle   *mcptransfer.Lifecycle
 	service     *Service
@@ -32,15 +32,14 @@ type acceptanceFixture struct {
 	input       Input
 }
 
+type acceptanceStorage interface {
+	filestorage.Storage
+	filestorage.TransferStorage
+	filestorage.TransferAttachmentPublisher
+}
+
 func newAcceptanceFixture(t *testing.T) acceptanceFixture {
 	t.Helper()
-	tasks, db, project, _, session := testsupport.TaskService(t)
-	task := testsupport.CreateTask(t, tasks, session, project.ID, "download acceptance")
-	id := uuid.NewString()
-	hash := sha256.Sum256([]byte(id))
-	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload'],1,$1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
-		t.Fatal(err)
-	}
 	files, err := local.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +49,19 @@ func newAcceptanceFixture(t *testing.T) acceptanceFixture {
 			t.Error(err)
 		}
 	})
-	lifecycle, err := mcptransfer.New(db, files, files, 1<<30, 0)
+	return newAcceptanceFixtureWithStorage(t, files, 1<<30)
+}
+
+func newAcceptanceFixtureWithStorage(t *testing.T, files acceptanceStorage, budget int64) acceptanceFixture {
+	t.Helper()
+	tasks, db, project, _, session := testsupport.TaskService(t)
+	task := testsupport.CreateTask(t, tasks, session, project.ID, "download acceptance")
+	id := uuid.NewString()
+	hash := sha256.Sum256([]byte(id))
+	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload'],1,$1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := mcptransfer.New(db, files, files, budget, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
