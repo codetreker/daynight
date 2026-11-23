@@ -26,6 +26,7 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
 	normalized, err := ParseWorkerConfiguration(raw)
+	normalized.LegacyPlatformTaskMode = value.LegacyPlatformTaskMode
 	normalized.PreserveToolPaths = value.PreserveToolPaths
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
@@ -284,6 +285,9 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
+	if err := preparePlatformTaskMode(current, fields, &value); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
 	if err := prepareTaskTagFilter(current, fields, &value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
@@ -317,6 +321,7 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 		}
 		value.PreserveWindowsProcessCleanup = false
 	}
+	value.LegacyPlatformTaskMode = false
 	value, err = NormalizeConfiguration(value)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
@@ -356,6 +361,9 @@ func ExchangeConfigurationAuthorized(ctx context.Context, dao store.WorkerWriteD
 }
 
 func exchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange, admit func(scopepolicy.Operation) error) (*model.WorkerConfigurationReceipt, error) {
+	if input.Bootstrap != nil && input.Bootstrap.PlatformTaskMode == model.PlatformTaskOnly {
+		return nil, invalidInput("Bootstrap cannot enable only platform tasks.")
+	}
 	if input.Bootstrap != nil && input.Bootstrap.TaskTagFilter != nil {
 		return nil, invalidInput("Bootstrap cannot set a task tag filter.")
 	}
@@ -426,6 +434,7 @@ func exchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			if revision == math.MaxInt64 {
 				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
 			}
+			value.LegacyPlatformTaskMode = false
 			value, err = NormalizeConfiguration(value)
 			if err != nil {
 				return nil, err

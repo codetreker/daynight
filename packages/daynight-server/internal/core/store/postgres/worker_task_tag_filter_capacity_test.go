@@ -27,7 +27,7 @@ func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
 	db := &Store{Pool: pool}
 	user, id := queryID(1), queryID(2)
 	putWorkerSnapshot(t, db, workerSnapshotFixture(user, id, time.Now().UTC()))
-	value := model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: make([]model.WorkerProjectConfiguration, 128)}
+	value := model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: make([]model.WorkerProjectConfiguration, 128)}
 	args := make([][]string, 128)
 	for i := range value.Projects {
 		args[i] = make([]string, 8)

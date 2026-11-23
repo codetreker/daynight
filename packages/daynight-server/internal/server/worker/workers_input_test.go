@@ -333,7 +333,7 @@ func (f *capacityReportOperationFixture) reportRequest(body map[string]any, call
 		Configuration: nil,
 	}
 	if protocol == "1" {
-		want.Configuration = capacityDecode[*model.WorkerConfigurationExchange](f.t, body["configuration"])
+		want.Configuration = configurationHTTPExchange(f.t, body["configuration"])
 	}
 	used := 0
 	f.operations.report = func(ctx context.Context, principal model.Principal, worker string, input model.WorkerReport) (workerservice.WorkerReportResult, error) {
@@ -363,10 +363,14 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 	f.t.Helper()
 	f.authCalls = 0
 	var response *httptest.ResponseRecorder
-	if protocol == "" {
+	if protocol == "" && !strings.HasSuffix(path, "/configuration") {
 		response = projectRequest(f.handler, method, path, body)
 	} else {
-		response = configurationHTTPRequest(f.handler, method, path, body, protocol)
+		if protocol == "" {
+			response = configurationHTTPRequest(f.handler, method, path, body)
+		} else {
+			response = configurationHTTPRequest(f.handler, method, path, body, protocol)
+		}
 	}
 	if f.authCalls != 1 {
 		f.t.Fatalf("credential calls = %d, want 1", f.authCalls)
@@ -379,7 +383,17 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 
 func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls int, result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
 	f.t.Helper()
-	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
+	want := configurationHTTPModel(f.t, body["value"])
+	fields := body["value"].(map[string]any)
+	if _, exists := fields["preferPlatformSpecificTasks"]; exists {
+		converted := make(map[string]any, len(fields))
+		for key, value := range fields {
+			converted[key] = value
+		}
+		delete(converted, "preferPlatformSpecificTasks")
+		converted["platformTaskMode"] = want.PlatformTaskMode
+		body["value"] = converted
+	}
 	want.PreserveArchiveSessions = true
 	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
 	want.PreserveSudoCleanup = !present
@@ -482,7 +496,9 @@ func (f *capacityReportOperationFixture) listRequest(result workerservice.Worker
 	return response
 }
 
-func boundedUTF8(size int) string { return strings.Repeat("界", size/3) + strings.Repeat("x", size%3) }
+func boundedUTF8(size int) string {
+	return strings.Repeat("ç•Œ", size/3) + strings.Repeat("x", size%3)
+}
 
 func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	tests := []struct {
@@ -575,7 +591,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			value := configurationHTTPValue()
 			tc.set(value, tc.valid)
-			saved := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+			saved := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
 			if tc.changed {
 				saved.Desired.Revision = "2"
 				saved.Desired.UpdatedAt = capacityObservedAt.Add(1)
@@ -596,7 +612,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 			projects[i] = map[string]any{"projectId": fmt.Sprintf("%08x-0000-4000-8000-000000000001", i+1), "nativeOverrides": map[string]any{}}
 		}
 		value["projects"] = projects[:128]
-		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
 		got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, current), http.StatusOK)
 		if !reflect.DeepEqual(got, current) {
 			t.Fatal("equal configuration response changed revision or content")
@@ -613,7 +629,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-5]}
 		body := configurationHTTPReportBody(nil, obs)
 		want := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: model.WorkerConfigurationReceipt{
-			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
+			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationHTTPModel(t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
 		}}
 		result := workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &want.Configuration}
 		response := f.reportRequest(body, 1, result, nil, "1")
