@@ -60,8 +60,6 @@ func RegisterRoutes(mux httpx.RouteRegistrar, bots definitions, relay deletion, 
 	mux.HandleFunc("GET "+base+"/defaults", admit(h.defaults))
 	mux.HandleFunc(base+"/defaults", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc(base+"/{botId}", httpx.MethodDispatch(admit(h.detail), http.MethodGet, http.MethodHead, http.MethodDelete))
-	mux.HandleFunc("GET /api/v1/me/bot-deletion-recoveries", admit(h.deletionRecoveries))
-	mux.HandleFunc("/api/v1/me/bot-deletion-recoveries", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET "+base+"/{botId}/deletion-recovery", admit(h.deletionRecovery))
 	mux.HandleFunc("POST "+base+"/{botId}/deletion-recovery", admit(h.deletionRecovery))
 	mux.HandleFunc(base+"/{botId}/deletion-recovery", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))

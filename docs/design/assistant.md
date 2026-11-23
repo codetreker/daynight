@@ -172,7 +172,7 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 
 响应另外包含 `botId`、当前字符串 `version`、`deletionId`、原字符串 `requestedVersion`、原 `workerId`、当前承载 `hostingWorkerId`、`requiresStopProof`、`recoveryRequired`、`workerCleanup`、`serverCleanup` 与可空的 `decision`。原 Worker 保持与普通 DTO 及本地记录一致，当前承载 Worker 从 Bot 恢复身份或已保存删除决定取得。`requiresStopProof` 根据原绑定产生；`recoveryRequired` 仅在 Worker 为 `failed/execution_evidence_missing`、尚无决定且服务端未完成时成立。未删除的 Bot 返回资源冲突，不把活跃状态投影成待恢复删除。
 
-`GET /api/v1/me/bot-deletion-recoveries` 在 owner 和 `bot:read` 准入后，按 `(created_at,id)` 升序读取 `limit+1` 个匹配项：Worker 为 `failed/execution_evidence_missing` 且服务端未完成，或内部决定已存在。`limit` 范围 1–100、默认 50；独立 `bot-deletion-recoveries` 游标绑定 owner，不能与普通 Bot 游标混用。响应为完整恢复资源的 `items` 数组和可空 `nextCursor`，已完成服务端清理的决定仍可发现。列表路径位于 `/bots/{botId}` 之外，避免旧服务端将功能名作为非法 Bot ID 处理。独立列表不改变旧普通列表或 Worker DTO，用于新设备冷启动时重建可核对的恢复事实。
+恢复仅使用按 Bot ID 的独立资源，不建立账号级恢复集合。CLI 拥有本机检查、正常证据恢复及明确收尾写入；Web 仅对已有删除记录或已知 Bot ID 读取该资源并显示原机器指引。普通 Bot 列表继续隐藏删除定义，新设备没有已知 Bot ID 或保留记录时不自动发现删除历史。单项读取需要 `bot:read`，明确收尾写入同时需要 `bot:read`、`bot:delete` 及原所有者身份。
 
 `model.BotDeletion.Recovery` 是保存在现有 deletion JSON 中的可选内部责任，包含决定时的托管 Worker、原绑定及决定。决定保留 `operationId`、确认依据的 `requestedVersion`、`actorUserId`、UTC `acknowledgedAt`、原 `reason` 和固定 `localDisposition="unverified"`。它不进入旧管理投影，也不含会话正文或凭据；原绑定在 SQL 清理后仍用于解释义务和拒绝迟到回执。
 

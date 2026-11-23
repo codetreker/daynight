@@ -23,16 +23,17 @@ const apiError = (cause: unknown, seen = new Set<unknown>()): ApiError | undefin
   if (cause instanceof AggregateError) for (const child of cause.errors) { const found = apiError(child, seen); if (found !== undefined) return found; }
   return cause instanceof Error ? apiError(cause.cause, seen) : undefined;
 };
-const localError = (cause: unknown, seen = new Set<unknown>()): { code?: string; receiptConfirmed: boolean } => {
-  if (typeof cause !== "object" || cause === null || seen.has(cause)) return { receiptConfirmed: false };
+const localError = (cause: unknown, seen = new Set<unknown>()): { code?: string; receiptConfirmed: boolean; generationStopped: boolean } => {
+  if (typeof cause !== "object" || cause === null || seen.has(cause)) return { receiptConfirmed: false, generationStopped: false };
   seen.add(cause);
-  const value = cause as { code?: unknown; receiptConfirmed?: unknown };
-  const found = { ...(typeof value.code === "string" && Object.hasOwn(localReasons, value.code) ? { code: value.code } : {}), receiptConfirmed: value.receiptConfirmed === true };
+  const value = cause as { code?: unknown; receiptConfirmed?: unknown; generationStopped?: unknown };
+  const found = { ...(typeof value.code === "string" && Object.hasOwn(localReasons, value.code) ? { code: value.code } : {}), receiptConfirmed: value.receiptConfirmed === true, generationStopped: value.generationStopped === true };
   const nested = cause instanceof AggregateError ? cause.errors : cause instanceof Error ? [cause.cause] : [];
   for (const child of nested) {
     const result = localError(child, seen);
     if (found.code === undefined && result.code !== undefined) found.code = result.code;
     found.receiptConfirmed ||= result.receiptConfirmed;
+    found.generationStopped ||= result.generationStopped;
   }
   return found;
 };
@@ -111,7 +112,9 @@ export const runBotDeletionCommand = async (args: readonly string[], context: Cl
     const localReason = local.code;
     const recoveryUnavailable = failure?.operation === "bot.deletion.inspect" && failure.status === 404
       && (failure.code === "not_found" || failure.phase === "protocol" && hasErrorMessage(failure, "Expected an application/json UTF-8 response."));
-    const hint = recoveryUnavailable ? "The server may not support deletion recovery. Check the configured server and Bot ID, and upgrade the server to a version supporting deletion recovery before inspecting again. HTTP 404 does not confirm Bot cleanup." : undefined;
+    const hint = localReason === "evidence_missing" && local.generationStopped
+      ? `The original generation is stopped; historical cleanup evidence is missing. Deletion remains incomplete. Inspect locally with daynight bot deletion inspect ${botId} --json.`
+      : recoveryUnavailable ? "The server may not support deletion recovery. Check the configured server and Bot ID, and upgrade the server to a version supporting deletion recovery before inspecting again. HTTP 404 does not confirm Bot cleanup." : undefined;
     const confirmed = localReceiptConfirmed || local.receiptConfirmed === true || failure?.confirmedMutationId !== undefined;
     const error = { operation: `bot.deletion.${action}`, botId, ...(deletionId === undefined ? {} : { deletionId }), ...(operationId === undefined ? {} : { operationId }),
       ...(failure === undefined ? {} : { phase: failure.phase, status: failure.status, code: failure.code }), ...(localReason === undefined ? {} : { reason: localReason }), ...(hint === undefined ? {} : { hint }),

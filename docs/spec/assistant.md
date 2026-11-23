@@ -210,6 +210,8 @@ Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 
 
 ### 删除证据缺失恢复
 
+此恢复仅处理已进入删除的 Bot 及其执行证据异常，优先在原执行的承载机器通过 CLI 核查和补偿。它不定义普通 Worker 启停、Task 执行、一般重试或运行中 Bot 恢复的新流程。
+
 `workerCleanup={state:"failed",code:"execution_evidence_missing"}` 表示无法凭现有执行记录证明原执行已停止，需要恢复处理。Worker 须跨重启停止反复提交同一无效完成回执，同时继续读取权威状态，并保持其它助手正常工作。空本地记录、缺少 intent 或历史 `localCompleted:true` 都不能证明未绑定；仅剩 intent 而原执行行或必要 journal 丢失也不能证明 `never_started`。证据不足在私有清理前进入恢复，历史无依据的停证经服务端确定拒绝后也不继续重放。是否需要停证由服务端原 Session 绑定确定；真正从未绑定的助手仍可沿正常 null stop 路径完成，完整记录明确证明从未提交的执行仍可正常使用 `never_started`。
 
 `daynight bot deletion inspect <bot-id>` 读取服务端删除恢复状态，并在原执行的当前承载机器核查现存本地身份与材料；`--server-only` 只读服务端，可在另一设备核对。`bot deletion recover <bot-id> --deletion-id <deletion-id>` 要求本机 Worker 与 `hostingWorkerId` 匹配，在取得必要的 Worker、Bot 与执行存储锁后，按原 `workerId` 的记录归属尝试正常停止及私有清理；不能从新的 Bot/Session 身份、单纯 PID 不存在、进程名称或用户陈述补造停证。机器不可访问、身份不符或记录缺失必须分别保留真实结果，检查成功也不等于进程已经停止。
@@ -218,7 +220,7 @@ Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 
 
 恢复资源使用独立 `GET/POST /api/v1/me/bots/{botId}/deletion-recovery`，不向旧 Bot DTO 或 cleanup 三态增加未协商字段。GET 返回当前原删除身份、精确字符串版本、原 `workerId`、当前承载 `hostingWorkerId`、是否需要停证、是否需要恢复、原绑定、两方清理状态与独立决定；读取不产生收尾决定。原 Worker 身份用于原 DTO 和本地归属核对，当前承载身份用于定位执行责任，两者不能互换。原绑定在 Session 行和 Bot 的 Session 引用清理后仍保留，不能把迟到的 `completed + stop:null` 误当作从未绑定。
 
-`GET /api/v1/me/bot-deletion-recoveries` 为当前 owner 分页列出证据缺失且服务端未完成的删除，以及所有已有独立决定的删除，包含已收尾记录。它接受 1–100 的 `limit`（默认 50）与不透明 `cursor`，返回 `{items,nextCursor}`；items 为完整恢复资源，结束游标为 null。恢复列表保持普通 Bot 列表的删除过滤语义，使没有本地记录或已知 Bot ID 的另一设备仍能发现并核对恢复结果。列表和单项读取要求 `bot:read`，确认与清理重试同时要求 `bot:read`、`bot:delete` 及原所有者身份。
+恢复资源按已知 Bot ID 读取，要求 `bot:read`；CLI 的确认与清理重试同时要求 `bot:read`、`bot:delete` 及原所有者身份。网页只核对已有删除记录或已知 Bot ID，展示实际原因、结果和原机器 CLI 指引，不提交恢复决定或清理重试，也不提供账号级恢复集合或新设备自动发现删除历史。
 
 首次 POST 要求 `action:"accept_unverified"`、`ifVersion`、`deletionId`、`operationId`、`acknowledgeLocalUnverified:true` 与非空理由。只允许 owner 对当前证据缺失且尚未正常完成的删除确认；正常停证已先完成或原版本变化时须重新读取，不能偷偷接受过期确认。相同操作的精确重放只返回原决定，不隐式再次执行清理；不同内容或操作不得替换已有决定。
 

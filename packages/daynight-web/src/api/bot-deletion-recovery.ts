@@ -10,9 +10,6 @@ export type BotDeletionRecovery = {
   readonly workerCleanup: BotCleanupResult; readonly serverCleanup: BotCleanupResult;
   readonly decision: null | { readonly operationId: string; readonly requestedVersion: string; readonly actorUserId: string; readonly reason: string; readonly acknowledgedAt: string; readonly localDisposition: 'unverified' };
 };
-export type BotRecoveryInput = { readonly ifVersion: string; readonly deletionId: string; readonly operationId: string } & (
-  { readonly action: 'accept_unverified'; readonly acknowledgeLocalUnverified: true; readonly reason: string } | { readonly action: 'retry_cleanup' }
-);
 const fields = (value: unknown, keys: readonly string[]) => {
   const data = record(value);
   if (Object.keys(data).length !== keys.length || keys.some(key => !Object.hasOwn(data, key))) return malformed();
@@ -39,14 +36,6 @@ const responsePrincipal = (response: Response, expected: string, admission: Work
   if (response.status === 404 && !response.headers.has('Daynight-User-ID')) throw new ApiError('server', 404, 'deletion_recovery_unsupported');
   assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
 };
-export function parseBotRecoveryInput(value: unknown): BotRecoveryInput {
-  const data = record(value);
-  fields(data, ['action', 'ifVersion', 'deletionId', 'operationId', ...(data.action === 'accept_unverified' ? ['acknowledgeLocalUnverified', 'reason'] : [])]);
-  const identity = { ifVersion: decimal(data.ifVersion), deletionId: id(data.deletionId), operationId: id(data.operationId) };
-  if (data.action === 'retry_cleanup') return { ...identity, action: data.action };
-  if (data.action !== 'accept_unverified' || data.acknowledgeLocalUnverified !== true) return malformed();
-  return { ...identity, action: data.action, acknowledgeLocalUnverified: true, reason: reason(data.reason) };
-}
 export function parseBotDeletionRecovery(value: unknown, botId: string, userId: string): BotDeletionRecovery {
   const data = fields(value, ['schemaVersion', 'botId', 'version', 'deletionId', 'requestedVersion', 'workerId', 'hostingWorkerId', 'requiresStopProof', 'recoveryRequired', 'originalBinding', 'workerCleanup', 'decision', 'serverCleanup']);
   if (data.schemaVersion !== 1 || id(data.botId) !== requestId(botId)) return malformed();
@@ -73,47 +62,4 @@ export async function getBotDeletionRecovery(botId: string, signal: AbortSignal,
   const response = await request(`/api/v1/me/bots/${target}/deletion-recovery`, signal, { headers: { Accept: 'application/json' } }, onDispatch);
   responsePrincipal(response, expected, admission);
   return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parseBotDeletionRecovery(value, target, expected); });
-}
-export async function listBotDeletionRecoveries(cursor: string | null, signal: AbortSignal, admission: WorkerReadAdmission): Promise<{ readonly items: readonly BotDeletionRecovery[]; readonly nextCursor: string | null }> {
-  const parameters = new URLSearchParams({ limit: '100' });
-  if (cursor !== null) {
-    if (!cursor || cursor.length > 4096 || /\p{Cc}/u.test(cursor)) throw new ApiError('protocol');
-    parameters.set('cursor', cursor);
-  }
-  const expected = requestId(admission.userId);
-  const response = await request(`/api/v1/me/bot-deletion-recoveries?${parameters}`, signal, { headers: { Accept: 'application/json' } });
-  responsePrincipal(response, expected, admission);
-  return json(response, signal, value => {
-    if (response.status !== 200) throw new ApiError('protocol', response.status);
-    const data = fields(value, ['items', 'nextCursor']);
-    if (!Array.isArray(data.items) || data.items.length > 100) return malformed();
-    const items = data.items.map(value => parseBotDeletionRecovery(value, id(record(value).botId), expected));
-    if (new Set(items.map(value => value.botId)).size !== items.length) return malformed();
-    if (items.some(value => value.decision === null && value.workerCleanup.code !== 'execution_evidence_missing')) return malformed();
-    const nextCursor = data.nextCursor === null ? null : string(data.nextCursor);
-    if (nextCursor !== null && (!nextCursor || nextCursor.length > 4096 || /\p{Cc}/u.test(nextCursor))) return malformed();
-    return { items, nextCursor };
-  });
-}
-export class BotRecoveryUnknown extends Error {
-  constructor(readonly botId: string, readonly input: BotRecoveryInput, cause: unknown) { super('The assistant deletion recovery outcome is unknown.', { cause }); }
-}
-export async function submitBotDeletionRecovery(botId: string, input: BotRecoveryInput, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<BotDeletionRecovery> {
-  const target = requestId(botId), expected = requestId(admission.userId), original = Object.freeze(parseBotRecoveryInput(input));
-  let dispatched = false;
-  try {
-    const response = await request(`/api/v1/me/bots/${target}/deletion-recovery`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(original) }, () => { dispatched = true; onDispatch?.(); });
-    responsePrincipal(response, expected, admission);
-    return await json(response, signal, value => {
-      if (response.status !== 200) throw new ApiError('protocol', response.status);
-      const parsed = parseBotDeletionRecovery(value, target, expected);
-      if (parsed.deletionId !== original.deletionId || parsed.decision?.operationId !== original.operationId) return malformed();
-      if (BigInt(parsed.version) <= BigInt(original.ifVersion)) return malformed();
-      if (original.action === 'accept_unverified' && (parsed.decision.requestedVersion !== original.ifVersion || parsed.decision.reason !== original.reason)) return malformed();
-      return parsed;
-    });
-  } catch (error) {
-    if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotRecoveryUnknown(target, original, error);
-    throw error;
-  }
 }

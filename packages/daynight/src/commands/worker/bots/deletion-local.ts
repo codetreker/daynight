@@ -23,12 +23,14 @@ import { openBotRecoveryStore } from "./recovery-store.js";
 import { createBotRecoveryApi } from "./recovery-api.js";
 
 export class DeletionLocalError extends Error {
-  constructor(readonly code: string, options: ErrorOptions & { receiptConfirmed?: boolean } = {}) {
+  constructor(readonly code: string, options: ErrorOptions & { receiptConfirmed?: boolean; generationStopped?: boolean } = {}) {
     super(`Bot deletion local recovery failed: ${code}.`, options);
     this.name = "DeletionLocalError";
     this.receiptConfirmed = options.receiptConfirmed === true;
+    this.generationStopped = options.generationStopped === true;
   }
   readonly receiptConfirmed: boolean;
+  readonly generationStopped: boolean;
 }
 const lockIsHeld = (cause: unknown, seen = new Set<unknown>()): boolean => {
   if (seen.has(cause)) return false;
@@ -113,7 +115,8 @@ export const inspectLocalBotDeletion = async (input: InspectionInput): Promise<L
     }
     const rejectedNeverStarted = recovery.recoveryRequired && record?.cleanup?.stop?.stopProof.kind === "never_started";
     result.canRecover = result.hostingWorkerMatched && recovery.decision === null && record?.migration === undefined && !rejectedNeverStarted
-      && (!recovery.requiresStopProof || result.checks.bindingMatched && (result.checks.stopReceiptPresent || executionRecordPresent));
+      && (!recovery.requiresStopProof || result.checks.bindingMatched && (result.checks.stopReceiptPresent || executionRecordPresent
+        || recovery.recoveryRequired && result.checks.launchIntentPresent && result.checks.journalPresent && result.checks.ticketPresent));
   } catch {
     input.signal.throwIfAborted();
     result.storage = "unreadable"; result.canRecover = false;
@@ -155,6 +158,10 @@ export const recoverLocalBotDeletion = async (input: InspectionInput & {
     const sessionApi = createBotSessionApi({ owner, serverToken: input.serverToken, stateDirectory: paths.stateDirectory, recovery: hosting });
     process = createBotProcess({ homeDirectory: input.homeDirectory, packageDirectory: input.packageDirectory,
       store: local.store, executions: local.executions, sessionApi, recoveryLimit: 0, canControl: hosting.ownsHosting, canAdmitNewExecution: () => false });
+    if (record.intent !== null && record.cleanup?.stop == null && local.executions.get(record) === null) {
+      await process.withDeletion(record, input.signal, stop => stop({ recoverMissingExecution: true }));
+      throw new DeletionLocalError("evidence_missing", { generationStopped: true });
+    }
     await createBotDeletion({ homeDirectory: input.homeDirectory, store: local.store, executions: local.executions, process, sessionApi, remote, onReceiptConfirmed: () => { receiptConfirmed = true; } })
       .advance(record, input.signal, { recover: true });
     const current = local.store.get(originalOwner, input.botId)!;

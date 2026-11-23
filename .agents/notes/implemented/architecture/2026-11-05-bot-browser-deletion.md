@@ -46,7 +46,9 @@ both cleanup phases being completed confirms normal completion; inaccessible
 resources remain distinct from confirmed cleanup. The independent
 [evidence recovery decision](../bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)
 allows an owner to settle server cleanup with local verification unresolved;
-that retained result cannot be displayed as normal completion.
+the browser reads that result for a known deletion and directs compensation to
+the original-machine CLI. The retained result cannot be displayed as normal
+completion.
 The [feedback decision](../bug-fix/2026-11-17-bot-deletion-feedback.md)
 defines its display lifetime. Session storage preserves the
 minimal request and result across reloads when available, with memory fallback.

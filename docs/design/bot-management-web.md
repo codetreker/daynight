@@ -112,13 +112,13 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 ### 证据缺失恢复
 
-`api/bot-deletion-recovery.ts` 独立校验恢复资源，保留旧 `api/bots.ts` 的严格字段与三态 cleanup。账号、Bot、原 deletionId、请求版本及当前版本共同约束接纳；绑定与决定不能因迟到普通 Bot 投影而被覆盖。页面首次进入 `/bots`，及其后每五秒的可见、已准入周期，读取 `/api/v1/me/bot-deletion-recoveries` 全部分页，发现当前 owner 的证据缺失及已有决定记录，再进入同一协调器。该发现不依赖 sessionStorage 或已知 Bot ID，普通 Bot 列表继续隐藏已删除定义。已有证据缺失或恢复记录在原 Bot 状态核对后继续读取单项恢复资源；独立决定中原 Worker 与当前承载 Worker 分别保留，不能将后者替换旧 DTO 的 workerId。
+`api/bot-deletion-recovery.ts` 只读取并独立校验按 Bot ID 的恢复资源，保留旧 `api/bots.ts` 的严格字段与三态 cleanup。账号、Bot、原 deletionId、请求版本及当前版本共同约束接纳；绑定与决定不能因迟到普通 Bot 投影而被覆盖。已有删除记录或已知 Bot URL 在原 Bot 状态核对后读取该单项资源，不请求账号级恢复集合。普通 Bot 列表继续隐藏已删除定义，新设备没有已知 ID 或本地保留记录时不自动发现历史。独立决定中原 Worker 与当前承载 Worker 分别保留，不能将后者替换旧 DTO 的 workerId。
 
-协调器在同账号 sessionStorage 中保留恢复请求的完整 operationId、依据版本、原因和明确 acknowledgement，存储失败时保留内存。派发前固定身份，响应未知后自动只读取原决定；“重试原收尾请求”必须由用户明确选择，重放完整原 `accept_unverified` 或 `retry_cleanup`，不分配替代身份或刷新依据版本。确认精确重放只读已有决定，清理重试重放由 CAS 防止重复执行。未知确认之后读到另一设备的不可变决定时，接纳它作为当前权威结果并允许明确重试其清理，不声称原操作成功。恢复读取沿现有账号和页面准入规则进行；自动核对不发送确认或清理重试。`settled` 只有在权威决定存在且 `serverCleanup=completed` 时成立，始终保留 `workerCleanup` 的失败。普通 completed 继续从反馈列表消失；settled 显示“服务端删除完成，本机未核实”及决定记录，并停止普通等待。
+协调器的恢复状态仅包含可空的权威 `value` 与 `ready|unsupported` 阶段，随原普通 DELETE 身份保存在同账号 sessionStorage 中，存储失败时保留内存。不保存恢复写请求、不创建恢复写入的 submitting/unknown 状态，也不发送 `accept_unverified` 或 `retry_cleanup`。恢复读取沿现有账号和页面准入规则进行；核对到的决定只表示当前服务端事实，不归因于未观察的 CLI 操作。`settled` 只有在权威决定存在且 `serverCleanup=completed` 时成立，始终保留 `workerCleanup` 的失败。普通 completed 继续从反馈列表消失；settled 显示“服务端删除完成，本机未核实”及决定记录，并停止普通等待。
 
-`BotRecoveryDialog` 使用现有原生模态、焦点和滚动锁机制。`BotDeletionStatus` 对 `execution_evidence_missing` 显示恢复入口，先说明原机器 `daynight bot deletion inspect` 检查，再提供填写原因与接受本地未核实的确认控件；两者未满足时确认禁用。提交的是独立 `accept_unverified`，不是重放原 DELETE。原决定已接受但服务端清理失败或未完成时，使用独立 `retry_cleanup` 并绑定新观察版本；未知结果保留核对操作，不自动生成替代决定。
+`BotDeletionStatus` 对 `execution_evidence_missing` 使用原生 details 展示原机器 CLI 指引，包含当前承载身份、原配置目录和账号要求，以及精确 Bot ID、deletionId 的 inspect/recover 命令。证据无法恢复时解释未核实收尾的代价，并指向 `resolve --help`；已有决定且服务端未完成时，显示 `inspect --server-only --json` 和保留原 deletionId、operationId 的 `retry-cleanup` 用法，版本使用需由最新读取填入的占位符。页面禁止对该状态继续无效原 DELETE 重试；展开、核对和读取都不执行本机命令或恢复写入。
 
-恢复资源不支持时保留已有删除事实与升级指引，普通读取错误保留具体失败；均不推导完成。scope 失效清除本地状态，但下次同账号进入可再次从服务端发现决定。浏览器本地记录只用于原请求恢复与删除屏障，服务端独立资源拥有跨设备结果。协议和清理责任见[服务端恢复设计](assistant.md#独立删除恢复资源)，取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+恢复资源不支持时保留已有删除事实与升级指引，普通读取错误保留具体失败；均不推导完成。scope 失效清除本地状态，已知 Bot ID 可在后续同账号读取时重新核对决定。浏览器本地记录用于原请求恢复与删除屏障，服务端单项资源拥有实际恢复结果。协议和清理责任见[服务端恢复设计](assistant.md#独立删除恢复资源)，取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
 
 ## 详情、焦点与全屏边界
 

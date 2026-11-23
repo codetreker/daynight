@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
 import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
@@ -9,10 +10,11 @@ import { inspectLocalBotDeletion, recoverLocalBotDeletion } from "../../../src/c
 import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import type { BotDefinition, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import type { BotDeletionRecovery } from "../../../src/commands/bot/deletion-api.js";
+import * as botProcess from "../../../src/commands/worker/bots/process.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const cleanups: (() => void)[] = [];
-afterEach(() => { vi.unstubAllGlobals(); for (const close of cleanups.splice(0).reverse()) close(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const close of cleanups.splice(0).reverse()) close(); vi.unstubAllEnvs(); });
 const fixture = (evidence: "retained" | "missing" = "retained") => {
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-deletion-local"); mkdirSync(root, { recursive: true });
   const homeDirectory = mkdtempSync(path.join(root, "case-")); cleanups.push(() => rmSync(homeDirectory, { recursive: true, force: true }));
@@ -96,4 +98,34 @@ test("explicit local recovery reuses the real never-started proof protocol and r
   const local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
   try { expect(local.store.get(f.owner, id(3))).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, stop: expect.objectContaining(f.recovery.originalBinding!) } }); }
   finally { local.close(); }
+});
+
+test("a missing execution row permits only journal stop compensation and never completes deletion", async () => {
+  const f = fixture(), file = resolveBotPaths(f.paths.stateDirectory, id(3)).databaseFile;
+  const db = new Database(file);
+  const record = JSON.parse((db.prepare("SELECT record FROM bots").get() as { record: string }).record);
+  db.prepare("DELETE FROM bot_executions").run(); db.close();
+  for (const file of [record.intent.ticketPath, record.intent.journalPath]) {
+    mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, "original evidence");
+  }
+  const stop = vi.fn(async () => ({ stopProof: { stoppedAt: "2026-11-23T00:00:00Z" } })), close = vi.fn(async () => {});
+  vi.spyOn(botProcess, "createBotProcess").mockReturnValue({ withDeletion: async (_record: unknown, _signal: unknown, action: (stop: unknown) => unknown) => action(stop), close } as never);
+  const requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+    requests.push(init.method!);
+    return new Response(JSON.stringify(url.endsWith("/deletion-recovery") ? f.recovery : f.bot),
+      { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
+  }));
+  expect(await inspectLocalBotDeletion(f.input)).toMatchObject({ canRecover: true, checks: { executionRecordPresent: false, journalPresent: true, ticketPresent: true } });
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(stop).toHaveBeenCalledWith({ recoverMissingExecution: true }); expect(close).toHaveBeenCalledOnce();
+  expect(requests).toEqual(["GET", "GET"]); expect(existsSync(f.paths.lockFile)).toBe(false);
+  const saved = new Database(file, { readonly: true });
+  try {
+    expect(saved.prepare("SELECT count(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });
+    expect(JSON.parse((saved.prepare("SELECT record FROM bots").get() as { record: string }).record)).toMatchObject({ intent: record.intent, observed: f.bot });
+    expect(JSON.parse((saved.prepare("SELECT record FROM bots").get() as { record: string }).record).cleanup).toBeUndefined();
+  } finally { saved.close(); }
+  expect(readFileSync(record.intent.ticketPath, "utf8")).toBe("original evidence");
+  expect(readFileSync(record.intent.journalPath, "utf8")).toBe("original evidence");
 });

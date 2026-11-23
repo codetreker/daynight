@@ -32,7 +32,9 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 `bots/deletion-local.ts` 拥有本机检查与恢复。`bot deletion inspect` 以只读 SQLite 事务检查 Bot 专属及旧 Worker 库，核验服务、账号和原 `workerId` 归属，报告 intent、原停证、ticket、journal 的可用性、重复权威或不可读状态；`localProcessState` 始终为 unverified，`canRecover` 只表示可以尝试，不证明已停止。`--server-only` 不打开本机存储。`bot deletion recover` 要求本机 Worker 与 `hostingWorkerId` 匹配，按原 `workerId` 读取记录，并取得 Worker 实例锁与 Bot 存储锁以排除其它持有者。它允许同一缺失证据状态重新尝试原材料，但仍调用既有 `withDeletion`、Controller 停证和精确路径清理；新执行准入关闭。缺失、不可读、锁冲突及身份不符不会创建替代执行或重建停证。
 
-接受本地未核实由 CLI 或 Web 调用服务端恢复接口完成，Worker 不执行无证明的私有清理。服务端终态保留本地未核实事实，不能调用 `finishDeletion` 把它转成正常完成。取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+显式 recover 对已确认 `execution_evidence_missing` 且执行行缺失、仍有原 intent/ticket/journal 的 Bot，在同一删除串行入口内启用 `recoverMissingExecution`。`checkedTicket`、当前 journal 与原执行快照校验通过后，沿现有 Controller 停止及 `recordStoppedControllerGeneration` 机制停止原 generation；Windows 继续要求真实 Job 证明。原 journal 拥有停证，重复调用复用原 stoppedAt。缺失的历史执行材料不能恢复完整私有资源清单，因此不生成 execution 行或 cleanup 计划，不删除原 ticket/journal，不调用完成回执。`generationStopped` 仅是本机 Error 内的标记，用于 CLI 既有 `reason=evidence_missing` 与 hint 表达部分补偿结果，不增加协议或持久字段。该分支不进入自动调度或普通 Worker 停止流程。
+
+接受本地未核实由 CLI 调用服务端恢复接口完成，Web 只读显示原机器 CLI 指引，Worker 不执行无证明的私有清理。服务端终态保留本地未核实事实，不能调用 `finishDeletion` 把它转成正常完成。此补偿由 Bot 删除路径拥有，不扩展普通 Worker、Task 或运行中 Bot 的恢复流程。取舍见[删除证据恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
 
 ## 启动与授权
 

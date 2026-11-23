@@ -1,5 +1,4 @@
-import { useSyncExternalStore } from 'react';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotDeletionStatus } from '../src/features/bots/BotDeletionStatus';
 import { BotDeletionCoordinator } from '../src/features/bots/deletion-coordinator';
@@ -16,36 +15,43 @@ const cache = { snapshot: () => emptyPanes, invalidateBot: vi.fn(), blockBot: vi
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); sessionStorage.clear(); });
 function scope() { const value = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(value); return value; }
+async function recoveryCoordinator(value: BotDeletionRecovery) {
+  const coordinator = new BotDeletionCoordinator(scope()); coordinator.observe(recoveryBot(value));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => botResponse(url.endsWith('/deletion-recovery') ? value : recoveryBot(value))));
+  await coordinator.check(botId(), new AbortController().signal);
+  return coordinator;
+}
 
-it('requires acknowledgement and a reason, preserves reviewed version, and does not offer the invalid original delete retry', async () => {
-  const owner = scope(), coordinator = new BotDeletionCoordinator(owner); coordinator.observeRecovery(recoveryResource());
-  const resolve = vi.spyOn(coordinator, 'resolveRecovery').mockResolvedValue();
-  function Harness() { const record = useSyncExternalStore(coordinator.subscribe, coordinator.snapshot)[0]!; return record ? <BotDeletionStatus record={record} coordinator={coordinator} onCheck={async () => {}} enabled /> : null; }
-  renderWithLocale(<Harness />, { locale: 'zh-CN' });
-  expect(screen.queryByRole('button', { name: '重试原删除请求' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: '恢复删除' }));
-  const dialog = screen.getByRole('dialog'), confirm = within(dialog).getByRole('button', { name: '确认服务端收尾' });
-  expect(confirm).toBeDisabled();
-  fireEvent.change(within(dialog).getByRole('textbox', { name: '收尾原因' }), { target: { value: '原始执行记录已丢失' } });
-  expect(confirm).toBeDisabled(); fireEvent.click(within(dialog).getByRole('checkbox')); expect(confirm).toBeEnabled();
-  fireEvent.change(within(dialog).getByRole('textbox', { name: '收尾原因' }), { target: { value: '长'.repeat(1001) } });
-  expect(confirm).toBeDisabled(); expect(within(dialog).getByRole('alert')).toHaveTextContent('1,000');
-  fireEvent.change(within(dialog).getByRole('textbox', { name: '收尾原因' }), { target: { value: '原始执行记录已丢失' } });
-  act(() => coordinator.observeRecovery(recoveryResource(false, 'pending', '7')));
-  fireEvent.click(confirm); expect(resolve).toHaveBeenCalledWith(botId(), '原始执行记录已丢失', '5');
-  expect(screen.queryByRole('dialog')).toBeNull();
+it('shows original-machine CLI instructions and never offers a recovery write or invalid original DELETE', async () => {
+  const coordinator = await recoveryCoordinator({ ...recoveryResource(), hostingWorkerId: botId(88) });
+  renderWithLocale(<BotDeletionStatus record={coordinator.snapshot()[0]!} coordinator={coordinator} onCheck={async () => {}} enabled workerName="Original laptop" />, { locale: 'zh-CN' });
+  fireEvent.click(screen.getByText('查看恢复步骤'));
+  expect(screen.getByText('Original laptop')).toBeVisible(); expect(screen.getByText(botId(88))).toBeVisible();
+  expect(screen.getByText(`daynight bot deletion inspect ${botId()}`)).toBeVisible();
+  expect(screen.getByText(`daynight bot deletion recover ${botId()} --deletion-id ${botId(90)}`)).toBeVisible();
+  expect(screen.getByText('daynight bot deletion resolve --help')).toBeVisible();
+  expect(screen.getByText(/使用原来的 DN_CONFIG_DIR/)).toBeVisible();
+  expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['核对删除结果']);
 });
-it('shows a truthful settled record without a cleanup action or pending status', () => {
-  const coordinator = new BotDeletionCoordinator(scope()); coordinator.observeRecovery(recoveryResource(true, 'completed'));
+it.each(['pending', 'failed'] as const)('shows CLI cleanup retry instructions for an accepted %s decision', async state => {
+  const coordinator = await recoveryCoordinator(recoveryResource(true, state));
+  renderWithLocale(<BotDeletionStatus record={coordinator.snapshot()[0]!} coordinator={coordinator} onCheck={async () => {}} enabled />, { locale: 'zh-CN' });
+  fireEvent.click(screen.getByText('查看恢复步骤'));
+  expect(screen.getByText(`daynight bot deletion retry-cleanup ${botId()} --if-version <version> --deletion-id ${botId(90)} --operation-id ${botId(91)}`)).toBeVisible();
+  expect(screen.queryByText('daynight bot deletion resolve --help')).toBeNull();
+  expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['核对删除结果']);
+});
+it('shows a truthful settled record without a cleanup action or pending status', async () => {
+  const coordinator = await recoveryCoordinator(recoveryResource(true, 'completed'));
   renderWithLocale(<BotDeletionStatus record={coordinator.snapshot()[0]!} coordinator={coordinator} onCheck={async () => {}} enabled />, { locale: 'zh-CN' });
   expect(screen.getByRole('status')).toHaveTextContent('服务端删除完成，本机未核实');
   expect(screen.queryByRole('button', { name: '核对删除结果' })).toBeNull();
   fireEvent.click(screen.getByText('查看收尾记录')); expect(screen.getByText('Original records lost')).toBeVisible();
 });
-it('discovers recovery from the server on a cold device and reads settlement after another device resolves it', async () => {
+it('reads recovery from a known Bot URL and observes a CLI settlement after reload', async () => {
   let value: BotDeletionRecovery = recoveryResource();
   const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
-    if (url.includes('/bot-deletion-recoveries?')) return botResponse({ items: [value], nextCursor: null });
     if (url.endsWith('/deletion-recovery')) return botResponse(value);
     if (url.endsWith(`/bots/${botId()}`)) return botResponse(recoveryBot(value));
     if (url.includes('/defaults')) return botResponse(botDefaults());
@@ -53,11 +59,13 @@ it('discovers recovery from the server on a cold device and reads settlement aft
     if (url.includes('/bots?')) return botResponse({ items: [], nextCursor: null });
     throw new Error(`Unexpected route ${url}`);
   }); vi.stubGlobal('fetch', fetcher);
-  const first = renderWithLocale(<TaskCacheProvider scope={scope()}><BotsPage botId={null} readEnabled /></TaskCacheProvider>, { locale: 'zh-CN' });
-  await waitFor(() => expect(screen.getByRole('button', { name: '恢复删除' })).toBeEnabled());
+  const first = renderWithLocale(<TaskCacheProvider scope={scope()}><BotsPage botId={botId()} readEnabled /></TaskCacheProvider>, { locale: 'zh-CN' });
+  await waitFor(() => expect(screen.getByText('缺少执行记录，需要在原机器恢复')).toBeVisible());
+  expect(screen.getByRole('heading', { level: 2, name: '助手' })).toBeVisible();
+  expect(screen.queryByRole('heading', { level: 2, name: '正在加载…' })).toBeNull();
   first.unmount(); sessionStorage.clear(); value = recoveryResource(true, 'completed');
-  renderWithLocale(<TaskCacheProvider scope={scope()}><BotsPage botId={null} readEnabled /></TaskCacheProvider>, { locale: 'zh-CN' });
+  renderWithLocale(<TaskCacheProvider scope={scope()}><BotsPage botId={botId()} readEnabled /></TaskCacheProvider>, { locale: 'zh-CN' });
   expect(await screen.findByText('服务端删除完成，本机未核实')).toBeVisible();
-  expect(screen.queryByRole('button', { name: '恢复删除' })).toBeNull();
+  expect(screen.queryByText('查看恢复步骤')).toBeNull();
   expect(fetcher.mock.calls.every(([, init]) => !(init as RequestInit | undefined)?.method)).toBe(true);
 });

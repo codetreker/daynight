@@ -52,7 +52,9 @@ Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#li
 
 执行记录缺失时先读取独立删除恢复资源，核对原删除身份与 `requiresStopProof`。服务器需要停证而本地没有可用原执行证据或已保存停证时，在删除私有资料之前报告 `failed/execution_evidence_missing`，保留原责任；历史 `cleanup.localCompleted=true,stop=null` 同样需要此核对。只剩 intent 而原执行行或提交状态缺失，不能降格为 `never_started`；已提交执行无法确认停止且所需 journal 缺失时也进入证据缺失，其它停止失败仍保留未证明停止的原因。完整记录明确证明未提交或明确 OS 启动拒绝的正常路径仍可使用 `never_started`。历史无依据的 `never_started` 回执经服务端确定拒绝后，重新核对恢复资源的原绑定及承载身份，再转入证据缺失恢复；已知缺失状态不能由显式恢复再次重放同一无依据回执。真正从未绑定 Session 的助手仍允许正常 null stop，不以空本地记录代替服务端绑定事实。旧服务端不支持恢复资源时，已知的证据缺失状态仍跨重启停止自动完成重试，不盲目将非 null 停证的冲突归为证据缺失；其它错误不能推导成未绑定或成功。
 
-`bot deletion inspect` 把原机器实际检查与服务端状态分开呈现；`bot deletion recover` 在排除运行 Worker 和其它 Bot 持有者后，按原绑定尝试既有停证及精确私有清理。显式恢复可以继续等待恢复的同一删除，不能建立替代执行或放宽正常停证规则。缺失身份、未确认停止和未知回执仍保留责任。
+`bot deletion inspect` 把原机器实际检查与服务端状态分开呈现；`bot deletion recover` 在排除运行 Worker 和其它 Bot 持有者后，按原绑定尝试既有停证及精确私有清理。显式恢复可以继续等待恢复的同一删除，不能建立替代执行或放宽正常停证规则。缺失身份、未确认停止和未知回执仍保留责任。该入口仅补偿 Bot 删除异常，不作为普通 Worker 启停、Task 执行或运行中助手的一般恢复入口。
+
+已进入 `execution_evidence_missing`、执行索引行缺失，但原 intent、ticket 和 journal 仍可核对时，显式 `recover` 应尽力停止 journal 所属的原 generation，并将真实停证保留在原 journal。此时历史私有资源清单仍未知，因此不重建执行行、不生成部分 cleanup 计划、不删除 ticket/journal，也不提交 completed。命令仍以 `reason=evidence_missing` 失败，hint 明确区分“原 generation 已停止”与“删除尚未完成”；重复核对不得改写既有停止时间。自动删除推进及普通 Worker 流程不启用这一补偿。
 
 所有者接受本地未核实后的独立收尾由[助手删除恢复](assistant.md#删除证据缺失恢复)拥有。Worker 的远端清单及本地保留 ID 的逐项读取都须识别该决定，停止普通删除推进；不能仅从清单中隐藏它。服务端清理完成后本地仍保留 failed 事实及最小责任，不能伪造本地完成或补发旧成功回执。读取失败保留最后确认事实，不解除删除屏障。
 

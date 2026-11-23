@@ -111,6 +111,23 @@ describe("Bot deletion recovery commands", () => {
     expect(JSON.parse(result.err).error).toMatchObject({ confirmed: true, outcomeUnconfirmed: false, reason: "local_cleanup_failed" });
     expect(result.err).not.toContain("SECRET-PAT");
   });
+  it.each([true, false])("reports a stopped original generation without confirming deletion (JSON=%s)", async json => {
+    const stopped = Object.assign(new Error("SECRET-PAT original journal"), { code: "evidence_missing", generationStopped: true });
+    const recoverLocal = vi.fn().mockRejectedValue(new AggregateError([new Error("Local inspection failed", { cause: stopped })]));
+    const { run, requests } = await fixture(url => jsonResponse(url.pathname === "/api/v1/me" ? user : state()), { recoverLocal });
+    const result = await run(["recover", botId, "--deletion-id", deletionId, ...(json ? ["--json"] : [])]);
+    expect(result.exit).toBe(1); expect(result.out).toBe(""); expect(recoverLocal).toHaveBeenCalledOnce();
+    expect(requests.map(request => request.init.method)).toEqual(["GET", "GET"]);
+    if (json) {
+      const error = JSON.parse(result.err).error;
+      expect(error).toMatchObject({ reason: "evidence_missing", outcomeUnconfirmed: false });
+      expect(error).not.toHaveProperty("confirmed"); expect(error).not.toHaveProperty("receiptConfirmed");
+      expect(error.hint).toContain("The original generation is stopped; historical cleanup evidence is missing");
+    }
+    expect(result.err).toContain("Deletion remains incomplete");
+    expect(result.err).toContain(`Inspect locally with daynight bot deletion inspect ${botId} --json`);
+    expect(result.err).not.toContain("The submitted receipt is confirmed"); expect(result.err).not.toContain("SECRET-PAT");
+  });
   it.each(["lost", "malformed", "wrong-operation", "wrong-deletion", "wrong-owner", "wrong-reason"])("retains decision identity after %s without replay", async failure => {
     const { run, requests } = await fixture(() => {
       if (failure === "lost") throw new Error("SECRET-PAT response lost");

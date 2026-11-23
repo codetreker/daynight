@@ -9,15 +9,46 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+type recoveryReadSnapshot struct {
+	store.BotWriter
+	store.SnapshotScope
+	store.BotReader
+	t        *testing.T
+	p        model.Principal
+	ctx      context.Context
+	botID    string
+	snapshot sp.Snapshot
+	calls    []string
+}
+
+func (f *recoveryReadSnapshot) ReadSnapshot(ctx context.Context, read func(store.SnapshotScope) error) error {
+	if ctx != f.ctx {
+		f.t.Fatal("snapshot context changed")
+	}
+	f.calls = append(f.calls, "snapshot")
+	return read(f)
+}
+
+func (f *recoveryReadSnapshot) BotDAO() store.BotReader { return f }
+
+func (f *recoveryReadSnapshot) BotDeletionBinding(ctx context.Context, owner, id string) (sp.Snapshot, error) {
+	if ctx != f.ctx || owner != f.p.UserID || id != f.botID {
+		f.t.Fatal("binding identity changed")
+	}
+	f.calls = append(f.calls, "binding")
+	return f.snapshot, nil
+}
 
 func TestDeletionRecoveryReadOwnsSnapshotAndAdmission(t *testing.T) {
 	p, bot, input := deletionResolutionIdentity()
 	bot.SessionID = pointer(uuid.NewString())
 	bot.TestExecutionID = pointer(uuid.NewString())
-	f := &recoveryListRead{t: t, p: p, ctx: t.Context(), page: store.BotPage{Items: []model.Bot{bot}}}
+	f := &recoveryReadSnapshot{t: t, p: p, ctx: t.Context(), botID: bot.ID}
 	f.snapshot.SessionID, f.snapshot.TestExecutionID, f.snapshot.ExecutionGeneration = *bot.SessionID, *bot.TestExecutionID, "3"
 	f.snapshot.Identity.OwnerUserID, f.snapshot.Identity.ControllerID, f.snapshot.Identity.ControllerInstanceID = p.UserID, uuid.NewString(), uuid.NewString()
 	source := &definitionSource{read: scopedAuthorization(t, "bot:read")}

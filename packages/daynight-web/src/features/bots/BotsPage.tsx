@@ -11,7 +11,6 @@ import type { SessionTimelineReadingHandle } from '../task-agent-session/Session
 import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { getBotDefaults, listBots, type BotDefinition, type CreateBotInput } from '../../api/bots';
-import { listBotDeletionRecoveries, type BotDeletionRecovery } from '../../api/bot-deletion-recovery';
 import { navigate } from '../../app/router';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -45,19 +44,6 @@ const loadList = async (scope: TaskCacheScope, signal: AbortSignal) => {
   return [...items.values()];
 };
 const loadDefaults = (scope: TaskCacheScope, signal: AbortSignal) => getBotDefaults(null, signal, admission(scope));
-const loadRecoveries = async (scope: TaskCacheScope, signal: AbortSignal): Promise<readonly BotDeletionRecovery[] | null> => {
-  const values = new Map<string, BotDeletionRecovery>(), cursors = new Set<string>();
-  let cursor: string | null = null;
-  try {
-    do {
-      const page = await listBotDeletionRecoveries(cursor, signal, admission(scope));
-      for (const value of page.items) { if (values.has(value.botId)) throw new ApiError('protocol'); values.set(value.botId, value); }
-      cursor = page.nextCursor;
-      if (cursor !== null) { if (cursors.has(cursor)) throw new ApiError('protocol'); cursors.add(cursor); }
-    } while (cursor !== null);
-    return [...values.values()];
-  } catch (error) { if (error instanceof ApiError && error.kind === 'server' && error.status === 404) return null; throw error; }
-};
 const follow = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault(); navigate(event.currentTarget.pathname + event.currentTarget.search);
@@ -77,8 +63,6 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
   const blocked = (id: string) => cache.isBlocked(id) || cache.isRevoked(id) || deletions.some(record => record.id === id && record.phase !== 'rejected');
   const deletionChecks = useBotDeletionChecks(coordinator, readEnabled, deletions);
   const list = useBotRead('bots', readEnabled, loadList), defaults = useBotRead('bot-defaults', readEnabled, loadDefaults);
-  const recoveries = useBotRead('bot-deletion-recoveries', readEnabled, loadRecoveries);
-  useLayoutEffect(() => { if (readEnabled && !scope.isInvalidated) for (const value of recoveries.value ?? []) coordinator.observeRecovery(value); }, [coordinator, recoveries.value, readEnabled, scope]);
   const detail = useBotDetail(botId, readEnabled, retainedBotIds);
   const detailStale = !detail.confirmed;
   const conversation = useRef<HTMLDivElement>(null), detailsOpener = useRef<HTMLButtonElement>(null), detailsId = useId();
@@ -141,8 +125,8 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
   const detailsUnavailable = botId === null || blocked(botId) || denied || deleted || scope.isInvalidated;
   useEffect(() => { if (detailsUnavailable) setDetailsOpen(false); }, [detailsUnavailable]);
   const selectedName = !denied && !deleted && botId !== null && !blocked(botId) ? visibleBots.find(item => item.id === botId)?.name : null;
-  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, ...(bot ? { observation: observations.get(bot.id) } : {}), name: bot?.name ?? selectedName ?? (selectedDeletion?.name || (selectedDeletion && ['completed', 'settled'].includes(selectedDeletion.phase) ? m.title : m.loading)), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
-  const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); observations.refresh(); recoveries.refresh(); };
+  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, ...(bot ? { observation: observations.get(bot.id) } : {}), name: bot?.name ?? selectedName ?? (selectedDeletion?.name || (selectedDeletion?.result ? m.title : m.loading)), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
+  const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); observations.refresh(); };
   const deleteDialog = deleteTarget && !scope.isInvalidated && !targetUnavailable ? <div className="bot-details-confirmation" onKeyDown={event => {
     // Native dialog cancel and Tab own this layer before fullscreen handles keys.
     if (event.key === 'Escape' || event.key === 'Tab') event.stopPropagation();
@@ -160,7 +144,6 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
       <ul className="bot-list" aria-label={m.yourAssistants}>{items.map(item => <BotListItem key={item.id} bot={item} selected={botId === item.id} disabled={scope.isInvalidated} worker={worker(item.workerId)} stale={defaults.stale} observation={observations.get(item.id)} follow={follow} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} />)}</ul>
       <AssistantTaskSection tasks={assistantTasks.value} bots={visibleBots} selectedId={taskId} search={search} error={assistantTasks.error} busy={assistantTasks.busy} onRefresh={assistantTasks.refresh} onCreate={() => setTaskCreating('ordinary')} onWatchdog={() => { const task = assistantTasks.value?.find(t => t.application === 'watchdog'); if(task) navigate(assistantTaskUrl(task.id)); else setTaskCreating('watchdog'); }} follow={follow} />
       <div className="bot-deletions">{visibleDeletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} workerName={worker(record.recovery?.value?.hostingWorkerId ?? record.workerId ?? '')?.machine.name} onCheck={deletionChecks.check} enabled={readEnabled && !scope.isInvalidated} />)}</div>
-      {recoveries.error !== null ? <p className="notice error">{m.recoveryReadError}</p> : null}
     </aside>
     <div className="bot-conversation" ref={conversation} tabIndex={-1} onKeyDown={event => {
       if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented && showDetails && !deleteDialog) {
