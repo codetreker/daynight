@@ -434,11 +434,11 @@ func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
 // completionIdentity isolates the HTTP adapter while keeping the real request parser and router.
 type completionIdentity struct {
 	*strictIdentity
-	complete func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	complete func(context.Context, url.Values, string, string) (identitycore.LoginCompletion, error)
 }
 
-func (i *completionIdentity) CompleteLogin(ctx context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
-	return i.complete(ctx, values, binding)
+func (i *completionIdentity) CompleteLogin(ctx context.Context, values url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
+	return i.complete(ctx, values, binding, userAgent)
 }
 
 func TestCallbackNavigatesThroughCompletion(t *testing.T) {
@@ -446,10 +446,10 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 		t.Run(destination, func(t *testing.T) {
 			calls := 0
 			identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
-			identity.complete = func(_ context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
+			identity.complete = func(_ context.Context, values url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
 				calls++
-				if values.Get("state") != "state" || values.Get("code") != "private-code" || binding != "browser-binding" {
-					t.Fatalf("callback arguments: %v %q", values, binding)
+				if values.Get("state") != "state" || values.Get("code") != "private-code" || binding != "browser-binding" || userAgent != "sample browser" {
+					t.Fatalf("callback arguments: %v %q %q", values, binding, userAgent)
 				}
 				return identitycore.LoginCompletion{LoginID: "login", User: model.User{ID: "private-user"}, Session: model.Session{ID: "private-session", ExpiresAt: time.Now().Add(time.Hour)}, Secret: "private-secret", ReturnPath: destination}, nil
 			}
@@ -460,6 +460,7 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 			mux := http.NewServeMux()
 			h.RegisterRoutes(mux)
 			request := httptest.NewRequest(http.MethodGet, "/auth/callback?state=state&code=private-code", nil)
+			request.Header.Set("User-Agent", "sample browser")
 			request.AddCookie(&http.Cookie{Name: h.bindingCookieName("state"), Value: "browser-binding"})
 			response := httptest.NewRecorder()
 			mux.ServeHTTP(response, request)
@@ -482,7 +483,7 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 
 func TestCallbackStartsPreviewAfterIssuingMainSession(t *testing.T) {
 	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
-	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+	identity.complete = func(_ context.Context, _ url.Values, _, _ string) (identitycore.LoginCompletion, error) {
 		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "/projects?view=1#part"}, nil
 	}
 	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -515,7 +516,7 @@ func TestCallbackStartsPreviewAfterIssuingMainSession(t *testing.T) {
 
 func TestCallbackPreservesActualEscapedBase(t *testing.T) {
 	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/custom/callback" }}}
-	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+	identity.complete = func(_ context.Context, _ url.Values, _, _ string) (identitycore.LoginCompletion, error) {
 		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "%2Fprojects?view=1#part"}, nil
 	}
 	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))

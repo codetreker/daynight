@@ -60,7 +60,7 @@ func TestSDKProfileFieldsReachAdmissionUnchanged(t *testing.T) {
 					f.transactions[1].before = stop
 					f.identity.ops.newSession = func(time.Time) (model.Session, string) { f.hit("new-session"); return model.Session{}, "opaque" }
 				}
-				got, err := f.identity.CompleteLogin(f.ctx, query, binding)
+				got, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 				f.equal(got, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath})
 				if extra == 1 {
 					var provider *model.IdentityProviderError
@@ -158,7 +158,7 @@ func TestCompleteLoginAdmissionRequiresConfirmedRollback(t *testing.T) {
 					}
 					return nil
 				}
-				result, err := f.identity.CompleteLogin(f.ctx, query, binding)
+				result, err := f.identity.CompleteLogin(f.ctx, query, binding, "")
 				f.equal(result, core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath})
 				if !errors.Is(err, refusal) {
 					t.Fatalf("lost admission error: %v", err)
