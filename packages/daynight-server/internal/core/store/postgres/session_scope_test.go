@@ -108,6 +108,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
 			t.Fatal(err)
 		}
+		if expired && caller.Kind == model.SessionCredential {
+			if err := db.Pool.QueryRow(probeCtx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
+				t.Fatal(err)
+			}
+		}
 		admittedAt := expiry.Add(-time.Second)
 		recheckedAt := admittedAt
 		if expired {
@@ -153,6 +158,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 			}
 		}()
 		waitTransferTeamLock(t, probeCtx, db, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
+		if expired && caller.Kind == model.SessionCredential {
+			if _, err := db.Pool.Exec(probeCtx, `SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())))`, expiry); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := holder.Commit(probeCtx); err != nil {
 			t.Fatal(err)
 		}

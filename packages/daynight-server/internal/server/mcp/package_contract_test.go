@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/hex"
 	"reflect"
 	"testing"
 	"time"
@@ -35,26 +34,6 @@ func TestPublicTaskQueryRegistrationPublishesQueryTools(t *testing.T) {
 	want := map[string]bool{"task_list": true, "task_ready": true, "task_graph": true, "test_only": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("query tools = %#v; want %#v", got, want)
-	}
-}
-
-func TestStepAddAllocatesCanonicalIDAndForwardsOptionalFields(t *testing.T) {
-	ops := stepWriteFixture()
-	writer := stepWriter{steps: ops}
-	status := model.TaskStepDone
-	result, err := writer.add(t.Context(), projectActor(), stepAddInput{
-		stepWriteBase: stepWriteBase{ProjectID: testProjectID, TaskID: testTargetID},
-		Title:         "Generated", Description: ptr("Details"), Status: &status, After: ptr("12345678"),
-	})
-	if err != nil || result.WriteOutcome != "confirmed" {
-		t.Fatalf("add = %+v, %v", result, err)
-	}
-	id, err := hex.DecodeString(ops.addInput.ID)
-	if err != nil || len(id) != 4 || ops.addInput.Title != "Generated" || ops.addInput.Description != "Details" || ops.addInput.Status == nil || *ops.addInput.Status != status || ops.addInput.After == nil || *ops.addInput.After != "12345678" || ops.addInput.Version != ops.page.Header.Version || ops.reads != 1 || ops.writes != 1 {
-		t.Fatalf("incorrect generated-ID request: %+v, decode = %v", ops.addInput, err)
-	}
-	if result.Refs["stepId"] != ops.addInput.ID {
-		t.Fatalf("generated ID missing from receipt: %+v", result)
 	}
 }
 

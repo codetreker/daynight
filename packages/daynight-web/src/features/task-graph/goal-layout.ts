@@ -69,19 +69,38 @@ const groupsFor = (projection: GraphProjection): readonly Group[] => {
   return groups;
 };
 
-const axis = (direction: GraphDirection) => direction === 'horizontal'
-  ? { nodeF: TASK_NODE_WIDTH, nodeQ: TASK_NODE_COMPACT_HEIGHT }
-  : { nodeF: TASK_NODE_COMPACT_HEIGHT, nodeQ: TASK_NODE_WIDTH };
-
-const rankSize = (count: number, columns: number, direction: GraphDirection) => {
-  const { nodeF, nodeQ } = axis(direction);
-  const cols = Math.min(count, columns); const rows = Math.ceil(count / cols);
-  return { cols, f: cols * nodeF + (cols - 1) * forwardGap, q: rows * nodeQ + (rows - 1) * crossGap };
+type RankSize = { readonly cols: number; readonly f: number; readonly q: number; readonly forward: readonly number[]; readonly forwardSizes: readonly number[]; readonly cross: readonly number[] };
+const heightOf = (id: string, heights: ReadonlyMap<string, number>) => {
+  const height = heights.get(id) ?? TASK_NODE_COMPACT_HEIGHT;
+  if (!Number.isFinite(height) || height <= 0) invalid('received invalid node height');
+  return height;
 };
 
-const rectangleFor = (group: Group, columns: number, direction: GraphDirection): Rectangle => {
-  if (group.ranks.length === 1 && group.ranks[0]!.length === 1) return { group, width: TASK_NODE_WIDTH, height: TASK_NODE_COMPACT_HEIGHT };
-  const sizes = group.ranks.map((rank) => rankSize(rank.length, columns, direction));
+// Each grid column and row reserves its largest member, so mixed node heights
+// leave enough room for both cards and routes in either orientation.
+const rankSize = (rank: readonly string[], columns: number, direction: GraphDirection, heights: ReadonlyMap<string, number>): RankSize => {
+  const cols = Math.min(rank.length, columns); const rows = Math.ceil(rank.length / cols);
+  const forwardSizes = Array<number>(cols).fill(0); const crossSizes = Array<number>(rows).fill(0);
+  for (const [index, id] of rank.entries()) {
+    const height = heightOf(id, heights);
+    const forward = direction === 'horizontal' ? TASK_NODE_WIDTH : height;
+    const cross = direction === 'horizontal' ? height : TASK_NODE_WIDTH;
+    const col = index % cols; const row = Math.floor(index / cols);
+    forwardSizes[col] = Math.max(forwardSizes[col]!, forward);
+    crossSizes[row] = Math.max(crossSizes[row]!, cross);
+  }
+  const offsets = (sizes: readonly number[], gap: number) => {
+    let total = 0;
+    const positions = sizes.map((value, index) => { const offset = total; total += value + (index + 1 < sizes.length ? gap : 0); return offset; });
+    return { positions, total };
+  };
+  const forward = offsets(forwardSizes, forwardGap); const cross = offsets(crossSizes, crossGap);
+  return { cols, f: forward.total, q: cross.total, forward: forward.positions, forwardSizes, cross: cross.positions };
+};
+
+const rectangleFor = (group: Group, columns: number, direction: GraphDirection, heights: ReadonlyMap<string, number>): Rectangle => {
+  if (group.ranks.length === 1 && group.ranks[0]!.length === 1) return { group, width: TASK_NODE_WIDTH, height: heightOf(group.ranks[0]![0]!, heights) };
+  const sizes = group.ranks.map((rank) => rankSize(rank, columns, direction, heights));
   const f = sizes.reduce((sum, size) => sum + size.f, (sizes.length - 1) * forwardGap) + 2 * margin;
   const q = sizes.reduce((maximum, size) => Math.max(maximum, size.q), 0) + 2 * margin;
   return direction === 'horizontal' ? { group, width: f, height: q } : { group, width: q, height: f };
@@ -100,7 +119,7 @@ const pack = (rectangles: readonly Rectangle[], columns: number, budget: number)
   return { columns, budget, width: width + 2 * margin, height: y + rowHeight + 2 * margin, placements };
 };
 
-const choose = (groups: readonly Group[], size: GoalLayoutSize, direction: GraphDirection): Candidate => {
+const choose = (groups: readonly Group[], size: GoalLayoutSize, direction: GraphDirection, heights: ReadonlyMap<string, number>): Candidate => {
   const maxRank = groups.reduce((maximum, group) => group.ranks.reduce((value, rank) => Math.max(value, rank.length), maximum), 0);
   let best: Candidate | undefined;
   const score = (candidate: Candidate) => [Math.max(candidate.width / size.width, candidate.height / size.height),
@@ -111,7 +130,7 @@ const choose = (groups: readonly Group[], size: GoalLayoutSize, direction: Graph
     return false;
   };
   for (let columns = 1; columns <= maxRank; columns++) {
-    const rectangles = groups.map((group) => rectangleFor(group, columns, direction)).sort((a, b) =>
+    const rectangles = groups.map((group) => rectangleFor(group, columns, direction, heights)).sort((a, b) =>
       b.height - a.height || b.width - a.width || compare(a.group.id, b.group.id));
     const area = rectangles.reduce((sum, rectangle) => sum + rectangle.width * rectangle.height, 0);
     const maxWidth = rectangles.reduce((maximum, rectangle) => Math.max(maximum, rectangle.width), 0);
@@ -126,11 +145,10 @@ const choose = (groups: readonly Group[], size: GoalLayoutSize, direction: Graph
   return best!;
 };
 
-const materialize = (placement: Placement, columns: number, projection: GraphProjection, direction: GraphDirection) => {
+const materialize = (placement: Placement, columns: number, projection: GraphProjection, direction: GraphDirection, heights: ReadonlyMap<string, number>) => {
   const { group } = placement;
   const single = group.ranks.length === 1 && group.ranks[0]!.length === 1;
-  const { nodeF, nodeQ } = axis(direction);
-  const sizes = group.ranks.map((rank) => rankSize(rank.length, columns, direction));
+  const sizes = group.ranks.map((rank) => rankSize(rank, columns, direction, heights));
   const maxQ = sizes.reduce((maximum, size) => Math.max(maximum, size.q), 0);
   let f = single ? 0 : margin;
   const nodes: CanvasNode[] = [];
@@ -138,9 +156,9 @@ const materialize = (placement: Placement, columns: number, projection: GraphPro
     const size = sizes[rankIndex]!;
     const q = (single ? 0 : margin) + (maxQ - size.q) / 2;
     for (const [index, id] of rank.entries()) {
-      const forward = f + (index % size.cols) * (nodeF + forwardGap);
-      const cross = q + Math.floor(index / size.cols) * (nodeQ + crossGap);
-      nodes.push({ id, kind: projection.mainIds.has(id) ? 'main' : 'external', width: TASK_NODE_WIDTH, height: TASK_NODE_COMPACT_HEIGHT,
+      const forward = f + size.forward[index % size.cols]! + (direction === 'vertical' ? (size.forwardSizes[index % size.cols]! - heightOf(id, heights)) / 2 : 0);
+      const cross = q + size.cross[Math.floor(index / size.cols)]!;
+      nodes.push({ id, kind: projection.mainIds.has(id) ? 'main' : 'external', width: TASK_NODE_WIDTH, height: heightOf(id, heights),
         position: direction === 'horizontal' ? { x: forward, y: cross } : { x: cross, y: forward } });
     }
     f += size.f + forwardGap;
@@ -163,13 +181,13 @@ const materialize = (placement: Placement, columns: number, projection: GraphPro
     edges: routed.map((edge) => ({ ...edge, points: edge.points.map(translate) })) };
 };
 
-export const layoutGoalGraph = (projection: GraphProjection, size: GoalLayoutSize, direction: GraphDirection): CanvasLayout => {
+export const layoutGoalGraph = (projection: GraphProjection, size: GoalLayoutSize, direction: GraphDirection, heights: ReadonlyMap<string, number> = new Map()): CanvasLayout => {
   if (!Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 0 || size.height <= 0) invalid('requires positive finite canvas dimensions');
   const groups = groupsFor(projection);
   if (groups.length === 0) return { nodes: [], edges: [], width: 0, height: 0, direction };
-  const winner = choose(groups, size, direction);
+  const winner = choose(groups, size, direction, heights);
   if (!Number.isFinite(winner.width) || !Number.isFinite(winner.height)) invalid('returned non-finite bounds');
-  const contents = winner.placements.map((placement) => materialize(placement, winner.columns, projection, direction));
+  const contents = winner.placements.map((placement) => materialize(placement, winner.columns, projection, direction, heights));
   return { nodes: contents.flatMap((content) => content.nodes).sort((a, b) => compare(a.id, b.id)),
     edges: contents.flatMap((content) => content.edges).sort(edgeOrder), width: winner.width, height: winner.height, direction };
 };

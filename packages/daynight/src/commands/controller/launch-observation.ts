@@ -7,7 +7,7 @@ import { canonicalId } from "../../api/parse.js";
 import { sqliteDatabaseIsMissing, closeSqliteDatabase } from "../../platform/sqlite-access.js";
 import { inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { controllerJournalFormat } from "./journal-format.js";
+import { controllerJournalFormat, inspectReadCompatibleControllerJournal } from "./journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { parseStartupObservation } from "../../session/startup.js";
@@ -81,7 +81,11 @@ const readExitedJournal = (file: string, ticket: ControllerLaunchTicket, process
     result = db.transaction(() => {
       const source = inspectSqlite(db, controllerJournalFormat);
       if (source.kind === "empty") return { kind: "pre-writer-exited", process, journal: "missing" } as const;
-      if (source.kind !== "current") throw new ControllerLaunchJournalConflictError("Controller launch journal is not in the current format.");
+      try { inspectReadCompatibleControllerJournal(db); }
+      catch (cause) {
+        if (cause instanceof SqliteAccessError) throw cause;
+        throw new ControllerLaunchJournalConflictError("Controller launch journal is not in a supported read-only format.", { cause });
+      }
       const row = db.prepare("SELECT ticket_hash, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
       if (row === undefined) return { kind: "pre-writer-exited", process, journal: "missing" } as const;
       const snapshot = JSON.parse(row.snapshot) as ControllerSnapshot;

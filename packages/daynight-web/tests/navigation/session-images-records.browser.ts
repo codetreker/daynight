@@ -94,7 +94,6 @@ async function openRecords(page: Page, completed: boolean, busy?: { target: 'con
       }
     }
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
-    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
     observations.unexpected.push(`${request.method()} ${path}`);
     return send({ error: { code: 'not_found', message: 'Unexpected record fixture request', requestId: source.sessionId } }, 404);
   });

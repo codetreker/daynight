@@ -60,11 +60,12 @@ runs ordinary tests and installed acceptance in independent jobs on Linux,
 Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
 and records its own outcome. The ordinary jobs also typecheck and test the local
 development installer. Both native matrices include `ubuntu-latest`,
-`windows-latest` and `macos-15`. Ordinary macOS has a 15-minute job limit;
-the other jobs have 10 minutes. Windows
-ordinary tests use two independent runners with Vitest's built-in `--shard=1/2`
-and `--shard=2/2`; their execution sets together cover the complete ordinary
-collection. Each Windows runner retains the same preparation and source checks.
+`windows-latest` and `macos-15`. The ordinary macOS job has a 20-minute limit.
+The other ordinary jobs and all installed CLI jobs have 10-minute limits.
+Windows ordinary tests use two independent runners with Vitest's built-in
+`--shard=1/2` and `--shard=2/2`. Their execution sets together cover the complete
+ordinary collection. Each Windows runner uses the same preparation and source
+checks.
 Ordinary suites exclude `.stress.ts` files; explicit local stress commands select those
 workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
@@ -215,17 +216,27 @@ lock and cache fences have been observed. The project-preparation case advances
 the configuration clock at the recorded deadline, while observing persistence
 and inventory with real asynchronous work. The
 [startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
-owns both timing checks. The ordinary-run closure case holds the original
-Reviewer after its original journal has persisted stopped. It verifies that the
-runtime and lock remain owned beyond a one-second observation, then releases
-that same producer and observes natural completion within 35 seconds. A
-five-second startup observation and 45-second case limit bound the test; owner
-stop and management-close deadlines remain unchanged. Final assertions retain
-the uncancelled parent, one Reviewer invocation, generation 1 stopped record and
-reacquired lock. Failure diagnostics identify the phase, elapsed time and runtime
-errors. The
-[ordinary closure decision](../.agents/notes/implemented/testing/2026-11-21-worker-ordinary-closure-observation.md)
-owns this proof and budget.
+owns both timing checks. The runtime isolation fixtures use a real managed
+subprocess and hold its output consumer open until the journal records
+unconfirmed closure. The foreground runtime keeps the same coordinator and
+instance lock while task reconciliation advances. An explicit stop retains
+the original resource and blocks rebuild until its output consumer joins and
+closure is recorded. The
+[command closure decision](../.agents/notes/implemented/bug-fix/2026-11-23-worker-owned-command-unknown.md)
+owns the runtime behavior these fixtures verify.
+The management-close and prepared-command save fixtures deliver the exact
+registered deadline after the original writer or close enters its held phase.
+Real file operations, ownership records and lock observations stay in the
+production paths. The
+[observation deadline decision](../.agents/notes/implemented/testing/2026-11-23-worker-observation-deadline-fixtures.md)
+describes their clock and cleanup boundaries.
+Worker lifecycle manager fixtures control the wait between observations. The
+local SQLite observer and cloud poll advance independently in ordering-sensitive
+cases. Real SQLite receipts, cancellation and writer joins remain part of
+those cases. A representative fixture exercises the production timers and
+verifies the requested admission and poll intervals.
+The [lifecycle polling decision](../.agents/notes/implemented/testing/2026-11-23-lifecycle-polling-fixtures.md)
+owns the test timing rules.
 Worker reconcile wake tests retain native wake and cancellation. The poll
 completion case controls one Promise delay and asserts its requested interval.
 The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)

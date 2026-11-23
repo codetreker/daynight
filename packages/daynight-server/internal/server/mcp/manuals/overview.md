@@ -14,7 +14,6 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Edit Goal acceptance relationships | [Dependency writes](daynight://manuals/dependency-writes.md); [Dependencies](daynight://manuals/dependencies.md) |
 | Replace or reduce dependency relationships | [Dependency writes](daynight://manuals/dependency-writes.md) |
 | Organize requirements, designs, shared sources or results | [Materials](daynight://manuals/materials.md) |
-| Read or maintain Steps | [Steps](daynight://manuals/steps.md) |
 | Read or post participant discussion | [Threads](daynight://manuals/threads.md) |
 | Read attachment metadata/bytes or resolve paths | [Attachment reads](daynight://manuals/attachment-reads.md) |
 | Publish or remove attachments | [Attachment writes](daynight://manuals/attachment-writes.md); Attachment reads for unknown path rules or reading back bytes |
@@ -23,7 +22,7 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Send to an exact Session or query its original operation | [Session messages](daynight://manuals/session-messages.md); Session reads when target identity, state or admission must be established |
 | Hand off work or complete an explicitly owned Worker claim | [Worker operations](daynight://manuals/worker-operations.md) |
 
-Every write also requires [Write safety](daynight://manuals/write-safety.md) and its operation-specific prerequisites. Topics state any further necessary reads. For an input-dependent decision, read the actual complete material, not only its inventory or a preview. Task/Step summaries omit definitions; even full Task lists omit descriptions. Attachments, Steps, Thread and Session content are separate reads.
+Every write also requires [Write safety](daynight://manuals/write-safety.md) and its operation-specific prerequisites. Topics state any further necessary reads. For an input-dependent decision, read the actual complete material, not only its inventory or a preview. Task summaries omit definitions; even full Task lists omit descriptions. Attachments, Thread and Session content are separate reads.
 
 ## Shared conventions
 

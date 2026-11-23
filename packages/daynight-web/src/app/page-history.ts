@@ -40,6 +40,16 @@ const validNavigation = (value: unknown): value is TaskDetailNavigation => recor
 const validResource = (value: unknown): value is ResourceReading => record(value) && exact(value, ['id', 'navigation']) && validId(value.id) && validNavigation(value.navigation);
 const validChildren = (value: unknown): value is GoalChildren => record(value) && exact(value, ['graphRootId', 'task']) &&
   (value.graphRootId === null || validId(value.graphRootId)) && (value.task === null || validResource(value.task));
+// Saved history can contain the retired tab; retain the selected attachment.
+const normalizeResource = <T extends ResourceReading>(resource: T): T => ({
+  ...resource,
+  navigation: (resource.navigation.tab as string) === 'steps'
+    ? { ...resource.navigation, tab: resource.navigation.path === null ? 'overview' : 'attachments' }
+    : resource.navigation,
+});
+const normalizeChildren = (children: GoalChildren | null): GoalChildren | null => children === null ? null : ({
+  ...children, task: children.task === null ? null : normalizeResource(children.task),
+});
 const resourceKey = (projectId: string, taskId: string): `resource:${string}/${string}` => `resource:${projectId}/${taskId}`;
 
 /** Empty selections contain no resource data, only the absence of nested readers. */
@@ -57,7 +67,8 @@ export function readResourceHistory(value: unknown, userId: string, projectId: s
   if (external !== null && (!record(external) || !exact(external, ['id', 'navigation', 'witness', 'goalChildren']) ||
     !validId(external.id) || !validNavigation(external.navigation) || !validId(external.witness) ||
     !(external.goalChildren === null || validChildren(external.goalChildren)))) throw new Error('Invalid resource navigation state.');
-  return selection as ResourcePageReading;
+  const result = selection as ResourcePageReading;
+  return { goalChildren: normalizeChildren(result.goalChildren), externalGoal: result.externalGoal === null ? null : { ...normalizeResource(result.externalGoal), goalChildren: normalizeChildren(result.externalGoal.goalChildren) } };
 }
 
 export const resourceHistory = (userId: string, projectId: string, taskId: string, selection: ResourcePageReading): PageHistoryState =>
@@ -77,7 +88,8 @@ export function readMyTasksHistory(value: unknown, userId: string): MyTasksReadi
   if (detail !== null && (!record(detail) || !exact(detail, ['projectId', 'id', 'navigation', 'goalChildren']) ||
       !validId(detail.projectId) || !validId(detail.id) || !validNavigation(detail.navigation) ||
       !(detail.goalChildren === null || validChildren(detail.goalChildren)))) throw new Error('Invalid my-tasks navigation state.');
-  return selection as MyTasksReading;
+  const result = selection as MyTasksReading;
+  return { ...result, detail: result.detail === null ? null : { ...normalizeResource(result.detail), goalChildren: normalizeChildren(result.detail.goalChildren) } };
 }
 
 export const myTasksHistory = (userId: string, selection: MyTasksReading): PageHistoryState =>
@@ -97,7 +109,8 @@ export function readProjectHistory(value: unknown, userId: string, projectId: st
   if (detail !== null && (!record(detail) || !exact(detail, ['id', 'navigation', 'source', 'insideProjectGraph', 'goalChildren']) ||
       !validId(detail.id) || !validNavigation(detail.navigation) || (detail.source !== 'summary' && detail.source !== 'direct') ||
       typeof detail.insideProjectGraph !== 'boolean' || !(detail.goalChildren === null || validChildren(detail.goalChildren)))) throw new Error('Invalid project navigation state.');
-  return selection as ProjectReading;
+  const result = selection as ProjectReading;
+  return { ...result, detail: result.detail === null ? null : { ...normalizeResource(result.detail), goalChildren: normalizeChildren(result.detail.goalChildren) } };
 }
 
 export const projectHistory = (userId: string, projectId: string, selection: ProjectReading): PageHistoryState =>

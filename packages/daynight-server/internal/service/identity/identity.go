@@ -30,99 +30,103 @@ type Identity struct {
 }
 
 type identityOperations struct {
-	ensureUser               func(context.Context, store.IdentityDAO, model.User, time.Time) (model.User, bool, error)
-	patchUser                func(context.Context, store.IdentityDAO, string, model.UserProfilePatch) (model.User, error)
-	lockProfileCredential    func(context.Context, store.IdentityDAO, store.CredentialFamilyDAO, model.Principal, string, time.Time) error
-	validateProfilePatch     func(model.UserProfilePatch) error
-	validateExternalUser     func(model.User) (model.User, error)
-	admitCompleteUser        func(model.User, bool) error
-	validateLogin            func(provider, returnPath string) error
-	startLogin               func(provider, returnPath string, now time.Time) (core.LoginStart, model.LoginTransaction, error)
-	createLogin              func(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, appNow time.Time) (time.Time, error)
-	consumeLogin             func(ctx context.Context, dao store.IdentityDAO, state, binding string, now time.Time) (model.LoginTransaction, error)
-	newSession               func(now time.Time) (model.Session, string)
-	completeLogin            func(ctx context.Context, dao store.IdentityDAO, user model.User, now time.Time) (model.User, error)
-	createSession            func(ctx context.Context, dao store.IdentityDAO, session model.Session) error
-	authenticate             func(ctx context.Context, dao store.IdentityDAO, kind model.CredentialKind, value string, now time.Time) (model.Principal, error)
-	user                     func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (model.User, store.PersonalTeamFacts, error)
-	personalTeam             func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (store.PersonalTeamFacts, error)
-	logout                   func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
-	createPAT                func(ctx context.Context, dao store.IdentityDAO, p model.Principal, input core.CreatePAT, now time.Time) (core.MintedPAT, error)
-	listPATs                 func(ctx context.Context, dao store.IdentityDAO, p model.Principal, now time.Time) ([]model.PersonalAccessToken, error)
-	revokePAT                func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, now time.Time) error
-	updatePATExpiry          func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (model.PersonalAccessToken, error)
-	providers                func(providers []string, code string, cause error) ([]string, error)
-	deviceRate               func(ctx context.Context, dao store.IdentityDAO, operation, actor string, globalLimit, actorLimit int, now time.Time) error
-	startDevice              func(ctx context.Context, dao store.IdentityDAO, clientID string, now time.Time) (core.DeviceStart, error)
-	inspectDevice            func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code string, now time.Time) (model.DeviceAuthorization, error)
-	deviceInspection         func(d model.DeviceAuthorization, now time.Time) core.DeviceInspection
-	decideDevice             func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code, decision, expectedUserID string, now time.Time) error
-	redeemDevice             func(ctx context.Context, dao store.IdentityDAO, clientID, grantType, code, deviceName string, now time.Time) (core.MintedPAT, error)
-	logoutDevice             func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
-	validateCallback         func(query url.Values, binding string) error
-	validateProvider         func(expected, actual string, mismatch error) error
-	admitProfileFields       func(profile model.User) error
-	validateCredential       func(kind model.CredentialKind, value string) error
-	validateSession          func(p model.Principal) error
-	validateCreatePAT        func(p model.Principal, input core.CreatePAT, now time.Time) (*time.Time, error)
-	validateRevokePAT        func(p model.Principal, id string) (string, error)
-	validateUpdatePATExpiry  func(p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (string, *time.Time, error)
-	validateDeviceClient     func(id string) error
-	validateDeviceBrowser    func(p model.Principal) error
-	validateDeviceDecision   func(p model.Principal, code, decision, expectedUserID string) (string, string, error)
-	validateDeviceRedemption func(clientID, grantType, code, deviceName string) error
-	validateDeviceLogout     func(p model.Principal) error
-	bootstrapPersonalTeam    func(context.Context, store.PersonalTeamDAO, string, time.Time) (model.TeamRef, error)
-	validatePersonalTeam     func(store.PersonalTeamFacts) error
+	ensureUser                  func(context.Context, store.IdentityDAO, model.User, time.Time) (model.User, bool, error)
+	patchUser                   func(context.Context, store.IdentityDAO, string, model.UserProfilePatch) (model.User, error)
+	lockProfileCredential       func(context.Context, store.IdentityDAO, store.CredentialFamilyDAO, model.Principal, string, time.Time) error
+	validateProfilePatch        func(model.UserProfilePatch) error
+	validateExternalUser        func(model.User) (model.User, error)
+	admitCompleteUser           func(model.User, bool) error
+	validateLogin               func(provider, returnPath string) error
+	startLogin                  func(provider, returnPath string, now time.Time) (core.LoginStart, model.LoginTransaction, error)
+	createLogin                 func(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, appNow time.Time) (time.Time, error)
+	consumeLogin                func(ctx context.Context, dao store.IdentityDAO, state, binding string, now time.Time) (model.LoginTransaction, error)
+	newSession                  func(now time.Time) (model.Session, string)
+	sessionTime                 func(context.Context, store.IdentityDAO) (time.Time, error)
+	authenticateBrowserActivity func(context.Context, store.IdentityDAO, string, string) (model.Principal, error)
+	completeLogin               func(ctx context.Context, dao store.IdentityDAO, user model.User, now time.Time) (model.User, error)
+	createSession               func(ctx context.Context, dao store.IdentityDAO, session model.Session) error
+	authenticate                func(ctx context.Context, dao store.IdentityDAO, kind model.CredentialKind, value string, now time.Time) (model.Principal, error)
+	user                        func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (model.User, store.PersonalTeamFacts, error)
+	personalTeam                func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (store.PersonalTeamFacts, error)
+	logout                      func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
+	createPAT                   func(ctx context.Context, dao store.IdentityDAO, p model.Principal, input core.CreatePAT, now time.Time) (core.MintedPAT, error)
+	listPATs                    func(ctx context.Context, dao store.IdentityDAO, p model.Principal, now time.Time) ([]model.PersonalAccessToken, error)
+	revokePAT                   func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, now time.Time) error
+	updatePATExpiry             func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (model.PersonalAccessToken, error)
+	providers                   func(providers []string, code string, cause error) ([]string, error)
+	deviceRate                  func(ctx context.Context, dao store.IdentityDAO, operation, actor string, globalLimit, actorLimit int, now time.Time) error
+	startDevice                 func(ctx context.Context, dao store.IdentityDAO, clientID string, now time.Time) (core.DeviceStart, error)
+	inspectDevice               func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code string, now time.Time) (model.DeviceAuthorization, error)
+	deviceInspection            func(d model.DeviceAuthorization, now time.Time) core.DeviceInspection
+	decideDevice                func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code, decision, expectedUserID string, now time.Time) error
+	redeemDevice                func(ctx context.Context, dao store.IdentityDAO, clientID, grantType, code, deviceName string, now time.Time) (core.MintedPAT, error)
+	logoutDevice                func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
+	validateCallback            func(query url.Values, binding string) error
+	validateProvider            func(expected, actual string, mismatch error) error
+	admitProfileFields          func(profile model.User) error
+	validateCredential          func(kind model.CredentialKind, value string) error
+	validateSession             func(p model.Principal) error
+	validateCreatePAT           func(p model.Principal, input core.CreatePAT, now time.Time) (*time.Time, error)
+	validateRevokePAT           func(p model.Principal, id string) (string, error)
+	validateUpdatePATExpiry     func(p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (string, *time.Time, error)
+	validateDeviceClient        func(id string) error
+	validateDeviceBrowser       func(p model.Principal) error
+	validateDeviceDecision      func(p model.Principal, code, decision, expectedUserID string) (string, string, error)
+	validateDeviceRedemption    func(clientID, grantType, code, deviceName string) error
+	validateDeviceLogout        func(p model.Principal) error
+	bootstrapPersonalTeam       func(context.Context, store.PersonalTeamDAO, string, time.Time) (model.TeamRef, error)
+	validatePersonalTeam        func(store.PersonalTeamFacts) error
 }
 
 func New(writer store.IdentityWriter, client *uniauth.Client, callbackURL string) *Identity {
 	module := core.NewIdentity(callbackURL)
 	return &Identity{writer: writer, client: client, callbackURL: callbackURL, now: time.Now, ops: identityOperations{
-		ensureUser:               module.EnsureUser,
-		patchUser:                module.PatchUser,
-		lockProfileCredential:    module.LockProfileCredential,
-		validateProfilePatch:     core.ValidateProfilePatch,
-		validateExternalUser:     core.ValidateExternalUser,
-		admitCompleteUser:        core.AdmitCompleteUser,
-		validateLogin:            module.ValidateLogin,
-		startLogin:               module.StartLogin,
-		createLogin:              module.CreateLogin,
-		consumeLogin:             module.ConsumeLogin,
-		newSession:               module.NewSession,
-		completeLogin:            module.CompleteLogin,
-		createSession:            module.CreateSession,
-		authenticate:             module.Authenticate,
-		user:                     module.User,
-		personalTeam:             module.PersonalTeam,
-		logout:                   module.Logout,
-		createPAT:                module.CreatePAT,
-		listPATs:                 module.ListPATs,
-		revokePAT:                module.RevokePAT,
-		updatePATExpiry:          module.UpdatePATExpiry,
-		providers:                module.Providers,
-		deviceRate:               module.DeviceRate,
-		startDevice:              module.StartDevice,
-		inspectDevice:            module.InspectDevice,
-		deviceInspection:         module.DeviceInspection,
-		decideDevice:             module.DecideDevice,
-		redeemDevice:             module.RedeemDevice,
-		logoutDevice:             module.LogoutDevice,
-		validateCallback:         core.ValidateCallback,
-		validateProvider:         core.ValidateProvider,
-		admitProfileFields:       core.AdmitProfileFields,
-		validateCredential:       core.ValidateCredential,
-		validateSession:          core.ValidateSession,
-		validateCreatePAT:        core.ValidateCreatePAT,
-		validateRevokePAT:        core.ValidateRevokePAT,
-		validateUpdatePATExpiry:  core.ValidateUpdatePATExpiry,
-		validateDeviceClient:     core.ValidateDeviceClient,
-		validateDeviceBrowser:    core.ValidateDeviceBrowser,
-		validateDeviceDecision:   core.ValidateDeviceDecision,
-		validateDeviceRedemption: core.ValidateDeviceRedemption,
-		validateDeviceLogout:     core.ValidateDeviceLogout,
-		bootstrapPersonalTeam:    team.BootstrapPersonalTeam,
-		validatePersonalTeam:     team.ValidatePersonalTeam,
+		ensureUser:                  module.EnsureUser,
+		patchUser:                   module.PatchUser,
+		lockProfileCredential:       module.LockProfileCredential,
+		validateProfilePatch:        core.ValidateProfilePatch,
+		validateExternalUser:        core.ValidateExternalUser,
+		admitCompleteUser:           core.AdmitCompleteUser,
+		validateLogin:               module.ValidateLogin,
+		startLogin:                  module.StartLogin,
+		createLogin:                 module.CreateLogin,
+		consumeLogin:                module.ConsumeLogin,
+		newSession:                  module.NewSession,
+		sessionTime:                 module.SessionTime,
+		authenticateBrowserActivity: module.AuthenticateBrowserActivity,
+		completeLogin:               module.CompleteLogin,
+		createSession:               module.CreateSession,
+		authenticate:                module.Authenticate,
+		user:                        module.User,
+		personalTeam:                module.PersonalTeam,
+		logout:                      module.Logout,
+		createPAT:                   module.CreatePAT,
+		listPATs:                    module.ListPATs,
+		revokePAT:                   module.RevokePAT,
+		updatePATExpiry:             module.UpdatePATExpiry,
+		providers:                   module.Providers,
+		deviceRate:                  module.DeviceRate,
+		startDevice:                 module.StartDevice,
+		inspectDevice:               module.InspectDevice,
+		deviceInspection:            module.DeviceInspection,
+		decideDevice:                module.DecideDevice,
+		redeemDevice:                module.RedeemDevice,
+		logoutDevice:                module.LogoutDevice,
+		validateCallback:            core.ValidateCallback,
+		validateProvider:            core.ValidateProvider,
+		admitProfileFields:          core.AdmitProfileFields,
+		validateCredential:          core.ValidateCredential,
+		validateSession:             core.ValidateSession,
+		validateCreatePAT:           core.ValidateCreatePAT,
+		validateRevokePAT:           core.ValidateRevokePAT,
+		validateUpdatePATExpiry:     core.ValidateUpdatePATExpiry,
+		validateDeviceClient:        core.ValidateDeviceClient,
+		validateDeviceBrowser:       core.ValidateDeviceBrowser,
+		validateDeviceDecision:      core.ValidateDeviceDecision,
+		validateDeviceRedemption:    core.ValidateDeviceRedemption,
+		validateDeviceLogout:        core.ValidateDeviceLogout,
+		bootstrapPersonalTeam:       team.BootstrapPersonalTeam,
+		validatePersonalTeam:        team.ValidatePersonalTeam,
 	}}
 }
 
@@ -218,7 +222,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browser
 	}
 	return result, nil
 }
-func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string) (core.LoginCompletion, error) {
+func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string, userAgent string) (core.LoginCompletion, error) {
 	if err := s.ops.validateCallback(query, binding); err != nil {
 		return core.LoginCompletion{}, err
 	}
@@ -269,6 +273,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	}
 	now := s.now().UTC()
 	session, value := s.ops.newSession(now)
+	session.Browser, session.OS = core.ClassifyBrowserUserAgent(userAgent)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	var admissionError error
 	err = s.strict(ctx, func(scope store.IdentityScope) error {
@@ -299,6 +304,13 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 			return err
 		}
 		result.Session.UserID = result.User.ID
+		issuedAt, err := s.ops.sessionTime(ctx, scope.IdentityDAO())
+		if err != nil {
+			return err
+		}
+		result.Session.CreatedAt = issuedAt
+		result.Session.ExpiresAt = issuedAt.Add(core.SessionLifetime)
+		result.Session.LastUsedAt = &issuedAt
 		return s.ops.createSession(ctx, scope.IdentityDAO(), result.Session)
 	})
 	if err != nil {

@@ -14,7 +14,8 @@ independent presentation needs.
 The shared ordinary row assigns these labels and stuck warnings to `--text-xs`.
 The original decision kept ready and dependency-blocked indicators at their
 existing size; the later [ready badge decision](2026-11-20-task-row-ready-size.md)
-changes the ready indicator to `--text-xs`. The original row-scoped selectors
+changes the ready indicator to `--text-xs`, and the [not-ready badge decision](2026-11-23-task-row-not-ready-size.md)
+assigns dependency-blocked row indicators to the same size. The original row-scoped selectors
 overrode project list rules without changing shared badge defaults or Session
 button geometry. The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
 owns the visible contract. This refines the status role mapping in the

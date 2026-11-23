@@ -1,5 +1,6 @@
 import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 import { execFileSync } from "node:child_process";
 import * as childProcesses from "node:child_process";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
@@ -20,9 +21,10 @@ import { ToolSelectionManager, type ToolSelectionTargets } from "../../../src/co
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import * as workerIdentity from "../../../src/commands/worker/identity.js";
 import * as atomicFiles from "../../../src/platform/files.js";
-import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
-import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as executionScope from "../../../src/commands/worker/execution-scope.js";
 import * as reviewerHost from "../../../src/commands/worker/reviewer-host.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
@@ -88,6 +90,40 @@ vi.mock("../../../src/commands/worker/native-version.js", async original => ({ .
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }),
 }));
+
+const expireManagementClose = async (rebuild: () => void, entered: Promise<void>, running: Promise<void>): Promise<void> => {
+  const observe = executionScope.withinExecutionDeadline;
+  type CloseTimer = ReturnType<typeof captureSynchronousDeadline<Promise<unknown>>>;
+  const registered = Promise.withResolvers<{ before: number; after: number; deadline: number; timer: CloseTimer }>();
+  let timer: CloseTimer | undefined;
+  let settled = false;
+  const markSettled = () => { settled = true; };
+  void running.then(markSettled, markSettled);
+  // Arm only after real scope stop. The next exported observer belongs to management close.
+  const observation = vi.spyOn(executionScope, "withinExecutionDeadline").mockImplementationOnce(<T>(work: Promise<T>, deadline: number): Promise<T> => {
+    const before = Date.now();
+    const captured = captureSynchronousDeadline(() => observe(work, deadline));
+    timer = captured;
+    registered.resolve({ before, after: Date.now(), deadline, timer: captured });
+    return captured.result;
+  });
+  const rebuildAt = Date.now();
+  try {
+    rebuild();
+    const [close] = await observe(Promise.all([registered.promise, entered]), Date.now() + 5_000);
+    expect(close.deadline).toBeGreaterThanOrEqual(rebuildAt + 10_000);
+    expect(close.deadline).toBeLessThanOrEqual(close.before + 10_000);
+    expect(close.timer.count).toBe(1);
+    expect(close.timer.requested).toBeGreaterThanOrEqual(Math.max(0, close.deadline - close.after));
+    expect(close.timer.requested).toBeLessThanOrEqual(close.deadline - close.before);
+    expect(settled).toBe(false);
+    close.timer.markReady();
+    await close.timer.expire();
+  } finally {
+    observation.mockRestore();
+    timer?.restore();
+  }
+};
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -204,7 +240,7 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it("prepares a fresh management Git manager before removing a retained retired Web worktree", async () => {
+  it.each(["missing", "incomplete"] as const)("prepares a fresh management Git manager before removing a retained retired %s Web worktree", async webState => {
     const f = await fixture(true, false);
     if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
@@ -223,17 +259,24 @@ describe("worker cloud-first startup", () => {
     run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
     createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
     f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
-    const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
-    const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
-    web.bindWorktree(record, binding, Date.now()); web.close();
+    if (webState === "incomplete") {
+      const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+      const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+      web.bindWorktree(record, binding, Date.now()); web.close();
+    }
     const successorPath = path.join(project.localPath, ".worktrees", "daynight", uuid(75));
     run(["worktree", "add", "--force", successorPath, binding.branch]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, projectId: owner.projectId, taskId: owner.taskId, claimId: uuid(76), worktreeId: uuid(75), directoryName: uuid(75) });
     const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
     const saved = openLifecycleStore({ file, identity, allowCreate: true });
     saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" }); saved.close();
     mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
-    mocks.coordinator.mockImplementation(createWorkerCoordinator);
+    const messages: string[] = [];
+    mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => createWorkerCoordinator({ ...settings, emit: event => {
+      settings.emit(event);
+      if (event.error !== undefined) messages.push(`${event.message}: ${event.error instanceof Error ? event.error.stack : String(event.error)}`);
+    } }));
     mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
@@ -251,7 +294,6 @@ describe("worker cloud-first startup", () => {
       intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
     });
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
-    const messages: string[] = [];
     const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
     try {
       await vi.waitFor(() => expect(f.store!.getTask(owner)?.status, messages.join("; ")).toBe("done"), { timeout: 15000 });
@@ -497,50 +539,108 @@ describe("worker cloud-first startup", () => {
     try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
   }, 20_000);
 
-  it("does not implicitly rebuild after an ordinary run settles its original journal boundary", async () => {
+  it("keeps task reconciliation running when a background owner rejects with an unknown command boundary", async () => {
     const f = await fixture();
-    const boundary = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>();
-    const started = performance.now();
-    let phase = "starting", joined = false;
-    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
+    const taskCoordinator = coordinator(async () => {});
+    mocks.coordinator.mockReturnValue(taskCoordinator);
+    const startCommand = Promise.withResolvers<void>(), releaseOutput = Promise.withResolvers<void>();
+    const savedUnknown = Promise.withResolvers<{ resourceId: string; error: unknown }>();
+    const consumeOutput = vi.fn(async () => { await releaseOutput.promise; });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    let testFailure: unknown;
+    const reconcileOriginal = () => vi.waitFor(async () => {
+      // An observation can initially join the original timed-out stop.
+      const reconciled = await control!.reconcile({ deadline: Date.now() + 3_000 });
+      expect(reconciled.filter(result => result.stop !== "confirmed")).toEqual([]);
+    }, { timeout: 5_000 });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), shutdown: async () => {}, run: async (signal: AbortSignal) => {
+      await startCommand.promise;
+      const operation = createOperation({ signal, limits: { totalMs: 3000, requestMs: 3000 } });
       const sink = currentOwnedCommandLifecycle()!;
-      await sink({ resourceId: uuid(90), sequence: 1, stage: "prepared", proof: null });
-      await sink({ resourceId: uuid(90), sequence: 2, stage: "unknown", proof: null });
-      await sink({ resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null });
-      phase = "original journal stopped; reviewer still joining";
-      boundary.resolve(signal);
-      await release.promise;
-      phase = "original journal stopped; joining runtime";
-    });
-    const { cancellation, running } = start(f);
-    void running.then(() => { joined = true; }, () => { joined = true; });
+      let resourceId = "";
+      try {
+        await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('background');"], environment: process.env }, operation,
+          async event => { resourceId = event.resourceId; await sink(event); }, { cleanupWithinDeadline: true, onStdout: consumeOutput });
+        throw new Error("Expected the original foreground Worker command output to remain unjoined.");
+      } catch (error) {
+        savedUnknown.resolve({ resourceId, error });
+        throw error;
+      } finally { operation.dispose(); }
+    } });
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
     try {
-      const reviewerSignal = await withinExecutionDeadline(boundary.promise, Date.now() + 5_000);
-      expect(reviewerSignal.aborted).toBe(true);
-      expect(cancellation.signal.aborted).toBe(false);
-      expect(JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", `${uuid(90)}.json`), "utf8")))
-        .toMatchObject({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } });
-      // The original owner remains responsible beyond Vitest's one-second default.
-      await expect(vi.waitFor(() => expect(joined).toBe(true), { timeout: 1_000 })).rejects.toThrow();
-      expect(joined).toBe(false);
-      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
-      release.resolve();
-      // Owners have up to 20 seconds to stop, followed by a 10-second management close.
-      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 35_000, interval: 10 });
-      await running;
-      expect(cancellation.signal.aborted).toBe(false);
-      expect(mocks.reviewer).toHaveBeenCalledOnce();
-      const files = await readdir(path.join(f.paths.workerDirectory, "execution-resources"));
-      const records = await Promise.all(files.filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", file), "utf8"))));
-      expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } })]);
+      await vi.waitFor(() => expect(taskCoordinator.tick).toHaveBeenCalled(), { timeout: 5_000 });
+      startCommand.resolve();
+      const { resourceId, error } = await withinExecutionDeadline(savedUnknown.promise, Date.now() + 5_000);
+      expect(consumeOutput).toHaveBeenCalled();
+      expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+      await vi.waitFor(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ error })));
+      const priorTicks = taskCoordinator.tick.mock.calls.length;
+      expect(control!.snapshot()).toMatchObject({ admission: "open", stopped: false, generation: "1" });
+      await vi.waitFor(() => expect(taskCoordinator.tick.mock.calls.length).toBeGreaterThan(priorTicks), { timeout: 5_000 });
+      expect(taskCoordinator.shutdown).not.toHaveBeenCalled();
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      const previous = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(previous).toBeNull(); } finally { await previous?.release(); }
+      const journal = path.join(f.paths.workerDirectory, "execution-resources", `${resourceId}.json`);
+      expect(JSON.parse(await readFile(journal, "utf8")))
+        .toMatchObject({ generation: "1", event: { resourceId, stage: "unknown", proof: expect.any(Object) } });
+
+      expect(await control!.stop({ deadline: Date.now() + 1000 }))
+        .toContainEqual(expect.objectContaining({ resourceId: "native-inventory", stop: "unknown" }));
+      expect(() => control!.rebuild()).toThrow("original resources");
+      releaseOutput.resolve();
+      await reconcileOriginal();
+      expect(JSON.parse(await readFile(journal, "utf8"))).toMatchObject({ generation: "1", event: { resourceId, stage: "stopped" } });
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      cancellation.abort();
+      await expect(running).rejects.toBe(error);
       const lock = await tryAcquireWorkerInstanceLock(f.paths);
-      expect(lock).not.toBeNull(); await lock?.release();
-    } catch (cause) {
-      throw new Error(`Ordinary Worker closure failed: ${JSON.stringify({ phase, elapsedMs: Math.round(performance.now() - started), joined,
-        parentAborted: cancellation.signal.aborted, reviewerCalls: mocks.reviewer.mock.calls.length,
-        errors: mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).map(([event]) => String(event.error)) })}`, { cause });
-    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); }
-  }, 45_000);
+      try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
+    } catch (error) {
+      testFailure = error;
+      throw error;
+    } finally {
+      startCommand.resolve();
+      releaseOutput.resolve();
+      try {
+        if (control?.snapshot().admission === "closed" && !control.snapshot().stopped) await reconcileOriginal();
+      } catch (cleanupError) {
+        if (testFailure === undefined) throw cleanupError;
+        throw new AggregateError([testFailure, cleanupError], "Command isolation and original scope teardown failed.");
+      } finally {
+        cancellation.abort();
+        await Promise.allSettled([running]);
+      }
+    }
+  }, 25_000);
+
+  it("stops for an independent owner failure grouped with command cleanup", async () => {
+    const f = await fixture();
+    const taskCoordinator = coordinator(async () => {});
+    mocks.coordinator.mockReturnValue(taskCoordinator);
+    const reportFailure = Promise.withResolvers<void>();
+    const cleanupCause = new Error("The original command boundary remains unconfirmed.");
+    const cleanup = new OwnedCommandCleanupError([cleanupCause], cleanupCause);
+    const failure = new AggregateError([cleanup, new Error("The Bot inventory is unreadable.")], "The Bot owner failed.");
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), shutdown: async () => {}, run: async () => {
+      await reportFailure.promise;
+      throw failure;
+    } });
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(taskCoordinator.tick).toHaveBeenCalled(), { timeout: 5_000 });
+      reportFailure.resolve();
+      await expect(withinExecutionDeadline(running, Date.now() + 5_000)).rejects.toBe(failure);
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(taskCoordinator.shutdown).toHaveBeenCalled();
+    } finally {
+      reportFailure.resolve();
+      cancellation.abort();
+      await Promise.allSettled([running]);
+    }
+  }, 15_000);
 
   it("joins a Bot's ordinary cancellation without recording it as a background failure", async () => {
     const f = await fixture(false, false);
@@ -711,7 +811,7 @@ describe("worker cloud-first startup", () => {
     try {
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
       expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
-      controls[0]!.rebuild(); await entered.promise;
+      await expireManagementClose(() => controls[0]!.rebuild(), entered.promise, running);
       await expect(running).rejects.toThrow("owner stop deadline elapsed");
       expect(controls).toHaveLength(1);
       expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
@@ -761,7 +861,7 @@ describe("worker cloud-first startup", () => {
   });
 
   it("retains the root through the diagnostic close deadline until its original file handle joins", async () => {
-    const f = await fixture(), release = Promise.withResolvers<void>();
+    const f = await fixture(), release = Promise.withResolvers<void>(), closeEntered = Promise.withResolvers<void>();
     const createWake = reconcileWake.createReconcileWake;
     let polling = false, appending = false;
     const waking = vi.spyOn(reconcileWake, "createReconcileWake").mockImplementation(() => {
@@ -789,7 +889,12 @@ describe("worker cloud-first startup", () => {
           finally { await handle.close(); if (held) handleClosed = true; }
         },
       } });
-      close = vi.spyOn(sink, "close"); return sink;
+      const closeOriginal = sink.close;
+      close = vi.spyOn(sink, "close").mockImplementation(() => {
+        closeEntered.resolve();
+        return closeOriginal();
+      });
+      return sink;
     });
     let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
     const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
@@ -804,8 +909,7 @@ describe("worker cloud-first startup", () => {
       const stopping = control!.stop();
       await vi.waitFor(() => expect(appending).toBe(true));
       expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
-      control!.rebuild();
-      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 15_000 });
+      await expireManagementClose(() => control!.rebuild(), closeEntered.promise, running);
       await expect(running).rejects.toThrow("owner stop deadline elapsed");
       expect(sink!.isClosed()).toBe(false); expect(handleClosed).toBe(false);
       expect(close).toHaveBeenCalledOnce();

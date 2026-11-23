@@ -36,7 +36,6 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
     if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return sendWire({ projectId, taskId, version: task.version, steps: [] });
     if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
@@ -155,18 +154,17 @@ const foreground = async (page: Page, api: State) => {
   expect(api.meReads).toBe(meReads);
 };
 
-test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
+test('Task detail remains available after Team navigation without Steps requests', async ({ page }) => {
+  const stepsRequests: string[] = [];
+  page.on('request', request => { if (/\/tasks\/[^/]+\/steps(?:\/|$)/.test(new URL(request.url()).pathname)) stepsRequests.push(request.url()); });
   await install(page); await start(page);
-  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+  await traverse(page, `/projects/${projectId}/tasks/${taskId}?tab=steps`);
   await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
-  await page.getByRole('tab', { name: 'Steps' }).click();
-  const steps = await response;
-  expect(steps.status()).toBe(200);
-  expect(steps.headers()['daynight-user-id']).toBe(alice);
-  expect(await steps.text()).toBe(`{"projectId":"${projectId}","taskId":"${taskId}","version":${task.version},"steps":[]}`);
-  await expect(page.getByText('No steps yet')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Steps', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(stepsRequests).toEqual([]);
 });
 
 for (const width of [1440, 768, 601, 600, 390, 375, 320]) for (const locale of ['en', 'zh-CN']) {

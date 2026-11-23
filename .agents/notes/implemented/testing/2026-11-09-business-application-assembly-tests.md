@@ -37,9 +37,11 @@ output satisfies the [Authentication consumer](2026-11-10-auth-identity-consumer
 and the [MCP Personal Team resolver](2026-11-09-mcp-use-case-test-ownership.md)
 structurally, allowing controlled output after real assembly. The production test
 checks the concrete Identity and callback; it does not prove Identity business
-behavior. The nine-method `TaskStepsOperations` output satisfies the HTTP and
-MCP Step consumers structurally. Its factory receives the same store and selected
-Capturer as Tasks, including when assembly selects a default Capturer, and its
+behavior. The nine-method `TaskStepsOperations` output remains internal after
+the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md).
+Its original MCP consumer is removed by the
+[MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md).
+Its factory receives the same store and selected Capturer as Tasks, including when assembly selects a default Capturer, and its
 actual concrete result occupies the output. The production test checks the
 concrete TaskSteps output; neither assembly test proves Step business behavior.
 The five-method `TaskObservationOperations` output satisfies the HTTP and MCP

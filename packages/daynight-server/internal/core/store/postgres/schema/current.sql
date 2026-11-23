@@ -1,4 +1,4 @@
--- Schema snapshot version: 117
+-- Schema snapshot version: 122
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -811,7 +811,6 @@ CREATE TABLE "session_archive_files" (
     "state" "text" NOT NULL,
     "object_path" "text" NOT NULL,
     "upload_version" integer DEFAULT 1 NOT NULL,
-    "prefix_proof" "bytea",
     "successor_file_id" "uuid",
     "terminal_error" "jsonb"
 );
@@ -1011,6 +1010,9 @@ CREATE TABLE "sessions" (
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
     "preview_token_hash" "bytea",
+    "last_used_at" timestamp with time zone,
+    "browser" "text",
+    "os" "text",
     CONSTRAINT "sessions_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "sessions_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
 );
@@ -2323,6 +2325,8 @@ CREATE INDEX "session_operations_pending" ON "session_operations" USING "btree" 
 CREATE INDEX "session_operations_terminal_pending" ON "session_operations" USING "btree" ("session_id", "operation_seq") WHERE (("receipt" ->> 'state'::"text") = ANY (ARRAY['queued'::"text", 'dispatching'::"text"]));
 
 CREATE INDEX "session_resource_leases_owner" ON "session_resource_leases" USING "btree" ("owner_id", "kind");
+
+CREATE INDEX "sessions_user_created_id" ON "sessions" USING "btree" ("user_id", "created_at" DESC, "id" DESC);
 
 CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 

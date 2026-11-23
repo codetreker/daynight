@@ -54,7 +54,6 @@ func TestProductManualsCompleteAndUnmodified(t *testing.T) {
 		"daynight://manuals/dependency-writes.md",
 		"daynight://manuals/write-safety.md",
 		"daynight://manuals/materials.md",
-		"daynight://manuals/steps.md",
 		"daynight://manuals/threads.md",
 		"daynight://manuals/attachment-reads.md",
 		"daynight://manuals/attachment-writes.md",

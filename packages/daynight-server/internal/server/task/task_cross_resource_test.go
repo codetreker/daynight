@@ -45,7 +45,7 @@ func TestThreadHTTPAgentPostPreservesActiveClaim(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].ID != message.ID || page.Items[0].Author.Execution == nil || page.Items[0].Author.Execution.ClaimID != workerHTTPClaimID || page.Items[0].Author.Execution.WorkerID != workerHTTPWorkerID || page.Items[0].Author.Execution.Provider != "codex" || !bytes.Equal(response.Body.Bytes(), pageDocument.JSON) {
 		t.Fatal("Agent details lost verified attribution or document bytes")
 	}
-	if h.Tasks.TotalCalls() != 0 || h.Steps.TotalCalls() != 0 || strings.Contains(logs.String(), message.Body) || !strings.Contains(logs.String(), `"claim_id":"`+workerHTTPClaimID+`"`) || !strings.Contains(logs.String(), `"worker_id":"`+workerHTTPWorkerID+`"`) {
+	if h.Tasks.TotalCalls() != 0 || strings.Contains(logs.String(), message.Body) || !strings.Contains(logs.String(), `"claim_id":"`+workerHTTPClaimID+`"`) || !strings.Contains(logs.String(), `"worker_id":"`+workerHTTPWorkerID+`"`) {
 		t.Fatalf("Thread HTTP crossed Task mutation boundary or lost safe execution correlation: %s", &logs)
 	}
 }
@@ -83,7 +83,7 @@ func TestThreadHTTPReturnedDocumentResponseFailures(t *testing.T) {
 			} else if writer.calls != 1 || writer.Code != http.StatusCreated {
 				t.Fatalf("response failed with changed status or replay: %d/%d", writer.Code, writer.calls)
 			}
-			if h.Threads.Calls("Post") != 1 || h.Tasks.TotalCalls() != 0 || h.Steps.TotalCalls() != 0 || strings.Contains(logs.String(), message.Body) || strings.Contains(logs.String(), "private response failure") || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) {
+			if h.Threads.Calls("Post") != 1 || h.Tasks.TotalCalls() != 0 || strings.Contains(logs.String(), message.Body) || strings.Contains(logs.String(), "private response failure") || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) {
 				t.Fatalf("Thread result handling replayed business work or leaked private content: %s", &logs)
 			}
 		})

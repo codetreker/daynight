@@ -21,8 +21,8 @@ type IdentityScope interface {
 
 type IdentityDAO interface {
 	CleanupCredentials(context.Context, time.Time) error
-	// Login admission uses its post-lock database time for login expiry and the
-	// application clock for session and PAT expiry.
+	// Login admission uses its post-lock database time for login and browser
+	// session expiry; PAT expiry retains the supplied application clock.
 	CleanupLoginCredentials(context.Context, time.Time, time.Time) error
 	// AdmitLogin serializes capacity checks until the surrounding transaction
 	// ends. The returned time is sampled after the lock is acquired. A nonempty

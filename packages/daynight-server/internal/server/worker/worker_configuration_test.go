@@ -36,6 +36,9 @@ func (f *configurationHTTPFixture) request(method, path, body string, versions .
 	request.Header = f.headers.Clone()
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(workerToolPathsHeader, "2")
+	if strings.HasSuffix(path, "/configuration") || len(versions) > 0 {
+		request.Header.Set(workerPlatformTaskModeHeader, "1")
+	}
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -58,6 +61,18 @@ func configurationHTTPModel(t *testing.T, value any) model.WorkerConfiguration {
 	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
 		t.Fatal(err)
 	}
+	if result.PlatformTaskMode == "" {
+		var legacy struct {
+			Prefer bool `json:"preferPlatformSpecificTasks"`
+		}
+		if err := json.Unmarshal([]byte(jsonBody(t, value)), &legacy); err != nil {
+			t.Fatal(err)
+		}
+		result.PlatformTaskMode = model.PlatformTaskAll
+		if legacy.Prefer {
+			result.PlatformTaskMode = model.PlatformTaskPrefer
+		}
+	}
 	return result
 }
 
@@ -73,9 +88,21 @@ func configurationHTTPWireValue(t *testing.T, value model.WorkerConfiguration) m
 
 func configurationHTTPExchange(t *testing.T, value any) *model.WorkerConfigurationExchange {
 	t.Helper()
+	if value == nil {
+		return nil
+	}
 	var result model.WorkerConfigurationExchange
-	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
+	raw := []byte(jsonBody(t, value))
+	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
+	}
+	if result.Bootstrap != nil && result.Bootstrap.PlatformTaskMode == "" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		bootstrap := configurationHTTPModel(t, fields["bootstrap"])
+		result.Bootstrap = &bootstrap
 	}
 	return &result
 }
@@ -358,6 +385,9 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
+	if strings.HasSuffix(path, "/configuration") || len(versions) > 0 {
+		request.Header.Set(workerPlatformTaskModeHeader, "1")
+	}
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -368,6 +398,17 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 }
 
 func configurationHTTPReportBody(bootstrap, observation any) map[string]any {
+	if fields, ok := bootstrap.(map[string]any); ok {
+		if mode, exists := fields["platformTaskMode"]; exists {
+			converted := make(map[string]any, len(fields))
+			for key, value := range fields {
+				converted[key] = value
+			}
+			delete(converted, "platformTaskMode")
+			converted["preferPlatformSpecificTasks"] = mode != "all" && mode != model.PlatformTaskAll
+			bootstrap = converted
+		}
+	}
 	body := workerSnapshotReportBody()
 	body["taskInventory"] = nil
 	body["configuration"] = map[string]any{"bootstrap": bootstrap, "observation": observation, "toolPathsBootstrap": nil}

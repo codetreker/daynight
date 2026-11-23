@@ -8,6 +8,31 @@ import (
 
 type User = profileprotocol.Response
 
+type SessionActivityRequest struct {
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
+type BrowserSession struct {
+	ID         string     `json:"id"`
+	Browser    *string    `json:"browser"`
+	OS         *string    `json:"os"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastUsedAt *time.Time `json:"lastUsedAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+}
+
+type BrowserSessionList struct {
+	UserID     string           `json:"userId"`
+	Current    BrowserSession   `json:"current"`
+	Items      []BrowserSession `json:"items"`
+	NextCursor *string          `json:"nextCursor"`
+}
+
+type RevokeBrowserSessionRequest struct {
+	ExpectedUserID    string `json:"expectedUserId"`
+	ExpectedSessionID string `json:"expectedSessionId"`
+}
+
 type PersonalAccessToken struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`

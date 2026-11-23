@@ -124,9 +124,9 @@ func ScopedTaskSearchRoutes(mux httpx.RouteRegistrar, search ScopedSearchOperati
 	const path = "/api/v1/projects/{projectId}/tasks/search"
 	mux.HandleFunc("POST "+path, bind((*searchHandler).search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" "+path, bind(func(_ *searchHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
+		mux.HandleFunc(method+" "+path, httpx.MethodRejection(bind(func(_ *searchHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
 			httpx.ResourceMethodNotAllowed(logger, "POST")(w, r, p)
-		}))
+		})))
 	}
 	return nil
 }

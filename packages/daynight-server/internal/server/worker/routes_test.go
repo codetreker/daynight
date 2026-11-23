@@ -54,7 +54,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 		expected := model.WorkerReport{
 			Telemetry:     capacityDecode[model.WorkerTelemetry](t, body),
 			TaskInventory: capacityDecode[*model.WorkerTaskInventory](t, body["taskInventory"]),
-			Configuration: capacityDecode[*model.WorkerConfigurationExchange](t, body["configuration"]),
+			Configuration: configurationHTTPExchange(t, body["configuration"]),
 		}
 		return f.request("POST", path+"/report", jsonBody(t, body), &workerRouteCall{
 			name: "Report", args: []any{id, expected}, result: result,
@@ -130,7 +130,8 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": 1, "value": config})), 400, "invalid_input")
 	put := func(result model.WorkerConfigurationResource, refusal error) *httptest.ResponseRecorder {
 		t.Helper()
-		value := capacityDecode[model.WorkerConfiguration](t, config)
+		value := configurationHTTPModel(t, config)
+		value.LegacyPlatformTaskMode = true
 		value.PreserveArchiveSessions = true
 		value.PreserveSudoCleanup = true
 		value.PreserveWindowsProcessCleanup = true
@@ -146,7 +147,8 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 		return &model.WorkerDesiredConfiguration{
 			Revision: revision, UpdatedAt: capacityObservedAt, ValueValid: true,
 			Value: model.WorkerConfiguration{
-				MaxConcurrent: maxConcurrent, PollIntervalMs: 60000,
+				PlatformTaskMode: model.PlatformTaskAll,
+				MaxConcurrent:    maxConcurrent, PollIntervalMs: 60000,
 				Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 				Projects: []model.WorkerProjectConfiguration{},
 				ToolPaths: model.WorkerToolPaths{

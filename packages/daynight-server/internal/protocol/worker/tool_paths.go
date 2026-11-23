@@ -4,8 +4,9 @@ import "github.com/codetreker/daynight/packages/daynight-server/internal/core/mo
 
 // Capabilities select independent optional fields without changing prompt versions.
 type Capabilities struct {
-	ToolPaths       bool
-	ArchiveSessions bool
+	ToolPaths        bool
+	ArchiveSessions  bool
+	PlatformTaskMode bool
 }
 
 type ToolPathChoice = model.ToolPathChoice

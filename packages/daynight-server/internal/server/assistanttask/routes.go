@@ -134,7 +134,14 @@ func registerRoutes(mux httpx.RouteRegistrar, tasks operations, auth authenticat
 			}
 			record(RouteClassification{Pattern: path, Method: "*", Owner: "method-fallback", Profile: "authenticated-fallback"})
 		}
-		mux.HandleFunc(path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		businessMethods := make([]string, 0, len(methods)+1)
+		for method := range methods {
+			businessMethods = append(businessMethods, method)
+			if method == http.MethodGet {
+				businessMethods = append(businessMethods, http.MethodHead)
+			}
+		}
+		mux.HandleFunc(path, httpx.MethodDispatch(auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 			operation, ok := methods[r.Method]
 			if !ok && r.Method == http.MethodHead {
 				operation, ok = methods[http.MethodGet]
@@ -179,7 +186,7 @@ func registerRoutes(mux httpx.RouteRegistrar, tasks operations, auth authenticat
 				return
 			}
 			httpx.WriteJSON(w, r, logger, http.StatusOK, result)
-		}))
+		}), businessMethods...))
 	}
 	register("/api/v1/assistant-task-presets/watchdog", "POST", map[string]classifiedOperation{"POST": operation("core.Module.EnablePreset", h.enableWatchdog)})
 	const base = "/api/v1/assistant-tasks"

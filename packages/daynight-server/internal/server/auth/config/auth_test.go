@@ -35,6 +35,7 @@ func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
 		{"different origin", "https://example.com", "https://other.example/auth/callback", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 		{"noncanonical callback", "https://example.com", "https://example.com/a/../callback", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 		{"reserved callback", "https://example.com", "https://example.com/api/v1/me/child", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
+		{"activity callback", "https://example.com", "https://example.com/api/v1/auth/session/activity", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			origin, path, err := ValidateAuthSettings(AuthSettings{PublicOrigin: tc.origin, AllowHTTPTestOrigin: tc.allowHTTP}, tc.callback)
@@ -115,5 +116,14 @@ func TestMyTasksCallbackPathReserved(t *testing.T) {
 	}
 	if _, got, err := ValidateAuthSettings(config, config.PublicOrigin+"/my-tasks-callback"); err != nil || got != "/my-tasks-callback" {
 		t.Fatalf("distinct callback got %q, %v", got, err)
+	}
+}
+
+func TestBrowserSessionsCallbackPathsReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/api/v1/me/browser-sessions", "/api/v1/me/browser-sessions/10000000-0000-4000-8000-000000000001", "/api/v1/me/browser-sessions/10000000-0000-4000-8000-000000000001/revoke"} {
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			t.Fatalf("callback overlaps browser session path %s", path)
+		}
 	}
 }

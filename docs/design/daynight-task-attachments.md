@@ -330,7 +330,7 @@ PathGuard 在 ServeMux 规范化之前检查原始路径，Host 中的 UUID 必�
 一致。非法、嵌套、尾点或端口异常的 preview Host 拒绝，不能落回主站。Task 和 Goal
 均以自身 ID 命名，其内容通过同一个附件 Open 完成项目、成员、归属和删除检查。
 
-独立入口以 preview Cookie 调用 Identity 的 Authenticate，再复用附件内容流；成功保留
+独立入口以 preview Cookie 调用 Identity 的 Authenticate，再通过附件 Open 执行受保护内容准入。规范 Task Host 的 GET/HEAD 在 Open 成功后、响应字节或 304 发出前，按原预览散列复核并续共享 session：允许同源请求、受支持的同站 iframe 文档导航和显式用户发起的顶层文档导航。跨站自动请求、其他同站子资源及缺失或矛盾的来源元数据不续期；失败授权不续期，预览活动不能替主站制造活动。续期失败关闭已打开流并返回原错误，不发送内容。时间与锁合同由[浏览器 session 设计](daynight-auth.md#主站-session-与-pat)拥有。成功保留
 原字节、MIME、inline 和 no-store，HEAD 无正文。document 响应带
 `Origin-Agent-Cluster: ?1`。缺失或失效 Cookie 的 document/iframe GET 根据原始 URL
 创建短期 SSO 记录并跳转到 bare Host；complete 验证 Cookie 后返回原 GET，原始 query

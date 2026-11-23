@@ -48,6 +48,15 @@ type botDefinitionsFixture struct {
 	want           *botDefinitionCall
 }
 
+type botDefinitionRequestKey struct{}
+
+func (f *botDefinitionsFixture) sameRequestContext(ctx context.Context) bool {
+	deadline, hasDeadline := ctx.Deadline()
+	wantDeadline, wantHasDeadline := f.requestContext.Deadline()
+	return ctx.Value(botDefinitionRequestKey{}) == f && ctx.Done() == f.requestContext.Done() &&
+		ctx.Err() == f.requestContext.Err() && hasDeadline == wantHasDeadline && deadline.Equal(wantDeadline)
+}
+
 func newBotDefinitionsFixture(t *testing.T, logs io.Writer) *botDefinitionsFixture {
 	t.Helper()
 	return newBotDefinitionsFixtureForCredential(t, logs, model.PATCredential)
@@ -61,7 +70,7 @@ func newBotDefinitionsFixtureForCredential(t *testing.T, logs io.Writer, kind mo
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
 		f.authCalls++
-		if f.authCalls != 1 || f.authentication == botDefinitionAnonymous || ctx != f.requestContext ||
+		if f.authCalls != 1 || f.authentication == botDefinitionAnonymous || !f.sameRequestContext(ctx) ||
 			kind != f.principal.Kind || token != httpTestToken(f.principal.Kind) {
 			t.Error("unexpected Bot credential identity, context, or call count")
 			return model.Principal{}, authhttp.Failure()
@@ -78,6 +87,7 @@ func newBotDefinitionsFixtureForCredential(t *testing.T, logs io.Writer, kind mo
 	mux := http.NewServeMux()
 	bothttp.RegisterRoutes(mux, f, f, &authhttp.Authentication{RequestAuthentication: auth}, logger)
 	f.handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), botDefinitionRequestKey{}, f))
 		f.requestContext = r.Context()
 		mux.ServeHTTP(w, r)
 	}))
@@ -88,9 +98,9 @@ func (f *botDefinitionsFixture) invoke(ctx context.Context, p model.Principal, m
 	f.t.Helper()
 	want := f.want
 	if want == nil || want.method != method || want.id != id || !reflect.DeepEqual(want.input, input) ||
-		f.authentication != botDefinitionAdmitted || f.authCalls != 1 || ctx != f.requestContext || p != f.principal {
+		f.authentication != botDefinitionAdmitted || f.authCalls != 1 || !f.sameRequestContext(ctx) || p != f.principal {
 		f.t.Fatalf("unexpected Bot %s(%q, %#v): principal=%+v same context=%v want=%#v",
-			method, id, input, p, ctx == f.requestContext, want)
+			method, id, input, p, f.sameRequestContext(ctx), want)
 	}
 	f.want = nil
 	return *want

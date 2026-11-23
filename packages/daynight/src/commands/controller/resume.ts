@@ -1,7 +1,8 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
-import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
+import { assertCurrentSqlite, inspectSqlite, type SqliteSource } from "../../platform/sqlite-format.js";
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import { assertResumeLeaseMigrationAllowed, nativeResumeLeaseFormat } from "./resume-lease-format.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
@@ -13,7 +14,8 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import type { SessionProvider } from "../../session/protocol.js";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { readControllerSnapshot, readCurrentControllerInventorySnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { controllerJournalFormat } from "./journal-format.js";
 import { captureProcessProof, confirmControllerProcessesStopped } from "./process-proof.js";
 
 export type ResumeLease = { ticket: ControllerLaunchTicket; nativeSessionId: string; release(): Promise<void> };
@@ -23,6 +25,20 @@ const missing = (error: unknown): boolean => error instanceof Error && "code" in
 const privateFile = async (file: string): Promise<void> => {
   const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.isSymbolicLink() || process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw new Error("Controller recovery evidence must be a private regular file.");
+};
+const inventorySnapshot = (file: string, ticket: ControllerLaunchTicket): ControllerSnapshot | null => {
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true });
+  let source: SqliteSource | undefined, failure: unknown, failed = false;
+  try { source = db.transaction(() => inspectSqlite(db, controllerJournalFormat)).deferred(); }
+  catch (cause) { failed = true; failure = cause; }
+  try { closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "not-started"); }
+  catch (cause) { throw failed ? new AggregateError([failure, cause], "Controller resume inventory inspection and close failed.", { cause: failure }) : cause; }
+  if (failed) throw failure;
+  // Inventory must not migrate unrelated live writers. Earlier formats retain
+  // the existing permit-owned migration path for their stopped journals.
+  if (source!.kind === "current" || source!.kind === "outdated" && (source!.version === 16 || source!.version === 17))
+    return readCurrentControllerInventorySnapshot(file, [ticket], Date.now() + 5000)?.snapshot ?? null;
+  return readControllerSnapshot(file);
 };
 const inventory = async (home: string): Promise<LocalExecution[]> => {
   let files: string[];
@@ -41,7 +57,7 @@ const inventory = async (home: string): Promise<LocalExecution[]> => {
   for (const ticket of tickets.values()) {
     const file = path.join(controllerExecutionDirectory(home, ticket.executionId), "journal.sqlite");
     let snapshot: ControllerSnapshot | null = null;
-    try { await privateFile(file); snapshot = readControllerSnapshot(file); }
+    try { await privateFile(file); snapshot = inventorySnapshot(file, ticket); }
     catch (error) { if (!missing(error)) throw error; }
     if (snapshot && (snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.testExecutionId !== ticket.testExecutionId || snapshot.claimId !== ticket.claimId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId || snapshot.nativeSessionId !== null && !uuid(snapshot.nativeSessionId))) throw new Error("Controller journal does not match its latest launch ticket.");
     result.push({ ticket, snapshot, file });

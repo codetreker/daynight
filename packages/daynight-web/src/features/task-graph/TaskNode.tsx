@@ -19,6 +19,7 @@ export type TaskNodeData = {
   kind: 'main' | 'external';
   center: CanvasPoint;
   size: Pick<CanvasNode, 'width' | 'height'>;
+  onReadingRowChange: (id: string, visible: boolean) => void;
   actions: {
     readonly onInspectTask: (id: string) => void;
     readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
@@ -50,7 +51,7 @@ const TaskNodeContent = memo(({ task, kind, execution, usage, onReadingEnter, on
       <span className="task-node-meta-labels">{paused && <TaskPausedBadge compact />}<TaskAgentPermissionBadge allowAgents={task.allowAgents} compact /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} compact /></span>
     </span>
     <span className="task-node-title" title={title}>{kind === 'external' && <span className="task-external-label" title={m.externalDescription}>{m.external} </span>}{title}</span>
-    {(usage !== null || execution?.overdue) && <span className="task-node-readings">
+    {(usage !== null || execution?.overdue === true) && <span className="task-node-readings">
       {usage !== null && <span className="task-node-usage" onPointerEnter={onReadingEnter} onPointerLeave={onReadingLeave}>{usage.short}</span>}
       {execution?.overdue && duration}
     </span>}
@@ -81,6 +82,9 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   const execution = useTaskExecution(data.task);
   const usage = useGraphTaskUsage(data.task.id);
   const hint = useGraphReadingHint();
+  const hasReadingRow = usage !== null || execution?.overdue === true;
+  useLayoutEffect(() => { data.onReadingRowChange(data.task.id, hasReadingRow); }, [data.onReadingRowChange, data.task.id, hasReadingRow]);
+  useLayoutEffect(() => () => data.onReadingRowChange(data.task.id, false), [data.onReadingRowChange, data.task.id]);
   const { format, messages: { execution: executionMessages } } = useI18n();
   const reading = { usage: usage?.full ?? null, execution: execution === null ? null : executionMessages.description({ ...execution, duration: format.duration(execution.elapsedMilliseconds) }) };
   const touch = useRef(false);

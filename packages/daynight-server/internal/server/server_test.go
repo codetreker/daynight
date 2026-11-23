@@ -424,6 +424,10 @@ type httpAuthenticationDAO struct {
 	calls     int
 }
 
+func (d *httpAuthenticationDAO) SessionTime(context.Context) (time.Time, error) {
+	return time.Now().UTC().Truncate(time.Microsecond), nil
+}
+
 func (d *httpAuthenticationDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
 	d.calls++
 	if d.calls != 1 || kind != d.principal.Kind || !bytes.Equal(hash, d.hash) || now.IsZero() || now.Location() != time.UTC {
@@ -1088,7 +1092,7 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 			Dispatch bool `json:"dispatchEnabled"`
 		} `json:"service"`
 	}
-	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 6 || data.Service.Dispatch {
+	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 5 || data.Service.Dispatch {
 		t.Fatalf("catalog: %s (%v)", catalog, err)
 	}
 	empty := f.expect("GET", "/api/v1/me/webhooks", "", 200)

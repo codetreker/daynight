@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -9,12 +10,64 @@ import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { readCurrentControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
 import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
 afterEach(cleanupMigrations);
 
+const previousJournalFixture = async (version: 16 | 17 = 16) => {
+  const fixture = await migrationFixture();
+  const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
+  restoreControllerJournalVersion(journal, version);
+  expect(inspectSqlite(journal, controllerJournalFormat)).toEqual({ kind: "outdated", version });
+  journal.close();
+  return fixture;
+};
+
 describe("legacy Bot storage migration", () => {
+  it.each([16, 17] as const)("preserves checksummed v%i history and recovery copies across the v18 journal upgrade", async version => {
+    const f = await previousJournalFixture(version), original = readFileSync(f.record.intent!.journalPath);
+    expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
+    const manifest = await migrateLegacyBot(f.input), paths = resolveBotPaths(f.stateDirectory, f.botId);
+    expect(readFileSync(f.record.intent!.journalPath)).toEqual(original);
+    const copies = new Map(manifest.files.map(file => {
+      const destination = path.join(paths.directory, file.destination);
+      return [destination, readFileSync(destination)] as const;
+    }));
+    copies.set(path.join(paths.directory, "migration.json"), readFileSync(path.join(paths.directory, "migration.json")));
+    rmSync(path.dirname(f.record.intent!.journalPath), { recursive: true });
+    rmSync(f.record.intent!.ticketPath);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(readMigratedBotHistory(f.input)).toMatchObject({ snapshot: f.snapshot, entries: [{ ...f.entry, entrySeq: "1" }] });
+      expect(readMigratedBotRecoveryBinding(f.input)).toEqual({
+        sessionId: f.record.intent!.sessionId, testExecutionId: f.record.intent!.executionId, nativeSessionId: f.snapshot.nativeSessionId,
+      });
+      migrationFiles.verifyMigrationFiles(f.stateDirectory, manifest);
+      for (const [file, bytes] of copies) expect(readFileSync(file), file).toEqual(bytes);
+    }
+    const copiedJournal = path.join(paths.directory, manifest.journal!);
+    expect(() => readCurrentControllerSnapshot(copiedJournal, f.ticket)).toThrow(/current journal format/);
+  });
+
+  it.each(["future", "unversioned", "schema", "ticket"] as const)("refuses a protected v16 copy with invalid %s evidence", async conflict => {
+    const f = await previousJournalFixture(), manifest = await migrateLegacyBot(f.input);
+    const paths = resolveBotPaths(f.stateDirectory, f.botId), journal = path.join(paths.directory, manifest.journal!);
+    const db = f.openRaw(journal, false);
+    if (conflict === "future") db.pragma("user_version=19");
+    else if (conflict === "unversioned") db.pragma("user_version=0");
+    else if (conflict === "schema") db.exec("DROP TABLE timeline_entries");
+    else db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
+    db.close();
+    const altered = { ...manifest, files: manifest.files.map(file => file.destination === manifest.journal ? { ...file, ...migrationFiles.migrationFileDigest(journal) } : file) };
+    writeFileSync(path.join(paths.directory, "migration.json"), JSON.stringify(altered), { mode: 0o600 });
+    const bytes = readFileSync(journal);
+    expect(() => readMigratedBotHistory(f.input)).toThrow();
+    expect(() => readMigratedBotRecoveryBinding(f.input)).toThrow();
+    expect(readFileSync(journal)).toEqual(bytes);
+  });
+
   it("reads the native recovery binding from the verified copy after original Controller files disappear", async () => {
     const f = await migrationFixture();
     expect(f.record.intent!.nativeSessionId).toBeNull();

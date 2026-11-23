@@ -41,7 +41,9 @@ Management reconciliation joins command producers and their event writes before
 re-observing retained native boundaries, output writers and durable closure.
 A settled producer's historical cleanup error cannot skip this reconciliation.
 It uses the original resource generation and never reruns the command; missing
-proof or a required lease still retains unknown responsibility.
+proof or a required lease still retains unknown responsibility. The
+[owned-command fault decision](../bug-fix/2026-11-23-worker-owned-command-unknown.md)
+preserves command responsibility while the active scope continues to run.
 A Task producer that ignores cancellation cannot hold its native stop request
 behind the business mutation queue. Independent stop verifies the original
 launch identity and boundary without changing cleanup state or releasing leases;

@@ -31,8 +31,8 @@
   .task-row .task-row-status { justify-content: flex-start; }
 }
 
-.task-row .graph-blocked-badge, .task-row-tag-state { font-size: var(--text-sm); }
-.task-row .task-ready { font-size: var(--text-xs); }
+.task-row-tag-state { font-size: var(--text-sm); }
+.task-row .graph-blocked-badge, .task-row .task-ready { font-size: var(--text-xs); }
 .task-row-meta :is(.task-assignee-identity, .assignee-former) { font-size: var(--text-xs); }
 .task-row .task-platform, .task-row .task-agent-permission,
 .task-row.task-status-surface .task-row-status :is(.task-paused-badge, .root-status, .project-session-control, .project-session-text) { font-size: var(--text-xs); }

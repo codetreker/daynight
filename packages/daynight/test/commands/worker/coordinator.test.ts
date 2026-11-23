@@ -12,7 +12,8 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
-import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { createRetiredClaimNativeCleanup } from "../../../src/commands/worker/backends/retired-claim-native.js";
+import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
@@ -147,16 +148,37 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
   const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
   const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
-  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const retiredNativeCleanup = createRetiredClaimNativeCleanup({ homeDirectory: root, identity: { serverOrigin: origin, workerId, userId: uuid(2) }, jobLeases: createControllerJobLeases() });
+  const options = { store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   return { root, store, project, candidates, grants, grant, worktrees, manifests, git, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind };
 };
 
 describe("retired Web claim cleanup", () => {
+  it.each(["patrol", "shutdown"] as const)("settles a retired pending-only claim with an absent repository through %s without Session reads", async entry => {
+    const f = await fixture(); f.candidates.splice(0);
+    const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851) };
+    f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const successor = f.grant(task(owner.projectId, owner.taskId), { claimId: uuid(853), worktreeId: uuid(854), workerId, agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+    const verify = vi.fn(async () => { throw new Error("Session registration cannot decide retired ownership."); });
+    const runner = createCoordinator({ ...f.options, repositories: [], globalConfiguration: null, verifyWebUnregistered: verify });
+    coordinators.push(runner);
+    if (entry === "shutdown") await expect(runner.shutdown()).resolves.toBe(true);
+    else { await runner.tick(); await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done")); }
+    expect(f.store.getTask(owner)?.status).toBe("done");
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+    expect(f.options.webStore.getTask(owner)).toBeNull();
+    expect(verify).not.toHaveBeenCalled();
+    expect(f.git.prepareRepository).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(readWorkerClaim(successor.properties)?.claimId).toBe(uuid(853));
+  });
+
   it.each(["patrol", "shutdown"] as const)("uses immediate terminal cleanup through %s without consulting Session registration", async entry => {
     const f = await fixture(); f.candidates.splice(0);
     const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851), worktreeId: uuid(852) };
     f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
     const record = f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    f.options.webStore.initializeWebExecution(owner, 2);
     f.options.webStore.bindWorktree(record, f.bind(owner), 2);
     const successor = f.grant(task(owner.projectId, owner.taskId), { claimId: uuid(853), workerId, worktreeId: uuid(854), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
     const unregistered = vi.fn(async () => { throw new Error("Session registration cannot decide retired ownership."); });
@@ -182,6 +204,7 @@ describe("retired Web claim cleanup", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851), worktreeId: uuid(852) };
     f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
     f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    f.options.webStore.initializeWebExecution(owner, 2);
     if (state === "owned") f.grant(task(owner.projectId, owner.taskId), { ...owner, workerId, agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
     else vi.mocked(f.remote.readTask).mockRejectedValue(new Error("Ownership unavailable."));
     const cleanup = vi.fn<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["cleanup"]>(async (input, request) => {
@@ -200,6 +223,7 @@ describe("retired Web claim cleanup", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851), worktreeId: uuid(852) };
     f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    f.options.webStore.initializeWebExecution(owner, 2);
     vi.mocked(f.remote.readTask).mockResolvedValue({ ...task(owner.projectId, owner.taskId), status: "done" });
     const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
     const independentStop = vi.fn(async () => {});
@@ -231,6 +255,7 @@ describe("retired Web claim cleanup", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851), worktreeId: uuid(852) };
     f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    f.options.webStore.initializeWebExecution(owner, 2);
     vi.mocked(f.remote.readTask).mockResolvedValue({ ...task(owner.projectId, owner.taskId), status: "done" });
     const entered = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
     const independentStop = vi.fn(async () => {});
@@ -260,6 +285,7 @@ describe("retired Web claim cleanup", () => {
     for (const owner of owners) {
       f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
       f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+      f.options.webStore.initializeWebExecution(owner, 2);
     }
     const blocked = Promise.withResolvers<import("../../../src/api/types.js").Task>();
     const currentTasks = new Map(owners.map((owner, index) => [`${owner.projectId}/${owner.taskId}`, index === 0 ? blocked.promise : Promise.resolve({ ...task(owner.projectId, owner.taskId), status: "done" as const })]));
@@ -287,6 +313,7 @@ describe("retired Web claim cleanup", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(850), claimId: uuid(851), worktreeId: uuid(852) };
     f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     f.options.webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    f.options.webStore.initializeWebExecution(owner, 2);
     const paths: string[] = [];
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const url = new URL(String(input)); paths.push(url.pathname);
@@ -319,6 +346,11 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   task = store.updateWebExecution(task, { controllerProcess: snapshot.controllerProcess }, 7);
   vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+  vi.spyOn(lifecycle, "readCompatibleControllerSnapshot").mockImplementation((file, original) => {
+    expect(file).toBe(path.join(controllerExecutionDirectory(f.root, ticket.executionId), "journal.sqlite"));
+    expect(original).toEqual(ticket);
+    return snapshot;
+  });
   // These cases exercise archive scheduling after stop has been proven; the
   // Windows proof boundary itself is covered by the lifecycle integration tests.
   vi.spyOn(lifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(snapshot);
@@ -534,7 +566,7 @@ it("routes Web claims, freezes launch settings, and keeps interaction state out 
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
-it("missing Web execution evidence never permits replacing or deleting an existing server Session", async () => {
+it("keeps active missing-Web recovery guarded and clears retired local inventory independently of Session registration", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(); const webStore = openWebExecutionStore(createMemoryDatabase());
   const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
@@ -550,9 +582,8 @@ it("missing Web execution evidence never permits replacing or deleting an existi
     expect(f.store.getTask(row)?.status).toBe("active");
     f.grants.clear();
     await coordinator.tick();
-    await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
-    expect(f.store.getTask(row)?.status).toBe("active");
-    expect(await coordinator.shutdown()).toBe(false);
+    await eventually(() => expect(f.store.getTask(row)?.status).toBe("done"));
+    expect(await coordinator.shutdown()).toBe(true);
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
@@ -658,6 +689,171 @@ it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries wit
     expect(f.remote.update).toHaveBeenCalledTimes(2);
     expect(webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
   } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+const seedSummaryClaim = (f: Awaited<ReturnType<typeof fixture>>): Task => {
+  const claimed = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: claimed.projectId, taskId: claimed.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  return claimed;
+};
+
+it.each(["already-current", "still-different", "claim-changed", "claim-completed", "status-changed", "project-changed", "task-changed", "worker-changed", "user-changed", "worktree-changed", "agent-changed", "mode-changed", "session-changed", "session-newly-bound"] as const)("rechecks the summary after inventory when the remote task is %s", async scenario => {
+  const f = await fixture();
+  const inventoryTask = seedSummaryClaim(f);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const advance = vi.fn(async (input: WebTask) => {
+    let record = f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    if (scenario === "session-changed") record = f.options.webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(880) }, 3);
+    entered.resolve();
+    await release.promise;
+    return f.options.webStore.getTask(input)!;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick();
+    await entered.promise;
+    expect(f.remote.ownInventory).toHaveBeenCalled();
+    const original = [...f.grants.values()][0]!;
+    expect(original).toBe(inventoryTask);
+    expect(original.version).toBe(2n);
+    const claim = readWorkerClaim(original.properties)!;
+    const fresh: Task = { ...original, version: 3n, status: scenario === "status-changed" ? "done" : original.status,
+      projectId: scenario === "project-changed" ? uuid(990) : original.projectId, id: scenario === "task-changed" ? uuid(991) : original.id,
+      properties: { ...original.properties, worker: { ...claim,
+        ...(scenario === "already-current" ? { phase: "waiting" as const } : {}),
+        ...(scenario === "claim-changed" ? { claimId: uuid(999) } : {}),
+        ...(scenario === "claim-completed" ? { state: "completed" as const } : {}),
+        ...(scenario === "worker-changed" ? { workerId: uuid(998) } : {}),
+        ...(scenario === "user-changed" ? { userId: uuid(997) } : {}),
+        ...(scenario === "worktree-changed" ? { worktreeId: uuid(996) } : {}),
+        ...(scenario === "agent-changed" ? { agent: "copilot" as const } : {}),
+        ...(scenario === "mode-changed" ? { agentControlMode: "herdr" as const, herdr: { session: "session", workspaceId: "workspace", paneId: "pane" } } : {}),
+        ...(scenario === "session-changed" || scenario === "session-newly-bound" ? { nativeSessionId: uuid(995) } : {}) } } };
+    f.grants.set(claim.claimId, fresh);
+    vi.mocked(f.remote.readTask).mockResolvedValueOnce(fresh);
+    release.resolve();
+    await eventually(() => expect(f.remote.readTask).toHaveBeenCalledWith(original.projectId, original.id, expect.any(AbortSignal)));
+    if (scenario === "still-different") {
+      await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+      expect(vi.mocked(f.remote.update).mock.calls[0]![0]).toBe(fresh);
+      expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "waiting", nativeSessionId: null });
+    } else {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+    expect(advance).toHaveBeenCalledOnce();
+    if (scenario === "already-current") {
+      vi.mocked(f.remote.readTask).mockClear();
+      await coordinator.tick();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.readTask).not.toHaveBeenCalled();
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+  } finally { release.resolve(); await coordinator.shutdown(); }
+});
+
+it.each(["fresh-current", "fresh-different", "inventory-different"] as const)("recompares the observed startup report against the fresh task: %s", async scenario => {
+  const f = await fixture();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const report = (claimId: string) => ({ schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(888), claimId,
+    executionGeneration: "1", controllerInstanceId: uuid(889), revision: "2", observedAt: "2026-11-05T00:00:00.000Z",
+    startup: { state: "unknown" as const, reasonCode: "native_timeout" as const }, recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } });
+  const claimed = seedSummaryClaim(f), claimedId = readWorkerClaim(claimed.properties)!.claimId;
+  f.grants.set(claimedId, { ...claimed, properties: { ...claimed.properties, sessionStartup: scenario === "inventory-different" ? { ...report(claimedId), revision: "1" } : report(claimedId) } });
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    entered.resolve(); await release.promise;
+    return f.options.webStore.getTask(input)!;
+  });
+  const verify = vi.fn(async () => true);
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: verify,
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn(), observeStartupReport: input => report(input.claimId) } });
+  try {
+    await coordinator.tick(); await entered.promise;
+    const original = [...f.grants.values()][0]!, claim = readWorkerClaim(original.properties)!;
+    const fresh: Task = { ...original, version: 3n, properties: { ...original.properties, worker: { ...claim, phase: "waiting" },
+      sessionStartup: scenario === "fresh-different" ? { ...report(claim.claimId), revision: "1" } : report(claim.claimId) } };
+    f.grants.set(claim.claimId, fresh); release.resolve();
+    await eventually(() => expect(f.remote.readTask).toHaveBeenCalledWith(original.projectId, original.id, expect.any(AbortSignal)));
+    expect(verify).toHaveBeenCalledOnce();
+    if (scenario === "fresh-different") {
+      await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+      expect(vi.mocked(f.remote.update).mock.calls[0]![0]).toBe(fresh);
+      expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "waiting", nativeSessionId: null, startupReport: report(claim.claimId) });
+    } else {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+  } finally { release.resolve(); await coordinator.shutdown(); }
+});
+
+it.each(["read-failed", "version-conflict", "other-refusal", "unconfirmed-conflict", "unknown"] as const)("defers a %s summary result to the next reconciliation without retrying native recovery", async scenario => {
+  const f = await fixture();
+  seedSummaryClaim(f);
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    return f.options.webStore.getTask(input)!;
+  });
+  const cause = new Error(`controlled ${scenario}`);
+  const failure = ["version-conflict", "other-refusal", "unconfirmed-conflict"].includes(scenario) ? new ApiError({ operation: "worker.update" }, "response", {
+    cause, status: 409, serverError: { code: scenario === "other-refusal" ? "claim_conflict" : "version_conflict", message: "stale version", requestId: "summary-request" }, confirmedRefusal: scenario !== "unconfirmed-conflict", outcomeUnconfirmed: scenario === "unconfirmed-conflict",
+  }) : cause;
+  const normalUpdate = vi.mocked(f.remote.update).getMockImplementation()!;
+  if (scenario === "read-failed") vi.mocked(f.remote.readTask).mockRejectedValueOnce(failure);
+  else vi.mocked(f.remote.update).mockImplementationOnce(async (current, input, signal) => {
+    const claimId = readWorkerClaim(current.properties)!.claimId;
+    f.grants.set(claimId, { ...current, version: current.version + 1n });
+    if (scenario === "version-conflict") {
+      if (f.grants.get(claimId)!.version !== current.version) throw failure;
+      return normalUpdate(current, input, signal);
+    }
+    throw failure;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
+  try {
+    await tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "summary-error" && event.error === failure)).toBe(true));
+    const diagnostic = f.events.find(event => event.kind === "summary-error" && event.error === failure)!;
+    if (scenario === "version-conflict") {
+      expect(diagnostic.message).toMatch(/rejected.*version/i);
+      expect(failure).toMatchObject({ code: "version_conflict", requestId: "summary-request", cause });
+    } else if (scenario === "other-refusal") expect(diagnostic.message).toMatch(/rejected/i);
+    else if (scenario !== "read-failed") expect(diagnostic.message).toMatch(/not confirmed/i);
+    expect(f.remote.update).toHaveBeenCalledTimes(scenario === "read-failed" ? 0 : 1);
+    if (scenario !== "read-failed") expect(vi.mocked(f.remote.update).mock.calls[0]![0].version).toBe(2n);
+    await tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(scenario === "read-failed" ? 1 : 2));
+    if (scenario !== "read-failed") expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(3n);
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.options.webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
+  } finally { await coordinator.shutdown(); }
+});
+
+it.each(["worker", "sessionStartup"] as const)("reports malformed fresh %s as a summary error without starting native recovery", async field => {
+  const f = await fixture(); seedSummaryClaim(f);
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    return f.options.webStore.getTask(input)!;
+  });
+  const report = (input: WebTask) => ({ schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(888), claimId: input.claimId,
+    executionGeneration: "1", controllerInstanceId: uuid(889), revision: "1", observedAt: "2026-11-05T00:00:00.000Z",
+    startup: { state: "unknown" as const, reasonCode: "native_timeout" as const }, recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } });
+  const original = [...f.grants.values()][0]!;
+  vi.mocked(f.remote.readTask).mockResolvedValueOnce({ ...original, version: 3n, properties: { ...original.properties, [field]: {} } });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: async () => true,
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn(), observeStartupReport: report } });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "summary-error")).toBe(true));
+    expect(f.events.some(event => event.kind === "execution-error")).toBe(false);
+    expect(f.remote.update).not.toHaveBeenCalled();
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.options.webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
+  } finally { await coordinator.shutdown(); }
 });
 
 it.each(["claim", "worktree"])("rejects Web retry after original %s loss without authorizing or advancing it", async field => {
@@ -803,7 +999,10 @@ it.each(["paused", "revoked", "changed_claim"] as const)("rechecks %s before res
       expect(cleanup).toHaveBeenCalledOnce();
       expect(webStore.getTask(owner)?.webExecution?.restartAfterShutdown).toBe(true);
     } else {
-      await eventually(() => expect(readWorkerClaim(f.grants.get(owner.claimId)!.properties)?.phase).toBe("waiting"));
+      if (state === "changed_claim") {
+        await eventually(() => expect(f.remote.readTask).toHaveBeenCalledTimes(2));
+        expect(f.remote.update).not.toHaveBeenCalled();
+      } else await eventually(() => expect(readWorkerClaim(f.grants.get(owner.claimId)!.properties)?.phase).toBe("waiting"));
       expect(cleanup).not.toHaveBeenCalled();
       expect(webStore.getTask(owner)?.cleanup?.kind).toBe("shutdown");
     }
@@ -1523,6 +1722,7 @@ describe("Web ownership boundaries", () => {
     const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
     const owner = { projectId: f.project.projectId, taskId: uuid(930), claimId: uuid(931), worktreeId: uuid(932) };
     const record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+    webStore.initializeWebExecution(record, 2);
     f.candidates.splice(0);
     const cleanup = vi.fn(async (value: WebTask, request: import("../../../src/commands/worker/execution-stop.js").CleanupRequest) => {
       if (request.kind === "terminal") {
@@ -1618,32 +1818,33 @@ describe("Web ownership boundaries", () => {
     f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     if (status === "active") f.store.activateTask(owner); else f.store.completeTask(owner);
     f.store.saveCleanupSchedule(owner, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+    f.bind(owner);
     f.candidates.splice(0);
     const verify = vi.fn(async () => {});
     const coordinator = createWorkerCoordinator({ ...f.options, webStore, verifyWebUnregistered: verify });
     try {
       await coordinator.tick();
       await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-      expect(verify).toHaveBeenCalled();
+      expect(verify).not.toHaveBeenCalled();
       expect(f.store.getTask(owner)?.status).toBe("done");
       expect(f.git.removeUnpublishedReservation).toHaveBeenCalled();
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
-  it("retains an unregistered cleanup schedule when provenance cannot be verified", async () => {
+  it("settles a retired journal-free schedule from complete local inventory when Session registration is unavailable", async () => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
     const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(976), worktreeId: uuid(977) };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
-    const saved = f.store.saveCleanupSchedule(owner, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+    f.store.saveCleanupSchedule(owner, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+    f.bind(owner);
     f.candidates.splice(0);
     const coordinator = createWorkerCoordinator({ ...f.options, webStore, verifyWebUnregistered: async () => { throw new Error("Unverified provenance"); } });
     try {
       await coordinator.tick();
-      await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
-      expect(f.store.getCleanupSchedule(owner)).toEqual(saved);
+      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
-      expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+      expect(f.git.removeUnpublishedReservation).toHaveBeenCalled();
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 

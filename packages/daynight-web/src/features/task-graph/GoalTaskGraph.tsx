@@ -3,7 +3,8 @@ import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
 import { getViewportForBounds } from '@xyflow/react';
 import type { TaskSummary } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { type CanvasLayout, type GraphDirection } from './layout';
+import { TASK_NODE_READING_HEIGHT, type CanvasLayout, type GraphDirection } from './layout';
+import { useReadingRows } from './reading-rows';
 import { layoutGoalGraph, type GoalLayoutSize } from './goal-layout';
 import { scaleGraph, useGraphFontScale } from './graph-scale';
 import { projectGoal, goalTopologyKey } from './goal-projection';
@@ -47,6 +48,7 @@ const boundsOf = (geometry: CanvasLayout) => {
 export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirectionChange, directionIssue, onOpenTask, fullscreen }: Props) => {
   const { messages: { graph: m, workspace: { project } } } = useI18n();
   const fontScale = useGraphFontScale();
+  const { rows, onReadingRowChange } = useReadingRows();
   const [size, setSize] = useState({ width: 0, height: 0 });
   const latestSize = useRef<GoalLayoutSize | null>(null);
   const [request, setRequest] = useState<LayoutRequest | null>(null);
@@ -85,7 +87,7 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
     if (activeRequest === null) return { geometry: null, error: false };
     try {
       const started = performance.now();
-      const geometry = scaleGraph(layoutGoalGraph(activeRequest.projection, { width: activeRequest.size.width / fontScale, height: activeRequest.size.height / fontScale }, activeRequest.direction), fontScale);
+      const geometry = scaleGraph(layoutGoalGraph(activeRequest.projection, { width: activeRequest.size.width / fontScale, height: activeRequest.size.height / fontScale }, activeRequest.direction, new Map([...rows].map((id) => [id, TASK_NODE_READING_HEIGHT]))), fontScale);
       performance.clearMeasures('daynight:task-layout');
       performance.measure('daynight:task-layout', { start: started, end: performance.now(), detail: {
         scopeKind: 'goal', goalId, mainCount: projection.mainIds.size, externalCount: projection.externalIds.size, edgeCount: projection.edges.length, direction,
@@ -96,7 +98,7 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
       console.warn('Goal graph layout failed', { projectId, scopeKind: 'goal', resourceId: goalId, stage: 'layout', errorName, reason: cause instanceof Error ? 'layout_error' : 'non_error' });
       return { geometry: null, error: true };
     }
-  }, [activeRequest, projectId, goalId, fontScale]);
+  }, [activeRequest, projectId, goalId, fontScale, rows]);
   const geometry = result.geometry;
   const fallbackGeometry = geometry ?? emptyGeometry;
   const focusFallback = useCallback(() => resetButton.current ?? fullscreen?.buttonRef.current ?? null, [fullscreen]);
@@ -105,11 +107,11 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
     const task = index.nodes.get(node.id)!;
     return { id: node.id, position: node.position, type: 'task', width: node.width, height: node.height,
       style: { width: node.width, height: node.height }, data: {
-        task, kind: node.kind,
+        task, kind: node.kind, onReadingRowChange,
         center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
         size: { width: node.width, height: node.height }, actions: { kind: 'goal', onInspectTask, onOpenTask },
       } };
-  }), [geometry, index, onInspectTask, onOpenTask]);
+  }), [geometry, index, onInspectTask, onOpenTask, onReadingRowChange]);
   const viewportFactory = useCallback(() => {
     const bounds = boundsOf(geometry!);
     const { width, height } = activeRequest!.size;
