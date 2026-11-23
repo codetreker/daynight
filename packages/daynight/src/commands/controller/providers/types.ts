@@ -87,6 +87,8 @@ export type ProviderOptions = {
   onImageOccurrence?(occurrence: ImageOccurrence, source: NativeImageSource | null): boolean;
   imageOccurrenceAcknowledged?(imageId: string): boolean;
   prepareImageCapture?(request: ImageCaptureRequest, signal?: AbortSignal): Promise<void>;
+  verifyImageCapture?(captureId: string, attemptId: string): void;
+  freezeImageCapture?(submission: DirectCaptureSubmission): void;
   submitImageCapture?(submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt>;
   registerImageCapture?(request: ImageCaptureRequest): Promise<ImageCaptureReceipt>;
   queryImageCapture?(captureId: string): Promise<ImageCaptureReceipt>;

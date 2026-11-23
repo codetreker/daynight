@@ -2,7 +2,7 @@
 
 ## 范围与所有者
 
-Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15。标准化 timeline 的权威是原 `journal.sqlite` 的当前行。`execution.history_content_policy` 持久区分 `legacy` 与 `task_body`；正文策略把消息与在线详情分别保存，在线读取合并两者，同步及归档只消费正文。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
+Controller journal 的唯一编号序列为 `001`–`017`，当前格式为 v17。标准化 timeline 的权威是原 `journal.sqlite` 的当前行。`execution.history_content_policy` 持久区分 `legacy` 与 `task_body`；正文策略把消息与在线详情分别保存，在线读取合并两者，同步及归档只消费正文。`execution.online_mode` 保存实际协商的在线模式。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
 
 | 模块 | 责任 |
 |---|---|
@@ -17,6 +17,8 @@ Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15�
 `sqlite/journal/010-timeline-content.sql` 是正文表、统计表、cleanup 标记与旧索引删除的唯一完整 DDL。`loadSqliteSequence` 从同一 canonical 目录发现全部步骤；journal 格式拥有者据此生成完整 schema snapshots、验证版本并执行转换。构建按原 SQL 目录复制到相同的 dist 相对路径，没有暂存副本、隔离格式工厂或运行时版本选择开关。已发布 `009-message-origins.sql` 及其来源关系保持原样。
 
 `015-online-content.sql` 新建 `online_entries`、`online_totals`，并给 execution 增加默认 `legacy` 的策略列。升级不搬移或过滤已有条目。runtime 仅在首次创建 claim 绑定的 Task execution 时选择 `task_body`；重新打开和恢复沿用已持久策略，不根据新配置重解释旧数据。普通 Test 与 Bot execution 保持兼容策略，不能从二者共用的 `testExecutionId` 推断 Bot 策略。
+
+`016-worker-lifecycle.sql` 保存 Worker 生命周期绑定；`017-online-mode.sql` 给已有 execution 绑定 `legacy` 在线模式，并在 timeline 事务保存修订对应的 source 序号、传输表示是否保留位置和原生图片的原槽位。替代显示错误的帧不能证明原图片位置；在线条目退休时清除对应修订记录。旧条目没有这些证明时不凭当前内容推断。新 execution 在收到实际 welcome 后持久绑定模式并核对正文策略，再发送对应模式的帧；断线、恢复和换代保持原决定。旧服务未协商时沿旧协议，已绑定 relay 的执行不能静默降级。
 
 ## 当前行与事务
 
@@ -89,7 +91,7 @@ VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`
 
 正文策略的 relay 在 WebSocket 握手请求中发送 `Daynight-Task-Body-History-Version: 1`，并核对 upgrade 响应同值；不支持时在发送 hello 前关闭连接并报告 `upgrade_required`，不回退到全量历史。活动同步和停止归档的 HTTP 请求也声明并逐次检查此能力。停止归档先有界识别精确的 HTTP 429 `resource_busy`，该拒绝可在旧 Server 的版本头之前发生；成功及其他原需校验的响应仍要求版本 1，错误体不因此被接纳为会话内容。重放条件、退避和预算由[Worker 设计](daynight-worker.md#结束清理与退出)拥有。兼容 execution 不发送正文策略声明。
 
-活动同步只在原 source 序列已全部 ACK、无 projection gap 且 history epoch 已知时准备。它在原短同步 SQL 事务内取得 epoch、完整 source 截止点、有序正文条目和正文引用资源，物化同步文件并持久提交原 intent 后结束事务，再等待网络。正文策略额外携带 `contentPolicy=task_body` 与最多 4096 个累积的 `onlineImageOccurrences`，供在线工具图片捕获校验，不携带工具文本；工具修订移除图片也保留原位置至最终结算。重试保留 syncId 和冻结字节；同步文件是传输材料，不是第二份会话权威。source 水位覆盖所有事件，不能用筛选后的正文序号替代。
+旧在线模式的活动同步只在原 source 序列已全部 ACK、无 projection gap 且 history epoch 已知时准备。它在原短同步 SQL 事务内取得 epoch、完整 source 截止点、有序正文条目和正文引用资源，物化同步文件并持久提交原 intent 后结束事务，再等待网络。正文策略额外携带 `contentPolicy=task_body` 与最多 4096 个累积的 `onlineImageOccurrences`，供在线工具图片捕获校验，不携带工具文本；工具修订移除图片也保留原位置至最终结算。重试保留 syncId 和冻结字节；同步文件是传输材料，不是第二份会话权威。relay 模式不发送活动同步；采集直接核对本地出现位置和当前 ACK。source 水位覆盖所有事件，不能用筛选后的正文序号替代。
 
 停止归档在精确原 stopped 身份下物化正文 timeline、descriptor 和引用；兼容 execution 保留全量内容。正文最终 history 的在线位置集合为空，schema3 manifest 显式携带 `contentPolicy=task_body`，物理文件布局不变。资源 hash、路径及 source-tail/旧 ready receipt 对账继续沿原规则。`assertFrozen()` 新开短只读连接，核对原身份、当前 SQL 正文和 source 截止点；后续本机写阶段重新取得 permit 和角色准入。wire 字段与旧读者兼容由[历史读取设计](task-session-history.md#归档与权限生命周期)拥有。
 

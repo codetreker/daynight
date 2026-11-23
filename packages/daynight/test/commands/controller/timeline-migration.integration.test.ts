@@ -60,6 +60,15 @@ const fixture = async (version: number, withExecution = true) => {
   return { root, file, db, sessionId, snapshot, entry, body, bodyFile, pending, permit, context, format, migrate };
 };
 
+test("migrates an existing execution to legacy online mode without changing its history policy", async () => {
+  const f = await fixture(16, false);
+  f.db.prepare("INSERT INTO execution(id,ticket_hash,snapshot,history_content_policy) VALUES(1,'old','{}','task_body')").run();
+  f.migrate();
+  expect(f.db.prepare("SELECT online_mode,history_content_policy FROM execution").get()).toEqual({ online_mode: "legacy", history_content_policy: "task_body" });
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM timeline_source_revisions").get()).toEqual({ count: 0 });
+  expect(f.db.prepare("PRAGMA table_info(image_occurrences)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "part_index" })]));
+});
+
 test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical chain without changing original execution evidence", async version => {
   const f = await fixture(version), before = f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get();
   expect(f.migrate()).toMatchObject({ fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
@@ -101,9 +110,9 @@ test.each([5, 7, 9].flatMap(version => ["text", "list"].map(kind => ({ version, 
 });
 
 test("canonical discovery includes the current schema and preserves shipped DDL", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(16);
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(17);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
   const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
   expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");

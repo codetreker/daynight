@@ -79,7 +79,7 @@ export async function createLocalImageContext(options: { cwd: string; platform?:
   contexts.set(context, internal); return context;
 }
 
-export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: (checkpoint: LocalImageCheckpoint) => void | Promise<void> }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
+export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: (checkpoint: LocalImageCheckpoint) => void | Promise<void>; assertCapture?(): void }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
   const internal = contexts.get(options.context);
   if (!internal || internal.dead) refuse("context_unavailable");
   if (internal.busy) refuse("source_busy");
@@ -107,7 +107,7 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
           catch (error) { void finish(error, undefined, true); return; }
           if (checkpoint.stage === "opened") clearTimeout(openTimer);
           checking = true;
-          void Promise.resolve().then(() => { if (!finishing) return options.checkPolicy(checkpoint); }).then(() => { checking = false; if (!finishing) send(internal.child, { type: "continue" }); }, error => finish(error, undefined, true));
+          void Promise.resolve().then(() => { if (!finishing) return options.checkPolicy(checkpoint); }).then(() => { checking = false; if (!finishing) { options.assertCapture?.(); send(internal.child, { type: "continue" }); } }).catch(error => finish(error, undefined, true));
         } else if (message.type === "error") { void finish(new LocalImageSourceError(message.code ?? "source_unavailable")); }
         else if (message.type === "result") {
           try { if (checking) refuse(); proofSequence.complete(); } catch (error) { void finish(error, undefined, true); return; }
@@ -116,7 +116,8 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
         }
       };
       internal.child.on("message", onMessage); internal.child.once("close", onClose); options.signal?.addEventListener("abort", onAbort, { once: true });
-      send(internal.child, { type: "copy", locator: options.path, path: parsed, outputPath: options.outputPath });
+      try { options.assertCapture?.(); send(internal.child, { type: "copy", locator: options.path, path: parsed, outputPath: options.outputPath }); }
+      catch (error) { void finish(error, undefined, true); }
     });
   } finally { internal.busy = false; }
 }

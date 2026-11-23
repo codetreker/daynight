@@ -263,6 +263,7 @@ export class ProviderImageProjector {
     const { options } = this, { saved } = pending;
     await options.prepareImageCapture!(saved.request);
     if (this.stopped) return;
+    options.verifyImageCapture?.(saved.request.captureId, saved.attemptId);
     // Persist the source start before IO. An interrupted reader cannot be
     // reopened under the same attempt against possibly changed source bytes.
     saved.phase = "preparing"; this.save(pending);

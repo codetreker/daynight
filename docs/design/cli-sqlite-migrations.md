@@ -24,7 +24,7 @@
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
 | Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql`、`007-resource-cleanup-intent.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql`、`003-orchestration-blockers.sql` |
-| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql`、`012-direct-capture.sql`、`013-native-index-lease.sql`、`014-usage.sql`、`015-online-content.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql`、`012-direct-capture.sql`、`013-native-index-lease.sql`、`014-usage.sql`、`015-online-content.sql`、`016-worker-lifecycle.sql`、`017-online-mode.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
@@ -42,6 +42,8 @@
 SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)。
 
 Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。领域 callback 捕获原已提交指针，在同一迁移事务执行包含旧索引删除的完整 DDL，并从对应文件导入可映射的正文；totals 根据实际写入行计算。DDL 只执行一次；失败回滚恢复原索引。文件映射、局部坏值和纯升级由 [SQL 正文设计](session-sqlite-content.md)拥有。011 在同一许可和迁移事务中建立 `outbox_totals`，对旧 outbox 编码文本逐行计算 UTF-8 字节并一次初始化；版本和总量一起提交或回滚。正常重开不重复初始化。容量与 ACK 计量由 [Controller 协议](task-session-protocol.md)拥有。012 的领域 callback 只转换原生图片、Markdown 和 publication slot 中改变表示的 state 字段；无法操作的局部 state 保持原值，其他 slot 继续，未变化的 JSON 不重写。receipt、图片关联和不涉及映射的字段保持原样，不进行完整业务验证或恢复。字段和版本一起提交或回滚；[图片来源设计](session-image-sources.md)拥有运行期 submit 与恢复语义。`014-usage.sql` 独立保存用量来源、队列和元数据；`015-online-content.sql` 增加 `execution.history_content_policy`，默认 legacy，并创建空的 `online_entries` 和 `online_totals`。015 不转换旧条目或改写其身份、确认水位和冻结意图。新建 claim execution 的 task_body 策略在后续业务初始化事务选择，恢复不覆盖已存策略；在线合并读取、正文同步及独立逻辑预算由 [SQL 正文设计](session-sqlite-content.md)拥有。
+
+`016-worker-lifecycle.sql` 保存原 execution 的 Worker 生命周期绑定。`017-online-mode.sql` 给已有 execution 绑定 legacy 在线模式，新增 timeline 修订与 source 序号关联和原生图片槽位；迁移不为旧条目猜测证明。新 execution 在 welcome 确认后持久绑定实际模式，恢复不改写原决定。
 
 ## 独立版本与起点
 

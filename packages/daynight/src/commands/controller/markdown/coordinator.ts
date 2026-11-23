@@ -6,7 +6,7 @@ import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
-import { ImageCapturePrerequisiteError, ImageCaptureRequestError, isRetryableCaptureRefusal } from "../media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError, ImageCaptureRetrySettledError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import type { ExternalImagePolicyLease } from "./external-policy.js";
@@ -28,7 +28,7 @@ export type MarkdownCaptureRecord = {
   dispatchPending?: boolean;
   resumeReserved?: "source" | "submission";
 };
-type Hooks = Required<Pick<ProviderOptions, "prepareImageCapture" | "queryImageCapture" | "submitImageCapture">>;
+type Hooks = Required<Pick<ProviderOptions, "prepareImageCapture" | "queryImageCapture" | "submitImageCapture">> & Pick<ProviderOptions, "verifyImageCapture" | "freezeImageCapture">;
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
 const validationFailures = new Map<string, string>([["image_decode_failed", "decode_failed"], ["image_format_unsupported", "unsupported_media_type"], ["image_integrity_failed", "source_changed"], ["image_geometry_exceeded", "invalid_image"], ["image_too_large", "source_too_large"]]);
 const sourceError = (error: unknown): ImageError => {
@@ -186,6 +186,7 @@ export const createMarkdownCaptureCoordinator = (options: {
   const freeze = (record: MarkdownCaptureRecord, outcome: DirectCaptureSubmission["outcome"]): void => {
     if (record.submission) throw new Error("Image capture already has a frozen submission.");
     record.submission = parseDirectCaptureSubmission({ request: journal.getImageCaptureRequest(record.request!.captureId), attemptId: record.request!.attemptId, outcome });
+    hooks.freezeImageCapture?.(record.submission);
     record.dispatchPending = true; record.phase = "unknown"; saved(record);
   };
   const submit = async (record: MarkdownCaptureRecord): Promise<void> => {
@@ -220,6 +221,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const request = record.request!, fence = options.fence();
     if (!fence) return refuse("policy_restricted");
     checkContext(record.context, request.locator.kind === "local", fence); signal.throwIfAborted();
+    hooks.verifyImageCapture?.(request.captureId, request.attemptId);
     const sourcePolicy = request.locator.kind === "local" ? options.nativeReadPolicy!()! : null;
     let sourceProofSha256: string | null = null;
     const media = journal.media(); let lease: CaptureSourceLease | undefined, sourceFailed = false, sourceCause: unknown;
@@ -230,14 +232,15 @@ export const createMarkdownCaptureCoordinator = (options: {
       lease = media.reserveCaptureSource(request.captureId, request.attemptId);
       const source = await lease.runWriter(async (outputPath, writerSignal) => {
         const joined = AbortSignal.any([signal, writerSignal]);
+        hooks.verifyImageCapture?.(request.captureId, request.attemptId);
         if (request.locator.kind === "local") {
           const context = await createLocalImageContext({ ...(options.beforeSpawn === undefined ? {} : { beforeSpawn: options.beforeSpawn }), cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
           try {
-            checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
-            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {
-              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
+            checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted(); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
+            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, assertCapture: () => { checkContext(record.context, true, fence, sourcePolicy!); hooks.verifyImageCapture?.(request.captureId, request.attemptId); }, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {
+              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted(); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
               try { await sourcePolicy!.authorizeCheckpoint(checkpoint); } catch { refuse("policy_restricted"); }
-              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
+              checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted(); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
               if (checkpoint.stage === "final") sourceProofSha256 = createHash("sha256").update(canonicalImageJson(checkpoint.proof)).digest("hex");
             } });
             return { ...result, byteLength: String(result.byteLength) };
@@ -247,8 +250,10 @@ export const createMarkdownCaptureCoordinator = (options: {
         if (!options.acquireExternalPolicy) return refuse("policy_restricted");
         const externalLease = await options.acquireExternalPolicy();
         try {
+          checkContext(record.context, false, fence); joined.throwIfAborted(); hooks.verifyImageCapture?.(request.captureId, request.attemptId);
           const policy = createExternalImagePolicy({ ...externalLease,
-            assertEgressPolicy: async () => { checkContext(record.context, false, fence); await externalLease.assertEgressPolicy(); checkContext(record.context, false, fence); },
+            assertCapture: () => { checkContext(record.context, false, fence); hooks.verifyImageCapture?.(request.captureId, request.attemptId); },
+            assertEgressPolicy: async () => { checkContext(record.context, false, fence); hooks.verifyImageCapture?.(request.captureId, request.attemptId); await externalLease.assertEgressPolicy(); checkContext(record.context, false, fence); hooks.verifyImageCapture?.(request.captureId, request.attemptId); },
             beforeRequest: ({ hostname }) => { checkContext(record.context, false, fence); if (!store.rate(hostname)) throw new ExternalImageSourceError("source_rate_limited", 30); },
           });
           return await copyExternalImage({ url: request.locator.url, outputPath, signal: joined, policy });
@@ -369,7 +374,14 @@ export const createMarkdownCaptureCoordinator = (options: {
     return track(request.occurrence.imageId, async joined => {
       await cleanupSource(old);
       joined.throwIfAborted();
-      if (old.request!.attemptId === request.attemptId && old.error) return refuse(old.error.code);
+      if (old.request!.attemptId === request.attemptId && old.error) {
+        if (old.submission) {
+          await submit(old);
+          if (old.receipt?.state === "failed" && old.receipt.error) throw new ImageCaptureRetrySettledError(old.receipt.error);
+          throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        }
+        throw new ImageCaptureRetrySettledError(old.error);
+      }
       const existing = journal.media().captureStatus(request.captureId, request.attemptId); if (existing) { if (!hasAdmission(old, existing)) return refuse("source_unavailable"); return existing; }
       if (old.request!.attemptId === request.attemptId && old.started) return refuse("source_unavailable");
       const remaining = Math.max(0, old.cooldownUntil - Date.now()), until = performance.now() + remaining;
@@ -380,7 +392,12 @@ export const createMarkdownCaptureCoordinator = (options: {
       const { submission: _previousSubmission, submissionRefusal: _previousRefusal, dispatchPending: _previousDispatch, resumeReserved: _previousResume, ...withoutRetry } = old;
       const record = saved({ ...withoutRetry, request, phase: "registered", started: false, awaitingRetry: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
       try { const result = await copy(record, joined); record.phase = "unknown"; saved(record); return result; }
-      catch (error) { record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record); throw error; }
+      catch (error) {
+        record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record);
+        if (record.receipt?.state === "failed" && record.receipt.error) throw new ImageCaptureRetrySettledError(record.receipt.error);
+        if (record.dispatchPending) throw new ImageCaptureNotDispatchedError("Image capture retry failure remains pending.");
+        throw error;
+      }
     }, signal);
   };
   const localWork = () => [...active].filter(([id]) => get(id)?.request?.locator.kind === "local").map(([, work]) => work);

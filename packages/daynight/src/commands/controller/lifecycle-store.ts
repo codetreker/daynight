@@ -240,7 +240,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     // Online details and source replay commit together; ACK never removes the
     // original content needed by a reconnect or an outstanding approval.
     sessionContent.onlineTimeline.save(durableEntry);
-    return appendEvent({ kind: "timeline_upsert", payload: display });
+    const event = appendEvent({ kind: "timeline_upsert", payload: display });
+    db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, revision, event.sequence, display.kind === payload.kind ? 1 : 0);
+    return event;
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
     const operation = getOperation(operationId);
@@ -273,7 +275,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const payload = options.contentOwnedLocally ? { ...content, entrySeq } : content;
     const display = options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload;
     parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: display });
-    return appendEvent({ kind: "timeline_upsert", payload: display });
+    const event = appendEvent({ kind: "timeline_upsert", payload: display });
+    db.prepare("INSERT INTO timeline_source_revisions VALUES(?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,source_sequence=excluded.source_sequence,position_visible=excluded.position_visible").run(entry.entryId, entry.revision, event.sequence, display.kind === payload.kind ? 1 : 0);
+    return event;
   });
   const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
@@ -289,7 +293,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
     const acknowledged = BigInt(ack) >= BigInt(sequence);
-    db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
+    const parts = entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : entry.kind === "tool_call" ? entry.output : [];
+    const partIndex = occurrence.partId === null ? parts.findIndex(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId) : -1;
+    db.prepare("INSERT INTO image_occurrences(image_id,occurrence,native_source,source_sequence,acknowledged,part_index) VALUES(?,?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0, partIndex < 0 ? null : partIndex);
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
   const getOnlineImageOccurrences = (): ImageOccurrence[] => read(() => {
@@ -316,7 +322,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence }),
     ...createNativeImageState(db, { read, write: atomic }),
     ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, { contentPolicy: () => sessionContent.contentPolicy, onlineImageOccurrences: getOnlineImageOccurrences }),
-    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot),
+    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, () => sessionContent.onlineTimeline),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
@@ -396,6 +402,17 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
     getHistoryContentPolicy: (): SessionHistoryContentPolicy => sessionContent.contentPolicy,
+    getOnlineMode: (): "legacy" | "relay" | null => read(() => {
+      const row = db.prepare("SELECT online_mode FROM execution WHERE id=1").get() as { online_mode: "legacy" | "relay" | null };
+      return row.online_mode;
+    }),
+    bindOnlineMode: (mode: "legacy" | "relay", policy: SessionHistoryContentPolicy | null): void => atomic(() => {
+      const row = db.prepare("SELECT online_mode,history_content_policy FROM execution WHERE id=1").get() as { online_mode: "legacy" | "relay" | null; history_content_policy: SessionHistoryContentPolicy };
+      if (row.online_mode !== null && row.online_mode !== mode) throw new Error("Controller online mode differs from the original execution.");
+      if (policy !== null && policy !== row.history_content_policy) throw new Error("Controller history policy differs from the original execution.");
+      if (mode === "relay" && policy === null) throw new Error("Relay requires a bound history content policy.");
+      if (row.online_mode === null) db.prepare("UPDATE execution SET online_mode=? WHERE id=1").run(mode);
+    }),
     getOnlineImageOccurrences,
     hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.onlineTimeline.has(entryId)),
     getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.onlineTimeline.get(entryId)),

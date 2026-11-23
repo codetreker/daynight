@@ -48,4 +48,7 @@ Relay operation requires both sides to understand the fixed mode and occurrence
 proof; older clients remain on their existing mode and cannot silently attach to
 a relay execution. Server media capacity is independent of online text capacity;
 the combined final archive can still fail while retaining the original source.
-The existing Controller continues using the legacy path until it adopts relay.
+The Controller persists the negotiated mode before using it. Existing journals
+retain legacy mode, while reconnects and new generations check the original
+decision. A peer that cannot support an already-bound mode cannot silently
+downgrade it.

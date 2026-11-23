@@ -111,6 +111,7 @@ export type ExternalImageTarget = { hostname: string; address?: string };
 export interface ExternalImagePolicyOptions {
   /** Rechecks this fixed generation and the current Daynight authorization. */
   assertEgressPolicy(): void | Promise<void>;
+  assertCapture?(): void;
   /** Production checks every alias, DNS candidate, selected address and actual peer. */
   assertTarget?(target: ExternalImageTarget): void | Promise<void>;
   /** Revocation must also interrupt operations waiting without new body blocks. */
@@ -145,6 +146,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
   const approved = (candidate: string) => isPublicImageAddress(candidate) || !!boundary && sameAddress(candidate, boundary.address);
   if (!approved(address)) throw failure("source_forbidden");
   await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address }), signal);
+  policy.assertCapture?.();
   const socket = connect({ host: address, port, family: isIP(address) === 6 ? 6 : 4, autoSelectFamily: false });
   socket.on("error", () => {});
   let current: Socket = socket;
@@ -162,6 +164,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
     await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), signal);
     await assertPolicy(policy, signal);
     if (url.protocol === "https:") {
+      policy.assertCapture?.();
       const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) });
       tls.on("error", () => {}); current = tls;
       await connected(tls, "secureConnect");
@@ -194,8 +197,9 @@ function validateResponseHeaders(response: IncomingMessage): { length: number | 
   const contentType = response.headers["content-type"] ?? null;
   return { length, contentType };
 }
-async function readBodyBlock(response: IncomingMessage): Promise<Buffer | null> {
+async function readBodyBlock(response: IncomingMessage, assertCapture?: () => void): Promise<Buffer | null> {
   for (;;) {
+    assertCapture?.();
     const block: unknown = response.readableLength > 0 ? response.read(Math.min(65536, response.readableLength)) : null;
     if (Buffer.isBuffer(block)) return block;
     if (response.readableEnded) return null;
@@ -251,6 +255,7 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       let response: IncomingMessage | null = null;
       try {
         await assertPolicy(policy, signal);
+        policy.assertCapture?.();
         response = await new Promise<IncomingMessage>((resolve, reject) => {
           const req = request({ protocol: "http:", hostname, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), path: url.pathname + url.search, method: "GET", agent, maxHeaderSize: 32768, insecureHTTPParser: false, headers: { Host: url.host, Accept: "image/png,image/jpeg,image/webp,image/gif,image/avif", "Accept-Encoding": "identity", "User-Agent": "Daynight-Image-Source/1", Connection: "close" }, signal });
           req.maxHeadersCount = 0;
@@ -282,8 +287,8 @@ export async function copyExternalImage(input: { url: string; outputPath: string
           // Socket, response queue and the current block each have a 64 KiB bound.
           socket.on("data", progress);
           for (;;) {
-            const block = await readBodyBlock(response); if (block === null) break;
-            progress(); await assertPolicy(policy, signal);
+            const block = await readBodyBlock(response, policy.assertCapture); if (block === null) break;
+            progress(); await assertPolicy(policy, signal); policy.assertCapture?.();
             if (block.length > 65536 || bytes + block.length > MAX_BYTES) throw failure("source_too_large");
             let written = 0;
             while (written < block.length) { const result = await handle.write(block, written, block.length - written, bytes + written); if (!result.bytesWritten) throw failure("source_unavailable"); written += result.bytesWritten; }

@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 18，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 增加 Markdown 投影修复分类，17→18 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 15，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 17，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表；16 保存 Worker 生命周期绑定；17 保存在线模式，旧 execution 保持 legacy 语义 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -31,6 +31,8 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，可映射的原非零历史必须先可靠导出再删除正文表。Worker 9→10 仅从可访问的 `intent.registration.controllerInstanceId` 映射控制器身份，并设置原有 execution recovery 字段。Web 的清理记录自 v2 起只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移只移除原定的旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。两步映射遇到无效 JSON、不可操作容器或必要来源字段缺失时保留原字符串并继续其他行；没有字段变化的行也保留原字符串。升级不据此修复关联或验证完整业务记录。Web 2→3 新增编排阻塞表并保留原执行记录，已升级的库拒绝旧二进制访问。版本 0 重置不成为非零版本的历史数据清洗路径。
 
 Controller v6、v8 和 v10 仅从 SQL 行或已提交索引指定的来源执行必要映射，不扫描或采用未引用文件，不验证消息完整性、hash、身份或资源关联。目标不能表示或必要来源缺失时，仅丢弃相应最小项，其他项继续；外部文件不因坏值删除或修复。v12 仅映射 capture state 的变化字段，无法映射的 state 保留原值，receipt 和图片关联不修复。v13 仅从有效 JSON 对象的 native index lease 移除 maximumBytes，保留其他字段和无法映射的原值。正文、实际输出的 totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对完成，才允许下一 writer。upgrade-only 保留 pending，不得制造 stopped。v15 只新增独立在线详情表及统计，并给已有 execution 保存默认 legacy 策略；不得搬移、筛除或重解释原正文，也不得更改已冻结同步、归档或确认事实。新建 Task execution 的正文策略由业务初始化选择，恢复沿用已持久策略。当前格式的普通内容生产者和消费者统一使用 SQL；在线读取与正文同步分别按[Session SQLite 内容设计](../design/session-sqlite-content.md)选择其来源和容量约束，旧解码器仅服务编号迁移。
+
+v16 保存 Worker 生命周期绑定；v17 为已有 execution 记录 legacy 在线模式，不改写其他执行事实，新增修订与 source 序号关联和原生图片槽位但不猜测旧证明。新 execution 在实际协商后固定在线模式，恢复不得切换。
 
 旧 Herdr lifecycle 数据由用户处理；Worker 不打开、迁移或重置该数据库。
 
