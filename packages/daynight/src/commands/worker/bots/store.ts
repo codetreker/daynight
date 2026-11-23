@@ -62,6 +62,10 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
         || typeof cleanup.localCompleted !== "boolean" || !Array.isArray(cleanup.targets)
         || new Set(cleanup.targets.map(target => target.path)).size !== cleanup.targets.length) throw new Error("Stored Bot deletion responsibility is inconsistent.");
       if (cleanup.localCompleted && (cleanup.targets.length !== 0 || record.intent !== null || record.definition !== null)) throw new Error("Completed Bot cleanup must retain only minimal deletion responsibility.");
+      if (cleanup.workerId !== undefined) {
+        botUUID(cleanup.workerId, "Bot deletion cleanup Worker");
+        if (cleanup.stop === null || cleanup.stop.stopProof.kind === "never_started") throw new Error("Bot cleanup Worker requires its original stopped execution proof.");
+      }
       for (const target of cleanup.targets) {
         if (!path.isAbsolute(target.path) || !path.isAbsolute(target.root) || path.dirname(target.path) !== target.root
           || !["file", "socket", "directory"].includes(target.kind) || typeof target.completed !== "boolean"
@@ -119,6 +123,15 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       const record = deleting(input), target = record.cleanup?.targets.find(value => value.path === file);
       if (target === undefined || record.cleanup?.localCompleted) throw new Error("Bot cleanup file is outside the original remaining responsibility.");
       target.completed = true;
+      return put(record);
+    }),
+    /** Retains only responsibility for this stopped deletion, never execution hosting. */
+    bindDeletionWorker: (input: BotRecord, workerId: string): BotRecord => atomic(() => {
+      const record = deleting(input), cleanup = record.cleanup;
+      botUUID(workerId, "Bot deletion cleanup Worker");
+      if (cleanup?.stop == null || cleanup.stop.stopProof.kind === "never_started"
+        || cleanup.workerId !== undefined && cleanup.workerId !== workerId) throw new Error("Bot deletion cleanup requires its original stopped execution and Worker.");
+      cleanup.workerId = workerId;
       return put(record);
     }),
     /** Commit logical erasure and its receipt together; no journal is needed for subsequent retries. */

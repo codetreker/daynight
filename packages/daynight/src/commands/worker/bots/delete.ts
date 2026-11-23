@@ -15,6 +15,7 @@ export const createBotDeletion = (options: {
   homeDirectory: string; store: BotStore; executions: BotExecutionStore;
   process: BotProcess; sessionApi: Pick<BotSessionApi, "completeDeletion">; remote: BotRemote; now?: () => number;
   onReceiptConfirmed?(): void;
+  recoveryWorkerId?: string;
   dependencies?: { capture?: typeof captureBotDeletionFiles; remove?: typeof removeBotDeletionFile };
 }) => {
   const now = options.now ?? Date.now;
@@ -72,6 +73,10 @@ export const createBotDeletion = (options: {
             record = options.store.prepareDeletion(record, proof, targets);
           }
           failureCode = "private_cleanup_failed";
+          if (settings.recover === true && options.recoveryWorkerId !== undefined
+            && record.cleanup!.stop !== null && record.cleanup!.stop.stopProof.kind !== "never_started") {
+            record = options.store.bindDeletionWorker(record, options.recoveryWorkerId);
+          }
           if (!record.cleanup!.localCompleted) {
             for (const target of record.cleanup!.targets) {
               signal.throwIfAborted();

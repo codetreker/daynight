@@ -17,11 +17,21 @@ uses retained evidence to stop and clean the original execution. It does not
 create a replacement execution. Locked or unreadable storage is a failure, not
 permission to remove it.
 
+Recovery saves the verified Worker identity with real stop proof and the complete
+cleanup plan before removing files. That retained duty lets the same Worker
+continue cleanup and its receipt if `recovery.json` was already removed. The
+original Worker keeps its existing ownership admission. For a replacement Worker,
+older duties without that identity still need confirmed hosting evidence; do not
+edit records to invent it.
+
 When full stop proof and private cleanup are confirmed, the command reports
 through the existing completion protocol. Both Worker and server cleanup must
 be completed before deletion is complete. A timeout, lost response or output
 failure does not prove rollback; read the same Bot with `bot show` before another
 attempt. Preserve original records and confirmed receipts.
+An unconfirmed response after submission reports `outcomeUnconfirmed: true`,
+distinct from refusal before submission or a definite HTTP rejection. It does
+not mean stop proof is missing; do not blindly repeat the completion request.
 
 If the execution row is missing but the original intent, ticket and journal
 still validate, explicit recovery can stop that generation and retain its real

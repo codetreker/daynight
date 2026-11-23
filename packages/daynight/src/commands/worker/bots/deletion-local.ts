@@ -122,10 +122,15 @@ export const recoverLocalBotDeletion = async (input: RecoveryInput & {
     const stores = local;
     const recoveryStore = openBotRecoveryStore({ stateDirectory: paths.stateDirectory, owner, assertLocked: stores.assertLocked });
     const hostingState = stores.isDedicated(record) ? recoveryStore.read(record) : null, receipt = hostingState?.current ?? hostingState?.registration;
-    if (hostingState?.pending != null || receipt != null && (!receipt.current || receipt.receipt.workerId !== owner.workerId)) throw new DeletionLocalError("wrong_worker");
+    if (hostingState?.pending != null || receipt != null && (!receipt.current || receipt.receipt.workerId !== owner.workerId)
+      || record.cleanup?.workerId !== undefined && record.cleanup.workerId !== owner.workerId) throw new DeletionLocalError("wrong_worker");
     const hosting = createBotReconciliation({ owner, store: recoveryStore,
       api: createBotRecoveryApi({ owner, serverToken: input.serverToken }), applicable: stores.isDedicated, canSubmit: () => false });
-    if (!hosting.ownsHosting(record)) throw new DeletionLocalError("wrong_worker");
+    // Cleanup can erase recovery.json. Its stopped, machine-bound responsibility
+    // then permits only the saved targets and receipt, not control of a writer.
+    const continuingCleanup = hostingState === null && record.cleanup?.workerId === owner.workerId
+      && record.cleanup.stop !== null && record.cleanup.stop.stopProof.kind !== "never_started";
+    if (!continuingCleanup && !hosting.ownsHosting(record)) throw new DeletionLocalError("wrong_worker");
     const sessionApi = createBotSessionApi({ owner, serverToken: input.serverToken, stateDirectory: paths.stateDirectory, recovery: hosting });
     process = createBotProcess({ homeDirectory: input.homeDirectory, packageDirectory: input.packageDirectory,
       store: local.store, executions: local.executions, sessionApi, recoveryLimit: 0, canControl: hosting.ownsHosting, canAdmitNewExecution: () => false });
@@ -133,7 +138,8 @@ export const recoverLocalBotDeletion = async (input: RecoveryInput & {
       await process.withDeletion(record, input.signal, stop => stop({ recoverMissingExecution: true }));
       throw new DeletionLocalError("evidence_missing", { generationStopped: true });
     }
-    await createBotDeletion({ homeDirectory: input.homeDirectory, store: local.store, executions: local.executions, process, sessionApi, remote, onReceiptConfirmed: () => { receiptConfirmed = true; } })
+    await createBotDeletion({ homeDirectory: input.homeDirectory, store: local.store, executions: local.executions, process, sessionApi, remote,
+      recoveryWorkerId: owner.workerId, onReceiptConfirmed: () => { receiptConfirmed = true; } })
       .advance(record, input.signal, { recover: true });
     const current = local.store.get(originalOwner, input.botId)!;
     if (current.observed.deletion?.workerCleanup.state !== "completed") throw new DeletionLocalError("stop_unproven");

@@ -57,6 +57,33 @@ describe("durable Bot inventory", () => {
 });
 
 describe("Bot deletion responsibility", () => {
+  it("retains one cleanup Worker across final erasure and rejects malformed or replacement ownership", () => {
+    const f = fixture(), original = bot();
+    if (original.deletion !== null) throw new Error("fixture");
+    f.store.observe(owner, original, 1);
+    const intent = f.store.prepare(owner, id(3), { homeDirectory: f.home, recoveryLimit: 0 });
+    f.store.observe(owner, { ...original, version: "2", sessionId: id(4), testExecutionId: intent.executionId }, 2);
+    const record = f.store.observe(owner, { id: id(3), workerId: owner.workerId, version: "3", deletion: { deletionId: id(8), requestedVersion: "2",
+      workerCleanup: { state: "failed", code: "execution_evidence_missing" }, serverCleanup: { state: "pending", code: null } } }, 3);
+    const stop = { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: intent.executionId, executionGeneration: "1",
+      controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
+      stopProof: { recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: "2026-11-23T00:00:00Z" } };
+    const prepared = f.store.prepareDeletion(record, stop, []);
+    expect(f.open().get(owner, id(3))!.cleanup).not.toHaveProperty("workerId");
+    expect(() => f.store.bindDeletionWorker(prepared, "invalid")).toThrow();
+    const bound = f.store.bindDeletionWorker(prepared, id(20));
+    expect(() => f.store.bindDeletionWorker(bound, id(21))).toThrow(/Worker/);
+    expect(() => f.store.bindDeletionWorker({ ...bound, observed: { ...bound.observed, deletion: { ...bound.observed.deletion!, deletionId: id(99) } } }, id(20))).toThrow(/identity/);
+    const finished = f.store.finishDeletion(bound);
+    expect(f.open().get(owner, id(3))).toMatchObject({ intent: null, definition: null, cleanup: { workerId: id(20), stop, localCompleted: true, targets: [] } });
+    for (const cleanup of [{ ...finished.cleanup, workerId: "invalid" }, { ...finished.cleanup, stop: null },
+      { ...finished.cleanup, stop: { ...stop, stopProof: { ...stop.stopProof, kind: "never_started" } } }]) {
+      f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify({ ...finished, cleanup }));
+      expect(() => f.store.get(owner, id(3))).toThrow();
+    }
+    f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(finished));
+  });
+
   it("rejects stale intent and replacement deletion identity without modifying progress",()=>{
     const f=fixture();const initial=f.store.observe(owner,bot(),1);
     f.store.prepare(owner,id(3),{homeDirectory:f.home,recoveryLimit:3});

@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { ApiError } from "../../../src/api/client.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
@@ -11,6 +13,9 @@ import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js"
 import type { BotDefinition, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import * as botProcess from "../../../src/commands/worker/bots/process.js";
 import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
+import * as deletionFiles from "../../../src/commands/worker/bots/delete-files.js";
+import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
+import type { BotDeletionStop } from "../../../src/commands/worker/bots/session-api.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const cleanups: (() => void)[] = [];
@@ -41,6 +46,37 @@ const fixture = (evidence: "retained" | "missing" = "retained") => {
   const input = { homeDirectory, packageDirectory: path.resolve(import.meta.dirname, "../../../"), workingDirectory: homeDirectory,
     serverUrl: owner.serverOrigin, ownerUserId: owner.ownerUserId, serverToken: "fixture-token", botId: id(3), bot, signal: new AbortController().signal };
   return { paths, stores, owner, bot, binding, input };
+};
+const stoppedProof = (record: BotRecord): BotDeletionStop => ({ protocol: "daynight.session.v1", sessionId: record.intent!.sessionId!,
+  testExecutionId: record.intent!.executionId, executionGeneration: record.intent!.executionGeneration,
+  controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.controllerInstanceId,
+  stopProof: { recordId: record.intent!.launchId, previousControllerInstanceId: record.intent!.controllerInstanceId, stoppedAt: "2026-11-23T00:00:00Z" } });
+
+const hostedCleanup = async (f: ReturnType<typeof fixture>) => {
+  const owner = { ...f.owner, workerId: id(20) }, paths = resolveBotPaths(f.paths.stateDirectory, id(3));
+  writeFileSync(f.paths.configFile, `workerId: ${owner.workerId}\n`);
+  const local = openLocalBotStores({ owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
+  try {
+    const record = local.store.get(f.owner, id(3))!, stop = stoppedProof(record);
+    const recovery = openBotRecoveryStore({ owner, stateDirectory: f.paths.stateDirectory, assertLocked: local.assertLocked });
+    const identity = { botRecoveryVersion: 1 as const, serviceOrigin: owner.serverOrigin, recoveryIdentity: recovery.ensureIdentity(record).recoveryIdentity };
+    const binding = { sessionId: stop.sessionId, testExecutionId: stop.testExecutionId, nativeSessionId: null };
+    recovery.prepare(record, { kind: "register", workerId: id(2), body: { ...identity, ...binding, operationId: id(90), botVersion: "2" } });
+    const receipt = { botRecoveryVersion: 1 as const, operationId: id(90), kind: "register" as const, workerId: id(2), hostingGeneration: "1", botVersion: "3",
+      ...binding, executionGeneration: stop.executionGeneration, controllerId: stop.controllerId, controllerInstanceId: stop.controllerInstanceId, grantExpiresAt: null, controllerTokenHash: null };
+    recovery.recordResult(record, id(90), { current: true, receipt }); recovery.finishOperation(record, id(90));
+    const token = `dncontroller_${Buffer.alloc(32, 1).toString("base64url")}`;
+    recovery.prepare(record, { kind: "takeover", workerId: owner.workerId, body: { ...identity, ...binding, operationId: id(91), expectedHostingGeneration: "1", controllerToken: token,
+      grant: { protocol: "daynight.session.v1", testExecutionId: stop.testExecutionId, controllerId: stop.controllerId, controllerInstanceId: stop.controllerInstanceId,
+        executionGeneration: stop.executionGeneration, kind: "reconnect", previousGeneration: null, stopProof: null } } });
+    recovery.recordResult(record, id(91), { current: true, receipt: { ...receipt, operationId: id(91), kind: "takeover", workerId: owner.workerId, hostingGeneration: "2",
+      grantExpiresAt: "2099-01-01T00:00:00Z", controllerTokenHash: createHash("sha256").update(token).digest("hex") } }); recovery.finishOperation(record, id(91));
+    mkdirSync(paths.codexRecoveryDirectory, { recursive: true, mode: 0o700 }); writeFileSync(path.join(paths.codexRecoveryDirectory, "private"), "private recovery data");
+    mkdirSync(path.dirname(record.intent!.journalPath), { recursive: true, mode: 0o700 }); writeFileSync(record.intent!.journalPath, "original stopped journal");
+    const targets = await deletionFiles.captureBotDeletionFiles(f.input.homeDirectory, record, local.executions.get(record), f.input.signal);
+    local.store.prepareDeletion(record, stop, targets);
+    return { owner, stop, paths, recoveryFile: path.join(paths.directory, "recovery.json") };
+  } finally { local.close(); }
 };
 
 test("missing records cannot become local stop evidence or create replacement storage", async () => {
@@ -74,11 +110,77 @@ test.each(["pending", "stale"])("retained %s hosting authority prevents local pr
         hostingGeneration: "1", botVersion: "3", ...f.binding, nativeSessionId: null, grantExpiresAt: null, controllerTokenHash: null } });
       recovery.finishOperation(record, id(90));
     }
+    const cleanup = local.store.prepareDeletion(record, stoppedProof(record), []);
+    local.store.bindDeletionWorker(cleanup, f.owner.workerId);
   } finally { local.close(); }
   const create = vi.spyOn(botProcess, "createBotProcess");
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(f.bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } })));
   await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "wrong_worker" });
   expect(create).not.toHaveBeenCalled(); expect(existsSync(f.paths.lockFile)).toBe(false);
+}, 15_000);
+
+test.each(["private removal", "completion transport"])("a takeover resumes its stamped stopped cleanup after %s failure removes hosting evidence", async failure => {
+  const f = fixture(), hosted = await hostedCleanup(f), remove = deletionFiles.removeBotDeletionFile;
+  const receipts: unknown[] = [];
+  let fail = true, current = f.bot;
+  const readSaved = () => {
+    const db = new Database(hosted.paths.databaseFile, { readonly: true });
+    try { return JSON.parse((db.prepare("SELECT record FROM bots").get() as { record: string }).record) as BotRecord; }
+    finally { db.close(); }
+  };
+  vi.spyOn(deletionFiles, "removeBotDeletionFile").mockImplementation(async (target, signal) => {
+    expect(readSaved().cleanup).toMatchObject({ workerId: hosted.owner.workerId, stop: hosted.stop });
+    if (failure === "private removal" && target.path === hosted.paths.codexRecoveryDirectory && fail) {
+      fail = false; expect(existsSync(hosted.recoveryFile)).toBe(false); throw new Error("controlled private removal failure");
+    }
+    await remove(target, signal);
+  });
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+    if (init.method === "POST") {
+      expect(url).toBe(`${f.owner.serverOrigin}/api/v1/me/workers/${hosted.owner.workerId}/bots/${id(3)}/deletion-complete`);
+      const receipt = JSON.parse(init.body as string); receipts.push(receipt);
+      expect(existsSync(hosted.recoveryFile)).toBe(false);
+      if (failure === "completion transport" && fail) { fail = false; throw new TypeError("controlled completion transport loss"); }
+      current = { ...current, version: "5", deletion: { ...current.deletion, workerCleanup: receipt.result, serverCleanup: { state: "completed", code: null } } };
+    }
+    return new Response(JSON.stringify(current), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
+  }));
+  const firstFailure = await recoverLocalBotDeletion(f.input).catch((cause: unknown) => cause);
+  if (failure === "completion transport") {
+    expect(firstFailure).toBeInstanceOf(ApiError);
+    expect(firstFailure).toMatchObject({ outcomeUnconfirmed: true, phase: "request" });
+    expect(firstFailure).not.toHaveProperty("code", "stop_unproven");
+  } else expect(firstFailure).toMatchObject({ code: "stop_unproven", receiptConfirmed: false });
+  expect(existsSync(hosted.recoveryFile)).toBe(false); expect(existsSync(f.paths.lockFile)).toBe(false);
+  expect(readSaved().cleanup).toMatchObject({ workerId: hosted.owner.workerId, stop: hosted.stop, localCompleted: failure === "completion transport" });
+  writeFileSync(f.paths.configFile, `workerId: ${id(21)}\n`);
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "wrong_worker" });
+  writeFileSync(f.paths.configFile, `workerId: ${hosted.owner.workerId}\n`);
+  await expect(recoverLocalBotDeletion(f.input)).resolves.toEqual({ receiptConfirmed: true });
+  expect(readSaved()).toMatchObject({ intent: null, definition: null, cleanup: { workerId: hosted.owner.workerId, stop: hosted.stop, localCompleted: true, targets: [] } });
+  expect(receipts).toHaveLength(failure === "completion transport" ? 2 : 1);
+  for (const receipt of receipts) expect(receipt).toEqual({ deletionId: id(8), stop: hosted.stop, result: { state: "completed", code: null } });
+  expect(existsSync(hosted.paths.codexRecoveryDirectory)).toBe(false); expect(existsSync(f.paths.lockFile)).toBe(false);
+}, 15_000);
+
+test.each(["unstamped", "foreign hosting", "corrupt hosting"])("a retained cleanup cannot override %s authority", async invalid => {
+  const f = fixture(), hosted = await hostedCleanup(f);
+  if (invalid !== "unstamped") {
+    const local = openLocalBotStores({ owner: hosted.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
+    try { local.store.bindDeletionWorker(local.store.get(f.owner, id(3))!, invalid === "foreign hosting" ? id(21) : hosted.owner.workerId); }
+    finally { local.close(); }
+  }
+  if (invalid === "unstamped") rmSync(hosted.recoveryFile);
+  else if (invalid === "corrupt hosting") writeFileSync(hosted.recoveryFile, "incomplete recovery identity");
+  else writeFileSync(f.paths.configFile, `workerId: ${id(21)}\n`);
+  const create = vi.spyOn(botProcess, "createBotProcess"), requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    requests.push(init.method!);
+    return new Response(JSON.stringify(f.bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
+  }));
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: invalid === "corrupt hosting" ? "stop_unproven" : "wrong_worker" });
+  expect(create).not.toHaveBeenCalled(); expect(requests).toEqual(["GET"]);
+  expect(existsSync(hosted.paths.codexRecoveryDirectory)).toBe(true); expect(existsSync(f.paths.lockFile)).toBe(false);
 });
 
 test.each(["pending", "completed", "private_cleanup_failed"])("recovery rejects an unrelated server state %s before acquiring a lock", async state => {

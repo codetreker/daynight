@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,8 @@ import { runServerCommand } from "../../../src/commands/server/runtime.js";
 import { runBotCommand } from "../../../src/commands/bot/commands.js";
 import type { BotRecoveryCommandDependencies } from "../../../src/commands/bot/recover.js";
 import type { Bot } from "../../../src/commands/bot/api.js";
+import { createBotSessionApi, type BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
+import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 
 const botId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", workerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", deletionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", otherId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const state = (completed = false): Bot => ({ id: botId, workerId, version: completed ? "9007199254740995" : "9007199254740993", deletion: {
@@ -19,14 +22,14 @@ const user = { id: botId, email: null, emailVerified: null, name: null, avatarUr
 const jsonResponse = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "Daynight-User-ID": botId } });
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
-const fixture = async (respond: (url: URL, init: RequestInit) => Response | Promise<Response>, local: Partial<BotRecoveryCommandDependencies> = {}, failOutput = false) => {
+const fixture = async (respond: (url: URL, init: RequestInit) => Response | Promise<Response>, local: Partial<BotRecoveryCommandDependencies> = {}, failOutput = false, serverUrl = "http://127.0.0.1:8787") => {
   vi.stubEnv("DN_CONFIG_DIR", undefined);
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-recover-command-tests");
   await mkdir(root, { recursive: true });
   const home = await mkdtemp(path.join(root, "home-"));
   cleanups.push(() => rm(home, { recursive: true, force: true }));
   await mkdir(path.join(home, ".daynight"));
-  await writeFile(path.join(home, ".daynight/config.yml"), "serverUrl: http://127.0.0.1:8787\nserverToken: SECRET-PAT\n");
+  await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: ${serverUrl}\nserverToken: SECRET-PAT\n`);
   let out = "", err = "";
   const requests: { url: URL; init: RequestInit }[] = [];
   const fetch: typeof globalThis.fetch = async (input, init) => { const url = new URL(String(input)); requests.push({ url, init: init! }); return respond(url, init!); };
@@ -114,6 +117,62 @@ describe("Bot local deletion recovery command", () => {
     const error = JSON.parse(result.err).error;
     expect(error).toMatchObject({ deletionId, outcomeUnconfirmed: true, reconcile: `daynight bot show ${botId} --json` });
     expect(error).not.toHaveProperty("confirmed"); expect(result.err).not.toContain("SECRET-PAT");
+  });
+  it.each(["disconnect", "truncated", "confirmed-output"])("propagates %s from the real completion client and HTTP socket to CLI output", async outcome => {
+    const received: { method: string; url: string; body: unknown }[] = [];
+    let accepted = false;
+    const server = createServer((request, response) => {
+      let text = "";
+      request.setEncoding("utf8"); request.on("data", chunk => { text += chunk; });
+      request.on("end", () => {
+        received.push({ method: request.method!, url: request.url!, body: text === "" ? null : JSON.parse(text) });
+        response.setHeader("Content-Type", "application/json"); response.setHeader("Daynight-User-ID", botId);
+        if (request.method === "GET" && request.url === "/api/v1/me") { response.end(JSON.stringify(user)); return; }
+        if (request.method === "GET" && request.url === `/api/v1/me/bots/${botId}`) { response.end(JSON.stringify(state(accepted))); return; }
+        if (request.method === "POST" && request.url === `/api/v1/me/workers/${workerId}/bots/${botId}/deletion-complete`) {
+          accepted = true;
+          if (outcome === "disconnect") { request.socket.destroy(); return; }
+          if (outcome === "truncated") {
+            response.setHeader("Content-Length", "4096"); response.setHeader("Connection", "close"); response.end('{"id":'); return;
+          }
+          response.end(JSON.stringify(state(true))); return;
+        }
+        response.statusCode = 404; response.end(JSON.stringify({ error: { code: "not_found", message: "Unexpected fixture route", requestId: "unexpected" } }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    cleanups.push(() => new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }));
+    const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing fixture address.");
+    const serverUrl = `http://127.0.0.1:${address.port}`;
+    const completion: BotDeletionReceipt = { deletionId, result: { state: "completed", code: null }, stop: {
+      protocol: "daynight.session.v1", sessionId: botId, testExecutionId: workerId, executionGeneration: "1", controllerId: deletionId, controllerInstanceId: otherId,
+      stopProof: { recordId: otherId, previousControllerInstanceId: otherId, stoppedAt: "2026-01-01T00:00:00Z" },
+    } };
+    const originalReceipt = structuredClone(completion);
+    const recoverLocal = vi.fn<NonNullable<BotRecoveryCommandDependencies["recoverLocal"]>>(async input => {
+      // Native stopping is outside this HTTP boundary; the retained cleanup
+      // receipt is the production client's unchanged submission input.
+      const owner = { serverOrigin: input.serverUrl, ownerUserId: input.ownerUserId, workerId };
+      const record: BotRecord = { owner, botId, observed: input.bot, definition: null, intent: null, observedAt: 1,
+        cleanup: { deletionId, requestedVersion: input.bot.deletion.requestedVersion, localCompleted: true, stop: completion.stop, targets: [] } };
+      const original = structuredClone(record);
+      try {
+        await createBotSessionApi({ owner, serverToken: input.serverToken }).completeDeletion(record, completion, input.signal);
+        return { receiptConfirmed: true };
+      } finally { expect(record).toEqual(original); expect(completion).toEqual(originalReceipt); }
+    });
+    const { run } = await fixture((url, init) => fetch(url, init), { recoverLocal }, outcome === "confirmed-output", serverUrl);
+    const result = await run(recoverArgs), error = JSON.parse(result.err).error;
+    expect(result.exit).toBe(1); expect(result.out).toBe(""); expect(recoverLocal).toHaveBeenCalledOnce();
+    expect(received.filter(request => request.method === "POST")).toEqual([{ method: "POST", url: `/api/v1/me/workers/${workerId}/bots/${botId}/deletion-complete`, body: originalReceipt }]);
+    expect(error).toMatchObject({ botId, deletionId, reconcile: `daynight bot show ${botId} --json`, outcomeUnconfirmed: outcome !== "confirmed-output" });
+    if (outcome === "confirmed-output") expect(error).toMatchObject({ confirmed: true, phase: "output" });
+    else {
+      expect(error).not.toHaveProperty("confirmed"); expect(error).not.toHaveProperty("reason", "stop_unproven");
+      expect(error.phase).toBe(outcome === "disconnect" ? "request" : "response");
+      expect(received.map(request => request.method)).toEqual(["GET", "GET", "POST"]);
+    }
+    expect(result.err).not.toContain("SECRET-PAT");
   });
   it("retains a confirmed receipt when the following ordinary Bot read fails", async () => {
     let reads = 0;

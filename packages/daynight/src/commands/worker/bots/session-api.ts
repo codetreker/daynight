@@ -60,14 +60,17 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       || intent.nativeSessionId !== null && snapshot.identity.nativeSessionId !== intent.nativeSessionId) throw new ProtocolError("Bot Session snapshot conflicts with the original execution.");
     return snapshot;
   };
-  const request = async (target: string, operation: Operation, body?: unknown): Promise<unknown> => {
+  const request = async (target: string, operation: Operation, body?: unknown, completion?: { dispatch(): void; response(status: number): void }): Promise<unknown> => {
     operation.check();
-    const response = await fetch(`${owner.serverOrigin}${target}`, {
+    const init: RequestInit = {
       method: body === undefined ? "GET" : "POST", redirect: "error",
       headers: { authorization: `Bearer ${token}`, accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.any([operation.signal, AbortSignal.timeout(operation.limits.requestMs)]),
-    });
+    };
+    if (completion !== undefined) { operation.check(); completion.dispatch(); }
+    const response = await fetch(`${owner.serverOrigin}${target}`, init);
+    completion?.response(response.status);
     try {
       if (response.headers.get("Daynight-User-ID") !== owner.ownerUserId) throw new ProtocolError("Bot lifecycle response principal does not match the Worker owner.");
       if (response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") throw new ProtocolError("Bot lifecycle response must be JSON.");
@@ -91,7 +94,9 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       catch { throw new ProtocolError("Bot lifecycle response contains invalid JSON or UTF-8."); }
       if (response.status !== 200) {
         const error = parseServerError(value);
-        throw new ApiError({ operation: "worker.bots.lifecycle" }, "response", { status: response.status, serverError: error, cause: new Error("Bot lifecycle request failed; observe the original identity before another write.") });
+        throw new ApiError({ operation: "worker.bots.lifecycle" }, "response", { status: response.status, serverError: error,
+          ...(completion === undefined ? {} : { outcomeUnconfirmed: response.status < 400 || response.status >= 500, confirmedRefusal: response.status >= 400 && response.status < 500 }),
+          cause: new Error("Bot lifecycle request failed; observe the original identity before another write.") });
       }
       return value;
     } finally { if (response.body !== null && !response.body.locked) await response.body.cancel(); }
@@ -157,11 +162,25 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       }
       // Private sources may already be gone. The durable receipt and deletion
       // identity remain sufficient for exact replay; do not read a deleted Session.
-      const result = parseBot(await request(`/api/v1/me/workers/${owner.workerId}/bots/${record.botId}/deletion-complete`, operation, receipt), original);
-      if (result.id !== record.botId || result.deletion === null || BigInt(result.version) < BigInt(bot.version)
-        || result.deletion.deletionId !== bot.deletion.deletionId || result.deletion.requestedVersion !== bot.deletion.requestedVersion
-        || !same(result.deletion.workerCleanup, receipt.result)) throw new ProtocolError("Bot deletion response does not confirm the original cleanup receipt.");
-      return result;
+      let dispatched = false, parsingResponse = false, status: number | undefined;
+      try {
+        const value = await request(`/api/v1/me/workers/${owner.workerId}/bots/${record.botId}/deletion-complete`, operation, receipt, {
+          dispatch: () => { dispatched = true; }, response: value => { status = value; },
+        });
+        parsingResponse = true;
+        const result = parseBot(value, original);
+        if (result.id !== record.botId || result.deletion === null || BigInt(result.version) < BigInt(bot.version)
+          || result.deletion.deletionId !== bot.deletion.deletionId || result.deletion.requestedVersion !== bot.deletion.requestedVersion
+          || !same(result.deletion.workerCleanup, receipt.result)) throw new ProtocolError("Bot deletion response does not confirm the original cleanup receipt.");
+        return result;
+      } catch (cause) {
+        if (!dispatched || cause instanceof ApiError) throw cause;
+        // Handoff can commit the receipt before transport or decoding fails.
+        // Only a validated matching response confirms the persisted result.
+        throw new ApiError({ operation: "worker.bots.deletion" }, parsingResponse || cause instanceof ProtocolError ? "protocol" : status === undefined ? "request" : "response", {
+          cause, outcomeUnconfirmed: true, ...(status === undefined ? {} : { status }),
+        });
+      }
     }),
     register: (record: BotRecord, signal: AbortSignal): Promise<{ bot: BotDefinition; snapshot: SessionSnapshot }> => run(signal, async operation => {
       const bot = active(record), intent = intentOf(record);

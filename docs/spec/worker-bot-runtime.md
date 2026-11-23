@@ -54,6 +54,8 @@ Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#li
 
 用户可先用 `daynight bot show <bot-id> --json` 核对，再在原执行机器、原 `DN_CONFIG_DIR` 和账号下停止 Worker，显式执行 `daynight bot recover <bot-id> --deletion-id <deletion-id> [--json]`。命令取得既有 Worker/Bot 锁，沿本地确认的承载身份、原执行和停止能力尽力补偿；完整停证及全部私有清理成功后才提交既有 completed 回执。执行行丢失但原 intent/ticket/journal 可核对时，可停止原 generation 并将真实停证留在原 journal；历史私有清理材料仍缺，因此保留失败，不重建 execution 或部分 cleanup 计划，不删除 ticket/journal，不提交 completed。重复补偿保留原停止时间，CLI hint 区分“原 generation 已停止”与“删除未完成”。证据彻底丢失时允许继续失败，不保证服务端完成；不新增服务端恢复协议或无证明结清能力，也不改变普通 Worker 流程。
 
+显式补偿须在核实承载身份、取得真实停证及完整清理计划后，先保存清理责任中的 Worker 身份，再删除任何私有文件。即使清理已移除 `recovery.json`，匹配本机 Worker、原 `deletionId/requestedVersion` 和停证的责任仍可用于剩余清理及回执；它不授予新的停止、启动或一般承载权限。原 Worker 保留既有身份准入；由其他 Worker 承载的旧责任若未保存 Worker 身份，仍须有现存可确认的承载证据，不得从原归属推定接管身份。完成回执从实际提交起区分结果未知与明确拒绝；响应丢失须报告 `outcomeUnconfirmed:true`，不能误报停证缺失或确定未提交，用户须先沿原 Bot GET 核对。
+
 首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。共享 Provider 历史不在清理范围内；新存储合同中的 Bot 专属原生副本属于其私有资料。不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
 
 ## 集成与验证边界

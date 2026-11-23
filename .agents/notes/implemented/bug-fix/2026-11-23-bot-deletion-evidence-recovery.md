@@ -16,7 +16,7 @@ The [Worker deletion path](../../../../docs/design/worker-bot-runtime.md) preser
 `failed/execution_evidence_missing` through the existing Bot observation and
 failure-receipt protocol. Automatic reconciliation keeps reading the original
 deletion but stops repeating destructive work and the same invalid receipt.
-There is no new server protocol, stored field or alternative completion state.
+There is no new server protocol or alternative completion state.
 
 `daynight bot recover` is an explicit operation on the original execution's
 machine. It acquires existing locks, checks the original deletion and local
@@ -27,6 +27,20 @@ command can stop that generation and retain its real journal proof; missing
 historical cleanup evidence still leaves deletion failed. It creates no
 replacement execution or partial cleanup plan. Ordinary Worker operation and
 automatic retries do not use this local compensation.
+
+Before removing any private files, explicit recovery saves the verified hosting
+Worker as optional `BotCleanup.workerId` alongside real stop proof and the
+complete cleanup plan. If cleanup removes `recovery.json`, a duty matching the
+local Worker, original deletion ID/version and stop proof permits remaining
+cleanup and its receipt. Pending, stale or foreign hosting records still refuse
+recovery. The duty grants no new stop, start or general hosting authority. The
+original Worker keeps its existing ownership admission; a replacement Worker
+handling an older duty without this identity still needs confirmed hosting evidence.
+
+The completion request distinguishes failures before submission, definite HTTP
+rejection and unknown outcomes after dispatch. A lost response preserves that
+uncertainty through CLI diagnostics; the caller reads the original Bot before
+another attempt, without treating transport failure as missing stop proof.
 
 The [website](../../../../docs/design/bot-management-web.md#删除协调) reads the
 existing Bot status for known deletions, shows the CLI instructions and preserves

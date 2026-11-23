@@ -20,9 +20,11 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 删除投影保留停止与精确清理所需的原责任，只有本地私有清理完成后才裁剪定义和执行资料。Task 表、maxConcurrent、收尾期限和容量计算不读取 Bot 执行行；保留的私有路径也不授予删除普通 cwd 或共享 native home 的权限。
 
-`bots/delete.ts` 每次推进先用既有 Bot GET 核对原 deletionId/requestedVersion。已持久观察到 `workerCleanup=failed/execution_evidence_missing` 时，自动推进只读对账；明确证据缺失或服务端确定拒绝的无效 null/never_started 回执通过原失败回执协议保存此状态，不增加 SQLite 字段或服务端资源。`stopForDeletion` 不把缺失执行行当作未提交，真实持久 not-submitted 或明确启动拒绝仍走原正常路径。
+`bots/delete.ts` 每次推进先用既有 Bot GET 核对原 deletionId/requestedVersion。已持久观察到 `workerCleanup=failed/execution_evidence_missing` 时，自动推进只读对账；明确证据缺失或服务端确定拒绝的无效 null/never_started 回执通过原失败回执协议保存此状态，不增加服务端资源。`stopForDeletion` 不把缺失执行行当作未提交，真实持久 not-submitted 或明确启动拒绝仍走原正常路径。
 
 `bots/deletion-local.ts` 为 `bot recover` 取得原 Worker/Bot 锁，重新读取普通 Bot 删除责任并核对本地原归属及已确认承载身份，再调用既有 `withDeletion` 和精确清理；新执行准入关闭。执行行缺失但原 intent、ticket、journal 有效时，显式补偿复用 Controller stop 与 `recordStoppedControllerGeneration`，Windows 仍要求真实 Job 停证。原 journal 保存该代停止事实并保留 stoppedAt；缺失历史资料不能支持完整私有清理，因此不补造 execution 行、cleanup 计划或完成回执。CLI 通过既有 `reason=evidence_missing` 和 hint 表达部分停止结果，`generationStopped` 仅是本机 Error 标记，不是协议或持久字段。自动调度和普通 Worker 不使用此补偿。证据仍不足时保持失败，服务端完成条件保持原协议。用法见[删除补偿手册](../../packages/daynight/src/commands/skill/skills/using-daynight/references/bot-deletion.md)，取舍见[证据丢失决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+
+既有 `BotCleanup` 仅新增可选 `workerId`：显式补偿核实 hosting 且已有真实非 `never_started` 停证和完整 cleanup 计划后，在任何 remove 前保存；既有计划可在相同条件下补记，完成清理仍保留且不得改绑。清理移除 `recovery.json` 后，续做须匹配本机 workerId、原 deletionId/requestedVersion 和停证，只继续原计划及回执；尚存 pending、stale 或其他 Worker 的 hosting 记录仍拒绝。process 的停止、启动和一般 hosting 准入保持原规则。旧责任缺少该字段时沿用 `hosting.ownsHosting`：原 owner.workerId 与当前 Worker 相同仍按既有规则准入；由其他 Worker 承载时须有现存可确认的 hosting，不能从 Bot 原归属推定接管身份。`completeDeletion` 在实际请求提交边界记录结果可能未知，保留提交前拒绝和明确 HTTP 拒绝的区别；提交后的响应丢失沿错误链传给 CLI 的 `outcomeUnconfirmed`，不包装为 `stop_unproven`。核对仍使用既有 Bot GET。
 
 ## 启动与授权
 
