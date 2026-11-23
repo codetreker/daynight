@@ -1,12 +1,16 @@
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, type ControllerLaunchTicket } from "../controller/launch-ticket.js";
 import { resolveControllerStateDirectory } from "../controller/paths.js";
+import type { ProcessProof } from "../controller/process-proof.js";
 import type { LifecycleIdentity, LifecycleResource } from "./lifecycle-store.js";
 
 const unavailable = (): never => { throw new Error("Original lifecycle Controller ticket location or identity is unavailable."); };
 
 /** Read only the ticket paired with the reservation's original journal and owner. */
-export const readLifecycleControllerTicket = async (homeDirectory: string, owner: LifecycleIdentity, resource: LifecycleResource): Promise<ControllerLaunchTicket> => {
+export const readLifecycleControllerLocation = async (homeDirectory: string, owner: LifecycleIdentity, resource: LifecycleResource): Promise<{
+  ticket: ControllerLaunchTicket; storageStateDirectory: string; journalFile: string;
+}> => {
   const identity = resource.identity;
   if (resource.ownerKind !== "controller" || typeof identity.launchId !== "string" || typeof identity.executionId !== "string"
     || typeof identity.journalFile !== "string" || !path.isAbsolute(identity.journalFile) || path.resolve(identity.journalFile) !== identity.journalFile) return unavailable();
@@ -28,5 +32,23 @@ export const readLifecycleControllerTicket = async (homeDirectory: string, owner
     if (ticket.testExecutionId !== identity.testExecutionId || ticket.ownerUserId !== owner.userId || identity.claimId !== undefined) return unavailable();
   } else if (ticket.claimId !== identity.claimId || ticket.projectId !== identity.projectId || ticket.taskId !== identity.taskId
     || ticket.worktreeId !== identity.worktreeId || ticket.workerId !== owner.workerId || ticket.userId !== owner.userId || identity.testExecutionId !== undefined) return unavailable();
-  return ticket;
+  return { ticket, storageStateDirectory: root, journalFile: identity.journalFile };
+};
+
+export const readLifecycleControllerTicket = async (homeDirectory: string, owner: LifecycleIdentity, resource: LifecycleResource): Promise<ControllerLaunchTicket> =>
+  (await readLifecycleControllerLocation(homeDirectory, owner, resource)).ticket;
+
+/** The original launch owner persisted this only after stopping its unreleased gate. */
+export const hasLifecycleUnreleasedControllerGateProof = (ticket: ControllerLaunchTicket, resource: LifecycleResource, process: ProcessProof): boolean => {
+  const saved = resource.stopProof;
+  return resource.ownerKind === "controller" && resource.identity.kind === "launch" && resource.stage === "stopped" && resource.saveState === "durable"
+    && ticket.lifecycleBinding !== undefined && saved !== null && typeof saved === "object" && !Array.isArray(saved)
+    && resource.resourceId === ticket.launchId && resource.operationId === ticket.launchId
+    && resource.instanceId === ticket.lifecycleBinding.instanceId && resource.instanceEpoch === ticket.lifecycleBinding.instanceEpoch
+    && resource.scopeGeneration === ticket.lifecycleBinding.scopeGeneration
+    && Object.keys(saved).sort().join() === "binding,boundaryEmpty,controllerInstanceId,gateReleased,kind,launchId,originalProcessProof,pid"
+    && saved.kind === "controller_unreleased_gate" && saved.launchId === ticket.launchId && saved.controllerInstanceId === ticket.controllerInstanceId
+    && saved.pid === process.pid && saved.gateReleased === false && saved.boundaryEmpty === true
+    && isDeepStrictEqual(saved.binding, ticket.lifecycleBinding) && isDeepStrictEqual(saved.originalProcessProof, process)
+    && isDeepStrictEqual(resource.processProof, process);
 };

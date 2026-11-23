@@ -14,51 +14,44 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// verifyArchiveV2Prefix reads only acknowledged block addresses. A first
-// unconfirmed object may exist after an interrupted write and is not required.
-func verifyArchiveV2Prefix(ctx context.Context, files backupStorageReader, namespace sessionarchive.Namespace, file store.StorageArchiveFileV2) error {
-	if file.AcceptedOffset < 0 || file.AcceptedOffset > file.ByteLength || (file.AcceptedOffset != file.ByteLength && file.AcceptedOffset%sessionarchive.BlockSize != 0) || len(file.PrefixProof) != sha256.Size {
-		return errors.New("invalid archive confirmed prefix")
+// observeArchiveV2Staging observes a stopped-writer backup's single staging file.
+// An incomplete trailing block is not recoverable; complete bytes must match
+// the immutable full-file identity. The observation never changes the backup.
+func observeArchiveV2Staging(ctx context.Context, files backupStorageReader, namespace sessionarchive.Namespace, file store.StorageArchiveFileV2) (offset int64, result error) {
+	reader, ok := files.(filestorage.ArchiveStagingReader)
+	if !ok {
+		return 0, errors.New("storage does not support isolated archive staging reads")
 	}
-	proof := sessionarchive.InitialPrefixProof()
-	for offset := int64(0); offset < file.AcceptedOffset; offset += sessionarchive.BlockSize {
-		length := min(sessionarchive.BlockSize, file.ByteLength-offset)
-		if offset+length > file.AcceptedOffset {
-			return errors.New("partial confirmed archive block")
-		}
-		path, err := namespace.BlockPath(file.FileID, offset)
-		if err != nil {
-			return err
-		}
-		object, err := files.Open(ctx, archiveBucket, path)
-		if err != nil {
-			return err
-		}
+	object, err := reader.OpenArchiveStaging(ctx, namespace, file.FileID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { result = archiveCleanupFailure(result, object.Body.Close()) }()
+	size := object.Info.Size
+	if size < 0 || size > file.ByteLength {
+		return 0, errors.New("archive staging length exceeds declared length")
+	}
+	if size == file.ByteLength {
 		h := sha256.New()
-		size, readErr := io.Copy(h, io.LimitReader(object.Body, length+1))
-		closeErr := object.Body.Close()
-		if err = archiveCleanupFailure(readErr, closeErr); err != nil {
-			return err
+		length, err := io.Copy(h, io.LimitReader(object.Body, file.ByteLength+1))
+		if err != nil {
+			return 0, err
 		}
-		if size != length {
-			return errors.New("archive block length mismatch")
+		if length != file.ByteLength || hex.EncodeToString(h.Sum(nil)) != file.SHA256 {
+			return 0, errors.New("archive staging integrity check failed")
 		}
-		var digest [sha256.Size]byte
-		copy(digest[:], h.Sum(nil))
-		proof = sessionarchive.AdvancePrefixProof(proof, uint64(offset), uint32(length), digest)
+		return size, nil
 	}
-	if !bytes.Equal(proof[:], file.PrefixProof) {
-		return errors.New("archive prefix proof mismatch")
-	}
-	return nil
+	return size - size%sessionarchive.BlockSize, nil
 }
 
-func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, namespace sessionarchive.Namespace) error {
+func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, namespace sessionarchive.Namespace, offsets *[]ArchiveRecoveryOffset) error {
 	byFile := make(map[string]store.StorageArchiveFileV2, len(inventory.ArchiveFilesV2))
 	for _, file := range inventory.ArchiveFilesV2 {
 		byFile[file.FileID] = file
@@ -77,7 +70,7 @@ func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, invent
 		if file.UploadVersion != 2 {
 			return errors.New("unsupported archive upload version")
 		}
-		if _, err := namespace.BlockPath(file.FileID, 0); err != nil {
+		if _, err := filestorage.ArchiveStagingPath(namespace, file.FileID); err != nil {
 			return err
 		}
 		digest, err := hex.DecodeString(file.SHA256)
@@ -99,8 +92,8 @@ func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, invent
 		} else if file.Purpose == "resource" {
 			limit = sp.MaxArchiveBlobBytes
 		}
-		if file.ByteLength > limit || (file.ByteLength == 0 && (file.Purpose != "resource" || file.SHA256 != archiveDigest(nil))) || file.AcceptedOffset < 0 || file.AcceptedOffset > file.ByteLength || len(file.PrefixProof) != sha256.Size {
-			return errors.New("invalid archive file bounds or proof")
+		if file.ByteLength > limit || (file.ByteLength == 0 && (file.Purpose != "resource" || file.SHA256 != archiveDigest(nil))) {
+			return errors.New("invalid archive file bounds")
 		}
 		if file.Path != expected {
 			return errors.New("archive file namespace mismatch")
@@ -159,9 +152,11 @@ func verifyArchiveV2Files(ctx context.Context, files backupStorageReader, invent
 			if file.StagingReleased || file.TimelineRevision < 1 || file.TimelineRevision > bundle.Revision || (file.Purpose != "resource" && file.TimelineRevision != bundle.Revision) || (file.Purpose == "timeline" && bundle.Phase != "sealed") || (file.Purpose == "history" && bundle.Phase != "settling") || (file.Purpose == "resource" && bundle.Phase != "settling" && bundle.Phase != "sealed" && bundle.Phase != "failed" && bundle.Phase != "committed" && bundle.Phase != "verified") {
 				return errors.New("invalid receiving archive phase")
 			}
-			if err := verifyArchiveV2Prefix(ctx, files, namespace, file); err != nil {
+			offset, err := observeArchiveV2Staging(ctx, files, namespace, file)
+			if err != nil {
 				return fmt.Errorf("archive file %s: %w", file.FileID, err)
 			}
+			*offsets = append(*offsets, ArchiveRecoveryOffset{SessionID: inventory.SessionID, FileID: file.FileID, Offset: offset})
 			continue
 		}
 		if file.State != "complete" || file.AcceptedOffset != file.ByteLength {

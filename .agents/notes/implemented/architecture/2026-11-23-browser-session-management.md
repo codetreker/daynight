@@ -27,6 +27,14 @@ by reading the target, not replaying the write. The [authentication design](../.
 owns the protocol and transaction details; the [activity decision](2026-11-23-browser-session-activity.md)
 owns renewal and its lock-after-time guarantees.
 
+The Web credential page presents the current login first and pages the others.
+It binds revocation to the observed caller, checks the caller again before
+publishing results, and retains an uncertain target for read-only recovery.
+The existing account logout handles the current browser. Live Session views
+report low-frequency activity only while visible, connected and otherwise idle;
+ordinary authenticated reads defer that report. The [Web design](../../../../docs/design/daynight-web.md#浏览器登录)
+owns the interface lifecycle.
+
 ## Alternatives
 
 **Store the raw user agent or network address.** These fields expose more client

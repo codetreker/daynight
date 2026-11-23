@@ -570,15 +570,15 @@ describe("worker runtime configuration reporting", () => {
 
   it("hot-loads platform preference into the coordinator in both directions", async () => {
     const f = await fixture(), running = start(f);
-    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === false && configuration.repositories.length === 1)).toBe(true));
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.platformTaskMode === "all" && configuration.repositories.length === 1)).toBe(true));
     update.mockClear();
     target = { ...target, revision: "2", value: { ...target.value, preferPlatformSpecificTasks: true } };
     await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === true && configuration.repositories.length === 1)).toBe(true));
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.platformTaskMode === "prefer" && configuration.repositories.length === 1)).toBe(true));
     update.mockClear();
     target = { ...target, revision: "3", value: { ...target.value, preferPlatformSpecificTasks: false } };
     await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === false && configuration.repositories.length === 1)).toBe(true));
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.platformTaskMode === "all" && configuration.repositories.length === 1)).toBe(true));
     f.signal.abort(); await running;
   });
   it("reconciles the cloud target after a locally oversized report", async () => {

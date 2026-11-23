@@ -144,3 +144,37 @@ func archiveFileRevision(value int64) int64 {
 	}
 	return value
 }
+
+var _ store.SessionArchiveStagingDAO = (*DAO)(nil)
+
+func (tx *DAO) ArchiveStagingRecord(ctx context.Context, session, id string) (store.ArchiveStagingRecord, error) {
+	v := store.ArchiveStagingRecord{SessionID: session, FileID: id}
+	err := tx.tx.QueryRow(ctx, `SELECT purpose,sha256,byte_length,state,object_path,resource,timeline_revision,staging_released,accepted_offset,coalesce(successor_file_id::text,''),terminal_error FROM session_archive_files WHERE session_id=$1 AND file_id=$2 AND upload_version=2 FOR UPDATE`, session, id).Scan(&v.Purpose, &v.SHA256, &v.ByteLength, &v.State, &v.Path, &v.Resource, &v.TimelineRevision, &v.StagingReleased, &v.TerminalOffset, &v.SuccessorFileID, &v.TerminalError)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return v, model.ErrNotFound
+	}
+	return v, err
+}
+
+func (tx *DAO) InsertArchiveStaging(ctx context.Context, v store.ArchiveStagingRecord) (bool, error) {
+	result, err := tx.tx.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,upload_version) VALUES($1,$2,$3,$4,$5,0,'receiving',$6,$7,$8,false,2) ON CONFLICT(session_id,file_id) DO NOTHING`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.Path, archiveFileResource(v.Resource), v.TimelineRevision)
+	return err == nil && result.RowsAffected() == 1, err
+}
+
+func (tx *DAO) FinishArchiveStaging(ctx context.Context, v store.ArchiveStagingRecord, state string, offset int64, terminal json.RawMessage) (bool, error) {
+	if state != "complete" && state != "failed" {
+		return false, errors.New("invalid archive terminal state")
+	}
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET state=$9,accepted_offset=$10,terminal_error=$11 WHERE session_id=$1 AND file_id=$2 AND upload_version=2 AND state='receiving' AND NOT staging_released AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND object_path=$6 AND resource=$7 AND timeline_revision=$8`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.Path, archiveFileResource(v.Resource), v.TimelineRevision, state, offset, terminal)
+	return err == nil && result.RowsAffected() == 1, err
+}
+
+func (tx *DAO) SetArchiveStagingSuccessor(ctx context.Context, v store.ArchiveStagingRecord, successor string) (bool, error) {
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET successor_file_id=$9::uuid WHERE session_id=$1 AND file_id=$2 AND upload_version=2 AND state='failed' AND successor_file_id IS NULL AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND object_path=$6 AND resource=$7 AND timeline_revision=$8`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.Path, archiveFileResource(v.Resource), v.TimelineRevision, successor)
+	return err == nil && result.RowsAffected() == 1, err
+}
+
+func (tx *DAO) ReleaseArchiveStaging(ctx context.Context, v store.ArchiveStagingRecord) (bool, error) {
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET staging_released=true WHERE session_id=$1 AND file_id=$2 AND upload_version=2 AND state IN ('complete','failed') AND NOT staging_released AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND object_path=$6 AND resource=$7 AND timeline_revision=$8`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.Path, archiveFileResource(v.Resource), v.TimelineRevision)
+	return err == nil && result.RowsAffected() == 1, err
+}

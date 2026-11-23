@@ -7,11 +7,11 @@ import { openSqliteDatabase } from "../../../platform/sqlite-access.js";
 import { inspectSqlite } from "../../../platform/sqlite-format.js";
 import { sqliteFilename } from "../../../platform/sqlite-filename.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath, parseLaunchTicket, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
-import { readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readCompatibleControllerSnapshot, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import { acquireControllerStoragePermit, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { openTimelineStore, type TimelinePageQuery } from "../../controller/content/timeline-store.js";
-import { controllerJournalFormat } from "../../controller/journal-format.js";
+import { inspectReadCompatibleControllerJournal } from "../../controller/journal-format.js";
 import { preservesControllerProcessProof, preservesNativeProcessPrefix } from "../backends/orchestration.js";
 import { workerStoreFormat } from "../store-format.js";
 import { openBotStore } from "./store.js";
@@ -154,7 +154,7 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
         assertMigrationPhysicalPath(path.dirname(intent.journalPath), "directory");
         controllerPermit = acquireControllerStoragePermit(intent.journalPath, Date.now() + 10_000, { fileMustExist: true });
         if (ticket === null) throw new Error("Bot migration journal has no original launch ticket.");
-        snapshot = readCurrentControllerSnapshot(intent.journalPath, ticket);
+        snapshot = readCompatibleControllerSnapshot(intent.journalPath, ticket);
         validateBotExecutionSnapshot(record, snapshot);
       }
       if (execution !== null && execution.launchSubmission !== "not-submitted") {
@@ -164,7 +164,7 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
           || !preservesNativeProcessPrefix(execution.snapshot?.nativeProcesses ?? [], snapshot.nativeProcesses)
           || execution.snapshot?.nativeSessionId != null && snapshot.nativeSessionId !== execution.snapshot.nativeSessionId) throw new Error("Bot migration requires complete original process stop evidence.");
         if (options.confirmStopped !== undefined) await options.confirmStopped(ticket, snapshot, signal);
-        else if (process.platform === "win32") readProvenWindowsStoppedControllerGeneration(intent.journalPath, ticket);
+        else if (process.platform === "win32") validateWindowsControllerStopProof(snapshot, ticket, controllerPayloadHash(ticket));
         else if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses, Date.now() + 10_000)) throw new Error("Bot original process tree is not proven stopped.");
       } else if (snapshot !== null || execution?.controllerProcess != null || execution?.snapshot != null || execution === null && ticket !== null || intent.nativeSessionId !== null || intent.executionGeneration !== "1") {
         throw new Error("Bot migration cannot infer an unsubmitted execution from incomplete process evidence.");
@@ -247,7 +247,7 @@ export const readMigratedBotRecoveryBinding = (options: Target): BotRecoveryBind
     return { sessionId: intent.sessionId, testExecutionId: intent.executionId, nativeSessionId: null };
   }
   if (ticket === null || !manifest.files.some(file => file.destination === manifest.journal && file.source === intent.journalPath && file.kind === "sqlite")) throw new Error("Migrated Bot journal has no verified original ticket or copy mapping.");
-  const snapshot = readCurrentControllerSnapshot(migrationDestination(options.stateDirectory, options.botId, manifest.journal), ticket);
+  const snapshot = readCompatibleControllerSnapshot(migrationDestination(options.stateDirectory, options.botId, manifest.journal), ticket);
   validateBotExecutionSnapshot(record, snapshot);
   if (execution === null || execution.launchSubmission === "not-submitted" || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped
     || snapshot.stoppedAt === null || snapshot.controllerProcess === null || execution.controllerProcess === null
@@ -266,11 +266,11 @@ export const readMigratedBotHistory = (options: Target & { query?: TimelinePageQ
   const file = migrationDestination(options.stateDirectory, options.botId, manifest.journal);
   const ticket = parseLaunchTicket(JSON.parse(readFileSync(migrationDestination(options.stateDirectory, options.botId, manifest.ticket), "utf8")));
   verifyTicket(manifest.original.record, ticket);
-  const snapshot = readCurrentControllerSnapshot(file, ticket);
+  const snapshot = readCompatibleControllerSnapshot(file, ticket);
   const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true });
   try {
     const entries = db.transaction(() => {
-      if (inspectSqlite(db, controllerJournalFormat).kind !== "current") throw new Error("Migrated Bot journal is not a readable current format.");
+      inspectReadCompatibleControllerJournal(db);
       return openTimelineStore(db, { assertWrite: () => { throw new Error("Migrated Bot history is read-only."); } }).page(options.query ?? { direction: "tail", pivot: null, limit: 50 });
     }).deferred();
     return { manifest, snapshot, entries };

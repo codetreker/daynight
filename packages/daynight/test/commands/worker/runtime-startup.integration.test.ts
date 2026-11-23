@@ -240,7 +240,7 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it("prepares a fresh management Git manager before removing a retained retired Web worktree", async () => {
+  it.each(["missing", "incomplete"] as const)("prepares a fresh management Git manager before removing a retained retired %s Web worktree", async webState => {
     const f = await fixture(true, false);
     if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
@@ -259,17 +259,24 @@ describe("worker cloud-first startup", () => {
     run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
     createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
     f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
-    const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
-    const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
-    web.bindWorktree(record, binding, Date.now()); web.close();
+    if (webState === "incomplete") {
+      const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+      const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+      web.bindWorktree(record, binding, Date.now()); web.close();
+    }
     const successorPath = path.join(project.localPath, ".worktrees", "daynight", uuid(75));
     run(["worktree", "add", "--force", successorPath, binding.branch]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, projectId: owner.projectId, taskId: owner.taskId, claimId: uuid(76), worktreeId: uuid(75), directoryName: uuid(75) });
     const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
     const saved = openLifecycleStore({ file, identity, allowCreate: true });
     saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" }); saved.close();
     mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
-    mocks.coordinator.mockImplementation(createWorkerCoordinator);
+    const messages: string[] = [];
+    mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => createWorkerCoordinator({ ...settings, emit: event => {
+      settings.emit(event);
+      if (event.error !== undefined) messages.push(`${event.message}: ${event.error instanceof Error ? event.error.stack : String(event.error)}`);
+    } }));
     mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
@@ -287,7 +294,6 @@ describe("worker cloud-first startup", () => {
       intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
     });
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
-    const messages: string[] = [];
     const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
     try {
       await vi.waitFor(() => expect(f.store!.getTask(owner)?.status, messages.join("; ")).toBe("done"), { timeout: 15000 });
@@ -1483,7 +1489,7 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(12);
+            expect(saved.schemaVersion).toBe(13);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
             if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
@@ -1534,7 +1540,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(12);
+          expect(installed.schemaVersion).toBe(13);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThanOrEqual(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,

@@ -2518,15 +2518,16 @@ not applied to it. A running disconnected Worker retains successful values;
 restart checks the cloud before normal scheduling. Task inventory or backend
 preparation failures do not disable configuration exchange.
 
-`preferPlatformSpecificTasks` defaults to false. Enable it separately for selected
-Workers in My Workers; local YAML supplies it only for the first cloud import.
-When enabled, new acquisition first scans all selected, eligible Projects for
-tasks explicitly requiring the actual host platform, then considers unrestricted
-tasks. Each category retains its own Project rotation and creation-time/ID order
-within a Project, across every candidate page. Preferred scans and claims do not
-advance the unrestricted category's rotation. Applied changes affect later acquisition;
-existing claims and pending startup retain their current lifecycle. A confirmed
-false application value means disabled; null means no confirmed application.
+Each Worker applies its cloud `platformTaskMode` to new acquisition. `all` scans
+compatible tasks in their existing order; `prefer` scans all eligible Projects
+for tasks explicitly requiring the host platform before unrestricted tasks;
+`only` scans platform-specific tasks and keeps polling when none are available.
+Each category retains its own Project rotation and creation-time/ID order across
+candidate pages. Changes affect later acquisition; existing claims retain their
+lifecycle. The local YAML boolean `preferPlatformSpecificTasks` supplies only
+the first cloud import (`false` maps to `all`, `true` to `prefer`). Older services
+retain those two modes. A saved target is not evidence of application; the
+Worker reports its actual persisted application result.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
@@ -2769,21 +2770,28 @@ tasks does not establish that local capacity is available.
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins their original Task writers. It sends no cleanup
 prompt and waits for no agent cleanup turn or retry backoff. A claim confirmed
-absent from current ownership, with usable Web execution state, enters the same
+absent from current ownership enters the same
 immediate terminal cleanup used by polling: stop the original processes, remove
 its worktree and settle its local responsibility. Claims still owned by this
-Worker, unknown ownership and insufficient Web state retain their existing
+Worker and unknown ownership retain their existing
 stop and preservation rules. Before the first poll and in management-only mode,
 bounded current Task reads classify original claims after the same remote client
 verifies the Worker account. Candidates include original pending claim
 reservations; each Task awaits its own reconciliation before classifying ownership
 or stopping, without making independent Tasks await that request. Matching
 Controller lifecycle checks follow the Task stop attempt and retain unresolved
-Task records. After original native stopping, management-only terminal file cleanup
+Task records. Local lookup preserves separate launch attempts within one generation
+and selects the actual journal ticket by its exact hash. An unresolved launch
+reservation without process proof retains responsibility. Historical Windows
+boundaries require their original full stop receipt or independently verifiable
+original native boundary; a newer generation or missing Job name cannot replace
+lost evidence. After original native stopping, management-only terminal file cleanup
 checks that the retained repository directory exists, validates its repository and
 worktree format, and prepares the current Git manager before inspecting or removing
-the original worktree. A missing directory does not trigger a clone; format
-preparation does not query Session registration or start business execution. An
+the original worktree. A pending claim with complete empty native inventory, no
+known worktree or cleanup owner, and an absent original repository can settle
+without Git preparation. A known owner still requires its original Git binding
+to be checked. A missing directory does not trigger a clone; format preparation does not query Session registration or start business execution. An
 existing on-disk format does not prepare a fresh manager. Preparation failures
 retain that Task's visible, retryable responsibility while independent stopping
 continues; they do not establish recovery readiness. A
@@ -3008,7 +3016,7 @@ pause. It is separate from `task.properties.blocked`, which controls automatic
 input as described above.
 
 Normal Web terminal cleanup keeps its original cleanup operation identity and
-deadline. For usable Web execution state, successful current-ownership
+deadline. Successful current-ownership
 observation that the original claim has ended selects immediate stopping, both
 during polling and exit. Current or historical Session registration and a
 successor Session do not authorize or gate this decision. Every attempt reads
@@ -3020,7 +3028,14 @@ cleanup target has also been cleared. A recorded done status never suppresses
 these checks. Native stop and backend closure precede
 safe worktree removal; archive success is maintained separately. Shutdown
 preserves claims, worktrees and native history for still-owned or unknown
-execution; insufficient local Web state keeps its existing failure handling.
+execution. Missing or incomplete Web state is resolved from the original Worker's
+local Controller resources, launch tickets and matching journals. Every matching
+execution generation is checked against its original native boundary; successor
+and unrelated resources remain independent. A complete local inventory proving
+no remaining resources settles old pending responsibility without inventing a
+never-started execution. Actual lookup, stop and deletion failures retain the
+original retry owner. Retired cleanup sends no current or historical Session
+query; active startup and recovery keep their existing checks.
 The [session design](../../docs/design/task-session-protocol.md) owns stopping,
 recovery and relay details. Web terminal cleanup retains its original deadline
 and retry policy in the independent schedule, without resource-completion flags.

@@ -13,7 +13,7 @@ func TestLegacyArchiveDAOCannotChangeNewUpload(t *testing.T) {
 	_, id := prepareArchiveSession(t, db)
 	ctx := t.Context()
 	file := store.ArchiveBundleFile{SessionID: id, FileID: uuid.NewString(), Purpose: "history", SHA256: archiveHashOf("original"), ByteLength: 8, AcceptedOffset: 4, State: "receiving", Path: "history/original", TimelineRevision: 1}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,upload_version,prefix_proof) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2,decode(repeat('01',32),'hex'))`, id, file.FileID, file.Purpose, file.SHA256, file.ByteLength, file.AcceptedOffset, file.State, file.Path); err != nil {
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path,upload_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2)`, id, file.FileID, file.Purpose, file.SHA256, file.ByteLength, file.AcceptedOffset, file.State, file.Path); err != nil {
 		t.Fatal(err)
 	}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
@@ -36,8 +36,7 @@ func TestLegacyArchiveDAOCannotChangeNewUpload(t *testing.T) {
 	})
 	var offset int64
 	var state string
-	var proof []byte
-	if err := db.Pool.QueryRow(ctx, `SELECT accepted_offset,state,prefix_proof FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, id, file.FileID).Scan(&offset, &state, &proof); err != nil || offset != 4 || state != "receiving" || len(proof) != 32 {
-		t.Fatalf("v2 state changed: offset=%d state=%s proof=%x err=%v", offset, state, proof, err)
+	if err := db.Pool.QueryRow(ctx, `SELECT accepted_offset,state FROM session_archive_files WHERE session_id=$1 AND file_id=$2`, id, file.FileID).Scan(&offset, &state); err != nil || offset != 4 || state != "receiving" {
+		t.Fatalf("v2 state changed: offset=%d state=%s err=%v", offset, state, err)
 	}
 }
