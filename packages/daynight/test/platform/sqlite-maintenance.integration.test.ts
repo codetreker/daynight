@@ -17,7 +17,12 @@ describe("SQLite maintenance ownership", () => {
     expect(JSON.parse(readFileSync(paths.lockFile, "utf8"))).toMatchObject({ owner: permit.owner, pid: process.pid });
     permit.release(); permit.release(); expect(existsSync(paths.lockFile)).toBe(false);
   });
-  it.each([JSON.stringify({ owner: "live", pid: process.pid, startedAt: new Date().toISOString() }), JSON.stringify({ owner: "dead", pid: 2147483647, startedAt: "2000-01-01T00:00:00Z" }), "bad JSON", ""])("preserves any existing owner without process probing: %s", value => {
+  it.each([
+    { label: "live owner", value: JSON.stringify({ owner: "live", pid: process.pid, startedAt: new Date().toISOString() }) },
+    { label: "dead owner", value: JSON.stringify({ owner: "dead", pid: 2147483647, startedAt: "2000-01-01T00:00:00Z" }) },
+    { label: "invalid JSON", value: "bad JSON" },
+    { label: "empty record", value: "" },
+  ])("preserves any existing owner without process probing: $label", ({ value }) => {
     const paths = fixture(); writeFileSync(paths.lockFile, value); const probe = vi.spyOn(process, "kill");
     expect(() => acquireMaintenanceLock(paths)).toThrow("existing instance lock"); expect(readFileSync(paths.lockFile, "utf8")).toBe(value); expect(probe).not.toHaveBeenCalled();
   });
