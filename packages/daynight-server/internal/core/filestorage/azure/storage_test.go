@@ -361,9 +361,9 @@ func TestReadRetryKeepsOriginalETag(t *testing.T) {
 }
 
 func TestLostWriteResponseIsUnknown(t *testing.T) {
-	requests := 0
+	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		_, _ = io.Copy(io.Discard, r.Body)
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
@@ -382,8 +382,9 @@ func TestLostWriteResponseIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = s.Put(t.Context(), "session-archives", "result", strings.NewReader("complete"))
-	if filestorage.PublicationOutcome(err) != filestorage.PublicationUnknown || requests != 1 {
-		t.Fatalf("outcome %s, requests %d: %v", filestorage.PublicationOutcome(err), requests, err)
+	gotRequests := requests.Load()
+	if filestorage.PublicationOutcome(err) != filestorage.PublicationUnknown || gotRequests != 1 {
+		t.Fatalf("outcome %s, requests %d: %v", filestorage.PublicationOutcome(err), gotRequests, err)
 	}
 }
 
