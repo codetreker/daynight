@@ -1,4 +1,4 @@
--- Schema snapshot version: 123
+-- Schema snapshot version: 124
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1138,20 +1138,6 @@ CREATE TABLE "task_sessions" (
     CONSTRAINT "task_sessions_history_content_policy_check" CHECK (("history_content_policy" = ANY (ARRAY['legacy'::"text", 'task_body'::"text"])))
 );
 
-CREATE TABLE "task_steps" (
-    "task_id" "uuid" NOT NULL,
-    "id" "text" NOT NULL COLLATE "pg_catalog"."C",
-    "position" bigint NOT NULL,
-    "title" "text" NOT NULL,
-    "description" "text" NOT NULL,
-    "status" "text" NOT NULL,
-    "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL,
-    CONSTRAINT "task_steps_id_check" CHECK (("id" ~ '^[0-9a-f]{8}$'::"text")),
-    CONSTRAINT "task_steps_position_check" CHECK (("position" >= 0)),
-    CONSTRAINT "task_steps_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'skipped'::"text"])))
-);
-
 CREATE TABLE "task_tags" (
     "project_id" "uuid" NOT NULL,
     "task_id" "uuid" NOT NULL,
@@ -2066,12 +2052,6 @@ ALTER TABLE ONLY "task_sessions"
 ALTER TABLE ONLY "task_sessions"
     ADD CONSTRAINT "task_sessions_project_id_task_id_claim_id_key" UNIQUE ("project_id", "task_id", "claim_id");
 
-ALTER TABLE ONLY "task_steps"
-    ADD CONSTRAINT "task_steps_pkey" PRIMARY KEY ("task_id", "id");
-
-ALTER TABLE ONLY "task_steps"
-    ADD CONSTRAINT "task_steps_task_id_position_key" UNIQUE ("task_id", "position") DEFERRABLE INITIALLY DEFERRED;
-
 ALTER TABLE ONLY "task_tags"
     ADD CONSTRAINT "task_tags_pkey" PRIMARY KEY ("project_id", "task_id", "tag_id");
 
@@ -2323,11 +2303,11 @@ CREATE INDEX "session_operations_terminal_pending" ON "session_operations" USING
 
 CREATE INDEX "session_resource_leases_owner" ON "session_resource_leases" USING "btree" ("owner_id", "kind");
 
-CREATE INDEX "sessions_user_created_id" ON "sessions" USING "btree" ("user_id", "created_at" DESC, "id" DESC);
-
 CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 
 CREATE UNIQUE INDEX "sessions_preview_token_hash" ON "sessions" USING "btree" ("preview_token_hash") WHERE ("preview_token_hash" IS NOT NULL);
+
+CREATE INDEX "sessions_user_created_id" ON "sessions" USING "btree" ("user_id", "created_at" DESC, "id" DESC);
 
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
 

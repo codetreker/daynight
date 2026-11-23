@@ -292,7 +292,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"task_dependencies",
 		"task_properties",
 		"task_sessions",
-		"task_steps",
 		"task_tags",
 		"task_thread_messages",
 		"task_threads",

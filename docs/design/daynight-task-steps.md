@@ -1,12 +1,12 @@
 # Task Steps 架构设计
 
-状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，Steps 应用服务、专用领域逻辑、codec 和输入策略已移除；Steps 存储合同、专用模型和 DAO 已移除，旧表仍保留。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
+状态：REST、MCP、CLI 和 Web 的 Steps 入口已退役，Steps 应用服务、专用领域逻辑、codec 和输入策略已移除；Steps 存储合同、专用模型和 DAO 已移除，迁移 124 删除旧表及数据。[资源要求](../spec/daynight-task-steps.md)拥有当前退役合同。
 
 ## 目标与边界
 
 公开入口不再提供父 Task 拥有的独立有序 Step 资源。REST 的集合、单项、status 和 position 不注册 handler、DTO 或专用 scope/CORS 路由。旧请求由既有未知 API 路径处理，不调用 Steps 用例，不回落 SPA，也不 touch 父 Task 或产生事件。普通 Task、Thread 和附件沿用各自路由及准入。
 
-入口退役不删除存储数据、不更改凭据，也不替代 Task 的整体状态、依赖、Worker 归属及 Session 生命周期。任务材料承载实施顺序和正式成果，Session 承载执行过程，PR 承载 review 迭代；普通 Task 投影不内嵌 Steps。
+迁移删除旧 Steps 数据，不更改父 Task、材料或凭据，也不替代 Task 的整体状态、依赖、Worker 归属及 Session 生命周期。任务材料承载实施顺序和正式成果，Session 承载执行过程，PR 承载 review 迭代；普通 Task 投影不内嵌 Steps。
 
 ## 职责与内部数据流
 
@@ -21,9 +21,9 @@
 
 ## 存储选择
 
-迁移 `030_task_steps.sql` 创建独立 `task_steps` 行及 Task 内位置唯一约束，历史文件和 checksum 保持。独立行曾支持目标文字局部更新及排序区间写入，避免把完整集合塞入 Task JSON 或借用描述、Session todo。现有表不随入口退役迁移、清空或改写。
+迁移 `030_task_steps.sql` 创建独立 `task_steps` 行及 Task 内位置唯一约束，历史文件和 checksum 保持。独立行曾支持目标文字局部更新及排序区间写入，避免把完整集合塞入 Task JSON 或借用描述、Session todo。迁移 124 在独立事务中删除旧表及全部记录，不修改父 Task 或正式材料。
 
-旧行以 `(task_id,id)` 定位，Task 软删除保留现存行。现有 schema 保留原约束，删除表由独立迁移处理。
+旧行以 `(task_id,id)` 定位，Task 软删除曾保留这些行；删表也包括这些记录。历史迁移仍保留原约束和 checksum。
 
 ## 应用装配与存储边界
 
@@ -61,9 +61,9 @@ Web 不展示 Steps 集合。旧 `tab=steps` 地址和已保存的该选项按�
 
 ## 凭据、迁移与部署
 
-PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。旧表的数据清理由独立迁移处理。
+PAT 和 MCP 的生产目录排除 `step:read`、`step:write`，目录 revision 随可选项及默认值变化。规范化仍认识历史 ID，使已存凭据及已批准未兑换授权码保留原合同；编辑可保留或移除已存旧值，但不能重新添加。混合凭据继续使用其他原有授权，旧值不授予新的 Task scope。迁移 124 删除旧表和数据，不产生逐条事件或导出。
 
-服务迁移仍严格验证顺序和 checksum；入口退役不增加数据迁移，也不证明生产制品已部署。生产发布、数据库清理和旧进程停机遵循各自的授权及验收要求。原始存储与协议取舍见[REST 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)及其前置记录。
+服务迁移严格验证顺序和 checksum。上线前停止并排空所有旧服务及后台工作，迁移锁无法阻止旧进程访问表。失败事务回滚表与 ledger；提交后旧二进制不认识新 ledger，须使用兼容制品向前修复。生产部署仍需独立授权。原始存储与协议取舍见[REST 退役决策](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)及其前置记录。
 
 ## 验证与组件依赖
 

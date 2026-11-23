@@ -15,7 +15,7 @@ Remove Steps reader and writer methods, projections, model and PostgreSQL SQL.
 Keep `TaskHeader`, `ReadTaskHeader`, `TouchTask`, shared errors and ordinary Task
 synchronization. Replace Step fixtures in shared transaction tests with ordinary
 Task operations while preserving their commit, cancellation and rollback proofs.
-The current schema, migration ledger and historical migration remain unchanged.
+At that stage the schema, migration ledger and historical migration remained unchanged. The subsequent [data retirement](2026-11-23-drop-task-steps-data.md) removes the table.
 
 This follows the [application retirement](2026-11-23-retire-task-steps-application.md).
 The [requirements](../../../../docs/spec/daynight-task-steps.md) and
@@ -31,7 +31,6 @@ separate upgrade, rollback and old-process drain needed for data removal.
 
 ## Consequences
 
-Production no longer reads or writes Steps rows. Existing data and historical
-schema remain until a separate migration; this change does not establish a
-production deployment or delete data. Ordinary Task operations retain their
+Production no longer reads or writes Steps rows. The subsequent data retirement removes existing data; the historical schema and
+checksum remain. Neither code change establishes a production deployment. Ordinary Task operations retain their
 revision, synchronization and transaction guarantees.

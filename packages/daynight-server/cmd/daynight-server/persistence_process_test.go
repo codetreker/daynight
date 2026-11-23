@@ -466,17 +466,12 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	}
 	checkRetiredSteps := func(parent api.Task) {
 		t.Helper()
-		countSteps := func() int {
-			t.Helper()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			var count int
-			if err := admin.QueryRow(ctx, "SELECT count(*) FROM task_steps WHERE task_id=$1", parent.ID).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			return count
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var absent bool
+		if err := admin.QueryRow(ctx, "SELECT to_regclass('task_steps') IS NULL").Scan(&absent); err != nil || !absent {
+			t.Fatalf("retired Steps table remains: absent=%t error=%v", absent, err)
 		}
-		before := countSteps()
 		base := projectPath + "/tasks/" + parent.ID + "/steps"
 		for _, suffix := range []string{"", "/abcdef01", "/abcdef01/status", "/abcdef01/position"} {
 			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodPut} {
@@ -525,9 +520,6 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 					t.Fatalf("retired preflight %s %s: status=%d read=%v close=%v", method, req.URL.Path, response.StatusCode, readErr, closeErr)
 				}
 			}
-		}
-		if after := countSteps(); after != before {
-			t.Fatalf("retired requests changed Step rows: %d -> %d", before, after)
 		}
 		if actual := readTask(parent.ID); !reflect.DeepEqual(actual, parent) {
 			t.Fatalf("retired requests changed parent: before=%+v after=%+v", parent, actual)

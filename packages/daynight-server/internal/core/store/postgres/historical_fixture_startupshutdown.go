@@ -15,6 +15,11 @@ func ReplaySchema107ForTest(ctx context.Context, pool *pgxpool.Pool) error {
 	return replayHistoricalSchemaForTest(ctx, pool, 107)
 }
 
+// ReplaySchema114ForTest prepares the schema before active Worker claim migration.
+func ReplaySchema114ForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	return replayHistoricalSchemaForTest(ctx, pool, 114)
+}
+
 // ReplaySchema122ForTest prepares the last schema before inherited Task deletion.
 func ReplaySchema122ForTest(ctx context.Context, pool *pgxpool.Pool) error {
 	return replayHistoricalSchemaForTest(ctx, pool, 122)

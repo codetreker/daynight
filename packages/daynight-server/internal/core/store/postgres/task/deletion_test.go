@@ -216,12 +216,12 @@ func testSubtreeDeletionResourceFirst(t *testing.T, db *postgres.Store) {
 	// Waiting on the smaller reference source must not have locked the subtree.
 	_, err = resource.Exec(ctx, `SELECT id FROM tasks WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE NOWAIT`, []string{child.ID, root.ID})
 	mustOK(t, err)
-	_, err = resource.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'00000001',0,'before deletion','','todo',now(),now())`, child.ID)
+	_, err = resource.Exec(ctx, `INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,body) VALUES($1,now(),'00000000-0000-0000-0000-000000000001',false,'before deletion')`, child.ID)
 	mustOK(t, err)
 	mustOK(t, resource.Commit(ctx))
 	mustOK(t, testutil.ReceiveQueryResult(t, ctx, done))
 	var rows int
-	mustOK(t, db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_steps WHERE task_id=$1`, child.ID).Scan(&rows))
+	mustOK(t, db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_thread_messages WHERE task_id=$1 AND body='before deletion'`, child.ID).Scan(&rows))
 	if rows != 1 {
 		t.Fatal("resource committed before deletion was lost")
 	}

@@ -46,6 +46,4 @@ processing of stored records.
 CLI users receive an explicit failure for retired commands. Updating a CLI also
 refreshes its existing installed guidance through the established mechanism.
 Steps-specific tests disappear with the behavior they own; shared validations
-must remain covered through ordinary callers. Persisted Steps data remains
-with its storage owner; REST, Web and MCP entry points retire under their
-separate decisions.
+must remain covered through ordinary callers. The subsequent [data retirement](2026-11-23-drop-task-steps-data.md) removes persisted Steps; REST, Web and MCP entry points retire under their separate decisions.
