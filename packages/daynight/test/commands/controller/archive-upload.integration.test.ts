@@ -509,6 +509,30 @@ test("uploads a schema3 manifest and separately hashed timeline without a native
  await rm(`${f.journalPath}.pending-content`,{recursive:true});
  const count=calls.length;await uploadStoppedControllerArchive(options);expect(calls.slice(count)).toEqual([expect.stringContaining("GET ")]);
 });
+test("an old in-flight v1 history and a new v2 timeline retain their individual versions", async () => {
+  const f = await fixture(), bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
+  let first = true, v2File = "", v2Bytes = Buffer.alloc(0), v2Hash = "", completed = false;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input)), method = init?.method ?? "GET", headers = new Headers(init?.headers);
+    if (first && method === "POST" && url.pathname.endsWith("/seal")) throw new Error("stop after v1 history");
+    if (!first && method === "POST" && url.pathname.endsWith("/prepare")) { const response = await receiver.request(input, init); response.headers.set("Daynight-Archive-Upload-Version", "2"); return response; }
+    if (!first && method === "PUT" && /\/files\/[^/]+$/.test(url.pathname)) {
+      expect(headers.get("Daynight-Archive-Upload-Version")).toBe("2"); expect(headers.get("Daynight-Chunk-SHA256")).toBeNull();
+      v2File = url.pathname.split("/").at(-1)!; v2Bytes = Buffer.from(await new Response(init?.body as ConstructorParameters<typeof Response>[0]).arrayBuffer()); v2Hash = headers.get("Daynight-File-SHA256")!; receiver.files.set(v2File, v2Bytes);
+      return Response.json({ fileId: v2File, state: "receiving", acceptedOffset: String(v2Bytes.length), byteLength: String(v2Bytes.length), sha256: v2Hash, error: null }, { headers: { "Daynight-Archive-Upload-Version": "2" } });
+    }
+    if (!first && method === "POST" && url.pathname.endsWith(`/files/${v2File}/complete`)) { completed = true; return Response.json({ fileId: v2File, state: "complete", acceptedOffset: String(v2Bytes.length), byteLength: String(v2Bytes.length), sha256: v2Hash, error: null }, { headers: { "Daynight-Archive-Upload-Version": "2" } }); }
+    return receiver.request(input, init);
+  };
+  const options = { ...f, serverToken: "test", request };
+  await expect(uploadStoppedControllerArchive(options)).rejects.toThrow("stop after v1 history");
+  const intentPath = `${f.journalPath}.archive-intent-${f.ticket.executionGeneration}.json`, intent = JSON.parse(await readFile(intentPath, "utf8"));
+  await unlink(`${intentPath}.transfer.json`); first = false;
+  expect((await uploadStoppedControllerArchive(options)).state).toBe("ready");
+  const selection = JSON.parse(await readFile(`${intentPath}.transfer.json`, "utf8"));
+  expect(selection.versions).toMatchObject({ [intent.history.fileId]: 1, [intent.timeline.fileId]: 2 });
+  expect(completed).toBe(true); expect(JSON.parse(bodies[0]!).timeline.fileId).toBe(v2File);
+});
 test("a committed schema3 archive with a lost local receipt recovers through its unchanged durable intent", async () => {
   const f = await fixture(), bodies: string[] = [], calls: { method: string; path: string }[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough, onRequest: (method, path) => calls.push({ method, path }) });

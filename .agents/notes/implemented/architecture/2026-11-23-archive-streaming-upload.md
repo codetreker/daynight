@@ -26,6 +26,13 @@ Version 1 and online history retain their existing contracts. The
 [archive design](../../../../docs/design/session-image-archives.md) owns the
 protocol and storage boundaries.
 
+The Controller freezes the history and timeline bytes before transfer and
+retains their identities and per-file transport decisions across recovery.
+Existing file status identifies its version; the prepare capability selects a
+version only for a file that has not been registered. A confirmed corrupt file
+uses a durably reserved successor with the same source, and the final manifest
+names the timeline file that actually completed.
+
 ## Alternatives
 
 **Numbered blocks with database progress.** Each acknowledged block requires a
