@@ -207,7 +207,7 @@ Task 的冻结配置、Web 执行记录、Bot intent、Controller ticket 共用�
 
 遥测快照只读已观察事实，不启动工具。活动组来自 Web/Bot 的持久配置及已观察的工具选择，按 selectionKey 聚合；旧记录缺版本或检查时间时如实报告不完整，不重新探测拼接历史事实。后台候选准备具有独立预算，五秒 host 采样只消费已就绪选择。Copilot 的持续准备与能力发现仅在当前有效全局或项目选择它、或本 Worker 存在非删除 Copilot Bot 定义时进行；项目读取已解析继承的有效配置，Bot 定义包括 pending、failed 和可恢复记录。需求变化使准备时限失效，开启后下一轮可立即准备，关闭后停止后续持续准备。配置应用预检、明确模型发现与新执行仍按需准备，原冻结执行和清理责任保持不变。工具冻结与准入的取舍见[运行接线决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-frozen-tool-runtime.md)和[后台需求决策](../../.agents/notes/implemented/bug-fix/2026-11-13-worker-copilot-background-demand.md)。
 
-独立的配置检查调度器只读取已采纳的权威 Codex/Copilot choice；启动时目标为空，null choice 与暂停目标不探测。每项通过现有 manager.prepare、操作预算和清理回执检查 Web 启动路径，不依赖 Provider 需求读取成功。当前 applied 证明直接复用；未完成检查按工具去重，失败间隔至少 60 秒才再尝试，保留 manager 的具体错误。choice 改变、目标撤回或关闭时取消对应操作，旧执行继续使用冻结身份。检查完成后唤醒配置协调并发布新证明，不增加 Web 轮询或启动任务。自动 Copilot 仍由既有 materializer 准备随 CLI 提供的运行时。取舍见[已采纳工具检查决策](../../.agents/notes/implemented/bug-fix/2026-11-24-worker-adopted-tool-checks.md)。
+独立的配置检查调度器只读取已采纳的权威 Codex/Copilot choice；启动时目标为空，null choice 与暂停目标不探测。每项通过现有 manager.prepare、操作预算和清理回执检查 Web 启动路径，不依赖 Provider 需求读取成功。当前 applied 证明直接复用；未完成检查按工具去重，失败结算后至少等待 60 秒才再尝试，保留 manager 的具体错误；检查本身耗时不占用该退避时段。choice 改变、目标撤回或关闭时取消对应操作，旧检查结算不为新目标恢复退避，旧执行继续使用冻结身份。检查完成后唤醒配置协调并发布新证明，不增加 Web 轮询或启动任务。自动 Copilot 仍由既有 materializer 准备随 CLI 提供的运行时。取舍见[已采纳工具检查决策](../../.agents/notes/implemented/bug-fix/2026-11-24-worker-adopted-tool-checks.md)。
 
 ### Copilot authority 的私有运行目录
 

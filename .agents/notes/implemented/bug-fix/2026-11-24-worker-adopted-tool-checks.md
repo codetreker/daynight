@@ -12,10 +12,12 @@ configuration waiting without explaining which installation needs repair.
 
 The Worker checks each adopted Codex and Copilot Web choice through the existing
 selection manager, independently of provider demand. Current successful checks
-are reused. Failed checks retain their real error and retry no more often than
-the background interval. Changed choices, unavailable targets and shutdown
+are reused. Failed checks retain their real error for a full retry interval
+starting when failure settles, including checks that exhaust their operation
+budget. Changed choices, unavailable targets and shutdown
 cancel the corresponding checks; selection generations and existing cleanup
-receipts remain authoritative. An unadopted choice starts no check.
+receipts remain authoritative. A cancelled check cannot restore backoff for a
+superseded target. An unadopted choice starts no check.
 
 The editor and software shortcut call the section Tool launch paths. Summaries
 preserve the reported failure, checking, pending and unchecked states. Overall

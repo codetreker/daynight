@@ -59,9 +59,9 @@ export const createWorkerToolSelectionRuntime = (options: {
         const cancel = () => controller.abort(signal.reason);
         signal.addEventListener("abort", cancel, { once: true });
         owner.controller = controller;
-        owner.nextAt = Date.now() + 60_000;
         const job = withOperation(controller.signal, operation => manager.prepare(entry.tool, "web", operation)).catch(() => {
           // The selection owner retains the concrete failure during retry backoff.
+          if (!controller.signal.aborted) owner.nextAt = Date.now() + 60_000;
         }).finally(() => {
           signal.removeEventListener("abort", cancel);
           if (owner.pending === job) { delete owner.pending; delete owner.controller; }
