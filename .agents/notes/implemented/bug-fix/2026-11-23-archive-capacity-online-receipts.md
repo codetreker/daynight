@@ -17,6 +17,10 @@ The ready transaction checks the final closure and combined capacity, rechecks
 read leases, and retires eligible references atomically with publication. Body
 resources and other references remain protected. The same boundary applies to
 both history upload versions and to active and relay-mode inventories.
+After the archive lease is released, the Server attempts upload reclamation;
+the ordinary Web Task archive maintenance pass retries released uploads from
+durable state with the original identity, reference and lease checks. Cleanup
+failure does not change a committed ready receipt.
 
 The Controller preserves the code and message of an identity-checked terminal
 file receipt. Only confirmed staging corruption permits a successor. Worker
@@ -39,5 +43,6 @@ an uncertain transfer.
 
 Failed or rolled-back publication retains online receipts and originals. The
 ledger carries pending occurrences until publication, and a reader can delay
-ready until its lease is released. Monitoring exposes the capacity reason
-without publishing server-supplied diagnostic text.
+ready until its lease is released. Physical reclamation can lag publication
+and resumes on maintenance passes after failure or restart. Monitoring exposes
+the capacity reason without publishing server-supplied diagnostic text.

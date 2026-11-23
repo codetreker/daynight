@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -1045,6 +1046,15 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 	ctx, cancelGate := op.GateContext(ctx)
 	defer cancelGate()
 	archiveCtx := ctx
+	defer func() {
+		if err == nil && out.State == "ready" {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(archiveCtx), 5*time.Second)
+			if e := op.SettleExpiredUploads(cleanup); e != nil {
+				slog.ErrorContext(cleanup, "Ready archive upload settlement failed", "session_id", op.id, "error", e)
+			}
+			cancel()
+		}
+	}()
 	defer func() {
 		if err == nil {
 			op.retryArchiveStreamCleanup(archiveCtx)

@@ -86,7 +86,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。新执行的策略在授权连接时与在线模式一同绑定，不能在停止准备后改变或补填；迁移前未绑定策略的旧执行保留空值。已有活动账本继续核对其已确认前缀。
 
-已绑定策略且无活动 bundle 时，服务读取 capture 库存核对最终正文中的已提交图片出现及其原 resourceId。`task_body` 的工具和 reasoning 图片仅在线保留；正文复用同一原件时保留其引用，其他 pin 和 lease 继续保护原件。最终 history 校验不退役在线引用；manifest 闭包及组合容量通过后，服务在建立 ready 的事务内检查读取租约并退役不再需要的在线引用。读取租约仍持有待退休图片时返回 `resource_busy`，保留引用并允许重试。容量失败或事务回滚保留在线原件和原回执。未结算的 capture 保持原状态，返回 `archive_incomplete`，不能封存或伪造缺图。停止后对账和提交已冻结图片结果的入口尚未实现；补充该能力须沿原 attempt、停止身份、实际提交证据和本机正文同步恢复，不得重新启动来源读取。
+已绑定策略且无活动 bundle 时，服务读取 capture 库存核对最终正文中的已提交图片出现及其原 resourceId。`task_body` 的工具和 reasoning 图片仅在线保留；正文复用同一原件时保留其引用，其他 pin 和 lease 继续保护原件。最终 history 校验不退役在线引用；manifest 闭包及组合容量通过后，服务在建立 ready 的事务内检查读取租约并退役不再需要的在线引用。读取租约仍持有待退休图片时返回 `resource_busy`，保留引用并允许重试。容量失败或事务回滚保留在线原件和原回执。ready 提交并释放归档 lease 后尝试回收已释放上传；失败不改变 ready 回执，普通 Web Task 的归档维护周期按持久的上传终态重试，重新核对归档和资源身份、引用、原 Controller 释放事实及 lease。未结算的 capture 保持原状态，返回 `archive_incomplete`，不能封存或伪造缺图。停止后对账和提交已冻结图片结果的入口尚未实现；补充该能力须沿原 attempt、停止身份、实际提交证据和本机正文同步恢复，不得重新启动来源读取。
 
 ## 归档与完整历史同步合同
 
