@@ -18,8 +18,8 @@ func RegisterDirectMemberRoutes(mux httpx.RouteRegistrar, members *teamservice.D
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members", auth.Require(h.addDirectMember))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.addExistingTeamMember))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members/resolve", auth.Require(h.resolveDirectMember))
-	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/resolve", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
+	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/resolve", httpx.MethodRejection(auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST"))))
 }
 
 func directMemberInput(w http.ResponseWriter, r *http.Request) (coreteam.AddTeamMember, error) {

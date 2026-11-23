@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -27,31 +26,18 @@ type unifiedArchiveOperation interface {
 	PutArchiveManifest(context.Context, []byte) (sp.ArchiveStatus, error)
 }
 
-type archiveUploadV2Operation interface {
-	PutArchiveFileV2(context.Context, string, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)
-	PutArchiveResourceV2(context.Context, string, int64, int64, string, string, []byte, sp.Resource) (sp.ArchiveFileReceipt, error)
-	CompleteArchiveFile(context.Context, string, string) (sp.ArchiveFileReceipt, error)
-	RestartArchiveFile(context.Context, string, string, string) (sp.ArchiveFileReceipt, error)
-}
-
-const archiveUploadVersionHeader = "Daynight-Archive-Upload-Version"
-
 func (h *Routes) registerUnifiedArchiveRoutes(mux httpx.RouteRegistrar, base string, observe func(ProducerRoute)) {
 	for route, handler := range map[string]httpx.AuthenticatedHandler{
-		"GET " + base + "/prepare":                            h.archivePreparation,
-		"POST " + base + "/prepare":                           h.prepareArchive,
-		"POST " + base + "/source-tail":                       h.archiveSourceTail,
-		"POST " + base + "/seal":                              h.sealArchive,
-		"PUT " + base + "/content":                            h.putArchiveManifest,
-		"PUT " + base + "/prepare/history/{fileId}":           h.putArchiveHistory,
-		"GET " + base + "/prepare/history/{fileId}/status":    h.archiveBundleFileStatus,
-		"POST " + base + "/prepare/history/{fileId}/complete": h.completeArchiveFile,
-		"POST " + base + "/prepare/history/{fileId}/restart":  h.restartArchiveFile,
-		"PUT " + base + "/files/{fileId}":                     h.putArchiveTimeline,
-		"GET " + base + "/files/{fileId}/status":              h.archiveBundleFileStatus,
-		"POST " + base + "/files/{fileId}/complete":           h.completeArchiveFile,
-		"POST " + base + "/files/{fileId}/restart":            h.restartArchiveFile,
-		"GET " + base + "/files/{fileId}":                     h.archiveTimelineContent,
+		"GET " + base + "/prepare":                         h.archivePreparation,
+		"POST " + base + "/prepare":                        h.prepareArchive,
+		"POST " + base + "/source-tail":                    h.archiveSourceTail,
+		"POST " + base + "/seal":                           h.sealArchive,
+		"PUT " + base + "/content":                         h.putArchiveManifest,
+		"PUT " + base + "/prepare/history/{fileId}":        h.putArchiveHistory,
+		"GET " + base + "/prepare/history/{fileId}/status": h.archiveBundleFileStatus,
+		"PUT " + base + "/files/{fileId}":                  h.putArchiveTimeline,
+		"GET " + base + "/files/{fileId}/status":           h.archiveBundleFileStatus,
+		"GET " + base + "/files/{fileId}":                  h.archiveTimelineContent,
 	} {
 		next := h.auth.Require(h.unifiedArchiveParameters(handler, route == "GET "+base+"/files/{fileId}"))
 		if route[:3] != "GET" || route == "GET "+base+"/files/{fileId}" {
@@ -122,9 +108,6 @@ func (h *Routes) archivePreparation(w http.ResponseWriter, r *http.Request, p mo
 		return
 	}
 	out, err := h.service.ArchivePreparation(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"))
-	if err == nil {
-		w.Header().Set(archiveUploadVersionHeader, "2")
-	}
 	h.Result(w, r, http.StatusOK, out, err)
 }
 func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -155,7 +138,6 @@ func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
 	}
-	w.Header().Set(archiveUploadVersionHeader, "2")
 	h.archiveResult(w, r, out, op)
 }
 func (h *Routes) sealArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -219,11 +201,6 @@ func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p 
 	offset, e1 := strconv.ParseInt(values.Get("offset"), 10, 64)
 	length, e2 := strconv.ParseInt(r.Header.Get("Daynight-File-Byte-Length"), 10, 64)
 	legacyResource := values.Get("purpose") == "resource" && values.Get("migrationOnly") == "true" && purpose == "timeline"
-	version, versionErr := archiveUploadVersion(r)
-	if versionErr != nil {
-		h.Failure(w, r, versionErr)
-		return
-	}
 	if e1 != nil || e2 != nil || offset < 0 || length < 0 || length == 0 && !legacyResource || len(r.Header.Values("Daynight-File-Byte-Length")) != 1 || len(r.Header.Values("Daynight-File-SHA256")) != 1 || len(r.Header.Values("Daynight-Chunk-SHA256")) != 1 || strconv.FormatInt(offset, 10) != values.Get("offset") || strconv.FormatInt(length, 10) != r.Header.Get("Daynight-File-Byte-Length") {
 		h.Failure(w, r, httpx.InvalidInput("Invalid archive offset or length."))
 		return
@@ -248,36 +225,15 @@ func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p 
 			h.Failure(w, r, archiveCleanupError(httpx.InvalidInput("Invalid legacy resource descriptor."), op.Close()))
 			return
 		}
-		if version == 2 {
-			v2, ok := op.(archiveUploadV2Operation)
-			if !ok {
-				err = httpx.InvalidInput("Archive upload version is unavailable.")
-			} else {
-				out, err = v2.PutArchiveResourceV2(r.Context(), r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data, resource)
-			}
-		} else {
-			out, err = op.PutArchiveResource(r.Context(), r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data, resource)
-		}
+		out, err = op.PutArchiveResource(r.Context(), r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data, resource)
 	} else if values.Get("purpose") != "" || values.Get("migrationOnly") != "" {
 		err = httpx.InvalidInput("Invalid archive migration profile.")
 	} else {
-		if version == 2 {
-			v2, ok := op.(archiveUploadV2Operation)
-			if !ok {
-				err = httpx.InvalidInput("Archive upload version is unavailable.")
-			} else {
-				out, err = v2.PutArchiveFileV2(r.Context(), purpose, r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data)
-			}
-		} else {
-			out, err = op.PutArchiveFile(r.Context(), purpose, r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data)
-		}
+		out, err = op.PutArchiveFile(r.Context(), purpose, r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data)
 	}
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
-	}
-	if version == 2 {
-		w.Header().Set(archiveUploadVersionHeader, "2")
 	}
 	if purpose == "history" {
 		h.archiveResult(w, r, historyFileResponse(out), op)
@@ -290,11 +246,7 @@ func historyFileResponse(file sp.ArchiveFileReceipt) map[string]any {
 	if file.State == "complete" {
 		revision = file.TimelineRevision
 	}
-	out := map[string]any{"syncId": file.FileID, "state": file.State, "acceptedOffset": file.AcceptedOffset, "byteLength": file.ByteLength, "sha256": file.SHA256, "timelineRevision": revision, "error": file.Error}
-	if file.SuccessorFileID != nil {
-		out["successorFileId"] = *file.SuccessorFileID
-	}
-	return out
+	return map[string]any{"syncId": file.FileID, "state": file.State, "acceptedOffset": file.AcceptedOffset, "byteLength": file.ByteLength, "sha256": file.SHA256, "timelineRevision": revision, "error": file.Error}
 }
 func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := httpx.QueryValues(r); err != nil {
@@ -306,11 +258,6 @@ func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request,
 		h.Failure(w, r, err)
 		return
 	}
-	if out.UploadVersion == 2 {
-		w.Header().Set(archiveUploadVersionHeader, "2")
-	} else {
-		w.Header().Set(archiveUploadVersionHeader, "1")
-	}
 	if len(r.Pattern) > 0 && containsHistoryPath(r.Pattern) {
 		h.Result(w, r, http.StatusOK, historyFileResponse(out), nil)
 	} else {
@@ -319,124 +266,6 @@ func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request,
 }
 func containsHistoryPath(value string) bool {
 	return strings.Contains(value, "/history/")
-}
-
-func archiveUploadVersion(r *http.Request) (int, error) {
-	values := r.Header.Values(archiveUploadVersionHeader)
-	if len(values) == 0 {
-		return 1, nil
-	}
-	if len(values) == 1 && (values[0] == "1" || values[0] == "2") {
-		return int(values[0][0] - '0'), nil
-	}
-	return 0, httpx.InvalidInput("Invalid archive upload version.")
-}
-
-func archiveFilePurpose(r *http.Request) string {
-	if containsHistoryPath(r.Pattern) {
-		return "history"
-	}
-	return "timeline"
-}
-
-func (h *Routes) completeArchiveFile(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.archiveV2Action(w, r, p, false)
-}
-
-func (h *Routes) restartArchiveFile(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.archiveV2Action(w, r, p, true)
-}
-
-func (h *Routes) archiveV2Action(w http.ResponseWriter, r *http.Request, p model.Principal, restart bool) {
-	if _, err := httpx.QueryValues(r); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	version, err := archiveUploadVersion(r)
-	if err != nil || version != 2 {
-		h.Failure(w, r, httpx.InvalidInput("Archive upload version 2 is required."))
-		return
-	}
-	op, err := h.beginUnifiedArchive(w, r, p)
-	if err != nil {
-		httpx.CloseUnreadBody(w, r)
-		h.Failure(w, r, err)
-		return
-	}
-	v2, ok := op.(archiveUploadV2Operation)
-	if !ok {
-		httpx.CloseUnreadBody(w, r)
-		h.Failure(w, r, archiveCleanupError(httpx.InvalidInput("Archive upload version is unavailable."), op.Close()))
-		return
-	}
-	readRequest, finishRead := archiveReadRequest(r, op)
-	var replacement string
-	if restart {
-		var body []byte
-		body, err = readUnifiedArchiveBody(w, readRequest, "application/json", 1024, false)
-		if err == nil {
-			replacement, err = archiveReplacementFileID(body)
-		}
-	} else {
-		stream := httpx.NewDeadlineBody(w, readRequest, 15*time.Second)
-		var body []byte
-		body, err = io.ReadAll(io.LimitReader(stream, 1))
-		err = archiveCleanupError(err, stream.Close())
-		if err == nil && len(body) != 0 {
-			httpx.CloseUnreadBody(w, r)
-			err = httpx.InvalidInput("Archive completion does not accept a body.")
-		}
-	}
-	finishRead()
-	if err != nil {
-		h.Failure(w, r, archiveCleanupError(err, op.Close()))
-		return
-	}
-	var out sp.ArchiveFileReceipt
-	if restart {
-		out, err = v2.RestartArchiveFile(r.Context(), archiveFilePurpose(r), r.PathValue("fileId"), replacement)
-	} else {
-		out, err = v2.CompleteArchiveFile(r.Context(), archiveFilePurpose(r), r.PathValue("fileId"))
-	}
-	if err != nil {
-		h.Failure(w, r, archiveCleanupError(err, op.Close()))
-		return
-	}
-	w.Header().Set(archiveUploadVersionHeader, "2")
-	if archiveFilePurpose(r) == "history" {
-		h.archiveResult(w, r, historyFileResponse(out), op)
-	} else {
-		h.archiveResult(w, r, out, op)
-	}
-}
-
-func archiveReplacementFileID(body []byte) (string, error) {
-	invalid := func() (string, error) { return "", httpx.InvalidInput("Invalid archive replacement identity.") }
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	start, err := decoder.Token()
-	if err != nil || start != json.Delim('{') || !decoder.More() {
-		return invalid()
-	}
-	key, err := decoder.Token()
-	if err != nil || key != "replacementFileId" {
-		return invalid()
-	}
-	var raw string
-	if decoder.Decode(&raw) != nil || decoder.More() {
-		return invalid()
-	}
-	end, err := decoder.Token()
-	if err != nil || end != json.Delim('}') {
-		return invalid()
-	}
-	if _, err = decoder.Token(); err != io.EOF {
-		return invalid()
-	}
-	id, err := model.CanonicalID(raw)
-	if err != nil || id != raw {
-		return invalid()
-	}
-	return id, nil
 }
 func (h *Routes) archiveTimelineContent(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := httpx.QueryValues(r); err != nil {

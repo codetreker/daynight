@@ -28,6 +28,8 @@ func TestAccountRegistrationReportsScopeClasses(t *testing.T) {
 	}
 	add("PATCH /api/v1/me", ScopeRoute{Operations: []scopepolicy.Operation{scopepolicy.AccountWrite}})
 	add("POST /api/v1/auth/logout", ScopeRoute{BrowserOnly: true})
+	add("POST /api/v1/auth/session/activity", ScopeRoute{BrowserOnly: true})
+	add("/api/v1/auth/session/activity", ScopeRoute{BrowserOnly: true, Fallback: true})
 	add("/api/v1/auth/logout", ScopeRoute{Fallback: true})
 	for _, method := range []string{"GET", "HEAD", "POST"} {
 		add(method+" /api/v1/me/tokens", ScopeRoute{BrowserOnly: true})
@@ -38,6 +40,13 @@ func TestAccountRegistrationReportsScopeClasses(t *testing.T) {
 	for _, path := range []string{"/api/v1/me", "/api/v1/me/tokens", "/api/v1/me/tokens/{tokenId}"} {
 		add(path, ScopeRoute{Fallback: true})
 	}
+	for _, path := range []string{"/api/v1/me/browser-sessions", "/api/v1/me/browser-sessions/{sessionId}"} {
+		add("GET "+path, ScopeRoute{BrowserOnly: true})
+		add("HEAD "+path, ScopeRoute{BrowserOnly: true, Fallback: true})
+		add(path, ScopeRoute{BrowserOnly: true, Fallback: true})
+	}
+	add("POST /api/v1/me/browser-sessions/{sessionId}/revoke", ScopeRoute{BrowserOnly: true})
+	add("/api/v1/me/browser-sessions/{sessionId}/revoke", ScopeRoute{BrowserOnly: true, Fallback: true})
 	for _, method := range []string{"GET", "POST"} {
 		add(method+" /api/v2/me/tokens", ScopeRoute{BrowserOnly: true})
 	}
@@ -53,10 +62,10 @@ func TestAccountRegistrationReportsScopeClasses(t *testing.T) {
 		if !hasMethod {
 			method, path = "OPTIONS", pattern
 		}
-		request := httptest.NewRequest(method, strings.ReplaceAll(path, "{tokenId}", "11111111-1111-4111-8111-111111111111"), nil)
+		request := httptest.NewRequest(method, strings.NewReplacer("{tokenId}", "11111111-1111-4111-8111-111111111111", "{sessionId}", "11111111-1111-4111-8111-111111111111").Replace(path), nil)
 		_, matched := mux.Handler(request)
 		expected := pattern
-		if strings.HasPrefix(pattern, "HEAD /api/v1/") {
+		if strings.HasPrefix(pattern, "HEAD /api/v1/") && !strings.Contains(pattern, "browser-sessions") {
 			expected = "GET " + strings.TrimPrefix(pattern, "HEAD ")
 		}
 		if matched != expected {

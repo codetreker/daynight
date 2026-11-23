@@ -18,7 +18,7 @@ accessors decode the fields their consumer uses without repeat validation or
 capacity admission. `internal/core/task/properties` applies public write policy
 and the Worker/sessionStartup association using those definitions.
 `internal/core/task/codec` owns Steps and Thread resource types and exact write
-encoding; API reuses its types. Step reads use pure collection/item projection,
+encoding. The [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md) removes the public API aliases; the shared Thread codec remains. Internal Step reads use pure collection/item projection,
 while strict candidate operations remain in `internal/core/task/steps`. The
 [Task boundary](2026-11-05-server-task-boundaries.md) owns transaction and
 permission orchestration. The

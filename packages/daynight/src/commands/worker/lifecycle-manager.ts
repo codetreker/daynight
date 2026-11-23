@@ -15,17 +15,20 @@ export type LifecycleExecutionControl = {
   reconcile(options: { deadline: number }): Promise<OwnerStopResult[]>;
   rebuild(): void;
 };
+type PollPurpose = "local-watch" | "cloud-poll" | "admission";
+
 export type LifecycleManagerOptions = {
   store: LifecycleStore; api: WorkerLifecycleClient; platform: "macos" | "linux" | "windows"; signal: AbortSignal;
   reconcileResources(deadline: number): Promise<void>;
   reportError(error: unknown): void;
+  waitForPoll?(purpose: PollPurpose, milliseconds: number, signal: AbortSignal): Promise<void>;
   ensureWorkerRegistered?(refresh?: boolean): Promise<void>;
   recovery?(): readonly LifecycleRecoveryObservation[];
 };
 
 /** Management has no native execution capability; only a verified activation opens a scope. */
 export const createLifecycleManager = (options: LifecycleManagerOptions) => {
-  const { store, api, signal } = options;
+  const { store, api, signal, waitForPoll = (_purpose, milliseconds, signal) => delay(milliseconds, undefined, { signal }) } = options;
   let control: LifecycleExecutionControl | undefined;
   let tail: Promise<unknown> = Promise.resolve();
   let active = false;
@@ -442,7 +445,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
               void work.catch(error => { if (!signal.aborted) blocked(error, "stop_unknown"); }).finally(() => { if (localStop === work) localStop = undefined; });
             }
           } catch (error) { if (!signal.aborted) blocked(error, "persistence_failed"); try { await control?.stop({ deadline: Date.now() + 60_000 }); } catch (failure) { options.reportError(failure); } }
-          try { await delay(1000, undefined, { signal }); } catch { break; }
+          try { await waitForPoll("local-watch", 1000, signal); } catch { break; }
         }
       })();
       polling = (async () => {
@@ -455,12 +458,12 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
             }
             try { await control?.stop({ deadline: Date.now() + 60_000 }); } catch (stopError) { if (!signal.aborted) blocked(stopError, "stop_unknown"); }
           }
-          try { await delay(1000, undefined, { signal }); } catch { break; }
+          try { await waitForPoll("cloud-poll", 1000, signal); } catch { break; }
         }
       })();
     },
     async waitForAdmission(): Promise<LifecycleBinding> {
-      while (!signal.aborted) { const state = store.readState(); if (state.admission === "open") return binding(); await delay(100, undefined, { signal }); }
+      while (!signal.aborted) { const state = store.readState(); if (state.admission === "open") return binding(); await waitForPoll("admission", 100, signal); }
       signal.throwIfAborted(); throw new Error("Worker management stopped.");
     },
     reconcile: (): Promise<void> => serialize(async () => {

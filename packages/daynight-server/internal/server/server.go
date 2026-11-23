@@ -119,8 +119,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	routes.fixed("public-oauth").HandleFunc("/oauth/authorize", authorization.Start)
 	routes.fixed("public-oauth").HandleFunc("/oauth/token", tokens.Token)
 	routes.fixed("public-oauth").HandleFunc("/oauth/revoke", tokens.Revoke)
-	routes.fixed("browser-oauth-binding").HandleFunc("/api/v1/oauth/requests/{id}", authorization.Inspect)
-	routes.fixed("browser-oauth-binding").HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
+	routes.fixed("browser-oauth-binding").HandleFunc("/api/v1/oauth/requests/{id}", httpx.MethodDispatch(authorization.Inspect, http.MethodGet))
+	routes.fixed("browser-oauth-binding").HandleFunc("/api/v1/oauth/requests/{id}/decision", httpx.MethodDispatch(authorization.Decide, http.MethodPost))
 	oauthhttp.RegisterMetadata(routes.fixed("public-oauth-discovery"), config.Server.PublicOrigin)
 	scopedAuth := authhttp.WithCredentialPolicy(auth, app.Scoped.Credentials.Current)
 	if err := auth.RegisterScopedAccountRoutes(routes.scoped("account-and-browser-credential-management"), scopedAuth, app.Identity.(authhttp.ScopedProfile), app.Scoped.Credentials.ProfileWrite, observeScopeRoutes[authhttp.ScopeRoute](routes)); err != nil {
@@ -207,12 +207,11 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	}, scopedAuth, logger); err != nil {
 		return nil, err
 	}
-	taskhttp.TaskStepsScopedRoutes(routes.scoped("step-operation-and-response"), app.Scoped.Steps, scopedAuth, logger)
 	taskhttp.ScopedTaskThreadRoutesObserved(routes.scoped("thread-operation-and-response"), app.Scoped.Threads, scopedAuth, logger, observeScopeRoutes[taskhttp.ThreadScopeRoute](routes))
 	attachmenthttp.RegisterScopedRoutesWithScopeObserver(routes.scoped("attachment-method-host-and-response"), app.Scoped.Attachments, scopedAuth, logger, config.Server.PreviewOrigin, observeScopeRoutes[attachmenthttp.ScopeRoute](routes))
 	taskPreviewMux := http.NewServeMux()
 	previewRoutes := newScopeRegistry(taskPreviewMux, "task-preview")
-	attachmenthttp.RegisterPreviewRoutesWithScopeObserver(previewRoutes.fixed("preview-cookie-only"), app.Attachments, preview.Require, logger, observeScopeRoutes[attachmenthttp.ScopeRoute](previewRoutes))
+	attachmenthttp.RegisterPreviewRoutesWithScopeObserver(previewRoutes.fixed("preview-cookie-only"), app.Attachments, preview.Require, logger, observeScopeRoutes[attachmenthttp.ScopeRoute](previewRoutes), preview.RenewAuthorized)
 	if app.Webhooks != nil {
 		if err := webhookhttp.RegisterScopedRoutes(routes.scoped("webhook-mutation-fields-and-delivery"), app.Webhooks, scopedAuth, logger, observeScopeRoutes[webhookhttp.ScopeRoute](routes)); err != nil {
 			return nil, err

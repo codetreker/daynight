@@ -74,7 +74,7 @@ func TestCatalogRejectsInvalidCredentialAndMissingPolicy(t *testing.T) {
 					t.Fatal(err)
 				}
 				v := value.(map[string]any)
-				if len(v["items"].([]any)) != 6 || v["limits"].(map[string]any)["policyVersion"] != "1" {
+				if len(v["items"].([]any)) != 5 || v["limits"].(map[string]any)["policyVersion"] != "1" {
 					t.Fatalf("catalog=%#v", v)
 				}
 			}

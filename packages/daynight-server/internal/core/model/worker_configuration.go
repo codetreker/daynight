@@ -27,7 +27,8 @@ type WorkerConfiguration struct {
 	EnableSudoCleanup             bool                         `json:"enableSudoCleanup"`
 	PreserveWindowsProcessCleanup bool                         `json:"-"`
 	EnableWindowsProcessCleanup   bool                         `json:"enableWindowsProcessCleanup"`
-	PreferPlatformSpecificTasks   bool                         `json:"preferPlatformSpecificTasks"`
+	PlatformTaskMode              WorkerPlatformTaskMode       `json:"platformTaskMode"`
+	LegacyPlatformTaskMode        bool                         `json:"-"`
 	MaxConcurrent                 int64                        `json:"maxConcurrent"`
 	PollIntervalMs                int64                        `json:"pollIntervalMs"`
 	RecoveryLimit                 int64                        `json:"recoveryLimit"`
@@ -95,4 +96,17 @@ type WorkerConfigurationReceipt struct {
 	Desired             *WorkerDesiredConfiguration `json:"desired"`
 	ObservationRevision string                      `json:"observationRevision"`
 	ObservationAccepted bool                        `json:"observationAccepted"`
+}
+
+// WorkerPlatformTaskMode controls client-side candidate selection, never claim admission.
+type WorkerPlatformTaskMode string
+
+const (
+	PlatformTaskAll    WorkerPlatformTaskMode = "all"
+	PlatformTaskPrefer WorkerPlatformTaskMode = "prefer"
+	PlatformTaskOnly   WorkerPlatformTaskMode = "only"
+)
+
+func (mode WorkerPlatformTaskMode) Valid() bool {
+	return mode == PlatformTaskAll || mode == PlatformTaskPrefer || mode == PlatformTaskOnly
 }

@@ -24,7 +24,6 @@ export class ApiError extends Error {
   readonly code: string;
   readonly requestId: string | null;
   readonly serverMessage: string | undefined;
-  readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
   readonly writeOutcome: "not_committed" | undefined;
 
   constructor(
@@ -34,7 +33,6 @@ export class ApiError extends Error {
     requestId: string | null = null,
     cause?: unknown,
     serverMessage?: string,
-    stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
     writeOutcome?: "not_committed",
   ) {
     const message = kind === "network"
@@ -49,7 +47,6 @@ export class ApiError extends Error {
     this.code = code;
     this.requestId = requestId;
     this.serverMessage = serverMessage;
-    this.stepsLimit = stepsLimit;
     this.writeOutcome = writeOutcome;
   }
 }
@@ -172,7 +169,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   return response;
 };
 
-export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false, onServerError?: (error: ApiError) => void): Promise<T> => {
+export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeServerMessage = false, onServerError?: (error: ApiError) => void): Promise<T> => {
   const lifetime = responseSignal(response, signal);
   let body: unknown;
   try {
@@ -192,8 +189,8 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
       lifetime.throwIfAborted();
       return result;
     }
-    const serverError = parseServerError(body, includeStepsError);
-    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
+    const serverError = parseServerError(body, includeServerMessage);
+    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.writeOutcome);
     onServerError?.(error);
     throw error;
   } catch (error) {

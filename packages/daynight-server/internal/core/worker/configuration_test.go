@@ -67,7 +67,7 @@ func (d *configurationDAO) SetWorkerConfigurationObservation(_ context.Context, 
 }
 
 func configurationFixture() model.WorkerConfiguration {
-	return model.WorkerConfiguration{ArchiveSessions: new(true), MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
+	return model.WorkerConfiguration{PlatformTaskMode: model.PlatformTaskAll, ArchiveSessions: new(true), MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 func configuredDAO(revision string) *configurationDAO {
@@ -246,9 +246,9 @@ func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T)
 	ctx, principal := context.Background(), model.Principal{UserID: "user"}
 	d := configuredDAO("3")
 	value := configurationFixture()
-	value.PreferPlatformSpecificTasks = true
+	value.PlatformTaskMode = model.PlatformTaskPrefer
 	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
-	if err != nil || got.Desired.Revision != "4" || !got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 1 {
+	if err != nil || got.Desired.Revision != "4" || got.Desired.Value.PlatformTaskMode != model.PlatformTaskPrefer || d.desiredWrites != 1 {
 		t.Fatalf("enabling preference did not create its desired revision: %+v %v", got, err)
 	}
 	d.current = got
@@ -256,9 +256,9 @@ func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T)
 	if err != nil || got.Desired.Revision != "4" || d.desiredWrites != 1 {
 		t.Fatalf("same preference changed configuration: %+v %v", got, err)
 	}
-	value.PreferPlatformSpecificTasks = false
+	value.PlatformTaskMode = model.PlatformTaskAll
 	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
-	if err != nil || got.Desired.Revision != "5" || got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 2 {
+	if err != nil || got.Desired.Revision != "5" || got.Desired.Value.PlatformTaskMode != model.PlatformTaskAll || d.desiredWrites != 2 {
 		t.Fatalf("disabling preference was lost: %+v %v", got, err)
 	}
 }
@@ -395,8 +395,9 @@ func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
 
 func compatibilityConfiguration() model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		ArchiveSessions: new(true),
-		MaxConcurrent:   3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		PlatformTaskMode: model.PlatformTaskAll,
+		ArchiveSessions:  new(true),
+		MaxConcurrent:    3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{},
 	}
@@ -668,9 +669,9 @@ const historicalProject = "eb000000-0000-4000-8000-000000000003"
 func historicalConfiguration(max int64, withProject bool) model.WorkerConfiguration {
 	value := model.WorkerConfiguration{
 		MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
-		PreferPlatformSpecificTasks: false,
-		Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
-		Projects:                    []model.WorkerProjectConfiguration{},
+		PlatformTaskMode: model.PlatformTaskAll,
+		Native:           model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+		Projects:         []model.WorkerProjectConfiguration{},
 	}
 	if withProject {
 		value.Projects = []model.WorkerProjectConfiguration{{ProjectID: historicalProject, NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`["--foo","bar"]`)}}}
@@ -787,9 +788,9 @@ const authorityUnknownProject = "ec000000-0000-4000-8000-000000000004"
 
 func authorityConfiguration(max int64, project string) model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		ArchiveSessions:             new(true),
-		PreferPlatformSpecificTasks: false,
-		MaxConcurrent:               max, PollIntervalMs: 60000, RecoveryLimit: 3,
+		ArchiveSessions:  new(true),
+		PlatformTaskMode: model.PlatformTaskAll,
+		MaxConcurrent:    max, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
 	}
@@ -1104,7 +1105,7 @@ func TestTwoToolReplacementCorrectsLegacyRawWithoutChangingArchiveOrSudo(t *test
 	d := checkedConfigurationScope(t, configuredDAO("7"))
 	archive := false
 	d.current.Desired.ArchiveSessions = &archive
-	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"}},"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"}},"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
 	choice := &model.ToolPathChoice{Kind: "auto"}
 	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice, Copilot: choice}}
 	receipt, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
@@ -1143,7 +1144,7 @@ func TestCompleteReplacementPersistsLegacyNullAndMissingFields(t *testing.T) {
 				d := checkedConfigurationScope(t, configuredDAO("7"))
 				archive := false
 				d.current.Desired.ArchiveSessions = &archive
-				d.current.Desired.Raw = json.RawMessage(`{` + tc.mode + tc.paths + `"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+				d.current.Desired.Raw = json.RawMessage(`{` + tc.mode + tc.paths + `"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
 				value := configurationFixture()
 				value.ArchiveSessions = &archive
 				value.EnableSudoCleanup = true
@@ -1191,7 +1192,7 @@ func TestLegacyModeReplacementPreservesAbsentSudo(t *testing.T) {
 	d := checkedConfigurationScope(t, configuredDAO("7"))
 	archive := false
 	d.current.Desired.ArchiveSessions = &archive
-	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":null,"copilot":null},"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":null,"copilot":null},"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"platformTaskMode":"all","native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
 	value := configurationFixture()
 	value.PreserveSudoCleanup = true
 	value.PreserveArchiveSessions = true

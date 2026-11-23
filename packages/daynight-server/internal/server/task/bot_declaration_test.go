@@ -31,7 +31,6 @@ func botDeclarationRequest(h *resourceTestHandler, method, path, body string, he
 
 func TestBotDeclarationRejectsMalformedHeaderBeforeEveryWrite(t *testing.T) {
 	task := taskCollection(testProjectID) + "/" + testTaskID
-	step := stepHTTPPath() + "/" + testStepID
 	routes := []struct{ method, path string }{
 		{"POST", taskCollection(testProjectID)},
 		{"PATCH", task},
@@ -43,11 +42,6 @@ func TestBotDeclarationRejectsMalformedHeaderBeforeEveryWrite(t *testing.T) {
 		{"PATCH", task + "/worker-claim"},
 		{"POST", task + "/worker-claim/release"},
 		{"POST", task + "/worker-claim/withdraw"},
-		{"POST", stepHTTPPath()},
-		{"PATCH", step},
-		{"DELETE", step},
-		{"PUT", step + "/status"},
-		{"PUT", step + "/position"},
 		{"POST", task + "/thread/messages"},
 	}
 	headers := [][]string{
@@ -97,15 +91,6 @@ func TestBotDeclarationReachesWriteOperations(t *testing.T) {
 				return model.Task{}, fmt.Errorf("write task: %w", refusal)
 			}
 			assertProjectError(t, botDeclarationRequest(h, "POST", taskCollection(testProjectID), `{"title":"Declared"}`, header), 403, "forbidden")
-		})
-		t.Run(fmt.Sprintf("step declared=%v", declared), func(t *testing.T) {
-			h := newHTTPFixture(t, io.Discard)
-			h.Steps.AddFunc = func(ctx context.Context, _ model.Principal, _, _ string, _ taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
-				expect(t, ctx, declared)
-				failure := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: refusal}
-				return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, fmt.Errorf("write task steps: %w", failure)
-			}
-			assertProjectError(t, botDeclarationRequest(h, "POST", stepHTTPPath(), `{"version":1,"id":"abcdef01","title":"Declared"}`, header), 403, "forbidden")
 		})
 		t.Run(fmt.Sprintf("thread declared=%v", declared), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)

@@ -208,6 +208,11 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			continue
 		}
 		switch item.Key.Kind {
+		case "platformTaskMode":
+			var mode model.WorkerPlatformTaskMode
+			if err := configurationDecode(item.AppliedValue, &mode); err != nil || !mode.Valid() {
+				return invalidInput("Worker platform task mode must be all, prefer or only.")
+			}
 		case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 			var enabled bool
 			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {

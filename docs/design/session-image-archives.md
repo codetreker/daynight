@@ -28,7 +28,7 @@ flowchart LR
 
 Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服务的消息关联与原件是页面历史来源。原生事件按同一 sourceKey 重放，只更新原出现；historyEpoch、分页、工具折叠和网络重连不分配新 imageId。
 
-出现采用两个持久阶段。Controller 先保存 entry/出现位置与原 request，通过 sourceSeq/outbox 的 timeline upsert 取得覆盖该位置的服务 ACK，并实际上传必要完整历史；当前来源权限和本机容量有效时读取并封存 bytes，再以原 request、当前 attempt 和 frozen outcome 直接 submit。服务核验已确认位置、revision/hash、sourceKey、可信 nativeSource 与原身份；source IO 不等待 register 或 reserved。ACK 未知保留 outbox 且不先读源；submit 未知先查询原 capture，只有当前授权、Session 和 fence 有效且明确 capture_not_found 才重放同一冻结业务与封存字节。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 和 resource outcome submit，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
+出现采用两个持久阶段。Controller 先保存 entry/出现位置与原 request，通过 sourceSeq/outbox 的 timeline upsert 取得覆盖该位置的服务 ACK；旧在线模式还需实际上传必要完整历史。当前来源权限和本机容量有效时读取并封存 bytes，再以原 request、当前 attempt 和 frozen outcome 直接 submit。旧模式由服务核验完整历史中的位置、revision/hash、sourceKey、可信 nativeSource 与原身份；relay 模式由 Controller 核对位置和当前 ACK，服务核验当前 source epoch 与确认上界，source IO 不等待 register 或 reserved。ACK 未知保留 outbox 且不先读源；submit 未知先查询原 capture，只有当前授权、Session 和 fence 有效且明确 capture_not_found 才重放同一冻结业务与封存字节。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 和 resource outcome submit，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
 
 资源与已确认出现的提交原子可见；原生接受和消息关联尚未结算的意图持有原 pin 和关联身份，不广播虚构消息。终结前必须处理全部待挂接关联，不能把资源未出现在最后显示页误当无引用。停止后的完整同步先确认原位置，再按原 stopped 权限登记已经发生的来源与已有 validated 结果，不重新启动来源 IO。冻结的记录来源索引不保存正文、路径或 Base64，须与 timeline 的原出现和 resource hash 相符；Controller 已丢失且只有未上报本地映射时明确 context_unavailable，不能伪造恢复。
 
@@ -70,7 +70,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 | 对象 | 上限、计量与结果 |
 | --- | --- |
 | 新图片 | 每图 10485760 bytes；输入最多 8 张且合计 20971520 bytes，原生更小限制取交集。 |
-| Session 实际内容 | `T+I+R+D+M ≤ 134217728` bytes；各项采用实际已接纳内容或最终事务中的实测候选。 |
+| Session 实际内容 | 旧在线模式及最终归档：`T+I+R+D+M ≤ 134217728` bytes；各项采用实际已接纳内容或最终事务中的实测候选。relay 在线模式只按不同 available resourceId 的原件计量，上限 1073741824 bytes、1000 项。 |
 | schema3 timeline | 完整 UTF-8 编码最多 134217728 bytes、100000 entries；仍须满足 Session 总量。schema1/2 保持旧 67108864 bytes 边界。 |
 | manifest | 原字节最多 4194304、resources 最多 1000 项；available 项引用外置 blob，失败项没有 blob。 |
 | Controller 本地 | 不设本地累计容量或卷空闲准入；真实存储错误独立于服务端内容限制；详见[公共协议与存储设计](session-image-contracts.md)。 |
@@ -78,13 +78,13 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 `T` 是完整规范 `{"entries":[...]}` 的字节数，已接受空正文为 14；完整索引可计算 `14 + sum(entry.b) + max(0,n−1)`。`I` 是规范 entries/occurrences 索引的字节数，不含 epoch、来源截止点等协调状态。`R` 按不同 available resourceId 求实际原件长度，`D` 是按 resourceId 排序的已提交 descriptor 规范集合，`M` 是实际发布的 manifest 长度；缺少对应已接纳内容的分量为零。相同 resourceId 的多处引用只算一次原件，不同 resourceId 即使摘要相同也分别计量。临时副本、数据库内部空间及不含内容的控制记录不计入总量。
 
-完整历史由 Controller 在短 SQL 快照固定源身份和截止点后上传；显示页或尚未上传的本机正文不能代替完整测量。服务保存 entry 的身份、序号、修订、摘要、规范长度和 occurrence 索引，最终 timeline 按条核验同一闭包，不重复计量正文。活动 checkpoint 的同 epoch 序号和修订不得回退；跨 epoch 使用准确的交接证明，不能比较无关联的裸序号。每次实际 resource、history 或 manifest 发布的最终短事务锁定 Session，重读 ledger、资源和已发布 manifest，用实测候选替换相应分量并原子保存事实与回执。manifest 仅 committed/verified 的长度作为既有值；提前登记长度不证明发布成功。网络、解码和文件操作在事务外完成。
+旧在线模式的活动历史及最终归档的完整历史由 Controller 在短 SQL 快照固定源身份和截止点后上传；显示页或尚未上传的本机正文不能代替完整测量。服务保存 entry 的身份、序号、修订、摘要、规范长度和 occurrence 索引，最终 timeline 按条核验同一闭包，不重复计量正文。活动 checkpoint 的同 epoch 序号和修订不得回退；跨 epoch 使用准确的交接证明，不能比较无关联的裸序号。每次实际 resource、history 或 manifest 发布的最终短事务锁定 Session，旧模式重读 ledger、资源和已发布 manifest，用实测候选替换相应分量并原子保存事实与回执。relay 在线图片发布在同一 Session 锁下查询 available 原件及候选，按原件字节与数量准入；确认回执重放不重复计量。最终归档仍按组合上限核算。manifest 仅 committed/verified 的长度作为既有值；提前登记长度不证明发布成功。网络、解码和文件操作在事务外完成。
 
 旧 prepare/register 保留身份、权限、来源与生命周期校验，容量申请不为未来内容预留字节或资源槽；其兼容 `reserved` 状态不证明占额。实际内容超过上限返回 `quota_exceeded`，实际磁盘失败按存储错误返回；已接纳内容不被截断或删除。文件已发布而数据库结果未知时保留原身份、路径及清理责任，沿原结果协调；确认重放不重复计量。独立媒体 lease 和实际清理屏障仍有效。
 
 ### 无活动账本的停止准备
 
-无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。该可空字段只提供存储与归档读取，当前不提供协商写入；策略的首次绑定必须在执行授权连接时完成，不能在停止准备后改变或补填。已有活动账本继续核对其已确认前缀。
+无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。新执行的策略在授权连接时与在线模式一同绑定，不能在停止准备后改变或补填；迁移前未绑定策略的旧执行保留空值。已有活动账本继续核对其已确认前缀。
 
 已绑定策略且无活动 bundle 时，服务读取 capture 库存核对最终正文中的已提交图片出现及其原 resourceId。`task_body` 的工具和 reasoning 图片仅在线保留；正文复用同一原件时保留其引用，其他 pin 和 lease 继续保护原件。读取租约仍持有待退休图片时，最终同步返回 `resource_busy`，保留引用并允许原文件重试。未结算的 capture 保持原状态，返回 `archive_incomplete`，不能封存或伪造缺图。停止后对账和提交已冻结图片结果的入口尚未实现；补充该能力须沿原 attempt、停止身份、实际提交证据和本机正文同步恢复，不得重新启动来源读取。
 
@@ -205,7 +205,6 @@ type ImageHistorySyncReceipt = {
   sha256: SHA256;
   timelineRevision: Decimal | null;
   error: ImageError | null;
-  successorFileId?: UUID;
 };
 ```
 
@@ -220,7 +219,9 @@ historyEpoch 沿既有 history key：非空白、合法 Unicode、无 NUL、UTF-
 
 PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久确认和时间边界；不能加入 JSON fence 或改成普通 timeline 显示页。syncId 是 Controller 为一份冻结本地文件生成的 UUID，首次 offset="0" 固定完整 byteLength/sha256；同 ID 不换文件，块可以跨任意合法 entry。
 
-活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。原生runtime在welcome取得currentFence，初始同步和events/sync ACK后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
+活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。旧模式的原生 runtime 在 welcome 取得 currentFence，初始同步和 events/sync ACK 后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
+
+relay 模式不建立 active bundle，活动 ledger 的 PUT 和状态 GET 明确拒绝；停止归档仍使用上述最终历史入口。当前 Controller 仍使用旧在线模式。
 
 活动 ledger 的状态 GET 与相同身份、offset、hash 和字节的 PUT 复用归档容量退避。仅精确的 HTTP 429 `resource_busy` 可重放；旧服务的早期容量拒绝可缺少 Task body 版本头，成功及其他需校验的响应仍须提供版本。每次请求最多 15 秒，同步轮次从首次拒绝起最多 30 秒、总共最多重试四次；连续 checkpoint 共用预算，每个成功后的新请求从第一档退避开始。发送前与等待后核对连接代次和取消，未知 PUT 结果仍查询原 syncId 的状态；即使重试预算已耗尽，也允许一次最多 15 秒的原身份状态观察，保留原写入错误及未知结果。诊断只记录受限 request ID、Session、等待阶段、次数、延时和错误类别。
 
@@ -248,19 +249,18 @@ type ImageArchiveFileReceipt = {
   byteLength: Decimal;
   sha256: SHA256;
   error: ImageError | null;
-  successorFileId?: UUID;
 };
 ```
 
 `PUT {base}/archive/files/{fileId}?offset=<Decimal>` 写原始 timeline 块；`GET {base}/archive/files/{fileId}/status` 向同原 writer 返回严格 ImageArchiveFileReceipt。首次 offset="0" 在 sealed 准备中占用唯一 fileId，并绑定 1..134217728 bytes 的完整长度和 SHA；每记录只有一个 timeline file，不是通用附件接口。旧记录迁移专用 purpose=resource&migrationOnly=true 分支携带原 Daynight-Resource-Descriptor，只接受原 stopped writer 的原资源身份、长度与摘要，并复用同一资源 namespace，不伪造图片元数据。该 legacy resource 可保留零长度：完整长度及 offset 均为 `"0"`、空 body、文件和块摘要均为 SHA-256 空摘要 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。服务仍核验原 available legacy descriptor，实际耐久发布空原件并完成闭包；精确重试保留 fileId/resourceId/hash，不写虚构块或负偏移。`GET {base}/archive/files/{fileId}` 只对 ready 记录的有权读者返回原始 application/json bytes，不带 envelope；staging 不对浏览器公开。
 
-timeline 和两种完整历史同步共用以下传输规则；逐块重传与最后块触发完成的规则适用于版本 1。停止归档版本 2 的偏移和完成规则见[编号块上传与配对备份](#编号块上传与配对备份)。活动账本继续使用版本 1。
+timeline 和两种完整历史同步共用以下传输规则：
 
-- 版本 1 的每块为 1..1048576 原 bytes；版本 2 使用固定大小块。`Content-Type: application/octet-stream`；`Daynight-File-Byte-Length` 是完整正 Decimal 长度（仅上述 legacy resource 允许零长度空块；timeline 与历史同步仍要求正长度），`Daynight-File-SHA256` 是完整文件 SHA256，`Daynight-Chunk-SHA256` 是本块 SHA256。offset 是非负规范 Decimal。每次请求都带同一完整文件身份，不信任只声明的长度。
-- 接收并验证完整块、落盘且持久化边界后才推进 acceptedOffset。版本 1 接受连续 offset，或同 ID 下已确认同边界、同长度、同摘要且实际 bytes 相同的精确重传；重叠、跳跃、不同 bytes/身份均为 409 archive_conflict。版本 2 对不等于已确认偏移的请求返回冲突。每文件一个变更请求在途，每 Session 文件块最多一个，仍占共享媒体额度，不增加第二套账户/部署并发槽。
+- 每块为 1..1048576 原 bytes，`Content-Type: application/octet-stream`；`Daynight-File-Byte-Length` 是完整正 Decimal 长度（仅上述 legacy resource 允许零长度空块；timeline 与历史同步仍要求正长度），`Daynight-File-SHA256` 是完整文件 SHA256，`Daynight-Chunk-SHA256` 是本块 SHA256。offset 是非负规范 Decimal。每次请求都带同一完整文件身份，不信任只声明的长度。
+- 接收并验证完整块、落盘且持久化边界后才推进 acceptedOffset。只接连续 offset，或同 ID 下已确认同边界、同长度、同摘要且实际 bytes 相同的精确重传；重叠、跳跃、不同 bytes/身份均为 409 archive_conflict。每文件一个变更请求在途，每 Session 文件块最多一个，仍占共享媒体额度，不增加第二套账户/部署并发槽。
 - file receipt 各状态 byteLength/sha256 都是预期完整身份，acceptedOffset 为 0..byteLength。receiving.error=null；complete 必须 acceptedOffset=byteLength、error=null，且实际完整文件已经通过长度/SHA/strict JSON/timeline 与 sealed revision 闭包校验；failed.error 为非 null ImageError，保留原身份及最后确认 offset。确定失败不回退或换 ID，暂时 IO 故障保持 receiving。
-- 版本 1 的正常非末块返回 200 receiving；最后块验证未结束可以 202 receiving，验证完成为 200 complete。版本 2 的最后块保持 receiving，显式完成后才可返回 complete。received 全部 bytes 仍可能 receiving，不能仅按 offset 满额推断 complete。同步另外要求完整 source/账本验证，只有其 complete receipt 才发布 timelineRevision。
-- 每块网络等待最多 15 秒，整轮推进最多 60 秒后让出；状态保留，下一轮先协调原 ID。网络超时或取消不证明服务回滚，不删除已确认前缀，不因未知结果换 fileId/syncId，也不解除 pin。失联先查原 status，确认 receiving 后才沿原身份续传；complete 后仅查询或精确重复，不能覆写。已确认 `staging_corrupt` 的版本 2 文件可按下文显式接替。
+- 正常非末块返回 200 receiving；最后块验证未结束可以 202 receiving，验证完成为 200 complete。received 全部 bytes 仍可能 receiving，不能仅按 offset 满额推断 complete。同步另外要求完整 source/账本验证，只有其 complete receipt 才发布 timelineRevision。
+- 每块网络等待最多 15 秒，整轮推进最多 60 秒后让出；状态保留，下一轮先协调原 ID。网络超时或取消不证明服务回滚，不删除已确认前缀，不换 fileId/syncId，也不解除 pin。失联先查原 status，确认 receiving 后才沿原身份精确续传；complete 后仅查询或精确重复，不能覆写。
 
 15 秒块等待、60 秒传输轮次和 60 秒来源结算是三个不同边界，均不是 upload TTL，也不是 writer/reader 已停止证明。槽、lease 和物理计费只有实际完成或 cancel+join 后释放；监督器不能仅凭心跳过期完成清理。反向代理只为这些路由配置相应的 1 MiB 块、128 MiB 原始 GET 和 4 MiB manifest/prepare 响应限额，不扩大其他控制请求。
 
@@ -335,7 +335,7 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 
 settling 下的最终同步使用有界原字节文件传输，避免一条合法但 JSON 转义后大于普通历史页的 entry 永远无法同步。`PUT {base}/archive/prepare/history/{syncId}?offset=<Decimal>` 的原 stopped writer 权限与完整归档身份由 prepare 账本绑定。文件原内容严格为 `{historyEpoch,sourceThrough,entries,resources}`，前两项是原历史身份和最后已确认连续源序号，entries 为全部有序 TimelineEntry，resources 为统一描述符、不含 Base64；服务端收到的正文只在临时文件和有界解析中存在，不写服务 DB 正文表。schema3 timeline≤128MiB，再加有界同步 envelope 最多16KiB，故同步文件≤134234112 bytes；实际 timeline 和 Session 总量检查不被这个传输余量放宽。
 
-文件长度/hash和块hash使用下节相同三个Daynight-* header；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。版本 1 的块为 1..1048576 原 bytes，offset 连续或精确同边界重传，最后块触发验证；版本 2 使用下文的固定块和显式完成。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及原 journal gap校验后，按实际总量检查并原子替换完整索引并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；未知结果先查询原身份。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
+每块1..1048576原bytes，完整文件长度/hash和块hash使用下节相同三个Daynight-* header，offset连续或精确同边界重传；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。最后完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及原 journal gap校验后，按实际总量检查并原子替换完整索引并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；查询未知不换ID。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
 
 本地采集终态结算改变绑定，或对已持久正文的有界解析恢复成功改变图片投影时，只有先确认原同步complete或failed、实际writer已停且prepare仍settling，才能显式以新syncId开启新完整轮次。解析成功清除imageProjectionError并输出完整空bindings也适用，不依赖capture结算或WebSocket重连。新轮次保持同一prepare/stopped身份、historyEpoch和sourceThrough，以推进的entry/片段revision提交修正投影；旧syncId的文件/hash不得改变，禁止新原生执行和新的来源IO。旧metadata账本和pin在新轮次complete前保留，旧轮次迟到请求不能覆盖新事实。服务计算并保存逐entry/hash/长度/引用元数据，legacy内嵌bytes的编码长度按其已登记长度和规范Base64计算，最终归档文件再验实际bytes。同步临时正文文件仅为校验使用，完成并写入元数据后删除；失败/未知按writer lease与准备引用协调清理。整个合法entry可跨任意文件块，不拆文字part、不改entryId；解析在有界执行单元完成，测量最坏128MiB timeline 文件而非假设单entry小于传输块。此同步 DTO 由本文定义并由公共 codec 统一实现，与图片upload和正式timeline file区分。
 
@@ -345,7 +345,7 @@ settling 下的最终同步使用有界原字节文件传输，避免一条合�
 
 ### 元数据文件的有界上传
 
-归档文件使用本文的 `PUT/GET {base}/archive/files/{fileId}` 有界连续块合同，不复用 ImageUploadReceipt/PreparedImageChunk。以下重传、最后块完成及重置规则适用于版本 1；版本 2 见[编号块上传与配对备份](#编号块上传与配对备份)：
+归档文件使用本文的 `PUT/GET {base}/archive/files/{fileId}` 有界连续块合同，不复用 ImageUploadReceipt/PreparedImageChunk：
 
 - 初始 PUT 与每块都带规范 `offset` query、`Content-Type: application/octet-stream`，单块1..1048576 bytes；`Daynight-File-Byte-Length`、`Daynight-File-SHA256` 为完整timeline身份，`Daynight-Chunk-SHA256`为当前块摘要。fileId由Controller生成，首次offset=0在sealed准备下原子占用唯一timeline身份并绑定完整长度/hash，长度1..134217728；之后不可变，不能覆盖同准备的另一个fileId。每个记录仅一个timeline file，不允许自由上传附件。
 - 接收完整规范块、核验摘要、落盘并持久边界后才能推进acceptedOffset；连续偏移或完全相同边界/实际bytes的重传允许，不同/重叠/跳跃为409 archive_conflict。每个文件只允许一个变更请求在途。
@@ -418,20 +418,16 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 
 兼容验证分别读取 schema1 真实字节与缺失资源、schema2 Herdr、schema3、旧数据边界归一和原始摘要；回滚保留新读者和查询。备份恢复同时校验 DB、manifest/timeline及统一资源原件闭包，不能用重新取源补造旧图。检查执行范围及证据等级遵循[图片验收规格](../spec/session-image-acceptance.md)和仓库现行检查规则，受控测试不能替代当前支持范围内 Codex、Copilot 的真实 Provider 与实际平台证据；Claude 历史记录仍须保留原始身份和读取权限。
 
-## 编号块上传与配对备份
+## 单文件暂存与配对备份读取
 
-归档文件记录的 `upload_version` 区分旧逐块表格式（1）与编号块格式（2）；迁移将既有行保留为 1。停止归档准备成功响应的 `Daynight-Archive-Upload-Version: 2` 表示支持版本 2；文件 status 的同名响应头返回该文件已登记的版本。首次 PUT 用同名请求头选择 `2`，省略时为 `1`；fileId 一经登记即固定版本、用途、revision、完整长度与 SHA-256，不能以另一版本修改。在线模式与上传版本独立。活动账本仍使用版本 1；原客户端和在途版本 1 上传保留原合同。
+归档文件记录的 `upload_version` 区分旧逐块表格式（1）与单文件暂存格式（2）。版本 2 在原 `(session_id, file_id)` 行保留不可变身份、业务状态、可空 successor 和终态错误；接收进度由暂存文件长度决定，终态回执可以保留偏移。公开上传入口仍使用版本 1。前向迁移拒绝已有编号块版本 2 记录的数据库并移除前缀证明；历史配对备份必须使用匹配其 schema 的旧验证器。
 
-版本 2 在原 `(session_id, file_id)` 行保存确认偏移、32 字节前缀证明、可空 successor 和结构化终态错误，不读写逐块表。每块大小为 512 KiB，末块可短；路径为归档 Session 命名空间下 `files/<fileId>/chunks/<offset>`，偏移为十进制字节数。路径生成要求规范 UUID 和块对齐偏移。仅迁移专用资源允许零长度：首次空 PUT 登记文件，空前缀随后仍需显式完成。
+每个文件在归档 Session 命名空间有一个按 fileId 确定的原始暂存文件。创建、追加、观察、读取和删除以打开的 Session 目录描述符为排他边界；归档根目录协调命名空间创建、路径身份核对及删除。写入按 512 KiB 同步数据和长度，创建及删除同步父目录。观察先同步文件；未达声明长度时恢复偏移为实际长度向下取整到 512 KiB，等于声明长度时为全长，超过声明长度或登记后缺失是损坏。追加前清除未完成尾部，并按预期偏移写入。实际挂载必须验证跨进程锁、可见性和同步语义；租约失效不能证明旧系统调用已退出。
 
-PUT 只接 `acceptedOffset` 起的完整块；请求摘要和块边界通过后，服务持有原 Session permit 与持久 I/O lease，在 rooted 存储中先耐久写入，再以同文件系统原子不可覆盖方式发布并持久化目录。已有同偏移对象只有长度和摘要完全相同且耐久时才能复用，不覆盖可能已确认的内容。短事务重核原上传、停止 writer、fence、删除屏障与预期偏移，同时推进 offset 和 proof。低于或高于确认偏移返回冲突；文件或提交结果未知先查询原状态，不把未确认对象计入进度。
+条件创建不会覆盖已有对象。创建结果未知或目录同步失败后，调用方在持锁并确认原身份尚未登记、允许采用时，可显式采用已存在的空暂存；存储重新核验文件并同步文件和父目录。非空对象不能按此路径采用，终态身份不得重建。
 
-收满后文件仍为 receiving。原 writer 对相同文件基路径发送空正文 `POST /complete`，带 `Daynight-Archive-Upload-Version: 2`；服务流式核验确认块、prefix proof、完整长度和整文件 SHA-256，再按用途校验并发布对象或账本。重放终态完成请求返回原回执；发布与提交结果未知时先对账原文件身份和状态。确认块缺失或损坏、同偏移暂存对象与重试内容不一致时，文件以 `staging_corrupt` 终结，保留 bundle 的 settling 或 sealed、revision 和封存闭包；不合法的单次请求不改变文件状态，内容或容量失败走原失败路径。
+本地暂存默认不可用。Linux 适配器在调用方确认实际参与实例的卷语义后，检查文件系统类型、根目录与挂载身份，并以独立进程探测锁和双向可见性；这些本机检查不能替代多实例验证。支持的类型为 ext4、XFS 和 Btrfs；tmpfs、网络和未知文件系统拒绝启用。每层目录和文件的挂载身份必须与根一致，避免子挂载绕过检查。探测依赖 `flock`、`cat`、`dd` 和 Linux `statx`；缺失或失败时拒绝启用。公开 v2 写入及其部署设置仍由后续流式上传实现承接。
 
-只有 `staging_corrupt` 允许原停止上传器对原文件基路径发送 `POST /restart`，同样带版本 `2` 和 JSON `{"replacementFileId":"<UUID>"}`。原 I/O 已退出且归档未发布时，服务在同一事务保留旧失败回执、登记 successor，并创建继承原用途、revision、长度与摘要的新 receiving 行；history 或 timeline 更新相应 bundle 指针，迁移资源保留 descriptor 和作用域，并核对当前账本仍包含该 descriptor。相同 replacementFileId 重放返回原结果，不同 ID 冲突。客户端在切换当前 ID 前持久保存旧、新 ID 与冻结来源身份，并核对接替回执；timeline 最终完成后按确认的实际 fileId 生成 manifest。
+停写的 `verify-storage` 在同一个只读 PG 快照内取得库存，并在配对卷检查每个 receiving 暂存对象的存在和长度，报告恢复偏移。已收满的文件核对整文件 SHA-256；部分前缀的等长损坏由完成时的整文件摘要拦截。完成的 timeline 和资源使用已发布对象及既有引用闭包验证；seal 前当前完成 history 对照 bundle 的 ID、revision、phase 和持久账本，不要求已清理的 history 暂存。封存后即使 timeline 尚未完成，也验证封存的资源账本及原件；完成 timeline 时按当前文件身份核对内容和闭包，支持 v1/v2 混合。合法退休或 failed 记录的暂存只用于清理。旧归档转换的源归档与迁移闭包沿既有规则核对。验证器不修复或重新取得原始内容。
 
-终态持久且原 I/O 退出后，服务按确认范围及可能存在的第一个未确认偏移推导并清理暂存；删除块和已组装暂存对象后持久化受影响的目录项，再登记释放；失败保留 `staging_released=false`，不阻止其他终态文件回收。终态 `POST /complete` 和后续适用的变更式 prepare、seal、manifest 操作可在原 gate、lease 和文件身份下重试清理；GET 只观察。清理结果不改写原终态回执。
-
-空前缀证明为 `SHA256(UTF-8("daynight-archive-prefix-v2"))`。每个确认块依次计算 `SHA256(previous || uint64be(offset) || uint32be(length) || SHA256(block))`；证明和偏移必须作为一个持久事实更新。`verify-storage` 在同一个只读 PG 快照内取得库存，从零枚举到确认偏移，检查每个对象的精确长度并重算证明；第一个未确认对象无论是否存在均不构成恢复前提。已收满但尚未完成的 receiving 记录仍按此规则验证。零字节迁移资源使用空证明，不需要块。
-
-完成的 timeline 和资源使用已发布对象及既有引用闭包验证；seal 前当前完成 history 对照 bundle 的 ID、revision、phase 和持久账本，不要求已清理的 history 暂存。封存后即使 timeline 尚未完成，也验证封存的资源账本及原件；完成 timeline 时按当前文件身份核对内容和闭包，支持 v1/v2 混合。已经登记的资源上传在后续 history 修改及 seal 后仍按其确认前缀验证。合法退休或 failed 记录的暂存只用于清理。旧归档转换产生的 committed bundle 不含 history 上传，其源归档与迁移闭包沿既有迁移验证规则核对。验证器不修复或重新取得原始内容。版本 1 继续读取其逐块库存；数据库迁移账本必须与验证器版本一致，升级前的备份使用相同 schema 版本的验证器。部署迁移前停止所有旧写入方；旧二进制不能读取新 schema，回滚须使用理解当前 schema 的版本或恢复匹配的旧配对备份。选择该布局的原因见[编号块备份决策](../../.agents/notes/implemented/architecture/2026-11-23-archive-v2-backup.md)。
+版本 1 继续读取逐块库存。数据库迁移账本必须与验证器版本一致，部署迁移前停止旧写入方；回滚须使用理解当前 schema 的版本或恢复匹配的旧配对备份。选择该布局的原因见[单文件暂存决策](../../.agents/notes/implemented/architecture/2026-11-23-archive-single-file-staging.md)。

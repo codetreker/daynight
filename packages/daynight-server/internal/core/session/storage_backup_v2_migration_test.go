@@ -2,7 +2,6 @@ package session
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"testing"
@@ -96,9 +95,8 @@ func TestBackupV2FailedReceiptWithCommittedLegacyMigration(t *testing.T) {
 			}
 			bundle := store.ArchiveBundle{SessionID: sessionID, PrepareID: doc.ControllerInstanceID, Phase: "committed", Revision: 1, Resources: encode(plan.Manifest.Resources), Ledger: encode(ledger), TimelineID: plan.Manifest.Timeline.FileID, ManifestPath: targetPath, ManifestHash: targetHash, ManifestLength: decimal(int64(len(plan.ManifestBytes)))}
 			migration := store.ArchiveMigration{SessionID: sessionID, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, SourceLength: int64(len(source)), TargetPath: targetPath, TargetHash: targetHash, Phase: "committed"}
-			proof := sha256.Sum256([]byte("daynight-archive-prefix-v2"))
 			failedID := uuid.NewString()
-			failed := store.StorageArchiveFileV2{UploadVersion: 2, FileID: failedID, Purpose: "history", State: "failed", SHA256: archiveDigest([]byte("history")), ByteLength: 7, Path: n.Directory() + "/files/" + failedID, TimelineRevision: 1, PrefixProof: proof[:], Resource: json.RawMessage(`null`), TerminalError: json.RawMessage(`{"code":"staging_corrupt"}`)}
+			failed := store.StorageArchiveFileV2{UploadVersion: 2, FileID: failedID, Purpose: "history", State: "failed", SHA256: archiveDigest([]byte("history")), ByteLength: 7, Path: n.Directory() + "/files/" + failedID, TimelineRevision: 1, Resource: json.RawMessage(`null`), TerminalError: json.RawMessage(`{"code":"staging_corrupt"}`)}
 			timeline := store.StorageArchiveTimeline{UploadVersion: 1, FileID: plan.Manifest.Timeline.FileID, State: "complete", Path: timelinePath, SHA256: plan.Manifest.Timeline.SHA256, ByteLength: int64(len(plan.TimelineBytes)), AcceptedOffset: int64(len(plan.TimelineBytes)), TimelineRevision: 1}
 			archive := store.StorageArchive{SchemaVersion: 3, Path: targetPath, SHA256: targetHash, ByteLength: int64(len(plan.ManifestBytes))}
 			inventory := store.StorageInventory{SessionID: sessionID, OwnerID: owner, Archive: &archive, Migration: &migration, Resources: plan.Resources, ArchiveBundle: &bundle, ArchiveTimeline: &timeline, ArchiveFilesV2: []store.StorageArchiveFileV2{failed}}

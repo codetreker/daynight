@@ -282,7 +282,7 @@ Public OAuth 与 MCP 保留各自原 CORS，静态资源与健康检查不受用
 
 login_transactions 保存随机 state、每笔浏览器绑定及独立浏览器 scope 的摘要、provider、主站内返回路径和十分钟到期时间。先验证 provider 和最多 4096 bytes 的 returnPath；有效 scope Cookie 缺失时只设置 32-byte 随机 scope 并以 303 返回原登录 URL，不创建 pending。首次并发请求或清除 Cookie 后的请求不能关联为同一物理浏览器。每次准入成功刷新 scope Cookie，使其覆盖新交易的期限；每笔登录仍使用独立绑定 Cookie，支持同时打开多个登录页。
 
-短数据库事务取得全服务容量锁后读取数据库当前时间，排除过期记录并检查全服务 10000 条及同 scope 5 条上限。仅准入成功后才执行有限清理并插入；拒绝不清理、不插入、不撤销其他交易。锁后时间决定交易期限，避免等待锁使有效期缩短；callback 在取得交易行锁后按数据库时间判断到期，其他凭据仍按服务时钟判断自身期限。scope Cookie 与绑定 Cookie 都使用 host-only、HttpOnly、SameSite=Lax，HTTPS 时带 Secure 和 `__Host-` 前缀。
+短数据库事务取得全服务容量锁后读取数据库当前时间，排除过期记录并检查全服务 10000 条及同 scope 5 条上限。仅准入成功后才执行有限清理并插入；拒绝不清理、不插入、不撤销其他交易。锁后时间决定交易期限，避免等待锁使有效期缩短；callback 在取得交易行锁后按数据库时间判断到期，浏览器 session 同样使用主库时钟，PAT/OAuth 保持各自期限合同。scope Cookie 与绑定 Cookie 都使用 host-only、HttpOnly、SameSite=Lax，HTTPS 时带 Secure 和 `__Host-` 前缀。
 
 升级时必须停止旧版本创建登录交易，允许旧 callback 完成或等待十分钟到期。迁移对仍有效的旧 pending 明确失败并保留记录；旧记录全部消费或到期后，迁移清理过期记录并建立非空 scope 摘要合同，不伪造 scope。
 callback 在同一事务验证绑定/state/provider/期限并消费 pending；提交后才通过 SDK
@@ -391,7 +391,7 @@ Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览
 | bare preview | `/auth/sso/complete?login=...` | 以浏览器实际带回的预览 Cookie 完成记录并 303 返回原始目标；失败停在可重试页。 |
 | main | `/api/v1/auth/preview/retry` | 用户主动重试可恢复的登录记录时，在事务内校验当前主站 session、原记录和必要的 state，消费旧记录并建立保存相同目标的新记录；无法验证或记录失效时返回错误。 |
 
-生产预览 Cookie 为 `__Secure-daynight_preview_session; Domain=<preview hostname>; Path=/; Secure; HttpOnly; SameSite=Lax`，到期时间取自来源 session。state Cookie 的名称由 state 摘要派生，值等于 state，仅属于 bare preview host，成功兑换后清理。主站 `__Host-daynight_session` 和原登录绑定 Cookie 保持原作用域。HTTP 测试模式使用非 Secure 测试名称。
+生产预览 Cookie 为 `__Secure-daynight_preview_session; Domain=<preview hostname>; Path=/; Secure; HttpOnly; SameSite=Lax`，新签发请求保留 400 天，服务端有效性由共享 session 的 168 小时闲置期限决定。state Cookie 的名称由 state 摘要派生，值等于 state，仅属于 bare preview host，成功兑换后清理。主站 `__Host-daynight_session` 和原登录绑定 Cookie 保持原作用域。HTTP 测试模式使用非 Secure 测试名称。
 
 SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。主站 callback 创建短期记录失败或结果未知时，失败页保留已构造的 `/auth/complete` 入口供用户继续账户发布与原目标，不重放创建或上游 callback。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
 
@@ -401,7 +401,19 @@ Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare hos
 
 秘密至少 32 随机字节，仅持久化 SHA-256 摘要。生产会话 Cookie 为
 __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain。
-会话绝对有效期七天，不后台续期；注销删除当前会话。Session 的有限到期和 PersonalAccessToken
+浏览器主站和预览共享同一 sessions 行及 168 小时闲置期限，完整行为由[认证需求](../spec/daynight-auth.md)拥有。core/identity 负责凭据有效性、预期账号和单调期限计算，service/identity 以严格事务协调认证活动；PostgreSQL BrowserSessionDAO 按实际 token_hash 或 preview_token_hash 锁行，再读取 clock_timestamp()，返回该行与锁后时间。规则要求 expires_at > now，以 max(now,last_used_at) 作为最近使用，期限取 max(既有 expires_at,最近使用 + 168 小时)。更新只触及 last_used_at 与 expires_at，不插入记录或改变散列；提交失败不暴露有效 principal 或续期成功。
+
+RequestAuthentication 在已注册的应用业务认证入口核对实际主站 authority 与来源元数据；入口可由 ServeMux 方法限定模式声明，或由内部 dispatcher 在认证前通过 httpx.MethodDispatch 声明支持的业务方法。Assistant Task、Bot detail、Webhook 和 OAuth consent 的内部 dispatcher 使用同一方法角色；支持的 HEAD 必须明确声明，拒绝分支不继承其他 dispatcher 的准入。MethodDispatch 对未声明的方法在认证前设置方法拒绝角色；此规则同样约束 GET 模式隐含的 HEAD，Session 历史集合保留原协议拒绝响应且不续期。明确 Origin 和 Fetch Metadata 必须一致，原访问行为与活动准入分别处理。Cookie 写请求的精确 Origin 由同一 cookieOriginError 检查控制：续期准入先排除缺失、重复或不匹配的 Origin；原只读认证完成后仍执行该检查，保持认证失败优先于 Origin 拒绝的顺序。仅有同源 Fetch Metadata 不能授权 Cookie 写入或续期，安全 GET/HEAD 的来源准入保持原义。注册的纯方法拒绝 handler 在认证前通过 httpx.MethodRejection 标记请求角色，即使为遮蔽通配业务路由而使用 GET、PATCH 或 DELETE 限定模式也不续期；拒绝仍执行只读认证和原授权、CSRF 检查。业务拒绝发生于成功认证之后时，已提交活动保持有效；公开路由、登录步骤、注销、未声明业务方法的 fallback 和明确 HEAD 拒绝不进入活动写入。GET 所隐含的 HEAD、内部 dispatcher 明确支持的 HEAD 与后台轮询、304 同样可以计数，协议 ping/pong 和纯服务端请求不触达活动能力。独立 POST /api/v1/auth/session/activity 在正文和 Cookie 准入后，以 expectedUserId 交给同一活动事务，账号不符返回 409 identity_mismatch；成功返回 204 与 no-store。前端可见且已连接的实时观察如何发送和停止请求由调用方拥有。
+
+preview Routes 保留本次认证使用的原 secret 与 principal。附件 Open 成功完成受保护读取准入后、响应字节或 304 发出前，HTTP 来源矩阵允许的请求调用 PreviewSSO.Renew，并以原 preview_token_hash 再锁定和验证同一 session。允许同源请求、同站 iframe 文档导航和显式用户发起的顶层导航；其他同站子资源、跨站自动流量与缺失或矛盾元数据只沿用读取行为。换发、撤销或到期后的旧凭据不能续期，错误关闭已经打开的流并保留失败。该钩子不授予主站权限。
+
+浏览器签发、认证、预览 SSO、权限重检及清理使用主库时钟。新 session 的 created_at 与 last_used_at 保存实际签发时刻，expires_at 为其后 168 小时；旧行的未知活动不回填。新登录和预览 SSO Cookie 请求保留 400 天，保持既有隔离域与安全属性。普通响应不重发 Cookie，旧 Cookie 按原保留期自然到期；浏览器提前清除时沿用登录或 SSO 恢复。PAT/OAuth 的时钟、到期与续期规则保持各自合同。
+
+浏览器会话管理复用账户凭据准入，仅接受主站 Cookie。Identity 在主库时间下读取有效会话，将当前行与其余行分开；其余行由 `(user_id, created_at DESC, id DESC)` 索引支持倒序游标分页，游标绑定调用账号和会话。单条读取沿完整资源路径核对同账号目标。新登录只持久化有界浏览器和系统分类，历史未知值保持 null，不持久化原始 User-Agent 或 IP。投影不包含凭据散列或其他秘密。
+
+撤销需要同时保护调用者与目标：事务按会话 ID 一致顺序锁定两行，锁后取主库时间，复核调用者、预期账号和会话、目标归属及有效期，再删除目标。该顺序避免两个会话互相撤销时按相反顺序取得锁；锁后校验防止等待期间到期或撤销的调用者继续写入。提交未确认时不宣称成功，调用方只读回目标，不重放撤销。当前会话不能通过管理接口撤销，继续使用 logout。删除共享行使目标主站、预览凭据和后续权限重检同时失效，不改变其他凭据。详细取舍见[管理决策](../../.agents/notes/implemented/architecture/2026-11-23-browser-session-management.md)。
+
+注销删除当前会话。Session 的有限到期和 PersonalAccessToken
 的可空到期由独立领域记录表达，OAuth family 使用自己的有效期限。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
 1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI (<hostname>)` 凭据。
@@ -696,13 +708,19 @@ panic/abort 保持原中止语义，abort 另有安全请求日志。
 [记录器决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-recorder.md)
 记录其取舍。
 
+### 浏览器续期发布与恢复
+
+先备份数据库，停止旧认证实例和相关写入，再部署新增可空活动列的 schema 与支持续期合同的后端；两域在同一服务制品中切换，随后启用消费 activity API 的 Web。回调路径必须继续由现有路由预留和冲突检查保护。切换后不能混跑使用固定期限或应用时钟的旧认证实例。故障恢复使用保留现有协议、DB 时钟和滚动期限的兼容制品修复；常规响应不转换旧 Cookie。锁等待和每次合格活动产生的写入/WAL 是续期成本，由独立压力验证观察。
+
+[续期决策](../../.agents/notes/implemented/architecture/2026-11-23-browser-session-activity.md)记录锁后取时、来源准入与持久 Cookie 的取舍。
+
 ## 数据与并发
 
 | 表 | 关键字段与约束 |
 |---|---|
 | users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
-| sessions | ID、唯一 token_hash、可空且非空值唯一的 preview_token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
+| sessions | ID、唯一 token_hash、可空且非空值唯一的 preview_token_hash、user_id、必填 expires_at、可空 last_used_at；主站与预览共享 168 小时闲置期限，注销删除。 |
 | preview_sso_logins | ID、return_url、expires_at，及可空 state_hash、code_hash、session_id；非空 code_hash 唯一，按 expires_at 清理。 |
 | personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at 与 last_used_at；expires_at 为 null 表示永不过期，last_used_at 为 null 表示无已记录使用，撤销删除。 |
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
@@ -720,6 +738,8 @@ panic/abort 保持原中止语义，abort 另有安全请求日志。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
+`118_browser_session_activity.sql` 仅新增可空 last_used_at，不回填历史活动或改变旧行期限；首次合格活动按锁后主库时钟续期。
+`120_browser_session_management.sql` 在既有 119 迁移之后新增可空 browser、os 及账号创建顺序索引，不回填旧行，保留会话散列和到期索引。
 `035_team_invitations.sql` 随真实邀请入口建立独立邀请表、唯一散列及 Team/到期索引；
 删除 Team 的事务负责清除子记录，不引入 foreign key。
 
@@ -898,6 +918,8 @@ Thread 的强准入与凭据重验规则由其专用事务拥有。
 | GET /workers、GET /workers/{workerId} | 交付同一内嵌页面，认证后显示当前账号的 Worker 观测；数据由账号级快照 API 准入，任务行按当前项目权限过滤。 |
 | GET /setup | 交付同一内嵌页面，显示公开静态使用引导；文档根执行一次身份初始化，指南不发起业务 API 请求。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
+| POST /api/v1/auth/session/activity | 主站 Cookie、精确 Origin 与 expectedUserId；锁内核对账号并续期，成功 204/no-store，账号变化 409 identity_mismatch，不重发 Cookie。 |
+| GET /api/v1/me/browser-sessions、GET .../{id}、POST .../{id}/revoke | 主站 Cookie 管理本账号有效浏览器会话；写入校验精确 Origin、预期账号和会话，响应 no-store。当前会话单列，撤销当前会话或身份变化返回 409，其他账号或无有效目标返回 404，确认撤销返回 204。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
 | POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
@@ -1145,6 +1167,8 @@ canonical 非根路径，不接受编码别名、dot-segment、路由通配符�
 UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口、完成页和实际
 callback 的 returnPath，防止回调循环。
+
+部署浏览器会话管理前先备份并应用 schema，再部署支持该合同的后端，最后启用消费它的 Web。切换续期及管理行为时不混用旧认证实例；保留现有 Web、CLI 和登录接口。需要恢复时使用保留该协议与续期语义的兼容制品，避免旧实例破坏共享会话期限。
 
 两个独立开关默认关闭；YAML 使用布尔值，环境变量使用 0/1，其他值拒绝：
 

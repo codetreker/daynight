@@ -18,16 +18,6 @@ type ArchiveBundleFile struct {
 	TimelineRevision                                int64
 	StagingReleased                                 bool
 	Resource                                        json.RawMessage
-	UploadVersion                                   int
-	PrefixProof                                     []byte
-	SuccessorFileID                                 string
-	TerminalError                                   json.RawMessage
-}
-
-// SessionArchiveV2DAO atomically compares the complete previously observed file
-// state before changing it. The caller owns the transaction and transition rules.
-type SessionArchiveV2DAO interface {
-	CompareAndSwapSessionArchiveFile(context.Context, ArchiveBundleFile, ArchiveBundleFile) error
 }
 type ArchiveMigration struct {
 	SessionID, MigrationID, SourcePath, SourceHash, TargetPath, TargetHash, Phase string
@@ -68,4 +58,24 @@ type SessionArchiveHandoffDAO interface {
 // after its original bytes are durable in external storage.
 type SessionArchiveResourceMigrationDAO interface {
 	MigrateSessionArchiveResource(context.Context, SessionResourceRecord, SessionResourceRecord) error
+}
+
+// ArchiveStagingRecord is the database identity and durable business receipt of
+// a v2 upload. Receiving progress belongs to storage, not this record.
+type ArchiveStagingRecord struct {
+	SessionID, FileID, Purpose, SHA256, State, Path, SuccessorFileID string
+	ByteLength, TerminalOffset, TimelineRevision                     int64
+	StagingReleased                                                  bool
+	Resource, TerminalError                                          json.RawMessage
+}
+
+// SessionArchiveStagingDAO is transaction-bound. Callers hold the Session's
+// storage exclusion across creation, admission recheck, and business changes.
+// A false conditional write means the caller must read the original identity.
+type SessionArchiveStagingDAO interface {
+	ArchiveStagingRecord(context.Context, string, string) (ArchiveStagingRecord, error)
+	InsertArchiveStaging(context.Context, ArchiveStagingRecord) (bool, error)
+	FinishArchiveStaging(context.Context, ArchiveStagingRecord, string, int64, json.RawMessage) (bool, error)
+	SetArchiveStagingSuccessor(context.Context, ArchiveStagingRecord, string) (bool, error)
+	ReleaseArchiveStaging(context.Context, ArchiveStagingRecord) (bool, error)
 }

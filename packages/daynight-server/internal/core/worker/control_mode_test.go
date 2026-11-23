@@ -11,7 +11,7 @@ import (
 )
 
 func TestSudoCleanupProtocolOmission(t *testing.T) {
-	document := configurationInputDocument()
+	document := legacyConfigurationInputDocument()
 	for _, entry := range []struct {
 		value                      any
 		present, preserve, enabled bool
@@ -41,7 +41,7 @@ func TestSudoCleanupProtocolOmission(t *testing.T) {
 }
 
 func TestWindowsProcessCleanupProtocolOmission(t *testing.T) {
-	document := configurationInputDocument()
+	document := legacyConfigurationInputDocument()
 	for _, entry := range []struct {
 		value                      any
 		present, preserve, enabled bool

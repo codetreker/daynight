@@ -7,9 +7,10 @@ export type StopObservation =
   | { kind: "stopped"; execution: ExecutionRef; observedAt: number }
   | { kind: "running"; execution: ExecutionRef; observedAt: number }
   | { kind: "not-started"; owner: ResourceOwner; observedAt: number }
+  | { kind: "resources-cleared"; owner: ResourceOwner; observedAt: number }
   | { kind: "unknown"; target: CleanupTarget; error: unknown; observedAt: number };
 export type CleanupAttempt = { attemptId: string; owner: ResourceOwner };
-export type ExecutionStoppedNotice = { attempt: CleanupAttempt; observation: Extract<StopObservation, { kind: "stopped" | "not-started" }> };
+export type ExecutionStoppedNotice = { attempt: CleanupAttempt; observation: Extract<StopObservation, { kind: "stopped" | "not-started" | "resources-cleared" }> };
 export type ExecutionStopObserver = (target: CleanupTarget, operation: Operation) => Promise<StopObservation>;
 export type TerminalCleanupContext = { attempt: CleanupAttempt; onExecutionStopped(notice: ExecutionStoppedNotice): void };
 export type CleanupRequest =

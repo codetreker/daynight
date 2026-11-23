@@ -37,7 +37,6 @@ const install = async (page: Page, locale: string, type: 'task' | 'goal' = 'task
       if (state.mode === 'failure') return send({ error: { code: 'internal_error', message: 'Controlled read failure', requestId: 'discussion-touch-read' } }, 500);
       return send({ items: state.mode === 'empty' || url.searchParams.has('afterId') ? [] : messages, hasMoreBefore: false, hasMoreAfter: false });
     }
-    if (path === `${base}/steps`) return send({ projectId, taskId, version: 1, steps: [] });
     if (path === `${base}/attachments` || path === `${base}/sessions`) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Unconfigured fixture route', requestId: path } }, 404);
   });

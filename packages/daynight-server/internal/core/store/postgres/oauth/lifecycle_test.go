@@ -16,12 +16,16 @@ func TestLockOwnerSession(t *testing.T) {
 	user, session := uuid.NewString(), uuid.NewString()
 	_, err := tx.Exec(ctx, `INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$2,$3,$3)`, user, uuid.NewString(), now)
 	check(t, err)
-	_, err = tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session, user, digest("session"), now, now.Add(time.Hour))
+	_, err = tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session, user, digest("session"), now.Add(-time.Hour), now.Add(time.Hour))
 	check(t, err)
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
 	check(t, dao.LockOwnerSession(ctx, principal, now))
-	missing(t, dao.LockOwnerSession(ctx, principal, now.Add(time.Hour)))
+	check(t, dao.LockOwnerSession(ctx, principal, now.Add(2*time.Hour)))
 	principal.UserID = uuid.NewString()
+	missing(t, dao.LockOwnerSession(ctx, principal, now))
+	principal.UserID = user
+	_, err = tx.Exec(ctx, `UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, session)
+	check(t, err)
 	missing(t, dao.LockOwnerSession(ctx, principal, now))
 }
 

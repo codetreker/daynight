@@ -307,6 +307,41 @@ func (s *Execution) acceptMediaResponse(ctx context.Context, tx *operationTx, r 
 			return nil, fault("resource_conflict", "Media bytes must be durable before receipt completion.")
 		}
 	}
+	if r.OnlineMode == "relay" && row.Action == "retry_capture" {
+		var identity struct {
+			CaptureID string `json:"captureId"`
+			AttemptID string `json:"attemptId"`
+		}
+		if json.Unmarshal(row.Body, &identity) != nil || identity.CaptureID == "" {
+			return nil, conflict()
+		}
+		if _, err := uuid.Parse(identity.AttemptID); err != nil || row.RequestID != mediaIdentity(identity.AttemptID, "retry_capture") {
+			return nil, conflict()
+		}
+		resources, err := resourceDAO(tx)
+		if err != nil {
+			return nil, err
+		}
+		capture, err := resources.SessionCapture(ctx, r.Snapshot.SessionID, identity.CaptureID)
+		if err != nil {
+			return nil, err
+		}
+		if capture.Receipt.AttemptID == identity.AttemptID && capture.Validated != nil {
+			validated, err := sp.DecodeValidatedImage(row.Result)
+			if row.Error != nil || err != nil || !jsonEqual(encode(validated), encode(capture.Validated)) {
+				return nil, conflict()
+			}
+		}
+		if capture.Receipt.AttemptID == identity.AttemptID && capture.Receipt.State == "failed" && capture.Validated == nil && row.Error != nil && !jsonEqual(encode(capture.Receipt.Error), encode(row.Error)) {
+			return nil, conflict()
+		}
+		if row.Error != nil && capture.Receipt.AttemptID == identity.AttemptID && capture.Receipt.State == "reserved" {
+			capture.Receipt.State, capture.Receipt.ResourceID, capture.Receipt.Error = "failed", nil, row.Error
+			if err = saveImageCapture(ctx, resources, capture); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if e = saveMediaRequest(ctx, d, row); e != nil {
 		return nil, e
 	}

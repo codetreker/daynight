@@ -70,7 +70,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
-Task Steps have [CLI list/show reads, atomic CLI Add and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
+Task Steps have no REST, MCP, CLI or Web entry points. The [retirement requirements](docs/spec/daynight-task-steps.md) define old-path refusals and the boundary of the remaining internal service and persisted data.
 
 Task creation and general editing use the CLI. The Web app provides project and
 Worker browsing, Worker configuration editing, status and execution-setting
@@ -124,7 +124,7 @@ daynight --skill
 
 This prints the complete standalone product manual, generated from the same
 topic sources installed for coding agents. It covers project and task operations,
-Steps, materials, write safety, Sessions, Webhooks and Worker operations. Reading
+materials, write safety, Sessions, Webhooks and Worker operations. Reading
 requires no login, configuration, installed skill or interactive terminal. Use
 each command's `--help` for exact arguments.
 

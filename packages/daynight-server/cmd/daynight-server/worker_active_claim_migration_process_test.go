@@ -36,12 +36,18 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=115").Scan(&expectedChecksum); err != nil {
 				t.Fatal(err)
 			}
-			// Remove the additive migrations after 114 as well as their ledger
-			// entries so startup sees the actual schema preceding migration 115.
+			// Remove later additive migrations and their ledger entries to restore schema 114.
 			if _, err := observer.Exec(ctx, `DROP INDEX task_properties_worker_active_claim_idx;
-ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
-DELETE FROM schema_migrations WHERE version IN (115, 116)`); err != nil {
+ALTER TABLE task_sessions DROP COLUMN online_mode;
+ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
+DROP INDEX sessions_user_created_id;
+ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
+DELETE FROM schema_migrations WHERE version >= 115`); err != nil {
 				t.Fatal(err)
+			}
+			var latestVersion int
+			if err := observer.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&latestVersion); err != nil || latestVersion != 114 {
+				t.Fatalf("historical migration boundary: latest=%d error=%v", latestVersion, err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()
 			worker := &model.WorkerClaim{ClaimID: uuid.NewString(), State: model.WorkerActive, UserID: uuid.NewString(), WorkerID: uuid.NewString(),
@@ -123,6 +129,32 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if committed != wantCommitted || indexed != wantCommitted || !preserved {
 				t.Fatalf("startup result: ledger=%t index=%t preserved=%t want commit=%t", committed, indexed, preserved, wantCommitted)
 			}
+			var activityApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || activityApplied != wantCommitted {
+				t.Fatalf("activity migration after worker validation: applied=%t want=%t error=%v", activityApplied, wantCommitted, err)
+			}
+			var stepRetirementApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || stepRetirementApplied != wantCommitted {
+				t.Fatalf("step retirement migration after worker validation: applied=%t want=%t error=%v", stepRetirementApplied, wantCommitted, err)
+			}
+			const managementFacts = `SELECT (EXISTS(SELECT FROM schema_migrations WHERE version=120))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='browser'))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='os'))::int + (EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('sessions_user_created_id') AND indisvalid AND indisready))::int`
+			var managementFactsCount int
+			wantFacts := 0
+			if wantCommitted {
+				wantFacts = 4
+			}
+			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != wantFacts {
+				t.Fatalf("session management migration after worker validation: facts=%d want=%d error=%v", managementFactsCount, wantFacts, err)
+			}
+			var platformModeApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121)`).Scan(&platformModeApplied); err != nil || platformModeApplied != wantCommitted {
+				t.Fatalf("platform task mode migration after worker validation: applied=%t want=%t error=%v", platformModeApplied, wantCommitted, err)
+			}
+			const stagingFacts = `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=122) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='upload_version') AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`
+			var stagingApplied bool
+			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || stagingApplied != wantCommitted {
+				t.Fatalf("single staging migration after worker validation: applied=%t want=%t error=%v", stagingApplied, wantCommitted, err)
+			}
 			if strings.Contains(failed.logs.String(), validRaw) || strings.Contains(failed.logs.String(), values["DAYNIGHT_DATABASE_URL"]) {
 				t.Fatal("startup failure exposed a claim payload or database configuration")
 			}
@@ -147,6 +179,21 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			}
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=115 AND checksum=$1) AND EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('task_properties_worker_active_claim_idx') AND indisvalid AND indisready)`, expectedChecksum).Scan(&committed); err != nil || !committed {
 				t.Fatalf("same-ledger recovery: committed=%t error=%v", committed, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || !activityApplied {
+				t.Fatalf("activity migration recovery: applied=%t error=%v", activityApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || !stepRetirementApplied {
+				t.Fatalf("step retirement migration recovery: applied=%t error=%v", stepRetirementApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != 4 {
+				t.Fatalf("session management migration recovery: facts=%d error=%v", managementFactsCount, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121)`).Scan(&platformModeApplied); err != nil || !platformModeApplied {
+				t.Fatalf("platform task mode migration recovery: applied=%t error=%v", platformModeApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || !stagingApplied {
+				t.Fatalf("single staging migration recovery: applied=%t error=%v", stagingApplied, err)
 			}
 		})
 	}

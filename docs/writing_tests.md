@@ -93,7 +93,7 @@ Go Server API integration tests live in `packages/daynight-server/cmd/integratio
 
 Start a real Go Server process, PostgreSQL instance and attachment storage in an isolated environment. Drive the service through Go HTTP clients and assert public responses and observable results. Requests must pass through real routing, authentication, service assembly, DAO and persistence. Do not replace DAO or product API behavior with mocks, or use CLI/browser drivers. Production Web resources are a Server build dependency; these tests do not drive Web interactions.
 
-Choose representative normal success flows for each feature, with valid input, ordinary resource sizes, normal authorized identities and sequential operations. For example, create a Project and Task, read and modify the same Task, then complete it. Step, discussion and attachment features verify basic successful reads and writes. Subsequent requests read the same resource and content to confirm the real chain works. Identity, resource IDs, versions and content must correspond; success or HTTP status alone is insufficient.
+Choose representative normal success flows for each feature, with valid input, ordinary resource sizes, normal authorized identities and sequential operations. For example, create a Project and Task, read and modify the same Task, then complete it. Discussion and attachment features verify basic successful reads and writes. Subsequent requests read the same resource and content to confirm the real chain works. Identity, resource IDs, versions and content must correspond; success or HTTP status alone is insufficient.
 
 Do not expand this suite into invalid input, capacity boundaries, permission refusals, conflicts, races, fault injection or recovery matrices. Unit, store or process tests own those guarantees. Normal authentication and authorization may be flow steps; refusal, expiry and revocation remain at their owning layer.
 
@@ -104,7 +104,7 @@ Bounded readiness, execution deadlines, failure diagnostics and resource cleanup
 Evaluate scenarios and assertions individually, not by filename, database use or whether a request once succeeded. Only representative success flows proving normal collaboration through the complete API chain belong here:
 
 - Normal identity and valid data create, read and modify the same resource, with later API requests confirming the result.
-- Normal Task status progression and basic successful Step, discussion and attachment reads and writes.
+- Normal Task status progression and basic successful discussion and attachment reads and writes.
 - A small normal dataset for filtering, pagination or dependency reads verifies the fully assembled request path.
 
 Split tests mixing normal flows with boundaries, refusals, conflicts, races, faults, cancellation or response loss by proof responsibility. Normal flows may move to API integration; protocol assertions remain with their server owner, business rules remain in core/service, actual SQL, transactions, locks and persistence faults remain in store, and process faults remain with their runtime owner. Stress and capacity workloads use independent entries.
@@ -136,7 +136,7 @@ Keep only a few sequential flows with valid data and ordinary resource sizes:
 1. Browser login and CLI login.
 2. CLI creates a Project and Task; Web reads the same Task.
 3. Web changes Task status; CLI reads and completes it; Web verifies the result.
-4. Step, discussion and attachment each have one basic successful write/read chain, read by the other client.
+4. Discussion and attachment each have one basic successful write/read chain, read by the other client.
 
 Cross-client assertions verify resource identity and actual content, not command success or HTTP status alone. Another client reads committed data; when applicable, refresh the browser to verify persistence.
 

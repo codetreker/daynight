@@ -120,7 +120,7 @@ func TestToolPathsStrictChoiceSyntax(t *testing.T) {
 
 func TestTwoToolProtocolRejectsLegacyFields(t *testing.T) {
 	capabilities := workerprotocol.Capabilities{ToolPaths: true, ArchiveSessions: true}
-	document := configurationInputDocument()
+	document := legacyConfigurationInputDocument()
 	document["toolPaths"] = map[string]any{"codex": nil, "copilot": nil}
 	document["archiveSessions"] = true
 	if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), capabilities); err != nil {
@@ -132,7 +132,7 @@ func TestTwoToolProtocolRejectsLegacyFields(t *testing.T) {
 		"missing tool": func(v map[string]any) { v["toolPaths"] = map[string]any{"codex": nil} },
 	} {
 		t.Run(name, func(t *testing.T) {
-			candidate := configurationInputDocument()
+			candidate := legacyConfigurationInputDocument()
 			candidate["toolPaths"] = map[string]any{"codex": nil, "copilot": nil}
 			candidate["archiveSessions"] = true
 			mutate(candidate)

@@ -198,6 +198,9 @@ func (op *ArchiveOperation) validateHistoryWriter(r *record, t task) error {
 	if op.principal.Kind != model.PATCredential || op.principal.UserID != r.Owner || !r.Consumed || !bytes.Equal(hash[:], r.GrantHash) || op.historyWriter.Fence != r.Snapshot.ControllerFence || r.Snapshot.ContentRevision != sp.ContentRevision || !active(t, r) || r.Snapshot.Lifecycle != "active" || r.Live == nil || r.ConnectionExpiry == nil || !op.execution.now().Before(*r.ConnectionExpiry) {
 		return conflict()
 	}
+	if r.OnlineMode == "relay" {
+		return fault("component_unsupported", "Online relay Sessions do not support active history ledgers.")
+	}
 	return nil
 }
 
@@ -243,7 +246,7 @@ func (op *ArchiveOperation) PutHistoryLedger(ctx context.Context, writer ActiveH
 	if err := op.prepareHistoryLedger(ctx, writer); err != nil {
 		return sp.ArchiveFileReceipt{}, err
 	}
-	return op.putArchiveFile(ctx, "history", fileID, offset, length, digest, chunk, data, nil, 1)
+	return op.putArchiveFile(ctx, "history", fileID, offset, length, digest, chunk, data, nil)
 }
 func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer ActiveHistoryWriter, fileID string) (out sp.ArchiveFileReceipt, err error) {
 	op.mu.Lock()

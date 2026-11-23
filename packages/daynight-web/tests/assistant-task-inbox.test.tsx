@@ -1,3 +1,4 @@
+import { webhookCatalog } from './helpers/webhooks';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { type AssistantTask, type AssistantTaskInbox as Inbox, assistantTaskInboxUrl, enableAssistantTaskInbox, getAssistantTaskInbox } from '../src/api/assistant-tasks';
@@ -34,6 +35,7 @@ function server(initial: Inbox) {
       state.inbox = off; return botResponse(receipt('inbox_disable', off, id));
     }
     if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(state.inbox);
+    if (path === '/api/v1/webhook-event-types') return botResponse(webhookCatalog());
     if (path.startsWith('/api/v1/me/webhooks?')) return botResponse({ items: [], nextCursor: null });
     return botError(404, 'not_found');
   });

@@ -12,6 +12,30 @@ const arrival = (state: unknown, path = '/account') => act(() => {
   dispatchEvent(new PopStateEvent('popstate', { state }));
 });
 
+it('restores retired tabs in all nested history selections without changing attachment identities', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const legacy = { id: child, navigation: { tab: 'steps', path: 'docs/result.md' } };
+  const nested = { graphRootId: null, task: legacy };
+  const projectState = { version: 1, userId: user, pageKey: `project:${project}`, selection: { section: 'tasks', view: 'goals', projectGraphWitness: null, detail: { id: root, source: 'direct', insideProjectGraph: false, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const myState = { version: 1, userId: user, pageKey: 'my-tasks', selection: { projectPages: {}, detail: { projectId: project, id: root, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const resourceState = { version: 1, userId: user, pageKey: `resource:${project}/${root}`, selection: { goalChildren: nested, externalGoal: { id: root, witness: child, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const projectResult = readProjectHistory(projectState, user, project)!;
+  const myResult = readMyTasksHistory(myState, user)!;
+  const resourceResult = readResourceHistory(resourceState, user, project, root)!;
+  for (const detail of [projectResult.detail, myResult.detail, resourceResult.externalGoal]) {
+    expect(detail?.navigation).toEqual({ tab: 'overview', path: null });
+    expect(detail?.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  }
+  expect(resourceResult.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  expect(readProjectHistory(projectState, other, project)).toBeNull();
+  expect(readMyTasksHistory(myState, other)).toBeNull();
+  expect(readResourceHistory(resourceState, other, project, root)).toBeNull();
+  const invalid = { ...resourceState, selection: { ...resourceState.selection, goalChildren: { ...nested, task: { ...legacy, navigation: { tab: 'steps', path: '../private' } } } } };
+  expect(() => readResourceHistory(invalid, user, project, root)).toThrow();
+});
+
 describe('standalone resource reading history', () => {
   const project = '10000000-0000-4000-8000-000000000001';
   const root = '20000000-0000-4000-8000-000000000001';

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -71,7 +72,7 @@ func TestBackupReaderOrchestrationPreservesInputsCleanupAndCauses(t *testing.T) 
 					}
 					return files, nil
 				},
-				verify: func(got context.Context, volume backupVolumeReader, inventory store.StorageInventory) error {
+				verify: func(got context.Context, volume backupVolumeReader, inventory store.StorageInventory, report func(sessioncore.ArchiveRecoveryOffset) error) error {
 					f.calls = append(f.calls, "verify")
 					if got != ctx || volume != files || !reflect.DeepEqual(inventory, f.inventory) {
 						t.Fatal("core operation input changed")
@@ -82,7 +83,7 @@ func TestBackupReaderOrchestrationPreservesInputsCleanupAndCauses(t *testing.T) 
 					return nil
 				},
 			}
-			e := verifyStorageBackup(ctx, "restored-database", "restored-volume", readers)
+			e := verifyStorageBackup(ctx, "restored-database", "restored-volume", readers, nil)
 			want := []string{"database-open", "files-open", "inventory", "verify", "files-close", "database-close"}
 			if kind == "database-open" {
 				want = []string{"database-open"}
@@ -113,5 +114,57 @@ func TestBackupReaderOrchestrationPreservesInputsCleanupAndCauses(t *testing.T) 
 func TestBackupReaderPublicEntryRejectsInvalidDatabaseBeforeVolume(t *testing.T) {
 	if e := VerifyStorageBackup(t.Context(), "postgres://private-user:private-password@bad%host/db", "must-not-open"); e == nil {
 		t.Fatal("invalid backup database accepted")
+	}
+}
+
+func TestBackupReaderReportsOriginalOffsetsAndPropagatesReportFailure(t *testing.T) {
+	for _, failReport := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "report failure"}[failReport], func(t *testing.T) {
+			f := &backupReaderFixture{t: t, inventory: store.StorageInventory{SessionID: "session", OwnerID: "owner"}}
+			volume := &backupVolumeFixture{owner: f}
+			expected := sessioncore.ArchiveRecoveryOffset{SessionID: "session", FileID: "file", Offset: 524288}
+			reportFailure := errors.New("report destination unavailable")
+			var observations []sessioncore.ArchiveRecoveryOffset
+			report := func(value sessioncore.ArchiveRecoveryOffset) error {
+				f.calls = append(f.calls, "report")
+				observations = append(observations, value)
+				if failReport {
+					return reportFailure
+				}
+				return nil
+			}
+			readers := backupReaderDependencies{
+				openDatabase: func(context.Context, string) (backupInventoryReader, error) {
+					f.calls = append(f.calls, "database-open")
+					return f, nil
+				},
+				openFiles: func(string) (backupVolumeReader, error) { f.calls = append(f.calls, "files-open"); return volume, nil },
+				verify: func(ctx context.Context, got backupVolumeReader, inventory store.StorageInventory, callback func(sessioncore.ArchiveRecoveryOffset) error) error {
+					f.calls = append(f.calls, "verify")
+					if ctx != t.Context() || got != volume || !reflect.DeepEqual(inventory, f.inventory) || callback == nil {
+						t.Fatal("reporting inputs changed")
+					}
+					return callback(expected)
+				},
+			}
+			err := verifyStorageBackup(t.Context(), "database", "volume", readers, report)
+			if failReport && !errors.Is(err, reportFailure) || !failReport && err != nil {
+				t.Fatalf("report outcome: %v", err)
+			}
+			if !reflect.DeepEqual(observations, []sessioncore.ArchiveRecoveryOffset{expected}) {
+				t.Fatalf("observations: %+v", observations)
+			}
+			if want := []string{"database-open", "files-open", "inventory", "verify", "report", "files-close", "database-close"}; !reflect.DeepEqual(f.calls, want) {
+				t.Fatalf("lifetime order: %v", f.calls)
+			}
+		})
+	}
+}
+
+func TestBackupReportEntryRejectsInvalidDatabaseWithoutCallingReport(t *testing.T) {
+	called := false
+	err := VerifyStorageBackupWithReport(t.Context(), "postgres://private-user:private-password@bad%host/db", "must-not-open", func(sessioncore.ArchiveRecoveryOffset) error { called = true; return nil })
+	if err == nil || called {
+		t.Fatalf("invalid database: error=%v reportCalled=%t", err, called)
 	}
 }

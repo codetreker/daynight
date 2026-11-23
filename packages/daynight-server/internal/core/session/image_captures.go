@@ -87,6 +87,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 			return nil, e
 		}
 	case "register":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		request, e := sp.DecodeImageCaptureRequest(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image occurrence registration.")
@@ -191,6 +194,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 			s.scheduleCapture(tx, r, capture)
 		}
 	case "commit":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		input, e := sp.DecodeImageCaptureCommit(m.MediaBody)
 		if e != nil {
 			return nil, fault("invalid_input", "Invalid image capture completion.")
@@ -225,6 +231,9 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		}
 		s.scheduleCapture(tx, r, capture)
 	case "failed":
+		if r.OnlineMode == "relay" {
+			return nil, captureRefusal("component_unsupported", "This Session requires direct image capture submission.")
+		}
 		var body struct {
 			CaptureID string        `json:"captureId"`
 			AttemptID string        `json:"attemptId"`

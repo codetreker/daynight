@@ -31,9 +31,8 @@ import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, re
 import { resourcePath } from "./resource-path.js";
 import { botIdentity, botIdentityHeaders } from "./bot-identity.js";
 import { isTaskCreationStatus, isTaskStatus } from "../task/status.js";
-import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
-import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
@@ -46,7 +45,7 @@ import type { ProjectRepositoryPreview, ProjectRepositoryReceipt } from "./types
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
 export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
@@ -55,7 +54,7 @@ export class ApiError extends Error {
   readonly phase: ApiPhase;
   readonly projectId?: string;
   readonly taskId?: string;
-  readonly stepId?: string;
+
   readonly serverMessage?: string;
   readonly status?: number;
   readonly code?: string;
@@ -78,7 +77,7 @@ export class ApiError extends Error {
     readonly confirmedMutationId?: string;
     readonly responseRequestId?: string;
   }) {
-    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`, context.stepId === undefined ? "" : ` step=${context.stepId}`].join("");
+    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`].join("");
     const server = options.serverError;
     const reason = server === undefined
       ? options.cause instanceof OperationError ? options.cause.message : phase === "protocol" || phase === "pagination" ? "Invalid server response." : "Local HTTP request failed."
@@ -91,7 +90,6 @@ export class ApiError extends Error {
     this.phase = phase;
     if (context.projectId !== undefined) this.projectId = context.projectId;
     if (context.taskId !== undefined) this.taskId = context.taskId;
-    if (context.stepId !== undefined) this.stepId = context.stepId;
     if (context.sentRequestId !== undefined) this.sentRequestId = context.sentRequestId;
     if (options.responseRequestId !== undefined) this.responseRequestId = options.responseRequestId;
     if (options.status !== undefined) this.status = options.status;
@@ -175,13 +173,6 @@ export type ApiClient = TaskSessionClient & {
   deleteBot(botId: string, input: DeleteBotInput): Promise<Bot>;
   listWorkers(): Promise<WorkerList>;
   getWorker(workerId: string): Promise<WorkerDetailResponse>;
-  listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
-  addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
-  deleteTaskStep(projectId: string, taskId: string, stepId: string, input: DeleteTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  updateTaskStep(projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  setTaskStepStatus(projectId: string, taskId: string, stepId: string, input: SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource>;
-  moveTaskStep(projectId: string, taskId: string, stepId: string, input: MoveTaskStepInput, options: MoveTaskStepOptions): Promise<StepsResource>;
-  getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(requirePrincipal?: boolean): Promise<User>;
@@ -274,10 +265,10 @@ const safeInvitationCause = (input: unknown, seen = new WeakSet<object>(), depth
   return result;
 };
 
-// Webhook events record the Bot that performed a Task, Step or Thread write so
+// Webhook events record the Bot that performed a Task or Thread write so
 // an assistant's inbox can suppress its own changes. Only these writes carry
 // the Bot identity; reads and other resources never send it.
-const botWriteOperations = new Set(["task.create", "task.update", "task.delete", "task.set-status", "worker.complete", "task.set-property", "task.remove-property", "task.step.add", "task.step.update", "task.step.set-status", "task.step.move", "task.step.delete", "task.thread.post"]);
+const botWriteOperations = new Set(["task.create", "task.update", "task.delete", "task.set-status", "worker.complete", "task.set-property", "task.remove-property", "task.thread.post"]);
 
 const attachmentPrefix = (projectId: string, taskId: string): string => `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/attachments`;
 const encodeAttachmentPath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
@@ -345,11 +336,6 @@ export const createApiClient = (options: {
     };
   };
   const fetch = options.fetch ?? globalThis.fetch;
-  let stepsPrincipal = expectedUserId;
-  const bindStepsPrincipal = (principal: string): void => {
-    if (stepsPrincipal !== undefined && stepsPrincipal !== principal) throw new ProtocolError("The authenticated Steps response principal changed during the operation.");
-    stepsPrincipal = principal;
-  };
   const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
 
@@ -740,44 +726,6 @@ export const createApiClient = (options: {
     } }, [200], { kind: "json", value: input }, true);
   };
 
-  const updateStep = async (action: "update" | "set-status", projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput | SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource> => {
-    const context: Context = { operation: `task.step.${action}`, sentRequestId: options.requestId };
-    try {
-      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-      const target = { ...context, projectId: project, taskId: task, stepId: step };
-      try {
-        taskVersion(input.version);
-        let normalized: UpdateTaskStepInput | SetTaskStepStatusInput;
-        if (action === "update") {
-          const fields = input as UpdateTaskStepInput;
-          if (fields.title === undefined && fields.description === undefined) throw new Error("Provide at least one Step title or description.");
-          if (fields.title !== undefined && !isNonemptyText(fields.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
-          if (fields.description !== undefined && !isText(fields.description)) throw new Error("Step description must be Unicode text without NUL.");
-          normalized = { version: fields.version, ...(fields.title === undefined ? {} : { title: fields.title }), ...(fields.description === undefined ? {} : { description: fields.description }) };
-        } else {
-          const fields = input as SetTaskStepStatusInput;
-          if (!["todo", "in_progress", "done", "skipped"].includes(fields.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
-          normalized = { version: fields.version, status: fields.status };
-        }
-        const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-        if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-        const pathname = resourcePath("projects", project, "tasks", task, "steps", step) + (action === "set-status" ? "/status" : "");
-        return await exchange(target, pathname, action === "update" ? "PATCH" : "PUT", {
-          kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-          parse: (value) => parseStepsResource(value, project, task),
-          confirmMutation: (result) => confirmUpdatedTaskStep(result, step, normalized, previous),
-        }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(target, "prepare", { cause });
-      }
-    } catch (cause) {
-      if (cause instanceof ApiError) throw cause;
-      throw new ApiError(context, "prepare", { cause });
-    }
-  };
-
   const accountPrincipal = (): ((metadata: JsonResponseMetadata) => string) => {
     let bound: string | undefined = expectedUserId;
     return (metadata) => {
@@ -947,119 +895,6 @@ export const createApiClient = (options: {
     getWorker: (workerId) => {
       const target = resourceId(workerId), principal = accountPrincipal();
       return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server."); return parseWorkerDetail(value, target, true); } }, [200]);
-    },
-    listTaskSteps: (projectId, taskId, options) => {
-      const project = resourceId(projectId), task = resourceId(taskId);
-      return exchange({ operation: "task.step.list", projectId: project, taskId: task, ...(options === undefined ? {} : { sentRequestId: options.requestId }) }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {
-        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-        parse: (value) => parseStepsResource(value, project, task),
-      }, [200], undefined, true);
-    },
-    getTaskStep: (projectId, taskId, stepId) => {
-      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-      return exchange({ operation: "task.step.show", projectId: project, taskId: task, stepId: step }, resourcePath("projects", project, "tasks", task, "steps", step), "GET", {
-        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-        parse: (value) => parseStepResource(value, project, task, step),
-      }, [200], undefined, true);
-    },
-    addTaskStep: async (projectId, taskId, input, options) => {
-      const context: Context = { operation: "task.step.add", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(input.id);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          if (!isNonemptyText(input.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
-          if (input.description !== undefined && !isText(input.description)) throw new Error("Step description must be Unicode text without NUL.");
-          if (input.status !== undefined && !["todo", "in_progress", "done", "skipped"].includes(input.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
-          if (input.before !== undefined && input.after !== undefined) throw new Error("before and after are mutually exclusive.");
-          const anchor = (value: string): string => { const id = canonicalStepId(value); if (id === null) throw new Error("Step anchor must contain exactly eight hexadecimal characters."); return id; };
-          const normalized: AddTaskStepInput = { version: input.version, id: step, title: input.title,
-            ...(input.description === undefined ? {} : { description: input.description }), ...(input.status === undefined ? {} : { status: input.status }),
-            ...(input.before === undefined ? {} : { before: anchor(input.before) }), ...(input.after === undefined ? {} : { after: anchor(input.after) }) };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          const pathname = resourcePath("projects", project, "tasks", task, "steps");
-          return await exchange(target, pathname, "POST", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value, response) => {
-              if (response.locationHeader !== `/api/v1${pathname}/${step}`) throw new ProtocolError("Step Location does not match the submitted identity.");
-              return parseStepsResource(value, project, task);
-            },
-            confirmMutation: (result) => confirmAddedTaskStep(result, normalized, previous),
-          }, [201], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
-    },
-    updateTaskStep: (projectId, taskId, stepId, input, options) => updateStep("update", projectId, taskId, stepId, input, options),
-    setTaskStepStatus: (projectId, taskId, stepId, input, options) => updateStep("set-status", projectId, taskId, stepId, input, options),
-    moveTaskStep: async (projectId, taskId, stepId, input, options) => {
-      const context: Context = { operation: "task.step.move", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          if ([input.before, input.after, input.position].filter((value) => value !== undefined).length !== 1) throw new Error("Exactly one Step position is required.");
-          if (input.position !== undefined && input.position !== "first" && input.position !== "last") throw new Error("Step position must be first or last.");
-          const anchor = (value: string): string => {
-            const id = canonicalStepId(value);
-            if (id === null || id === step) throw new Error("Step anchor must be another eight-hex Step ID.");
-            return id;
-          };
-          const normalized: MoveTaskStepInput = { version: input.version,
-            ...(input.before === undefined ? {} : { before: anchor(input.before) }),
-            ...(input.after === undefined ? {} : { after: anchor(input.after) }),
-            ...(input.position === undefined ? {} : { position: input.position }) };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step, "position"), "PUT", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value) => parseStepsResource(value, project, task),
-            confirmMutation: (result) => confirmMovedTaskStep(result, step, normalized, previous),
-          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
-    },
-    deleteTaskStep: async (projectId, taskId, stepId, input, options) => {
-      const context: Context = { operation: "task.step.delete", sentRequestId: options.requestId };
-      try {
-        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
-        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
-        const target = { ...context, projectId: project, taskId: task, stepId: step };
-        try {
-          taskVersion(input.version);
-          const normalized: DeleteTaskStepInput = { version: input.version };
-          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
-          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
-          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step), "DELETE", {
-            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
-            parse: (value) => parseStepsResource(value, project, task),
-            confirmMutation: (result) => confirmDeletedTaskStep(result, step, normalized, previous),
-          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
-        } catch (cause) {
-          if (cause instanceof ApiError) throw cause;
-          throw new ApiError(target, "prepare", { cause });
-        }
-      } catch (cause) {
-        if (cause instanceof ApiError) throw cause;
-        throw new ApiError(context, "prepare", { cause });
-      }
     },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);

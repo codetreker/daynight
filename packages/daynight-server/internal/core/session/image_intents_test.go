@@ -310,3 +310,18 @@ func TestImageIntentPersistenceKeepsCanonicalIdentityAndResumePins(t *testing.T)
 		t.Fatal("old store fabricated recovery", ok, e)
 	}
 }
+
+func TestRelayImageIntentRetainsOriginalChecksWithoutLedger(t *testing.T) {
+	f, c, input := imageIntentFixture(t)
+	f.r.OnlineMode = "relay"
+	f.d.bundle = store.ArchiveBundle{}
+	tx := &operationTx{dao: f.d, op: &Operation{}}
+	if err := f.s.authorizeImages(t.Context(), tx, f.r, c); err != nil {
+		t.Fatal(err)
+	}
+	input.Content[1].SHA256 = imageBytesHash([]byte("different"))
+	c.Payload = encode(input)
+	if err := f.s.authorizeImages(t.Context(), tx, f.r, c); err == nil {
+		t.Fatal("changed upload receipt accepted")
+	}
+}

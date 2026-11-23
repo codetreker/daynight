@@ -136,7 +136,7 @@ it("refuses an unversioned journal without creating or migrating it", async () =
   const f = await fixture(); const db = new Database(f.journalFile);
   db.exec("CREATE TABLE unrelated (id INTEGER)"); db.close();
   await stopControllerBootstrap(f.proof, Date.now() + 15_000);
-  await expect(f.observe()).rejects.toThrow(/current format/);
+  await expect(f.observe()).rejects.toThrow(/supported read-only format/);
   const read = new Database(f.journalFile, { readonly: true });
   expect(read.pragma("user_version", { simple: true })).toBe(0); read.close();
 }, 30_000);

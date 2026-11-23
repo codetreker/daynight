@@ -13,19 +13,23 @@ Node starts, preventing the same process proof on all supported platforms.
 
 ## Decision
 
-The CLI module runs ten independent built Node entry processes against a static
-HTTP plan. A test-only preload reads each private JSON argument file into
-`process.argv` before the real entry loads. The plan checks the exact request and
-supplies independent refusal or complete Step receipt facts. The original text
-values and version sequence reach the real parser and transport; the fixture does
+The original CLI proof ran ten independent built Node entry processes against a
+static HTTP plan. A test-only preload read each private JSON argument file into
+`process.argv` before the real entry loaded. The plan checked the exact request and
+supplied independent refusal or complete Step receipt facts. The original text
+values and version sequence reached the real parser and transport; the fixture did
 not implement server admission or persistence. Process trees, listener and files
-are owned and cleaned up by the test.
+were owned and cleaned up by the test.
 
 The [Step limits decision](2026-11-10-step-limits-test-ownership.md) assigns
 business admission and encoding to Core. The [layered deletion
 decision](2026-11-10-step-cli-test-layered-removal.md) records the remaining
 protocol, coordination and storage owners. Installed launcher tests separately
 exercise representative native arguments and packaging.
+
+The [CLI retirement](../simplification/2026-11-23-retire-cli-task-steps.md)
+removes this proof with the Steps commands; its historical observations do not
+claim current CLI capability.
 
 ## Alternatives
 
@@ -42,7 +46,8 @@ values would also retain the operating-system argument limit.
 
 ## Consequences
 
-The test verifies exact strings after preload, not operating-system acceptance
+The test verified exact strings after preload, not operating-system acceptance
 of the largest argv. Static responses cannot establish server refusal rules or
 physical preservation after rejection; those remain with their respective
-owners. Ten real launches add routine CLI test cost without a claimed CI speedup.
+owners. Ten real launches added routine CLI test cost without establishing a
+CI speedup.

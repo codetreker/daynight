@@ -10,7 +10,7 @@ Readers need exact values without losing dependency inspection on touch devices.
 
 ## Decision
 
-Both graphs share a 300×124 body and a 60px footer only for actual actions.
+Both graphs originally shared a 300×124 body and a 60px footer only for actual actions. The later [variable-height card decision](2026-11-23-variable-graph-card-height.md) replaces those dimensions while retaining the shared reading and interaction model.
 Three title lines include the external marker; Goal ownership is not projected
 onto cards. Graph-specific compact token and duration formats retain exact values
 and execution details in one canvas-owned hint. Hover, body focus and touch

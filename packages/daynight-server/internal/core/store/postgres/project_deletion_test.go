@@ -111,7 +111,7 @@ func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	// Pre-index storage permits corrupt bytes needed to exercise reader failures.
 	s := &Store{Pool: workerIndexOldPool(t)}
-	_, _, project := testutil.ProjectMembershipFixture(t, s)
+	project := testutil.QueryProject(t, s.Pool, s, 10)
 	ctx := context.Background()
 	for _, raw := range []string{"{", `{"claimId":1}`} {
 		id := uuid.NewString()

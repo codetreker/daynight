@@ -8,6 +8,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import { afterEach, expect, it, vi } from "vitest";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 import { createOperation } from "../../../src/api/operation.js";
 import * as files from "../../../src/platform/files.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
@@ -474,9 +475,20 @@ it("retains the original prepared writer after its producer's save observation e
     return replace(file, text, ...rest);
   });
   const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
-  const running = runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, journal.sink("10")).catch(error => error);
+  const timer = captureSynchronousDeadline(() => runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, journal.sink("10")));
+  const running = timer.result.catch(error => error);
+  let pending = true;
+  void running.then(() => { pending = false; });
   try {
-    await entered.promise;
+    expect(timer.count).toBe(1);
+    expect(timer.requested).toBe(10_000);
+    await withinExecutionDeadline(entered.promise, Date.now() + 5000);
+    const [original] = retainedOwnedCommandBoundaries();
+    expect(original).toMatchObject({ proof: null });
+    expect(journal.snapshot().pending).toBe(1);
+    expect(pending).toBe(true);
+    timer.markReady();
+    await timer.expire();
     const failure = await running;
     expect(failure).toMatchObject({ name: "OwnedCommandCleanupError", cause: { message: "Owned command responsibility save exceeded its deadline." } });
     expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
@@ -487,8 +499,16 @@ it("retains the original prepared writer after its producer's save observation e
     await journal.reconcileRetained({ generation: "10", deadline: Date.now() + 1000 });
     expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
     await journal.assertClosed();
+    expect(await journal.read()).toMatchObject([{ generation: "10", event: { resourceId: original!.resourceId, stage: "stopped", proof: null } }]);
     expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
-  } finally { release.resolve(); await running; operation.dispose(); await journal.reconcileRetained({ generation: "10", deadline: Date.now() + 1000 }); }
+  } finally {
+    operation.dispose();
+    release.resolve();
+    try {
+      await running;
+      await journal.reconcileRetained({ generation: "10", deadline: Date.now() + 1000 });
+    } finally { timer.restore(); }
+  }
 }, 20_000);
 
 it("reconciles a non-Git command's failed stop save in its original journal and generation without replay", async () => {

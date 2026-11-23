@@ -162,13 +162,13 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 			if err != nil {
 				return err
 			}
-			files, err := tx.Query(ctx, `SELECT upload_version,file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,prefix_proof,coalesce(successor_file_id::text,''),terminal_error FROM session_archive_files WHERE session_id=$1 AND upload_version<>1 AND NOT $2::boolean ORDER BY file_id`, v.SessionID, item.expired)
+			files, err := tx.Query(ctx, `SELECT upload_version,file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released,coalesce(successor_file_id::text,''),terminal_error FROM session_archive_files WHERE session_id=$1 AND upload_version<>1 AND NOT $2::boolean ORDER BY file_id`, v.SessionID, item.expired)
 			if err != nil {
 				return err
 			}
 			for files.Next() {
 				f := store.StorageArchiveFileV2{}
-				if err = files.Scan(&f.UploadVersion, &f.FileID, &f.Purpose, &f.SHA256, &f.ByteLength, &f.AcceptedOffset, &f.State, &f.Path, &f.Resource, &f.TimelineRevision, &f.StagingReleased, &f.PrefixProof, &f.SuccessorFileID, &f.TerminalError); err != nil {
+				if err = files.Scan(&f.UploadVersion, &f.FileID, &f.Purpose, &f.SHA256, &f.ByteLength, &f.AcceptedOffset, &f.State, &f.Path, &f.Resource, &f.TimelineRevision, &f.StagingReleased, &f.SuccessorFileID, &f.TerminalError); err != nil {
 					files.Close()
 					return err
 				}

@@ -176,7 +176,7 @@ func testHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T, f *httpFixture) {
 	mustStatus(t, status, 200, b)
 	catalog := jsonBody(t, b)
 	items := catalog["items"].([]any)
-	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+	keys := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 	if len(items) != len(keys) {
 		t.Fatalf("catalog items: %s", b)
 	}

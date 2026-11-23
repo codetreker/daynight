@@ -1,7 +1,7 @@
 # Assistant tasks
 
 Assistant tasks are user-owned collaboration resources, separate from Project
-Tasks, Worker execution claims, Steps and Threads. They contain a manual,
+Tasks, Worker execution claims and Threads. They contain a manual,
 appendices, revision proposals, items, records, inquiries and delivery events.
 No Project argument or repository discovery is required. Read
 [write safety](write-safety.md) before mutations; command help owns exact flags.

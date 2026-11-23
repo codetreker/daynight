@@ -32,6 +32,7 @@ type Operations interface {
 	Redeem(context.Context, string, string, string) (identity.PreviewSSORedemption, error)
 	Complete(context.Context, string, string) (string, error)
 	Authenticate(context.Context, string) (model.Principal, time.Time, error)
+	Renew(context.Context, string, model.Principal) error
 	Retry(context.Context, string, string, model.Principal) (string, error)
 }
 
@@ -201,7 +202,8 @@ func (h *Routes) callback(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		return
 	}
-	cookie := h.cookie(h.SessionCookieName(), result.Secret, result.ExpiresAt)
+	cookie := h.cookie(h.SessionCookieName(), result.Secret, result.ExpiresAt.Add(400*24*time.Hour-identity.SessionLifetime))
+	cookie.MaxAge = int((400 * 24 * time.Hour).Seconds())
 	// Numeric loopback fixtures have no subdomain namespace; IPv6 literals also
 	// cannot appear in a Cookie Domain attribute.
 	if net.ParseIP(h.preview.Hostname()) == nil {

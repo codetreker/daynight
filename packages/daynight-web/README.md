@@ -1208,55 +1208,18 @@ distinct; the server owns matching, ordering and context. The
 [requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
 [design](../../docs/design/daynight-web.md) own the interaction and lifecycle.
 
-## Steps reading and writing
+## Task detail navigation
 
-Task details always expose Steps after Overview, in both the dialog and standalone
-page. `tab=steps` preserves the tab through direct access, reload and browser
-history, including details without a Session. Reading shows the ordered title,
-four-state status and task-local ID; multiple expanded rows render Task-root
-Markdown and timestamps through the same attachment controller as Overview.
-
-`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
-parent-detail and confirmed mutation versions invalidate it; identity, cache
-generation and version admission fence late responses. An ahead summary-backed resource waits for summary admission and requests parent/project refresh. Direct Steps use the current live parent version and bounded parent/collection rereads; stale responses
-are reread against the highest verified floor, including pending parent details.
-Refresh and reader release retain that scalar floor within the same cache
-generation. Confirmed parent deletion fences in-flight reads and asynchronous
-admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
-retained-content errors remain distinct and retryable. A Steps 404 checks the
-parent before retiring access; 403 remains a refusal, and parent 410 uses the
-existing deleted-task presentation. Retirement and the last active reader's
-unsubscribe release complete collections, including pending admission, unless a Steps write operation still needs them. Steps never
-enter the TaskDetail LRU or IndexedDB.
-
-The list mounts at most 100 rows per page, with global numbering, previous/next
-buttons and a numeric page input. Paging makes no API requests; expansion remains
-bound to IDs across pages, same-task tabs and refresh reordering. Both languages
-and the 320px layout retain reading and recovery controls. The four-state menu
-submits through the same owner as Task writes and retains the confirmed state
-until the response is validated. The owner reconciles the Steps resource, parent
-detail and authorized summary before allowing another write. Conflicts and
-unknown outcomes expose recovery without replaying the operation; a failed
-readback keeps the submission gate closed. Position controls move up, down, to
-either end or relative to a selected Step. The picker filters the complete
-collection by name or ID, mounts at most 100 candidates and retains selection
-across filtering and pages. Confirmed moves locate the actual page and preserve
-expansion and focus by ID. The add form appends or inserts before or after a
-selected Step, using the same bounded picker and preserving its anchor by ID.
-A missing anchor or a changed creation time leaves the draft intact and requires
-a new position decision.
-The shared owner validates the complete response, and an unknown result retains
-the original ID for read-only reconciliation. Confirmed additions locate and
-focus the new row. Existing Steps can be edited in the same draft workspace;
-identity and creation time prevent an old draft from updating a replacement.
-Deletion requires confirmation and preserves unrelated Steps and references; a
-deleted edited item requires an explicit draft decision. At heights up to 500px,
-a single scrollable tab row reserves
-reading space; the tab owner reveals its target after focus, selection styling
-and locale updates. At heights up to 600px, pagination scrolls with the list so
-its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
-and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
-own the complete resource lifecycle and the remaining write architecture.
+Ordinary Task details provide Overview and Attachments in both dialogs and
+standalone pages, followed by Discussion, Session and Usage when available.
+The tab row supports keyboard navigation and reveals the selected tab when its
+labels or container change. At heights up to 500px, a single scrollable row
+preserves reading space. Old `tab=steps` addresses and saved navigation states
+use the default selection: Overview for an ordinary Task, or Attachments when
+an attachment path is present. Access checks and attachment selection continue
+through their existing owners. The [navigation requirements](../../docs/spec/daynight-task-steps.md#web-导航)
+and [detail design](../../docs/design/daynight-task-inspection.md#独立完整任务详情)
+define the corresponding behavior.
 
 ## Session display
 
@@ -1359,7 +1322,7 @@ historical identity, archive verification and read-only playback behavior.
 
 ## Task discussions
 
-Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
+Ordinary Task details provide Overview, Attachments and Discussion tabs, followed
 by Session while its existence is being resolved or actual execution history is
 available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
@@ -2261,7 +2224,7 @@ current interface language. Markdown and localized messages do not change the
 stored string or CLI/API output. Wide tables and code scroll within their local
 regions, and long words wrap inside the Overview reading column at 320px.
 Nonempty Task and Goal descriptions have the same bordered reading container in
-page, dialog and fullscreen modes; empty descriptions, Steps and attachments keep
+page, dialog and fullscreen modes; empty descriptions and attachments keep
 their existing presentation.
 
 Description-relative links and images resolve from the task attachment root.
@@ -2457,8 +2420,9 @@ exit and return controls remain available.
 Description for Goals. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
-`tab=overview|description|attachments|steps|discussion|session` enters shared
-navigation. A Goal presents Description, Attachments and Discussion in that
+`tab=overview|description|attachments|discussion|session|usage` enters shared
+navigation. A legacy `tab=steps` uses the default selection while retaining an
+attachment path. A Goal presents Description, Attachments and Discussion in that
 order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
@@ -2727,20 +2691,12 @@ HTTP cases check decoder admission and protocol classification. The
 [API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
 owns that separation and its limits.
 
-State-only waits in the platform, pause, status, assignment,
-direct-observation and Steps session suites use `tests/helpers/waitForState.ts`.
-It delegates to Testing Library with a 5ms default polling interval, preserving
-immediate checks, timeouts, errors and explicit options. The mixed Steps session
-suite retains Testing Library's default wait for DOM predicates. Production
-polling remains unchanged.
-
-Readiness must describe the operation being observed. Retired Step parent-check
-tests settle the reopened parent and Steps collection before arming their fault
-responses. Steps history-replacement tests flush pending React work, then jointly
-require fresh parent and Steps versions, the rendered row and the retained draft.
-The [direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
-and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
-record these readiness and reader-lifetime requirements.
+State-only waits in the platform, pause, status, assignment and
+direct-observation suites use `tests/helpers/waitForState.ts`. It delegates to
+Testing Library with a 5ms default polling interval, preserving immediate checks,
+timeouts, errors and explicit options. Production polling remains unchanged. The
+[direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
+records the readiness and reader-lifetime requirements.
 
 Catalogue-only direct-observation cases mount the real detail hook, session and
 cache without the detail surface. They bind injected cache verification outcomes
@@ -2837,7 +2793,7 @@ tests/navigation/task-controls-playwright.config.ts` after installing Chromium.
 
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
-admission independently of Steps forms and HTTP writes, including indexed
+admission without business HTTP writes, including indexed
 history traversal, retirement, beforeunload, keyboard focus and both languages at
 320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/playwright.config.ts` after installing Chromium. Results and

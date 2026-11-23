@@ -65,6 +65,11 @@ type previewOps struct {
 	calls   int
 }
 
+func (o *previewOps) Renew(ctx context.Context, dao store.PreviewSSODAO, value string, p model.Principal) error {
+	o.hit("renew", ctx, dao, o.now, []any{value, p}, []any{"secret", model.Principal{UserID: "user", CredentialID: "session", Kind: model.SessionCredential}})
+	return o.failure
+}
+
 func (o *previewOps) hit(name string, ctx context.Context, dao store.PreviewSSODAO, now time.Time, got, want any) {
 	o.calls++
 	if name != o.want || o.calls != 1 || ctx != o.ctx || dao != o.dao || now != o.now || !reflect.DeepEqual(got, want) {
@@ -193,6 +198,7 @@ func TestPreviewSSOTransactions(t *testing.T) {
 
 type previewLiveDAO struct {
 	store.PreviewSSODAO
+	clock        func(context.Context) (time.Time, error)
 	cleanup      func(context.Context, time.Time) error
 	insert       func(context.Context, model.PreviewSSOLogin) error
 	start        func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
@@ -202,6 +208,8 @@ type previewLiveDAO struct {
 	complete     func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
 	authenticate func(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
 }
+
+func (d *previewLiveDAO) SessionTime(ctx context.Context) (time.Time, error) { return d.clock(ctx) }
 
 func (d *previewLiveDAO) CleanupPreviewSSO(ctx context.Context, now time.Time) error {
 	return d.cleanup(ctx, now)
@@ -248,6 +256,7 @@ func TestPreviewSSOProductionAssembly(t *testing.T) {
 	principal := model.Principal{Kind: model.SessionCredential, UserID: "user", CredentialID: "session"}
 	expires := now.Add(time.Hour)
 	dao := &previewLiveDAO{}
+	dao.clock = func(context.Context) (time.Time, error) { return now, nil }
 	writer := &previewLiveWriter{dao: dao}
 	s, err := NewPreviewSSO(writer, "https://daynight.example", "https://preview.daynight.example", "https://daynight.example/auth/callback")
 	if err != nil {
