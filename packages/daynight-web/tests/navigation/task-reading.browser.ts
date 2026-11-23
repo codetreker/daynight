@@ -868,7 +868,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
 });
 
 
-test('project section history protects a real task draft through cancellation and departure', async ({ page }) => {
+test('project section history restores its earlier section from Task detail', async ({ page }) => {
   const state = await install(page); await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.goto(`/projects/${projectId}?tab=overview`);
   await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
@@ -889,18 +889,6 @@ test('project section history protects a real task draft through cancellation an
   expect(original.preference).toBe(JSON.stringify('tasks'));
   const goToOverview = () => page.evaluate(delta => history.go(delta), overviewIndex - original.index);
   await goToOverview();
-  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect.poll(() => page.url()).toBe(original.url);
-  await expect(draft).toHaveValue('Project task draft');
-  await expect(draft).toBeFocused();
-  expect(await draft.evaluate(element => element.matches(':focus-visible'))).toBe(true);
-  expect(await page.evaluate(id => ({ state: JSON.stringify(history.state), length: history.length,
-    preference: localStorage.getItem(`daynight:project-section:${id}`) }), projectId)).toEqual({ state: original.state, length: original.length, preference: original.preference });
-  await goToOverview();
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=overview$`));
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');

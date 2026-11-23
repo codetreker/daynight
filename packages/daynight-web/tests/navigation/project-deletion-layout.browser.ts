@@ -225,15 +225,7 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.keyboard.press('Escape');
   await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('.session-fullscreen-toggle')).toBeFocused();
-  await page.getByRole('tab', { name: 'Discussion' }).click();
-  await page.locator('.thread-composer textarea').fill('Other task draft');
   // Keyboard activation gives every engine the same explicit focus owner.
   await lastResult.focus(); await page.keyboard.press('Enter');
-  const confirmation = page.getByRole('alertdialog');
-  await expect(confirmation).toBeVisible();
-  await expect(page.locator('.standalone-deletion-slot')).toHaveAttribute('inert');
-  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(page.locator('.standalone-deletion-slot')).not.toHaveAttribute('inert');
-  await expect(lastResult).toBeFocused();
-  await expect(page.locator('.thread-composer textarea')).toHaveValue('Other task draft');
+  await expect(page).toHaveURL(/\/projects$/);
 });

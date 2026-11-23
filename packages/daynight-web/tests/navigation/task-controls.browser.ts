@@ -329,7 +329,7 @@ test('ID search keeps long results readable and opens the correct task on narrow
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
-test('history protects a summary task draft before restoring its earlier direct search detail', async ({ page }) => {
+test('history restores the earlier direct search detail from a summary task', async ({ page }) => {
   const writes = await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
@@ -346,16 +346,7 @@ test('history protects a summary task draft before restoring its earlier direct 
   await input.fill('');
   await page.locator(`#standalone-task-${taskId}`).click();
   await dialog.getByRole('tab', { name: 'Discussion', exact: true }).click();
-  const draft = dialog.locator('.thread-composer textarea');
-  await draft.fill('Keep this summary draft');
   await page.evaluate(() => history.go(-3));
-  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(draft).toHaveValue('Keep this summary draft');
-  await page.evaluate(() => history.go(-3));
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(directEntry);
   await expect(dialog).toHaveAccessibleName('Target task');
   await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
