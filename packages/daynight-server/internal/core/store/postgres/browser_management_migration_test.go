@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 )
 
 func TestBrowserManagementMigrationPreservesLegacySessions(t *testing.T) {
@@ -17,6 +19,10 @@ func TestBrowserManagementMigrationPreservesLegacySessions(t *testing.T) {
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
+	}
+	project, err := testutil.CreateProject(ctx, pool, &Store{Pool: pool}, queryID(975), "Historical fixture", "https://example.test/fixture")
+	if err != nil || project.ID != queryID(975) {
+		t.Fatalf("schema 118 project fixture: %+v %v", project, err)
 	}
 	user, session := queryID(971), queryID(972)
 	if _, err := pool.Exec(ctx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,'management-migration',now(),now())`, user); err != nil {
