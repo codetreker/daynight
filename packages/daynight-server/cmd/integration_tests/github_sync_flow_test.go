@@ -422,7 +422,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP INDEX task_properties_worker_active_claim_idx`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
@@ -430,7 +430,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116)`); err != nil || result.RowsAffected() != 38 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117)`); err != nil || result.RowsAffected() != 39 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -464,6 +464,10 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	}
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=116`).Scan(&migrationCount); err != nil || migrationCount != 1 {
 		t.Fatalf("archive upload migration ledger: count=%d error=%v", migrationCount, err)
+	}
+	var onlineModeColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='online_mode'), (SELECT count(*) FROM schema_migrations WHERE version=117)`).Scan(&onlineModeColumn, &migrationCount); err != nil || !onlineModeColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Session online mode: column=%t migration count=%d error=%v", onlineModeColumn, migrationCount, err)
 	}
 	var assignmentTable bool
 	if err := db.QueryRow(f.context, `SELECT to_regclass('project_pr_review_assignments') IS NOT NULL,(SELECT count(*) FROM schema_migrations WHERE version=96)`).Scan(&assignmentTable, &migrationCount); err != nil || !assignmentTable || migrationCount != 1 {

@@ -478,6 +478,9 @@ func (h *Routes) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn
 	if protocol == sp.Protocol {
 		w.Header().Set("Daynight-Session-Direct-Upload-Version", "1")
 		w.Header().Set("Daynight-Task-Body-History-Version", "1")
+		if r.Header.Get("Daynight-Online-Relay-Version") == "1" {
+			w.Header().Set("Daynight-Online-Relay-Version", "1")
+		}
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol}, InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
@@ -627,6 +630,11 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		h.Failure(w, r, err)
 		return
 	}
+	optedIn, taskBody, err := onlineRelayCapabilities(r)
+	if err != nil {
+		h.Failure(w, r, err)
+		return
+	}
 	readVersion, err := contentReadVersion(r)
 	if err != nil {
 		h.Failure(w, r, err)
@@ -636,8 +644,19 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		h.Failure(w, r, err)
 		return
 	}
-	if err = h.service.AuthenticateController(r.Context(), token); err != nil {
-		h.channelAdmissionFailure(w, r, err)
+	if h.service.AuthenticateControllerOnline != nil {
+		err = h.service.AuthenticateControllerOnline(r.Context(), token, optedIn, taskBody)
+	} else {
+		err = h.service.AuthenticateController(r.Context(), token)
+	}
+	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "upgrade_required" {
+			httpx.CloseUnreadBody(w, r)
+			httpx.LogFailure(h.logger, r.Context(), "session", "channel", err)
+			httpx.WriteJSON(w, r, h.logger, http.StatusUpgradeRequired, map[string]any{"error": map[string]any{"code": fault.Code, "message": fault.Message, "requestId": httpx.RequestID(r.Context())}})
+		} else {
+			h.channelAdmissionFailure(w, r, err)
+		}
 		return
 	}
 	conn, ctx, cleanup, err := h.accept(w, r)
@@ -652,8 +671,18 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil || hello.Type != "hello" {
 		return
 	}
-	snapshot, err := h.service.Connect(ctx, token, hello, h.instance, readVersion)
+	var snapshot sp.Snapshot
+	var online sessioncore.OnlineConnection
+	if optedIn || taskBody {
+		online, err = h.service.ConnectOnline(ctx, token, hello, h.instance, readVersion, optedIn, taskBody)
+		snapshot = online.Snapshot
+	} else {
+		snapshot, err = h.service.Connect(ctx, token, hello, h.instance, readVersion)
+	}
 	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "upgrade_required" {
+			h.channelFailure(ctx, conn, hello.ControllerFence, err)
+		}
 		return
 	}
 	fence := snapshot.ControllerFence
@@ -667,7 +696,12 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		h.channelFailure(ctx, conn, fence, err)
 		return
 	}
-	if err = relayWrite(ctx, conn, map[string]any{"type": "welcome", "requiresLiveSync": true, "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}); err != nil {
+	welcome := map[string]any{"type": "welcome", "requiresLiveSync": true, "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}
+	if optedIn {
+		welcome["onlineMode"] = online.OnlineMode
+		welcome["historyContentPolicy"] = online.HistoryContentPolicy
+	}
+	if err = relayWrite(ctx, conn, welcome); err != nil {
 		return
 	}
 	type incoming struct {

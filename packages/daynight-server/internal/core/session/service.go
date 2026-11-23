@@ -80,6 +80,7 @@ func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 type record struct {
 	// ExecutionWorkerID is derived from locked Task/Session or Bot ownership.
 	ExecutionWorkerID                                   string
+	OnlineMode                                          string
 	HistoryContentPolicy                                *string
 	BotID                                               *string
 	Live                                                *liveSession
@@ -105,7 +106,10 @@ func loadWithBot(ctx context.Context, tx *operationTx, id string, bot *model.Bot
 	if err != nil {
 		return nil, err
 	}
-	r := &record{HistoryContentPolicy: persisted.HistoryContentPolicy, BotID: persisted.BotID, ServerInstance: persisted.ServerInstance, FirstInputBlocked: persisted.FirstInputBlocked, DrainTimelineSeq: persisted.DrainTimelineSeq, Snapshot: persisted.Snapshot, Owner: persisted.Owner, Parent: persisted.Parent, ConnectionParent: persisted.ConnectionParent, Registration: persisted.Registration, StopProof: persisted.StopProof, SourceEpoch: persisted.SourceEpoch, SourceEpochs: persisted.SourceEpochs, SourceSeq: persisted.SourceSeq, OperationSeq: persisted.OperationSeq, GrantHash: persisted.GrantHash, GrantExpiry: persisted.GrantExpiry, ConnectionExpiry: persisted.ConnectionExpiry, LastSeen: persisted.LastSeen, DrainUntil: persisted.DrainUntil, GrantKind: persisted.GrantKind, Consumed: persisted.Consumed}
+	if persisted.OnlineMode != "" && persisted.OnlineMode != "legacy" && persisted.OnlineMode != "relay" {
+		return nil, errors.New("invalid persisted Session online mode")
+	}
+	r := &record{OnlineMode: persisted.OnlineMode, HistoryContentPolicy: persisted.HistoryContentPolicy, BotID: persisted.BotID, ServerInstance: persisted.ServerInstance, FirstInputBlocked: persisted.FirstInputBlocked, DrainTimelineSeq: persisted.DrainTimelineSeq, Snapshot: persisted.Snapshot, Owner: persisted.Owner, Parent: persisted.Parent, ConnectionParent: persisted.ConnectionParent, Registration: persisted.Registration, StopProof: persisted.StopProof, SourceEpoch: persisted.SourceEpoch, SourceEpochs: persisted.SourceEpochs, SourceSeq: persisted.SourceSeq, OperationSeq: persisted.OperationSeq, GrantHash: persisted.GrantHash, GrantExpiry: persisted.GrantExpiry, ConnectionExpiry: persisted.ConnectionExpiry, LastSeen: persisted.LastSeen, DrainUntil: persisted.DrainUntil, GrantKind: persisted.GrantKind, Consumed: persisted.Consumed}
 	if !validSessionBot(bot, r) {
 		return nil, conflict()
 	}
@@ -129,7 +133,7 @@ func save(ctx context.Context, tx *operationTx, r *record) error {
 			return err
 		}
 	}
-	return tx.dao.SaveSession(ctx, store.SessionRecord{Snapshot: durableSnapshot(r.Snapshot), SourceEpoch: r.SourceEpoch, SourceEpochs: r.SourceEpochs, SourceSeq: r.SourceSeq, OperationSeq: r.OperationSeq})
+	return tx.dao.SaveSession(ctx, store.SessionRecord{OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy, Snapshot: durableSnapshot(r.Snapshot), SourceEpoch: r.SourceEpoch, SourceEpochs: r.SourceEpochs, SourceSeq: r.SourceSeq, OperationSeq: r.OperationSeq})
 }
 func credential(ctx context.Context, tx *operationTx, p model.Principal, now time.Time) error {
 	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
@@ -360,15 +364,54 @@ func (s *Execution) AuthenticateController(ctx context.Context, token string) er
 	hash := sha256.Sum256([]byte(token))
 	return s.grantRun(ctx, hash[:], func(*Access) error { return nil })
 }
+
+// AuthenticateControllerOnline refuses incompatible peers before upgrading the
+// authenticated channel. Connect repeats this decision in its write transaction.
+func (s *Execution) AuthenticateControllerOnline(ctx context.Context, token string, optedIn, taskBody bool) error {
+	hash := sha256.Sum256([]byte(token))
+	return s.grantRun(ctx, hash[:], func(a *Access) error {
+		return requireOnlineCapabilities(a.record, optedIn, taskBody)
+	})
+}
+
+func requireOnlineCapabilities(r *record, optedIn, taskBody bool) error {
+	if r.OnlineMode == "relay" && !optedIn {
+		return fault("upgrade_required", "This Session requires online relay version 1.")
+	}
+	if r.OnlineMode == "relay" && (r.HistoryContentPolicy == nil || (*r.HistoryContentPolicy != "legacy" && *r.HistoryContentPolicy != "task_body")) {
+		return errors.New("invalid persisted Session history policy")
+	}
+	if r.HistoryContentPolicy != nil && ((*r.HistoryContentPolicy == "task_body" && !taskBody) || (!optedIn && *r.HistoryContentPolicy == "legacy" && taskBody)) {
+		return fault("upgrade_required", "This Session requires its bound history content policy.")
+	}
+	return nil
+}
+
 func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMessage, instance string) (sp.Snapshot, error) {
 	return s.ConnectWithContentRead(ctx, token, h, instance, 0)
 }
 
 func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int) (sp.Snapshot, error) {
+	result, err := s.connectOnline(ctx, token, h, instance, contentReadVersion, false, false)
+	return result.Snapshot, err
+}
+
+// OnlineConnection keeps execution-level negotiation outside the public Snapshot.
+type OnlineConnection struct {
+	Snapshot             sp.Snapshot
+	OnlineMode           string
+	HistoryContentPolicy *string
+}
+
+func (s *Execution) ConnectWithOnlineMode(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int, optedIn, taskBody bool) (OnlineConnection, error) {
+	return s.connectOnline(ctx, token, h, instance, contentReadVersion, optedIn, taskBody)
+}
+
+func (s *Execution) connectOnline(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int, optedIn, taskBody bool) (OnlineConnection, error) {
 	if contentReadVersion != 0 && contentReadVersion != 1 {
-		return sp.Snapshot{}, fault("unsupported_protocol", "Unsupported content read version.")
+		return OnlineConnection{}, fault("unsupported_protocol", "Unsupported content read version.")
 	}
-	var out sp.Snapshot
+	var out OnlineConnection
 	hash := sha256.Sum256([]byte(token))
 	err := s.grantRun(ctx, hash[:], func(access *Access) error {
 		tx, r := access.tx, access.record
@@ -379,6 +422,22 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 		id := v.SessionID
 		if h.SessionID != id || h.ClaimID != v.ClaimID || h.TestExecutionID != v.TestExecutionID || h.ExecutionGeneration != v.ExecutionGeneration || h.ControllerID != v.Identity.ControllerID || h.ControllerInstanceID != v.Identity.ControllerInstanceID || h.Provider != v.Identity.Provider || h.SchemaVersion != 1 || h.ProjectionVersion != 1 {
 			return conflict()
+		}
+		// The first authorized connection fixes the choice for the entire execution.
+		// Migrated executions already have legacy mode and keep their old policy.
+		if r.OnlineMode == "" {
+			r.OnlineMode = "legacy"
+			if optedIn {
+				r.OnlineMode = "relay"
+			}
+			policy := "legacy"
+			if taskBody && v.ClaimID != "" {
+				policy = "task_body"
+			}
+			r.HistoryContentPolicy = &policy
+		}
+		if err := requireOnlineCapabilities(r, optedIn, taskBody); err != nil {
+			return err
 		}
 		if r.SourceEpoch == nil {
 			r.SourceEpoch = &h.SourceEpoch
@@ -420,7 +479,7 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 		if err := s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
 			return err
 		}
-		out = permissions(r, false, now)
+		out = OnlineConnection{Snapshot: permissions(r, false, now), OnlineMode: r.OnlineMode, HistoryContentPolicy: r.HistoryContentPolicy}
 		return save(ctx, tx, r)
 	})
 	return out, err
