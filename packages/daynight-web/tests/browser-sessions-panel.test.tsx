@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, invalidateAuthRequests } from '../src/api/client';
+import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import type { BrowserSession, BrowserSessionPage } from '../src/api/browser-sessions';
 import type { CurrentUser } from '../src/api/auth';
 import { BrowserSessionsPanel } from '../src/features/management/BrowserSessionsPanel';
@@ -195,6 +195,65 @@ describe('browser sessions panel', () => {
     expect(screen.getByText(/The result is unknown/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'End session: Firefox · Windows' })).toBeDisabled();
     expect(transport.revoke).toHaveBeenCalledOnce();
+  });
+
+
+  it('does not queue a revoke submitted while identity verification is paused', async () => {
+    const { transport } = setup();
+    await screen.findByText('Firefox'); await open();
+    const resume = pauseAuthRequests();
+    try {
+      confirm();
+      const dialog = screen.getByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
+      expect(transport.revoke).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(sessionStorage.getItem(`daynight.browserSessionRecovery.${user.id}`)).toBeNull();
+    } finally { resume(); }
+    await act(async () => {});
+    expect(transport.revoke).not.toHaveBeenCalled();
+  });
+
+  it('cancels a not-yet-dispatched revoke when identity verification pauses', async () => {
+    const { transport } = setup();
+    await screen.findByText('Firefox'); await open();
+    const dispatched = vi.fn();
+    transport.revoke.mockImplementationOnce(async (_id, _input, signal, _mismatch, onDispatch) => { signal.throwIfAborted(); dispatched(); onDispatch?.(); });
+    let resume!: () => void;
+    act(() => { confirm(); resume = pauseAuthRequests(); });
+    try {
+      const dialog = screen.getByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
+      expect(dispatched).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(sessionStorage.getItem(`daynight.browserSessionRecovery.${user.id}`)).toBeNull();
+    } finally { resume(); }
+    await act(async () => {});
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+
+  it('retains an unknown outcome when identity verification aborts a dispatched revoke', async () => {
+    const { transport } = setup();
+    transport.revoke.mockImplementationOnce((_id, _input, signal, _mismatch, onDispatch) => new Promise<void>((_resolve, reject) => {
+      signal.throwIfAborted(); onDispatch?.();
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    await screen.findByText('Firefox'); await open(); confirm();
+    await waitFor(() => expect(transport.revoke).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    try {
+      await screen.findByText(/The result is unknown/);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(JSON.parse(sessionStorage.getItem(`daynight.browserSessionRecovery.${user.id}`)!)).toEqual({ sessionId: current.id, targetId: other.id });
+      expect(screen.getByRole('button', { name: 'End session: Firefox · Windows' })).toBeDisabled();
+      expect(transport.get).not.toHaveBeenCalled();
+    } finally { resume(); }
+    await act(async () => {});
+    expect(transport.revoke).toHaveBeenCalledOnce(); expect(transport.get).not.toHaveBeenCalled();
+    expect(screen.getByText(/The result is unknown/)).toBeInTheDocument();
   });
 
 });

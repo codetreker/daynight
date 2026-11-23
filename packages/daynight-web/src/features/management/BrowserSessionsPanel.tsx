@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, isAbortError, readAuthRequestGeneration, waitForAuthRequests } from "../../api/client";
+import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { getBrowserSession, listBrowserSessions, revokeBrowserSession, type BrowserSession, type BrowserSessionPage } from "../../api/browser-sessions";
 import type { CurrentUser } from "../../api/auth";
 import { useI18n } from "../../i18n/LocaleProvider";
@@ -47,13 +47,16 @@ const BrowserSessionsContent = ({ user, onIdentityMismatch, onSignOut, visible, 
   useLayoutEffect(() => { if (focusAfter.current && selected === null && visible) { focusAfter.current = false; heading.current?.focus(); } }, [selected, visible, page]);
   const run = async (operation: (signal: AbortSignal, current: () => boolean) => Promise<void>, writing = false) => {
     const owner = lifetime.current;
-    if (!owner || owner.signal.aborted || busy.current) return;
+    if (!owner || owner.signal.aborted || busy.current || writing && authRequestsPaused()) return;
+    const request = new AbortController();
+    const unsubscribe = writing ? subscribeAuthPause(() => request.abort()) : () => {};
+    const signal = AbortSignal.any([owner.signal, request.signal]);
     busy.current = true; writing ? setPending(true) : setLoading(true);
     const generation = readAuthRequestGeneration();
     const current = () => !owner.signal.aborted && generation === readAuthRequestGeneration();
-    try { await waitForAuthRequests(owner.signal); if (current()) await operation(owner.signal, current); }
+    try { await waitForAuthRequests(signal); if (current()) await operation(signal, current); }
     catch (failure) { if (current() && !isAbortError(failure)) setError(failure); }
-    finally { busy.current = false; if (current()) { setLoading(false); setPending(false); } }
+    finally { unsubscribe(); busy.current = false; if (current()) { setLoading(false); setPending(false); } }
   };
   const restoreRecovery = (sessionId: string) => {
     try {
