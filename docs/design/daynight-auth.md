@@ -409,6 +409,10 @@ preview Routes 保留本次认证使用的原 secret 与 principal。附件 Open
 
 浏览器签发、认证、预览 SSO、权限重检及清理使用主库时钟。新 session 的 created_at 与 last_used_at 保存实际签发时刻，expires_at 为其后 168 小时；旧行的未知活动不回填。新登录和预览 SSO Cookie 请求保留 400 天，保持既有隔离域与安全属性。普通响应不重发 Cookie，旧 Cookie 按原保留期自然到期；浏览器提前清除时沿用登录或 SSO 恢复。PAT/OAuth 的时钟、到期与续期规则保持各自合同。
 
+浏览器会话管理复用账户凭据准入，仅接受主站 Cookie。Identity 在主库时间下读取有效会话，将当前行与其余行分开；其余行由 `(user_id, created_at DESC, id DESC)` 索引支持倒序游标分页，游标绑定调用账号和会话。单条读取沿完整资源路径核对同账号目标。新登录只持久化有界浏览器和系统分类，历史未知值保持 null，不持久化原始 User-Agent 或 IP。投影不包含凭据散列或其他秘密。
+
+撤销需要同时保护调用者与目标：事务按会话 ID 一致顺序锁定两行，锁后取主库时间，复核调用者、预期账号和会话、目标归属及有效期，再删除目标。该顺序避免两个会话互相撤销时按相反顺序取得锁；锁后校验防止等待期间到期或撤销的调用者继续写入。提交未确认时不宣称成功，调用方只读回目标，不重放撤销。当前会话不能通过管理接口撤销，继续使用 logout。删除共享行使目标主站、预览凭据和后续权限重检同时失效，不改变其他凭据。详细取舍见[管理决策](../../.agents/notes/implemented/architecture/2026-11-23-browser-session-management.md)。
+
 注销删除当前会话。Session 的有限到期和 PersonalAccessToken
 的可空到期由独立领域记录表达，OAuth family 使用自己的有效期限。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
@@ -735,6 +739,7 @@ panic/abort 保持原中止语义，abort 另有安全请求日志。
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
 `118_browser_session_activity.sql` 仅新增可空 last_used_at，不回填历史活动或改变旧行期限；首次合格活动按锁后主库时钟续期。
+`120_browser_session_management.sql` 在既有 119 迁移之后新增可空 browser、os 及账号创建顺序索引，不回填旧行，保留会话散列和到期索引。
 `035_team_invitations.sql` 随真实邀请入口建立独立邀请表、唯一散列及 Team/到期索引；
 删除 Team 的事务负责清除子记录，不引入 foreign key。
 
@@ -914,6 +919,7 @@ Thread 的强准入与凭据重验规则由其专用事务拥有。
 | GET /setup | 交付同一内嵌页面，显示公开静态使用引导；文档根执行一次身份初始化，指南不发起业务 API 请求。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
 | POST /api/v1/auth/session/activity | 主站 Cookie、精确 Origin 与 expectedUserId；锁内核对账号并续期，成功 204/no-store，账号变化 409 identity_mismatch，不重发 Cookie。 |
+| GET /api/v1/me/browser-sessions、GET .../{id}、POST .../{id}/revoke | 主站 Cookie 管理本账号有效浏览器会话；写入校验精确 Origin、预期账号和会话，响应 no-store。当前会话单列，撤销当前会话或身份变化返回 409，其他账号或无有效目标返回 404，确认撤销返回 204。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
 | POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
@@ -1161,6 +1167,8 @@ canonical 非根路径，不接受编码别名、dot-segment、路由通配符�
 UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口、完成页和实际
 callback 的 returnPath，防止回调循环。
+
+部署浏览器会话管理前先备份并应用 schema，再部署支持该合同的后端，最后启用消费它的 Web。切换续期及管理行为时不混用旧认证实例；保留现有 Web、CLI 和登录接口。需要恢复时使用保留该协议与续期语义的兼容制品，避免旧实例破坏共享会话期限。
 
 两个独立开关默认关闭；YAML 使用布尔值，环境变量使用 0/1，其他值拒绝：
 

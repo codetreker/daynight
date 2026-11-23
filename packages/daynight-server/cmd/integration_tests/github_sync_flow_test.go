@@ -422,15 +422,26 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP INDEX task_properties_worker_active_claim_idx`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode; ALTER TABLE sessions DROP COLUMN last_used_at`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE task_sessions DROP COLUMN history_content_policy, DROP COLUMN online_mode; DROP INDEX sessions_user_created_id; ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `CREATE OR REPLACE VIEW task_resource_rows AS
+			SELECT t.id, t.project_id, t.title, t.description, t.status, t.version,
+			       t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents,
+			       t.required_platform, t.deleted_at, t.assigned_to, t.cancelled_at,
+			       t.type, t.parent_id, p.type AS parent_type, p.deleted_at AS parent_deleted_at,
+			       COALESCE(t.deleted_at, CASE WHEN t.type = 'task' AND p.type = 'goal' THEN p.deleted_at END) AS effective_deleted_at
+			FROM tasks t
+			LEFT JOIN tasks p ON p.project_id = t.project_id AND p.id = t.parent_id;
+			ALTER TABLE tasks DROP COLUMN ancestor_deleted_at`); err != nil {
+			t.Fatal(err)
+		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119)`); err != nil || result.RowsAffected() != 41 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121)`); err != nil || result.RowsAffected() != 43 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -460,6 +471,15 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	}
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&migrationCount); err != nil || migrationCount != 1 {
 		t.Fatalf("upgraded Step Webhook retirement: migration count=%d error=%v", migrationCount, err)
+	}
+	var managementColumns int
+	var managementIndex bool
+	if err := db.QueryRow(f.context, `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name IN ('browser','os')), to_regclass('sessions_user_created_id') IS NOT NULL, (SELECT count(*) FROM schema_migrations WHERE version=120)`).Scan(&managementColumns, &managementIndex, &migrationCount); err != nil || managementColumns != 2 || !managementIndex || migrationCount != 1 {
+		t.Fatalf("upgraded browser session management: columns=%d index=%t migration count=%d error=%v", managementColumns, managementIndex, migrationCount, err)
+	}
+	var ancestorVisibilityColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='ancestor_deleted_at'), (SELECT count(*) FROM schema_migrations WHERE version=121)`).Scan(&ancestorVisibilityColumn, &migrationCount); err != nil || !ancestorVisibilityColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Task ancestor visibility: column=%t migration count=%d error=%v", ancestorVisibilityColumn, migrationCount, err)
 	}
 	var historyPolicyColumn bool
 	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {

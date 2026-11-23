@@ -131,6 +131,7 @@ func (h *Authentication) registerRoutes(mux httpx.RouteRegistrar, observe func(S
 	routes := accountRouteRegistry{mux: mux, observe: observe}
 	h.registerDeviceRoutes(mux)
 	h.registerCredentialRoutes(routes, pat)
+	h.registerBrowserSessionRoutes(routes)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)
@@ -204,7 +205,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		httpx.WriteError(w, request, h.logger, "auth", "callback", Failure())
 		return
 	}
-	result, err := h.identity.CompleteLogin(request.Context(), values, binding)
+	result, err := h.identity.CompleteLogin(request.Context(), values, binding, request.UserAgent())
 	logger := h.logger.With("login_id", result.LoginID)
 	if result.LoginID != "" {
 		http.SetCookie(w, h.cookie(h.bindingCookieName(values.Get("state")), "", time.Unix(1, 0), -1))

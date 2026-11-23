@@ -14,7 +14,7 @@ against ancestor deletion without locking an unbounded ancestor chain.
 Tasks store a nullable internal `ancestor_deleted_at`. The effective deletion
 time is `COALESCE(deleted_at, ancestor_deleted_at)`, preserving the target's own
 tombstone precedence. The shared resource view keeps its original column names,
-order and types. Migration 120 validates the formerly Goal-only hierarchy and
+order and types. Migration 121 validates the formerly Goal-only hierarchy and
 backfills visible physical children of already deleted Goals.
 
 Deletion holds the Project write lock, plans the target, visible descendants and
