@@ -13,6 +13,7 @@ import (
 )
 
 var _ store.SessionResourceDAO = (*DAO)(nil)
+var _ store.SessionCaptureInventoryDAO = (*DAO)(nil)
 var _ store.SessionIntentDAO = (*DAO)(nil)
 
 func (tx *DAO) SavedSessionResource(ctx context.Context, s, id string) (store.SessionResourceRecord, error) {
@@ -178,13 +179,51 @@ func (tx *DAO) SessionCapture(ctx context.Context, s, id string) (store.SessionC
 	if err != nil {
 		return r, mediaQueryError("read image capture", err)
 	}
+	err = decodeSessionCapture(&r, request, receipt, validated)
+	return r, mediaQueryError("decode image capture", err)
+}
+func decodeSessionCapture(r *store.SessionCaptureRecord, request, receipt, validated []byte) (err error) {
 	if err = json.Unmarshal(request, &r.Request); err == nil {
 		err = json.Unmarshal(receipt, &r.Receipt)
 	}
 	if err == nil && len(validated) > 0 {
 		err = json.Unmarshal(validated, &r.Validated)
 	}
-	return r, mediaQueryError("decode image capture", err)
+	return err
+}
+func (tx *DAO) SessionCaptures(ctx context.Context, session, after string, limit int) ([]store.SessionCaptureRecord, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("capture inventory limit must be between 1 and 1000")
+	}
+	var cursor any
+	if after != "" {
+		cursor = after
+	}
+	rows, err := tx.tx.Query(ctx, `SELECT capture_id::text,request,receipt,validated FROM session_image_captures WHERE session_id=$1 AND ($2::uuid IS NULL OR capture_id>$2::uuid) ORDER BY capture_id LIMIT $3`, session, cursor, limit)
+	if err != nil {
+		return nil, mediaQueryError("list image captures", err)
+	}
+	defer rows.Close()
+	out := []store.SessionCaptureRecord{}
+	for rows.Next() {
+		r := store.SessionCaptureRecord{SessionID: session}
+		var captureID string
+		var request, receipt, validated []byte
+		if err = rows.Scan(&captureID, &request, &receipt, &validated); err != nil {
+			return nil, mediaQueryError("scan image capture", err)
+		}
+		if err = decodeSessionCapture(&r, request, receipt, validated); err != nil {
+			return nil, mediaQueryError("decode image capture", err)
+		}
+		if r.Request.CaptureID != captureID {
+			return nil, errors.New("capture inventory identity differs from persisted key")
+		}
+		out = append(out, r)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mediaQueryError("list image captures", err)
+	}
+	return out, nil
 }
 func (tx *DAO) SessionCaptureByImage(ctx context.Context, s, image string) (store.SessionCaptureRecord, error) {
 	var id string
