@@ -1600,6 +1600,26 @@ describe("worker cloud-first startup", () => {
 
   it.each([true, false])("retries unavailable bootstrap projects before granting admission with local overrides=%s", async overrides => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+    const releaseGlobal = Promise.withResolvers<void>();
+    let globalEntered = false, applicationKey: cloudConfiguration.WorkerNativeApplicationEvent["key"] | undefined;
+    let manager: Awaited<ReturnType<typeof cloudConfiguration.createWorkerConfigurationManager>> | undefined;
+    const nativeEvents: cloudConfiguration.WorkerNativeApplicationEvent[] = [];
+    const createConfiguration = cloudConfiguration.createWorkerConfigurationManager;
+    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async options => {
+      // The fixture has no asynchronous selection preparation between the keyed event and applyNative.
+      expect(options.prepareToolSelection).toBeUndefined();
+      manager = await createConfiguration({ ...options, onNativeApplication: event => {
+        nativeEvents.push(event);
+        if (event.kind === "started") applicationKey = event.key;
+        options.onNativeApplication?.(event);
+      }, applyNative: async (native, signal) => {
+        const key = applicationKey; applicationKey = undefined;
+        if (key === undefined) throw new Error("Native application has no matching start event.");
+        if (key.kind === "native") { globalEntered = true; await releaseGlobal.promise; }
+        await options.applyNative(native, signal);
+      } });
+      return manager;
+    });
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
     const source = stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } });
     await writeFile(f.paths.configFile, source);
@@ -1633,16 +1653,33 @@ describe("worker cloud-first startup", () => {
         const current = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
         expect(current.configurationComplete!()).toBe(true);
       });
+      const native = { agent: "codex", model: { value: "local-model", source: overrides ? "local" : "cloud" }, reasoningEffort: { value: overrides ? "high" : "low", source: overrides ? "local" : "cloud" } };
+      const collect = async () => {
+        const operation = createOperation();
+        try { return (await reporterOptions!.collect(operation)).telemetry.runtimeConfiguration; }
+        finally { operation.dispose(); }
+      };
+      await vi.waitFor(async () => {
+        expect(globalEntered).toBe(true);
+        expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).configurationComplete!()).toBe(true);
+        expect(await collect()).toEqual({ schemaVersion: 1, native: null, projects: [{ projectId: uuid(1), native }, { projectId: uuid(2), native }] });
+      }, { timeout: 10_000, interval: 50 });
+      releaseGlobal.resolve();
+      await vi.waitFor(async () => {
+        const current = manager!.current();
+        const globalItem = current.items.find(item => item.key.kind === "native");
+        const diagnostic = JSON.stringify({ globalItem, proofMatchedEffectiveNative: current.effective.native, nativeEvents });
+        expect((await collect())?.native, diagnostic).toEqual(native);
+      }, { timeout: 10_000, interval: 50 });
       const sampleOperation = createOperation();
       try {
         const sample = await reporterOptions!.collect(sampleOperation);
-        const native = { agent: "codex", model: { value: "local-model", source: overrides ? "local" : "cloud" }, reasoningEffort: { value: overrides ? "high" : "low", source: overrides ? "local" : "cloud" } };
         expect(sample.telemetry.runtimeConfiguration).toEqual({ schemaVersion: 1, native, projects: [{ projectId: uuid(1), native }, { projectId: uuid(2), native }] });
       } finally { sampleOperation.dispose(); }
       expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
       expect(remote.resolveProject.mock.calls.every(([repository]: [{ projectId?: string }]) => repository.projectId !== undefined)).toBe(true);
-    } finally { cancellation.abort(); await running; }
-  });
+    } finally { releaseGlobal.resolve(); cancellation.abort(); try { await running; } finally { constructing.mockRestore(); } }
+  }, 30_000);
 
   it.each(["protocol", "request"] as const)("keeps a %s bootstrap error visible while its configuration channel stays available", async phase => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
