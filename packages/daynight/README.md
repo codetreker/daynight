@@ -818,6 +818,14 @@ is not accepted. The CLI verifies the authenticated user once and
 checks the response identity throughout the command. IDs are canonical UUIDs;
 versions and generations are positive decimal int64 values, preserved exactly.
 
+`catalog` accepts the five continuing Task events and an optional
+`task.step_updated` entry, preserving the service's order. Missing, duplicate or
+unknown events and invalid wire schemas fail explicitly. Known Steps
+subscriptions and delivery history remain readable. Subscription input still
+accepts `task.step_updated` for services that support it; the service decides
+whether an event can be configured. Configuration writes do not prefetch the
+catalog.
+
 ```bash
 daynight webhook catalog --json
 daynight webhook list --personal --json

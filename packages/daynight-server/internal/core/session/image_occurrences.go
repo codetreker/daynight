@@ -58,7 +58,7 @@ func (s *Execution) GetImageOccurrence(ctx context.Context, p model.Principal, p
 				if err != nil && !errors.Is(err, model.ErrNotFound) {
 					return err
 				}
-				if err == nil && row.Complete && row.Error == nil {
+				if err == nil && row.Complete && row.Error == nil && r.OnlineMode != "relay" {
 					v, err := sp.DecodeValidatedImage(row.Result)
 					if err != nil {
 						return fault("resource_conflict", "The original retry result is invalid.")
@@ -214,6 +214,12 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 		}
 		if current.Receipt.AttemptID != capture.Receipt.AttemptID {
 			return conflict()
+		}
+		if r.OnlineMode == "relay" {
+			// The durable retry offer starts the Controller's source work. Only
+			// its direct submission can admit the resulting bytes in relay mode.
+			out.Capture = current.Receipt
+			return nil
 		}
 		if current.Receipt.State == "committed" {
 			out.Capture = current.Receipt

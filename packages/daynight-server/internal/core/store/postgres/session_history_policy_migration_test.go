@@ -35,20 +35,17 @@ func TestSessionHistoryPolicyMigration(t *testing.T) {
 	}
 	read := func(want *string) {
 		t.Helper()
-		tx, err := pool.Begin(ctx)
-		if err != nil {
+		var policy *string
+		var raw []byte
+		if err := pool.QueryRow(ctx, `SELECT history_content_policy, snapshot FROM task_sessions WHERE id=$1`, id).Scan(&policy, &raw); err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(context.Background())
-		record, err := pgsession.New(tx).LockSession(ctx, id)
-		if err != nil {
-			t.Fatal(err)
+		if (policy == nil) != (want == nil) || want != nil && *policy != *want {
+			t.Fatalf("policy readback: got=%v want=%v", policy, want)
 		}
-		if (record.HistoryContentPolicy == nil) != (want == nil) || want != nil && *record.HistoryContentPolicy != *want {
-			t.Fatalf("policy readback: got=%v want=%v", record.HistoryContentPolicy, want)
-		}
-		if record.Snapshot.SessionID != id || record.Snapshot.Lifecycle != "archived" {
-			t.Fatalf("migration changed original snapshot: %+v", record.Snapshot)
+		var saved sp.Snapshot
+		if err := json.Unmarshal(raw, &saved); err != nil || saved.SessionID != id || saved.Lifecycle != "archived" {
+			t.Fatalf("migration changed original snapshot: %+v, %v", saved, err)
 		}
 	}
 	read(nil)
@@ -65,15 +62,18 @@ func TestSessionHistoryPolicyMigration(t *testing.T) {
 	}
 	want := "task_body"
 	read(&want)
-	// Ordinary Session saves do not overwrite the separately bound policy.
+	// The current DAO must preserve the migrated execution's established policy.
+	if err = migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dao := pgsession.New(tx)
 	record, err := dao.LockSession(ctx, id)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || record.OnlineMode != "legacy" || record.HistoryContentPolicy == nil || *record.HistoryContentPolicy != want {
+		t.Fatalf("current DAO: %+v %v", record, err)
 	}
 	replacement := "legacy"
 	record.HistoryContentPolicy = &replacement

@@ -169,10 +169,16 @@ func (tx *DAO) SessionBotID(ctx context.Context, id string) (*string, error) {
 func (tx *DAO) LockSession(ctx context.Context, id string) (store.SessionRecord, error) {
 	var r store.SessionRecord
 	var raw []byte
-	var parent, kind, connectionParent *string
-	err := tx.tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,history_content_policy,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.HistoryContentPolicy, &r.FirstInputBlocked)
+	var parent, kind, connectionParent, onlineMode *string
+	err := tx.tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,history_content_policy,online_mode,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.HistoryContentPolicy, &onlineMode, &r.FirstInputBlocked)
 	if err != nil {
 		return store.SessionRecord{}, pginternal.QueryError("lock session", err)
+	}
+	if onlineMode != nil {
+		if *onlineMode == "" {
+			return store.SessionRecord{}, errors.New("invalid empty Session online mode")
+		}
+		r.OnlineMode = *onlineMode
 	}
 	if parent != nil {
 		r.Parent = *parent
@@ -194,7 +200,7 @@ func (tx *DAO) SaveSession(ctx context.Context, r store.SessionRecord) error {
 	if err != nil {
 		return pginternal.QueryError("encode session", err)
 	}
-	_, err = tx.tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, raw, r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
+	_, err = tx.tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6,online_mode=COALESCE(online_mode,NULLIF($7,'')),history_content_policy=CASE WHEN online_mode IS NULL AND NULLIF($7,'') IS NOT NULL THEN $8 ELSE history_content_policy END WHERE id=$1`, r.Snapshot.SessionID, raw, r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq, r.OnlineMode, r.HistoryContentPolicy)
 	if err != nil {
 		return pginternal.QueryError("save session", err)
 	}

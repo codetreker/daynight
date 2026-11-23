@@ -11,11 +11,23 @@ func TestBrowserActivityMigrationPreservesPublishedMigrationsAndOldSession(t *te
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 117 })
-	if index < 3 || schemaMigrations[index-3].version != 114 || schemaMigrations[index-3].sql != sessionHistoryPolicySQL || schemaMigrations[index-2].version != 115 || schemaMigrations[index-2].transformSource == "" || schemaMigrations[index-1].version != 116 || schemaMigrations[index-1].sql != archiveUploadVersionSQL {
-		t.Fatal("browser activity must follow the published history policy, frozen worker index and archive upload migrations")
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 118 })
+	if index < 4 || schemaMigrations[index-4].version != 114 || schemaMigrations[index-4].sql != sessionHistoryPolicySQL || schemaMigrations[index-3].version != 115 || schemaMigrations[index-3].transformSource == "" || schemaMigrations[index-2].version != 116 || schemaMigrations[index-2].sql != archiveUploadVersionSQL || schemaMigrations[index-1].version != 117 || schemaMigrations[index-1].sql != sessionOnlineModeSQL {
+		t.Fatal("browser activity must follow the published history policy, frozen worker index, archive upload and Session online mode migrations")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:index-1]); err != nil {
+		t.Fatal(err)
+	}
+	execution := queryID(943)
+	if _, err := pool.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,'test',$2,$3,$4,'{}','{"lifecycle":"archived"}')`, execution, queryID(944), queryID(945), queryID(946)); err != nil {
+		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+		t.Fatal(err)
+	}
+	var onlineBefore, onlineChecksumBefore string
+	onlineFacts := `SELECT to_jsonb(s)::text,checksum FROM task_sessions s CROSS JOIN schema_migrations WHERE s.id=$1 AND version=117 AND s.online_mode='legacy'`
+	if err := pool.QueryRow(ctx, onlineFacts, execution).Scan(&onlineBefore, &onlineChecksumBefore); err != nil {
 		t.Fatal(err)
 	}
 	var indexBefore, checksumBefore string
@@ -53,15 +65,22 @@ func TestBrowserActivityMigrationPreservesPublishedMigrationsAndOldSession(t *te
 	if err := pool.QueryRow(ctx, `SELECT pg_get_indexdef('task_properties_worker_active_claim_idx'::regclass),checksum FROM schema_migrations WHERE version=115`).Scan(&indexAfter, &checksumAfter); err != nil {
 		t.Fatal(err)
 	}
-	if indexAfter != indexBefore || checksumAfter != checksumBefore || checksumAfter != schemaMigrations[index-2].checksum() {
+	if indexAfter != indexBefore || checksumAfter != checksumBefore || checksumAfter != schemaMigrations[index-3].checksum() {
 		t.Fatal("browser activity migration changed the published worker index or frozen checksum")
 	}
 	var archiveAfter, archiveChecksumAfter string
 	if err := pool.QueryRow(ctx, archiveFacts).Scan(&archiveAfter, &archiveChecksumAfter); err != nil {
 		t.Fatal(err)
 	}
-	if archiveAfter != archiveBefore || archiveChecksumAfter != archiveChecksumBefore || archiveChecksumAfter != schemaMigrations[index-1].checksum() {
+	if archiveAfter != archiveBefore || archiveChecksumAfter != archiveChecksumBefore || archiveChecksumAfter != schemaMigrations[index-2].checksum() {
 		t.Fatal("browser activity migration changed the published archive schema or checksum")
+	}
+	var onlineAfter, onlineChecksumAfter string
+	if err := pool.QueryRow(ctx, onlineFacts, execution).Scan(&onlineAfter, &onlineChecksumAfter); err != nil {
+		t.Fatal(err)
+	}
+	if onlineAfter != onlineBefore || onlineChecksumAfter != onlineChecksumBefore || onlineChecksumAfter != schemaMigrations[index-1].checksum() {
+		t.Fatal("browser activity migration changed the published online mode binding or checksum")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatalf("reopening the complete migration ledger: %v", err)

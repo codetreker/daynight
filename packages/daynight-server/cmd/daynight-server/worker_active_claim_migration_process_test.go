@@ -36,12 +36,12 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			if err := observer.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=115").Scan(&expectedChecksum); err != nil {
 				t.Fatal(err)
 			}
-			// Remove the additive migrations after 114 as well as their ledger
-			// entries so startup sees the actual schema preceding migration 115.
+			// Remove later additive migrations and their ledger entries to restore schema 114.
 			if _, err := observer.Exec(ctx, `DROP INDEX task_properties_worker_active_claim_idx;
+ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 ALTER TABLE sessions DROP COLUMN last_used_at;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117)`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118)`); err != nil {
 				t.Fatal(err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()
@@ -125,7 +125,7 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 				t.Fatalf("startup result: ledger=%t index=%t preserved=%t want commit=%t", committed, indexed, preserved, wantCommitted)
 			}
 			var activityApplied bool
-			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=117) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || activityApplied != wantCommitted {
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || activityApplied != wantCommitted {
 				t.Fatalf("activity migration after worker validation: applied=%t want=%t error=%v", activityApplied, wantCommitted, err)
 			}
 			if strings.Contains(failed.logs.String(), validRaw) || strings.Contains(failed.logs.String(), values["DAYNIGHT_DATABASE_URL"]) {
@@ -153,7 +153,7 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=115 AND checksum=$1) AND EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('task_properties_worker_active_claim_idx') AND indisvalid AND indisready)`, expectedChecksum).Scan(&committed); err != nil || !committed {
 				t.Fatalf("same-ledger recovery: committed=%t error=%v", committed, err)
 			}
-			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=117) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || !activityApplied {
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || !activityApplied {
 				t.Fatalf("activity migration recovery: applied=%t error=%v", activityApplied, err)
 			}
 		})

@@ -22,9 +22,11 @@ type DirectCaptureOutcome struct {
 }
 
 type DirectCaptureSubmission struct {
-	Request   ImageCaptureRequest  `json:"request"`
-	AttemptID string               `json:"attemptId"`
-	Outcome   DirectCaptureOutcome `json:"outcome"`
+	Request     ImageCaptureRequest  `json:"request"`
+	AttemptID   string               `json:"attemptId"`
+	Outcome     DirectCaptureOutcome `json:"outcome"`
+	SourceEpoch string               `json:"sourceEpoch,omitempty"`
+	SourceSeq   string               `json:"sourceSeq,omitempty"`
 }
 
 func DecodeDirectImageContent(data []byte) (DirectImageContent, error) {
@@ -48,25 +50,41 @@ func DecodeDirectImageContent(data []byte) (DirectImageContent, error) {
 }
 
 func DecodeDirectCaptureSubmission(data []byte) (DirectCaptureSubmission, error) {
-	return decode[DirectCaptureSubmission](data, nested(schema{
-		"request":   func(v json.RawMessage) bool { _, err := DecodeImageCaptureRequest(v); return err == nil },
-		"attemptId": identifier,
-		"outcome": func(v json.RawMessage) bool {
-			var kind struct {
-				Kind string `json:"kind"`
-			}
-			if json.Unmarshal(v, &kind) != nil {
-				return false
-			}
-			switch kind.Kind {
-			case "validated":
-				return validateObject(v, schema{"kind": enum("validated"), "validated": validImageMetadata})
-			case "resource":
-				return validateObject(v, schema{"kind": enum("resource")})
-			case "failed":
-				return validateObject(v, schema{"kind": enum("failed"), "error": nested(imageErrorSchema)})
-			}
+	return decode[DirectCaptureSubmission](data, func(raw json.RawMessage) bool {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil {
 			return false
-		},
-	}))
+		}
+		proof := schema{}
+		_, hasEpoch := fields["sourceEpoch"]
+		_, hasSeq := fields["sourceSeq"]
+		if hasEpoch != hasSeq {
+			return false
+		}
+		if hasEpoch {
+			proof["sourceEpoch"] = identifier
+			proof["sourceSeq"] = sequence
+		}
+		return validateObject(raw, extend(schema{
+			"request":   func(v json.RawMessage) bool { _, err := DecodeImageCaptureRequest(v); return err == nil },
+			"attemptId": identifier,
+			"outcome": func(v json.RawMessage) bool {
+				var kind struct {
+					Kind string `json:"kind"`
+				}
+				if json.Unmarshal(v, &kind) != nil {
+					return false
+				}
+				switch kind.Kind {
+				case "validated":
+					return validateObject(v, schema{"kind": enum("validated"), "validated": validImageMetadata})
+				case "resource":
+					return validateObject(v, schema{"kind": enum("resource")})
+				case "failed":
+					return validateObject(v, schema{"kind": enum("failed"), "error": nested(imageErrorSchema)})
+				}
+				return false
+			},
+		}, proof))
+	})
 }

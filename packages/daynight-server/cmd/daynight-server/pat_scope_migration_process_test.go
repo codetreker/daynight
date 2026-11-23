@@ -90,7 +90,7 @@ func TestCredentialScopeActivationProcessStartup(t *testing.T) {
 		t.Fatal("post-migration startup failure did not terminate")
 	}
 	var committed bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=111) AND EXISTS(SELECT FROM schema_migrations WHERE version=117) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at') AND EXISTS(SELECT FROM personal_access_tokens WHERE id=$1 AND cardinality(business_scopes)=67 AND scope_version=1)`, tokenID).Scan(&committed); err != nil || !committed {
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=111) AND EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at') AND EXISTS(SELECT FROM personal_access_tokens WHERE id=$1 AND cardinality(business_scopes)=67 AND scope_version=1)`, tokenID).Scan(&committed); err != nil || !committed {
 		t.Fatalf("activation did not commit before listener failure: %v %v; %s", committed, err, failed.logs.String())
 	}
 	if err := listener.Close(); err != nil {

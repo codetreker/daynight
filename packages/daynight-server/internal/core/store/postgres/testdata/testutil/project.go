@@ -27,7 +27,7 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtur
 	var ownership, current, currentIdentity bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32),
 		EXISTS(SELECT 1 FROM schema_migrations WHERE version=83),
-		EXISTS(SELECT 1 FROM schema_migrations WHERE version=117)`).Scan(&ownership, &current, &currentIdentity); err != nil {
+		EXISTS(SELECT 1 FROM schema_migrations WHERE version=118)`).Scan(&ownership, &current, &currentIdentity); err != nil {
 		return model.Project{}, err
 	}
 	var owner model.User

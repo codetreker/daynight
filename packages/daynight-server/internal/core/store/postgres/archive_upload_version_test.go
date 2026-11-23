@@ -15,8 +15,8 @@ func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
 	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 116 })
-	if index < 0 {
-		t.Fatal("archive upload migration is missing")
+	if index < 1 {
+		t.Fatal("archive upload version migration missing")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
