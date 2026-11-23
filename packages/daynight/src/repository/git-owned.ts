@@ -50,7 +50,7 @@ const startLifecycleRepositoryGit = (cwd: string, args: readonly string[], opera
       if (resourceId !== undefined && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) return { kind: "cleanup-pending", error: new RepositoryGitCleanupPendingError([], error) } as GitOwnedOutcome;
       finish(); return { kind: "failure", error, settlement: "joined" } as GitOwnedOutcome;
     }).finally(() => scoped.dispose());
-  return { outcome, joined, requestStop: () => {
+  const requestStop = (): void => {
     stop.abort(new Error("Repository Git stop requested."));
     if (settled || reconciling) return;
     reconciling = true;
@@ -67,7 +67,9 @@ const startLifecycleRepositoryGit = (cwd: string, args: readonly string[], opera
       catch { /* The original reservation remains unknown and joined remains pending. */ }
       finally { if (confirmed()) finish(); reconciling = false; }
     });
-  } };
+  };
+  void outcome.then(result => { if (result.kind === "cleanup-pending") requestStop(); });
+  return { outcome, joined, requestStop };
 };
 
 /** Owns the original child, its output streams and any started stop helper until their close events. */
