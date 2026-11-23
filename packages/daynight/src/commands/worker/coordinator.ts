@@ -995,18 +995,46 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
               observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
             }
           }
-          let startupReport: SessionStartupReport | undefined;
           try {
-            // Observation and transport must never become another native recovery attempt.
-            const report = record === null ? null : options.webBackend.observeStartupReport?.(record) ?? null;
-            const changedReport = report !== null && !sameStartupReport(readSessionStartupReport(remoteTask.properties), report);
-            startupReport = changedReport && await options.verifyWebStartupReporting?.(signal) ? report : undefined;
-          } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The startup report could not be prepared; ordinary execution summary reconciliation remains available.", error }); }
-          try {
-            if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || startupReport !== undefined) {
-              await options.remote.update(remoteTask, { phase, nativeSessionId, ...(startupReport === undefined ? {} : { startupReport }) }, signal);
+            let report: SessionStartupReport | null = null;
+            try {
+              // Observation and transport must never become another native recovery attempt.
+              report = record === null ? null : options.webBackend.observeStartupReport?.(record) ?? null;
+            } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The startup report could not be prepared; ordinary execution summary reconciliation remains available.", error }); }
+            if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || report !== null && !sameStartupReport(readSessionStartupReport(remoteTask.properties), report)) {
+              let supportedReport: SessionStartupReport | undefined;
+              try {
+                supportedReport = report !== null && await options.verifyWebStartupReporting?.(signal) ? report : undefined;
+              } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The startup report could not be prepared; ordinary execution summary reconciliation remains available.", error }); }
+              // Avoid an extra read when an unsupported report was the only candidate change.
+              if (!signal.aborted && (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || supportedReport !== undefined)) {
+                let fresh: Task | undefined;
+                try { fresh = await options.remote.readTask(task.projectId, task.taskId, signal); }
+                catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary could not read the current task; the next round will observe it again.", error }); }
+                if (fresh !== undefined) {
+                  const current = readWorkerClaim(fresh.properties);
+                  if (fresh.projectId === task.projectId && fresh.id === task.taskId && fresh.status === "in_progress"
+                    && current?.state === "active" && current.claimId === task.claimId && current.workerId === options.workerId
+                    && current.userId === worker.userId && (options.userId === undefined || current.userId === options.userId)
+                    && current.worktreeId === owner.worktreeId && current.agent === task.agent && current.agentControlMode === "web"
+                    && compatibleWebSessions(task.sessionId, worker.nativeSessionId, nativeSessionId, current.nativeSessionId)
+                    && (current.nativeSessionId === null || current.nativeSessionId === nativeSessionId)) {
+                    const startupReport = supportedReport !== undefined && !sameStartupReport(readSessionStartupReport(fresh.properties), supportedReport) ? supportedReport : undefined;
+                    if (current.phase !== phase || current.nativeSessionId !== nativeSessionId || startupReport !== undefined) {
+                      try { await options.remote.update(fresh, { phase, nativeSessionId, ...(startupReport === undefined ? {} : { startupReport }) }, signal); }
+                      catch (error) {
+                        if (!isWorkerCancellation(error, signal)) {
+                          const conflict = error instanceof ApiError && error.phase === "response" && error.confirmedRefusal && error.status === 409 && error.code === "version_conflict";
+                          const refusal = error instanceof ApiError && error.phase === "response" && error.confirmedRefusal;
+                          options.emit({ kind: "summary-error", task, message: conflict ? "The Web execution summary was rejected because the task version changed; the next round will read it again." : refusal ? "The Web execution summary was rejected; the next round will read it again." : "The Web execution summary was not confirmed; the next round will read it again.", error });
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
-          } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
+          } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary could not be prepared; the next round will observe it again.", error }); }
         }
       }
       return waitingInput;
