@@ -73,6 +73,48 @@ const located = async (adapter: ReturnType<typeof createRetiredClaimNativeCleanu
   return entry.located;
 };
 const request = () => ({ deadline: Date.now() + 10_000, signal: new AbortController().signal });
+const journalProcessFixture = async (platform: "posix" | "windows", change: Partial<processProofs.ProcessProof>) => {
+  const f = await fixture(), { store, binding } = f.lifecycle(), ticket = f.ticket({ schemaVersion: 2, lifecycleBinding: binding });
+  await writeLaunchTicket(f.home, ticket);
+  const journalFile = path.join(controllerExecutionDirectory(f.home, ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalFile), { recursive: true });
+  const launchProof: processProofs.ProcessProof = { pid: 987654, parentPid: 987653, processGroupId: platform === "posix" ? 987654 : null,
+    startedAt: "original-controller", commandHash: "a".repeat(64), ...(platform === "windows" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) };
+  const journalProof = { ...launchProof, ...change };
+  const journal = openControllerLifecycleStore(journalFile, ticket);
+  journal.patchSnapshot({ controllerProcess: journalProof }); journal.close();
+  store.importResource({ binding, resourceId: ticket.launchId, ownerKind: "controller", operationId: ticket.launchId, stage: "running", processProof: launchProof,
+    identity: { ...f.target, kind: "launch", executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
+      controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, launchId: ticket.launchId,
+      storageStateDirectory: resolveControllerStateDirectory(f.home), ticketHash: controllerPayloadHash(ticket), journalFile } });
+  const adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, lifecycle: store, jobLeases: createControllerJobLeases("linux") });
+  return { ...f, store, ticket, launchProof, journalProof, adapter };
+};
+
+it.skipIf(process.platform === "win32")("stops the original detached POSIX Controller after its journal self-capture observes a new parent", async () => {
+  const f = await journalProcessFixture("posix", { parentPid: 1 });
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  vi.spyOn(processProofs, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  expect(await f.adapter.stop(await located(f.adapter, f.target), request())).toMatchObject({ resourcesCleared: true, stoppedExecutions: [{ launchId: f.ticket.launchId }] });
+  expect(stop).toHaveBeenCalledExactlyOnceWith(f.journalProof, [], expect.any(Number), undefined);
+  expect(f.store.getResource(f.ticket.launchId)).toMatchObject({ stage: "stopped", processProof: f.launchProof,
+    stopProof: { controllerProcess: f.journalProof, boundaryEmpty: true } });
+});
+
+it.each([
+  { field: "PID", platform: "posix", change: { pid: 987655 } },
+  { field: "birth", platform: "posix", change: { startedAt: "another-controller" } },
+  { field: "command", platform: "posix", change: { commandHash: "b".repeat(64) } },
+  { field: "process group", platform: "posix", change: { processGroupId: 987655 } },
+  { field: "Windows parent", platform: "windows", change: { parentPid: 1 } },
+  { field: "Windows Job", platform: "windows", change: { jobObjectName: `Local\\Daynight-${randomUUID()}` } },
+] as const)("retains responsibility when the journal changes the original $field identity", async ({ platform, change }) => {
+  const f = await journalProcessFixture(platform, change), original = f.store.getResource(f.ticket.launchId);
+  const stop = vi.spyOn(processProofs, "stopControllerProcesses").mockRejectedValue(new Error("Conflicting process must not be stopped."));
+  await expect(f.adapter.stop(await located(f.adapter, f.target), request())).rejects.toThrow("conflicting lifecycle and journal process proofs");
+  expect(stop).not.toHaveBeenCalled();
+  expect(f.store.getResource(f.ticket.launchId)).toEqual(original);
+});
 
 it("certifies a complete empty inventory without inventing an execution or worktree owner", async () => {
   const f = await fixture(), adapter = f.adapter();

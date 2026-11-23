@@ -24,7 +24,7 @@ import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
-import { controllerJournalFormat } from "./journal-format.js";
+import { controllerJournalFormat, inspectReadCompatibleControllerJournal } from "./journal-format.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
@@ -540,8 +540,8 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
       db.pragma(`busy_timeout = ${remaining()}`); remaining();
       result = db.transaction(() => {
         remaining();
-        const source = inspectSqlite(db, controllerJournalFormat);
-        if (source.kind !== "current" && !(allowPreviousFormat && source.kind === "outdated" && source.version === 16)) throw new Error("Controller stop recording requires the current journal format.");
+        const source = allowPreviousFormat ? inspectReadCompatibleControllerJournal(db) : inspectSqlite(db, controllerJournalFormat);
+        if (!allowPreviousFormat && source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
         db.pragma(`busy_timeout = ${remaining()}`);
         const row = read(db, source.kind === "current"); remaining(); return row;
       }).deferred();
@@ -573,10 +573,9 @@ const validateControllerSnapshot = (value: ControllerSnapshot, ticket: Controlle
     return value;
 };
 
-/** Read the current journal without migration and verify its original ticket fence. */
-export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {
+const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline: number | undefined, allowPreviousFormat: boolean): ControllerSnapshot => {
   try {
-    const row = readControllerStopRow(file, deadline, true);
+    const row = readControllerStopRow(file, deadline, true, undefined, undefined, allowPreviousFormat);
     if (row === null) throw new Error("Original controller journal evidence is unavailable.");
     const value = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
     if (deadline !== undefined && Date.now() >= deadline) throw new Error("Controller stop recording exceeded its deadline.");
@@ -586,6 +585,12 @@ export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLa
     throw cause;
   }
 };
+
+/** Read the current journal without migration and verify its original ticket fence. */
+export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, false);
+
+/** Read a validated v16 or current snapshot without modifying protected or retained evidence. */
+export const readCompatibleControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, true);
 
 /** Immutable launch attempts can share a generation; only the journal's exact ticket owns its snapshot. */
 export const readCurrentControllerInventorySnapshot = (file: string, tickets: readonly ControllerLaunchTicket[], deadline: number): { ticket: ControllerLaunchTicket; snapshot: ControllerSnapshot } | null => {

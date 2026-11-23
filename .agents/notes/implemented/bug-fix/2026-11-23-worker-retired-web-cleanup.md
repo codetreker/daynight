@@ -100,7 +100,10 @@ validated immutable ticket. Legitimate replacement changes only launch-local
 fields while preserving the original execution intent. A reserved or unknown
 launch without process proof remains unresolved unless its original producer
 confirms non-dispatch or closes its launch gate. Missing process proof alone
-cannot exclude a child created before its birth identity was saved.
+cannot exclude a child created before its birth identity was saved. Launcher and
+Controller self-captured proofs use the existing identity-preservation contract:
+POSIX reparenting cannot invalidate the same PID, birth, command and nonnull
+process group; Windows retains its parent and Job checks.
 
 Controller journal schema 17 stores immutable full stopped snapshots keyed by
 ticket hash. The stop CAS saves its receipt in the same transaction, and a new
@@ -109,7 +112,9 @@ singleton. Original-ticket validation and all known process proofs remain
 required when consuming a historical Windows receipt. Existing current-format
 16 snapshots can be observed through a narrowly validated read-only inventory
 path; actual stopped maintenance performs the numbered migration under the
-original permit. Already overwritten history without a full stop receipt remains
+original permit. Read-compatible format checks also preserve the immutable v16
+Bot migration copies described by the [migration decision](../architecture/2026-11-19-bot-storage-migration.md); raising the active writer format cannot invalidate a
+checksum-protected original copy. Already overwritten history without a full stop receipt remains
 unrecoverable from the retained data. Retained lifecycle proof still requires
 its own boundary check.
 

@@ -11,6 +11,7 @@ import type { LifecycleIdentity, LifecycleJson, LifecycleStore } from "../lifecy
 import type { ResourceOwner } from "../types.js";
 import { hasLifecycleUnreleasedControllerGateProof, readLifecycleControllerTicket } from "../lifecycle-controller-ticket.js";
 import type { ControllerJobLeases } from "./controller-job-leases.js";
+import { preservesControllerProcessProof } from "./orchestration.js";
 import { locateRetiredClaimControllers, type LocatedClaimController, type LocatedClaimNative } from "./retired-claim-tickets.js";
 export type { ClaimNativeLocation, LocatedClaimNative } from "./retired-claim-tickets.js";
 
@@ -101,7 +102,7 @@ export const createRetiredClaimNativeCleanup = (options: {
     const historical = process.platform === "win32" && snapshot === null ? readHistoricalWindowsStoppedControllerGeneration(located.journalFile, located.ticket, request.deadline) : null;
     const launches = located.resources.filter(resource => resource.identity.kind === "launch" && resource.processProof !== null).map(resource => processProof(resource.processProof));
     const proof = snapshot?.controllerProcess ?? historical?.controllerProcess ?? launches[0] ?? null;
-    if (launches.some(launch => !isDeepStrictEqual(launch, proof))) throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
+    if (launches.some(launch => !preservesControllerProcessProof(launch, proof, located.ticket.launchId))) throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
     const native = [...(snapshot?.nativeProcesses ?? historical?.nativeProcesses ?? [])];
     for (const resource of located.resources) {
       if (resource.identity.kind !== "provider" || resource.processProof === null) continue;
