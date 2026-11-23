@@ -1021,7 +1021,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
-| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
+| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and local-backend storage leases. An empty value disables monitoring and selects standalone local gates | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_STORAGE_BACKEND` | `local` or `azure-blob` | `local` |
@@ -1059,9 +1059,12 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
-Select Azure explicitly with an existing container and a Managed Identity with
-Blob data access. The server checks container access within the startup timeout;
-the connection string and identity modes cannot be combined. `storage.root`
+Select Azure explicitly for a single Server instance with an existing container
+and a Managed Identity with Blob data access. Azure uses process-local storage
+gates even when Redis is configured for monitoring; multiple Server processes
+sharing an Azure container are not supported. The server checks container
+access within the startup timeout. The connection string and identity modes
+cannot be combined. `storage.root`
 remains a writable local scratch directory for request-scoped files.
 
 ```yaml
@@ -3483,13 +3486,15 @@ Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
 reason references before deduplication. Public summaries contain fixed reason
 codes and projection quality, never private references or hidden counts.
 
-`DAYNIGHT_REDIS_URL` enables monitoring and Redis storage gates, each with a
-separate client closed during shutdown. Use a valid `redis` or `rediss` URL.
+`DAYNIGHT_REDIS_URL` enables monitoring and, for the local backend, Redis storage
+gates, each with a separate client closed during shutdown. Azure storage gates
+remain process-local and support one Server instance. Use a valid `redis` or
+`rediss` URL.
 The only supported query parameter is `db`. An empty value returns 503 for
 monitoring and selects process-local storage gates for one Server instance.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
-For shared file storage, point all Server instances at the same Redis database
+For shared local file storage, point all Server instances at the same Redis database
 with `noeviction`. Give each independently operated storage deployment its own
 Redis database. Redis stores gate keys with short TTLs. PostgreSQL and the
 file store retain business data. Redis errors fail operations that need a

@@ -11,11 +11,13 @@ identity and abandoned permits need to expire after an owner exits.
 
 ## Decision
 
-A configured `DAYNIGHT_REDIS_URL` selects Redis storage gates. The storage and
-monitoring clients have separate connection pools. Gate keys preserve the
+A configured `DAYNIGHT_REDIS_URL` selects Redis storage gates for the local
+backend. The storage and monitoring clients have separate connection pools. Gate keys preserve the
 striped target and private domains and exact residency and media domains. One
 Redis database identifies one storage deployment. Without Redis configuration,
-a standalone server coordinates storage through process-local gates.
+a standalone server coordinates storage through process-local gates. The
+[Azure backend](2026-11-23-azure-archive-backend.md) supports a single Server
+instance and uses process-local storage gates even when monitoring uses Redis.
 
 Each Redis permit has a random ownership token and a 30-second TTL. The owner
 renews while the permit is open, including after the acquisition context
