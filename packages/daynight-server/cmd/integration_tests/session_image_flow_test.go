@@ -532,7 +532,7 @@ func sessionDirectImageFlow(t *testing.T, f *fixture, relay bool) {
 		}
 	}
 
-	content := imageWire(t, []map[string]string{{"type": "resource", "resourceId": resource.ResourceID, "label": "original.png"}})
+	content := imageWire(t, []map[string]string{{"type": "image", "imageId": imageID, "resourceId": resource.ResourceID, "label": "original.png"}})
 	entry.Revision, entry.Data["content"] = "2", content
 	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "2", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
 	imageReadContext, finishImageRead = context.WithTimeout(f.context, 5*time.Second)
