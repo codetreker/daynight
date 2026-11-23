@@ -35,7 +35,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 	readerExec(t, s, `CREATE FUNCTION reject_description() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'description must not be selected'; END $$;
 		ALTER VIEW task_resource_rows RENAME TO resource_source;
-		CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, title, reject_description() AS description,
+		CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, parent_type, title, reject_description() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at,effective_deleted_at FROM resource_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, readerID(11), readerGraphSelection(), 160)

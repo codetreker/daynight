@@ -62,7 +62,7 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 		task.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
 	}
 	for _, extended := range []bool{false, true} {
-		if _, err := taskprotocol.EncodeREST(io.Discard, task, extended, int64(taskcore.MaxTaskResponseJSONBytes)+taskprotocol.AliasBytes(task.Properties)); err != nil {
+		if _, err := taskprotocol.EncodeREST(io.Discard, task, extended, int64(taskcore.MaxTaskResponseJSONBytes)+taskprotocol.AliasBytes(task.Properties), taskParentView(ctx)); err != nil {
 			return taskResponseError(err)
 		}
 	}
@@ -85,7 +85,7 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 		if response.Receipt {
 			_, err = taskprotocol.EncodeMCPReceiptResponse(io.Discard, actual, response.RequestID, outcome, response.RPCID, response.Modern, budget)
 		} else {
-			_, err = taskprotocol.EncodeMCPResponse(io.Discard, task, response.RequestID, outcome, response.RPCID, response.Modern, response.Full, budget)
+			_, err = taskprotocol.EncodeMCPResponse(io.Discard, task, response.RequestID, outcome, response.RPCID, response.Modern, response.Full, budget, taskParentView(ctx))
 		}
 		if err != nil {
 			return taskResponseError(err)

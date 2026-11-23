@@ -17,7 +17,9 @@ positive exact full ID match in a successful branch precedes title ranking.
 The parser, evidence calculation and PostgreSQL compiler share a
 pure expression data model; the store contract does not depend on search business
 operations. A read-only repeatable-read snapshot binds authorization, the project
-Task fence, matching and parent Goal context. Distinct parent titles are read
+Task fence, matching and actual direct-parent context. Default protocol context
+remains Goal-only; the [Task-parent projection decision](2026-11-23-task-parent-read-projection.md)
+adds opt-in ordinary-parent context. Distinct parent titles are read
 in one batch and Go selects description snippets. The [typed resource read decision](2026-11-11-typed-task-resource-reads.md)
 replaces the originally selected ordinary-component context with actual membership.
 The [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)

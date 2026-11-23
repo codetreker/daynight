@@ -13,7 +13,7 @@ import (
 )
 
 func listSelectionRequest(request TaskListRequest) taskcore.ListRequest {
-	return taskcore.ListRequest{TagFilter: request.TagFilter, Type: request.Type, Parent: request.Parent,
+	return taskcore.ListRequest{TagFilter: request.TagFilter, Type: request.Type, Parent: request.Parent, ParentTask: request.ParentTask,
 		PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status,
 		Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform,
 		PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate,

@@ -84,7 +84,7 @@ func TestTypedQueriesFilterBeforePaginationAndHideDeletedParents(t *testing.T) {
 	}
 	titles, err := search.Titles(ctx, f.project, []string{goal, deletedGoal, first})
 	mustOK(t, err)
-	if len(titles) != 1 || titles[goal] != "needle goal" {
+	if len(titles) != 2 || titles[goal] != "needle goal" || titles[first] != "needle first" {
 		t.Fatalf("parent titles: %+v", titles)
 	}
 	graph, err := reader.TaskGraphTasks(ctx, f.project, first, store.TaskGraphSelection{OrdinaryPrerequisites: true, LiveOnly: true}, 160)

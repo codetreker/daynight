@@ -162,7 +162,7 @@ Task 包含以下持久化字段：
 
 完整 REST Task、列表、ready、搜索结果和同步摘要，以及 MCP Task 完整和摘要结果包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。REST 和 MCP 创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。REST PATCH 和 MCP `task_update` 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名、改色或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
 
-完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 Goal-only `parentId`；显式关系表示增加可空 `parentTaskId`，选择、搜索上下文和直属筛选见[父项读取设计](../design/daynight-task-parent-reads.md)。最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 
@@ -334,7 +334,7 @@ Task 更新示例：
 Team、Project 和 Task 列表按请求条数读取一批候选，并以一项 lookahead 判断续页；cursor 指向最后返回项。普通资源直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域或共享 MCP 读取响应字节预算。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
-Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 匹配没有直属 Goal 的资源，UUID 只匹配该直属 Goal 的孩子。`parentTaskId` 指定可见同项目普通父 Task UUID，与 `parentId` 互斥。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及两种 Parent 筛选。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
 

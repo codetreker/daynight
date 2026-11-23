@@ -55,7 +55,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 ### 自动认领和终止后新执行
 
-项目写事务取得锁后重新核验当前成员、精确版本、todo、全部前置为done或cancelled、assignedTo 非空且等于 principal.UserID、allowAgents=true、平台兼容和无 active 归属。负责人不匹配返回 409 invalid_transition，字段、版本和时间保持。成功同时进入 in_progress 并安装 active 记录，只增加一次任务版本。候选快照不替代事务校验。
+项目写事务取得锁后重新核验当前成员、精确版本、todo、全部前置为done或cancelled、assignedTo 非空且等于 principal.UserID、allowAgents=true、平台兼容和无 active 归属。负责人不匹配返回 409 invalid_transition，字段、版本和时间保持。成功同时进入 in_progress 并安装 active 记录，只增加一次任务版本。候选快照不替代事务校验。自动候选和事务内领取共用同项目递归祖先 Goal 判定；任一祖先 Goal 已完成或取消时拒绝新 claim，普通依赖 ready 与自有库存不加入该筛选。普通父项不随子项启动，只有直属 todo Goal 参与自动开始。目标与本次要启动的直属 Goal 在 Worker configuration/execution 检查之前按 UUID 锁定，详情见[父项读取与领取设计](daynight-task-parent-reads.md)。
 
 同一事务通过 [Worker 目标读取资源](daynight-worker-configuration.md#项目事务内的目标读取资源)锁定权威目标并独立解析 taskTagFilter。缺行或未初始化视为空；已初始化 Raw 缺失或非法成员是错误，不因其他字段不可解析而放宽。请求可选 taskTagFilterKey 必须为小写 64 位十六进制 SHA-256；摘要为紧凑 UTF-8 JSON `[match,sortedKeys]` 的哈希。非空目标缺摘要返回 409 `worker_task_tag_filter_unsupported`；提供的摘要与目标不符或当前任务自身标签不匹配返回 409 `claim_conflict`。空目标允许旧 Worker 省略摘要，提供时仍须匹配。Worker 行锁持续到事务结束，任务标签变化与配置写入均不能穿过最终准入；已有 claim 的更新、释放和恢复不受此筛选影响。
 

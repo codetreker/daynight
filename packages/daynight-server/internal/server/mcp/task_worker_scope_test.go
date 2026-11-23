@@ -64,6 +64,9 @@ func (workerScopeProjectDAO) ProjectAccess(_ context.Context, p model.Principal)
 func (s workerScopeTaskDAO) TaskHeader(_ context.Context, id string) (model.TaskHeader, error) {
 	return model.TaskHeader{ID: id, ProjectID: s.state.current.ProjectID, Type: model.TaskTypeTask}, nil
 }
+func (s workerScopeTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return s.TaskHeader(ctx, id)
+}
 func (s workerScopeTaskDAO) Task(_ context.Context, id string) (model.Task, error) {
 	if id != s.state.current.ID {
 		panic("unexpected task")

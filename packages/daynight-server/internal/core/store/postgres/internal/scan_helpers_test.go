@@ -87,7 +87,7 @@ func taskProjection(at time.Time, status model.TaskStatus) projectionRow {
 		value := at.Add(time.Minute)
 		cancelled = &value
 	}
-	return projectionRow{values: []any{"task", "project", model.TaskTypeTask, (*string)(nil), "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
+	return projectionRow{values: []any{"task", "project", model.TaskTypeTask, (*string)(nil), model.TaskType(""), "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
 		[]string{"dependency"}, []string{"external"}, []string{"blocked"}, true}}
 }
 

@@ -22,7 +22,7 @@ func (s *Reader) Task(ctx context.Context, projectID, id string) (model.Task, er
 }
 
 // taskResourceFilter applies typed selection before pagination. A nil parent
-// selects all parents; none selects unassigned tasks.
+// selects all parents; none selects tasks without a direct Goal.
 func taskResourceFilter(taskType model.TaskType, parent *string, args *[]any) (string, error) {
 	if taskType == "" {
 		taskType = model.TaskTypeTask
@@ -34,16 +34,37 @@ func taskResourceFilter(taskType model.TaskType, parent *string, args *[]any) (s
 	filter := fmt.Sprintf(" AND t.type=$%d::text", len(*args))
 	if parent != nil {
 		if *parent == "none" {
-			return filter + " AND t.parent_id IS NULL", nil
+			return filter + " AND (t.parent_id IS NULL OR t.parent_type='task')", nil
 		}
 		id, err := model.CanonicalID(*parent)
 		if err != nil || id != *parent {
 			return "", fmt.Errorf("invalid parent ID")
 		}
 		*args = append(*args, id)
-		filter += fmt.Sprintf(" AND t.parent_id=$%d::uuid", len(*args))
+		filter += fmt.Sprintf(" AND t.parent_id=$%d::uuid AND t.parent_type='goal'", len(*args))
 	}
 	return filter, nil
+}
+
+func taskRelationshipFilter(taskType model.TaskType, parent, parentTask *string, args *[]any) (string, error) {
+	filter, err := taskResourceFilter(taskType, parent, args)
+	if err != nil {
+		return "", err
+	}
+	if parentTask == nil {
+		return filter, nil
+	}
+	if parent != nil || taskType == model.TaskTypeGoal {
+		return "", fmt.Errorf("invalid parent task filter")
+	}
+	id, err := model.CanonicalID(*parentTask)
+	if err != nil || id != *parentTask {
+		return "", fmt.Errorf("invalid parent task ID")
+	}
+	*args = append(*args, id)
+	return filter + fmt.Sprintf(` AND t.parent_id=$%d::uuid AND t.parent_type='task'
+ AND EXISTS(SELECT 1 FROM task_resource_rows parent WHERE parent.project_id=t.project_id
+ AND parent.id=t.parent_id AND parent.type='task' AND parent.effective_deleted_at IS NULL)`, len(*args)), nil
 }
 
 func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQuery) (store.TaskPage, error) {
@@ -66,7 +87,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	default:
 		return store.TaskPage{}, pg.QueryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
 	}
-	resourceFilter, err := taskResourceFilter(query.Type, query.Parent, &arguments)
+	resourceFilter, err := taskRelationshipFilter(query.Type, query.Parent, query.ParentTask, &arguments)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}
@@ -80,9 +101,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	}
 	candidateFilter := ""
 	if query.AutomaticCandidate {
-		candidateFilter = ` AND t.type = 'task' AND (t.parent_id IS NULL OR EXISTS (
-			SELECT 1 FROM tasks parent WHERE parent.id=t.parent_id AND parent.project_id=t.project_id
-			AND parent.type='goal' AND parent.deleted_at IS NULL AND parent.status NOT IN ('done', 'cancelled')))`
+		candidateFilter = " AND t.type = 'task' AND NOT " + terminalAncestorGoalPredicate("t.project_id", "t.parent_id")
 	}
 	workerJoin := ""
 	if query.Worker != nil {

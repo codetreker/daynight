@@ -71,7 +71,11 @@ func PrepareUpdate(ctx context.Context, dao store.TaskWriteDAO, id string, input
 }
 
 func PrepareStatus(ctx context.Context, dao store.TaskWriteDAO, principal model.Principal, id string, input SetTaskStatus) (Mutation, error) {
-	current, err := dao.Task(ctx, id)
+	read := dao.Task
+	if input.Status == model.TaskInProgress {
+		read = dao.TaskForStart
+	}
+	current, err := read(ctx, id)
 	if errors.Is(err, model.ErrNotFound) {
 		return Mutation{}, NotFound(err)
 	}

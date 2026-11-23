@@ -25,6 +25,7 @@ import (
 type Request struct {
 	TagFilter          store.TagFilter
 	Type               model.TaskType
+	ParentTask         *string
 	Parent             *string
 	Query              string
 	AssignedTo         *string
@@ -46,6 +47,7 @@ type Item struct {
 	Tags        []model.TagReference `json:"-"`
 	ID          string               `json:"id"`
 	Type        model.TaskType       `json:"type"`
+	ParentType  model.TaskType       `json:"-"`
 	ParentID    *string              `json:"parentId"`
 	ProjectID   string               `json:"projectId"`
 	Title       string               `json:"title"`
@@ -67,6 +69,7 @@ type Page struct {
 type cursorScope struct {
 	TagFilterIdentity  string                     `json:"tagFilter"`
 	Type               model.TaskType             `json:"type"`
+	ParentTask         *string                    `json:"parentTask,omitempty"`
 	Parent             *string                    `json:"parent"`
 	Version            int                        `json:"version"`
 	UserID             string                     `json:"userId"`
@@ -167,6 +170,10 @@ func search(ctx context.Context, reader store.TaskSearchReader, principal model.
 	if err != nil {
 		return Page{}, err
 	}
+	parentTask, err := taskcore.ParentTaskFilter(kind, parent, request.ParentTask)
+	if err != nil {
+		return Page{}, err
+	}
 	assignment, err := taskcore.AssignmentFilter(request.AssignedTo, userID)
 	if err != nil {
 		return Page{}, err
@@ -184,7 +191,7 @@ func search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		return Page{}, err
 	}
 	hash := sha256.Sum256([]byte(request.Query))
-	scope := cursorScope{Version: 4, TagFilterIdentity: taskcore.TagFilterIdentity(filter), Type: kind, Parent: parent, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	scope := cursorScope{Version: 4, TagFilterIdentity: taskcore.TagFilterIdentity(filter), Type: kind, Parent: parent, ParentTask: parentTask, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
 	var prior *cursor
 	if request.Cursor != nil {
 		value, err := decodeCursor(*request.Cursor, scope)
@@ -213,7 +220,7 @@ func search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		if err := taskcore.RequireTagFilter(ctx, snapshot, projectID, filter); err != nil {
 			return err
 		}
-		selection := store.TaskSearchQuery{TagFilter: filter, Type: request.Type, Parent: parent, Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
+		selection := store.TaskSearchQuery{TagFilter: filter, Type: request.Type, Parent: parent, ParentTask: parentTask, Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
 		if prior != nil {
 			selection.After = &prior.Position
 		}
@@ -268,7 +275,7 @@ func search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err != nil {
 				return err
 			}
-			result.Items = append(result.Items, Item{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Tags: row.Tags, Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
+			result.Items = append(result.Items, Item{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ParentType: row.ParentType, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Tags: row.Tags, Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
 		}
 		if rows.HasMore {
 			if len(rows.Items) == 0 {

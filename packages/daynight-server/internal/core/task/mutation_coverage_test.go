@@ -21,6 +21,9 @@ type mutationDAO struct {
 }
 
 func (d *mutationDAO) Task(context.Context, string) (model.Task, error) { return d.current, d.err }
+func (d *mutationDAO) TaskForStart(context.Context, string) (model.Task, error) {
+	return d.current, d.err
+}
 func (d *mutationDAO) CreateTask(_ context.Context, id string, _ store.TaskWrite) (model.Task, error) {
 	d.action = "create"
 	return model.Task{ID: id}, d.err

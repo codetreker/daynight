@@ -2,17 +2,20 @@ package pg
 
 import (
 	"context"
+	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
 func ReadTaskWithLock(ctx context.Context, tx pgx.Tx, projectID, id, lock string) (model.Task, error) {
+	projection := TaskProjection
 	relation, deleted := "task_resource_rows", "t.effective_deleted_at"
 	if lock != "" {
 		relation, deleted = "tasks", "COALESCE(t.deleted_at, t.ancestor_deleted_at)"
+		projection = PhysicalTaskProjection()
 	}
-	task, err := ScanTask(LiveTaskRow{tx.QueryRow(ctx, `SELECT `+TaskProjection+`, `+deleted+` FROM `+relation+` t
+	task, err := ScanTask(LiveTaskRow{tx.QueryRow(ctx, `SELECT `+projection+`, `+deleted+` FROM `+relation+` t
   WHERE t.project_id = $1 AND t.id = $2`+lock, projectID, id)})
 	if err != nil {
 		return model.Task{}, QueryError("read task", err)
@@ -95,4 +98,10 @@ func AttachTaskTags(ctx context.Context, tx pgx.Tx, projectID string, tasks []mo
 		tasks[i].Tags = tags[tasks[i].ID]
 	}
 	return nil
+}
+
+// PhysicalTaskProjection resolves the direct parent while retaining the target-only
+// locking behavior used by write transactions.
+func PhysicalTaskProjection() string {
+	return strings.Replace(TaskProjection, "t.parent_type", "(SELECT parent.type FROM tasks parent WHERE parent.project_id=t.project_id AND parent.id=t.parent_id)", 1)
 }

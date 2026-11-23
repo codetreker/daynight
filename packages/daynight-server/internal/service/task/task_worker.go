@@ -25,7 +25,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 	if err := taskcore.RequireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+	return s.versionedWriteTaggedWithLocks(ctx, principal, projectID, id, input.Version, nil, false, true, nil, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
 		if err := taskcore.ClaimAdmission(current, principal.UserID, descriptor); err != nil {
 			return taskcore.Mutation{}, err
 		}
