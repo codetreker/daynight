@@ -147,7 +147,8 @@ Task 包含以下持久化字段：
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
 | `type` | 必填资源类型，公开创建支持 `task` 或 `goal` |
-| `parentId` | 必填、可空的父 Goal UUID；普通 Task 创建和更新可指定 |
+| `parentId` | 必填、可空的直属 Goal UUID；普通根可按既有规则创建和更新 |
+| `parentTaskId` | 显式扩展表示中的可空直属普通父 Task UUID；创建可指定非空 UUID，与非空 parentId 互斥，已有普通父边不可修改 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -180,7 +181,7 @@ proposed/todo/cancelled 可有未满足前置，in_progress/done 的前置必须
 ## 状态与更新规则
 
 新建 task 和数据库默认值均为 `proposed`，初始版本为1，执行起止和取消时间均为null，`allowAgents=false`。
-创建只接受 `title`、可选 `status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 和 `properties`；
+创建接受 `title`、可选 `type`、`parentId`、`parentTaskId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo`、`tagIds` 和 `properties`；普通父项创建及不可改挂约束见[父子写入设计](../design/daynight-task-parent-writes.md)。
 status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents 和执行时间。内部已确认的多步任务可显式创建 todo。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
 任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。字段、依赖和属性写入额度及完整 Task 成功响应预算见[输入与资源额度](daynight-api-input-limits.md)；确定的容量拒绝在提交前回滚。提交后发送失败不得表述为确定未写入。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
@@ -191,7 +192,7 @@ status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents �
 统一状态入口为 `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status`，普通请求为
 `{"version":123,"status":"in_progress"}`，done 目标另可提供 claimId 以完成当前 worker 执行。版本为正 int64 JSON 数字，范围
 `1..9223372036854775807`；拒绝缺失、null、字符串、非整数、越界、重复或未知字段及 query。
-只接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。
+只接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。可选严格布尔 `cancelDescendants` 仅允许普通 Task 的 cancelled 操作，显式 false 也受该限制；true 在同一事务取消可见未结束后代，省略或 false 仅取消目标。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。普通父项终态、不可改挂及未结束孩子的拒绝和整批取消见[父子写入设计](../design/daynight-task-parent-writes.md)。
 
 没有 active 执行归属的普通任务可在 proposed/todo/in_progress/done 之间直接设置状态，无需经过固定阶段，并允许进入不可恢复的cancelled；受控执行另有[认领保护](../design/daynight-worker-claims.md)。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
 同状态返回当前完整资源，不写持久化字段、版本、updatedAt 或计时；附带 claimId 的 done 同状态须匹配 completed 记录及其 owner。过期同状态仍返回

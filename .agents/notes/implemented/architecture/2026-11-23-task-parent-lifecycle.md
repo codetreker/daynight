@@ -37,5 +37,6 @@ changed independently of the immutable parent relationship.
 Completion and deletion must query visible direct children under the Project
 lock. A recursive cancellation holds that lock and locks each changed row, so its
 cost grows with the visible subtree and is bounded by the operation deadline.
-Public creation and confirmation inputs remain separate protocol work; existing
-status and deletion operations enforce the new lifecycle admission.
+Public creation and confirmation inputs use the existing REST and MCP tools,
+as recorded by the [write protocol decision](../feature/2026-11-23-task-parent-write-protocol.md).
+Status and deletion operations share the same lifecycle admission.

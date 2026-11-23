@@ -4118,6 +4118,18 @@ Goal-only. Minimal receipts and My Tasks keep their original field sets. Respons
 retain no-store and vary on the relation header. The [parent read design](../../docs/design/daynight-task-parent-reads.md)
 owns filtering, byte admission and ancestor Goal eligibility.
 
+Task POST and MCP `task_create` accept an optional non-null UUID `parentTaskId`
+for a visible nonterminal ordinary parent in the same Project. It conflicts with
+a non-null Goal `parentId`. PATCH and `task_update` reject `parentTaskId`; existing
+ordinary parent edges cannot be cleared or moved through `parentId`.
+Status PUT and `task_set_status` accept strict boolean `cancelDescendants` only
+for ordinary cancelled requests, including explicit false. Omission or false
+cancels only the target; true atomically cancels visible unfinished descendants.
+Existing exact versions, scope and claim protections apply. The
+[parent write design](../../docs/design/daynight-task-parent-writes.md) owns
+lifecycle refusals, scoped blocking IDs, response budgets and unknown outcomes.
+Old services reject the new fields; callers must not remove them and replay.
+
 Worker operations return complete Task resources with 200 and no-store, preserving
 existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest

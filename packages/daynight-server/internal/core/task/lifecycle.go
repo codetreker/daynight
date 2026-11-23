@@ -11,10 +11,11 @@ import (
 )
 
 type SetTaskStatus struct {
-	Version           int64
-	Status            model.TaskStatus
-	ClaimID           *string
-	CancelDescendants bool
+	Version                  int64
+	Status                   model.TaskStatus
+	ClaimID                  *string
+	CancelDescendants        bool
+	CancelDescendantsPresent bool
 }
 
 type DeleteTask struct {
@@ -56,7 +57,7 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 	if !input.Status.Valid() {
 		return input, invalidInput("Task status is invalid.")
 	}
-	if input.CancelDescendants && input.Status != model.TaskCancelled {
+	if (input.CancelDescendantsPresent || input.CancelDescendants) && input.Status != model.TaskCancelled {
 		return input, invalidInput("Descendant cancellation requires cancelled status.")
 	}
 	if input.ClaimID != nil {
@@ -76,6 +77,9 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 // the project write lock. A false changed result preserves a same-status no-op.
 func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal model.Principal, current model.Task, input SetTaskStatus, worker *model.WorkerClaim) (store.TaskWrite, bool, error) {
 	if current.Type == model.TaskTypeGoal {
+		if input.CancelDescendantsPresent || input.CancelDescendants {
+			return store.TaskWrite{}, false, invalidInput("Descendant cancellation requires an ordinary Task.")
+		}
 		if input.Status == model.TaskProposed || !input.Status.Valid() {
 			return store.TaskWrite{}, false, invalidInput("Goal status must be todo, in_progress, done or cancelled.")
 		}

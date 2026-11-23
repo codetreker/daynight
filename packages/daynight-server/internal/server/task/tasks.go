@@ -132,6 +132,20 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
+	input.ParentTaskID, err = httpx.OptionalString(fields, "parentTaskId")
+	if err != nil {
+		return api.CreateTaskRequest{}, err
+	}
+	if input.ParentTaskID != nil {
+		parent, err := model.CanonicalID(*input.ParentTaskID)
+		if err != nil {
+			return api.CreateTaskRequest{}, err
+		}
+		input.ParentTaskID = &parent
+		if input.ParentID != nil && *input.ParentID != nil {
+			return api.CreateTaskRequest{}, httpx.InvalidInput("parentId and parentTaskId are mutually exclusive")
+		}
+	}
 	input.Status, err = httpx.OptionalString(fields, "status")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
@@ -333,7 +347,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo", "status", "type", "parentId", "tagIds")
+	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo", "status", "type", "parentId", "parentTaskId", "tagIds")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
@@ -344,7 +358,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	values := taskcore.CreateTask{
-		TagIDs: input.TagIDs,
+		TagIDs: input.TagIDs, ParentTaskID: input.ParentTaskID,
 		Status: taskStatusValue(input.Status), AssignedTo: input.AssignedTo, AssignedToPresent: input.AssignedToPresent, RequiredPlatform: platformValue(input.RequiredPlatform), RequiredPlatformPresent: input.RequiredPlatformPresent, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
 	}
 	if input.Type != nil {
