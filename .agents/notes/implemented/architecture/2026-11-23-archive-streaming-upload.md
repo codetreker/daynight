@@ -46,8 +46,11 @@ storage operation, so a replacement writer or cleanup could race it.
 
 ## Consequences
 
-An interrupted stream resumes from the paired storage's observed offset,
-including an earlier restored prefix. Full-file hashing detects corruption
+An interrupted stream resumes from any canonical offset within the original
+file length reported by the paired storage, including an earlier restored prefix.
+The Controller's bounded source reads do not impose the local staging block
+alignment on Azure offsets; the [offset decision](../bug-fix/2026-11-24-archive-storage-offsets.md)
+records that distinction. Full-file hashing detects corruption
 before publication; partial prefixes have no independent checksum. Enabling
 new uploads on local storage requires verified volume semantics; the [Azure
 backend](2026-11-23-azure-archive-backend.md) uses Blob-specific exclusion and
