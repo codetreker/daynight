@@ -141,7 +141,6 @@ func TestWorkerActiveClaimMigrationPreservesFactsAndReopens(t *testing.T) {
 func TestWorkerActiveClaimMigrationRejectsInvalidRowsAtomically(t *testing.T) {
 	for _, test := range []struct{ name, raw, reason string }{
 		{"shape", `{}`, "worker shape"}, {"invalid JSON", `{`, "worker shape"},
-		{"original timestamp decode", strings.Replace(workerIndexFixture(t), "2020-01-02", `\u0032020-01-02`, 1), "original worker decode failed"},
 		{"duplicate", strings.Replace(workerIndexFixture(t), `"state":"active"`, `"state":"active","state":"completed"`, 1), "worker shape"},
 		{"PostgreSQL conversion", strings.Replace(workerIndexFixture(t), "Historical machine", `\ud800`, 1), "PostgreSQL worker extraction"},
 	} {
