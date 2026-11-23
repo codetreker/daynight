@@ -223,7 +223,7 @@ func validateBackupLedger(raw json.RawMessage, historyID string) error {
 			return errors.New("incomplete completed history ledger")
 		}
 	}
-	if json.Unmarshal(raw, &ledger) != nil || ledger.HistoryID != historyID || ledger.HistoryEpoch == "" || len(ledger.HistoryEpoch) > 256 || ledger.Entries == nil || ledger.Resources == nil || ledger.Occurrences == nil || len(ledger.Entries) > 100000 || len(ledger.Resources) > 1000 || len(ledger.Occurrences) > maxArchiveHistoryOccurrences {
+	if json.Unmarshal(raw, &ledger) != nil || ledger.HistoryID != historyID || (ledger.HistoryEpoch == "" && historyID != "") || len(ledger.HistoryEpoch) > 256 || ledger.Entries == nil || ledger.Resources == nil || ledger.Occurrences == nil || len(ledger.Entries) > 100000 || len(ledger.Resources) > 1000 || len(ledger.Occurrences) > maxArchiveHistoryOccurrences {
 		return errors.New("invalid completed history ledger")
 	}
 	validNumber := func(value string, zero bool) bool {
@@ -269,13 +269,10 @@ func validateBackupLedger(raw json.RawMessage, historyID string) error {
 // A sealed bundle owns its resource closure even before a timeline is complete.
 // A complete current timeline is checked against that closure for both uploads.
 func verifyBackupSealedBundle(ctx context.Context, files backupStorageReader, inventory store.StorageInventory, namespace sessionarchive.Namespace, bundle store.ArchiveBundle) error {
-	// Legacy archive conversion publishes its own deterministic closure without
-	// a history upload. verifyBackupMigration checks that source and closure.
-	if bundle.HistoryID == "" && inventory.Migration != nil && (inventory.Migration.Phase == "committed" || inventory.Migration.Phase == "verified") && (bundle.Phase == "committed" || bundle.Phase == "verified") {
-		return nil
-	}
+	// Legacy conversion has no history file; its source is checked separately.
+	legacy := bundle.HistoryID == "" && inventory.Migration != nil && (inventory.Migration.Phase == "committed" || inventory.Migration.Phase == "verified") && (bundle.Phase == "committed" || bundle.Phase == "verified")
 	var ledger archiveLedger
-	if bundle.HistoryID == "" || validateBackupLedger(bundle.Ledger, bundle.HistoryID) != nil || json.Unmarshal(bundle.Ledger, &ledger) != nil || !ledger.Sealable {
+	if (!legacy && bundle.HistoryID == "") || validateBackupLedger(bundle.Ledger, bundle.HistoryID) != nil || json.Unmarshal(bundle.Ledger, &ledger) != nil || !ledger.Sealable {
 		return errors.New("invalid sealed history ledger")
 	}
 	var refs []sp.ArchiveResourceReference

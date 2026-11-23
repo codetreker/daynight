@@ -24,6 +24,8 @@ func TestBackupV2FailedReceiptWithCommittedLegacyMigration(t *testing.T) {
 		{"missing legacy source", false},
 		{"missing migrated timeline", false},
 		{"missing resource", false},
+		{"wrong ledger digest", false},
+		{"wrong ledger revision", false},
 		{"wrong migration identity", false},
 		{"wrong published manifest", false},
 	} {
@@ -101,6 +103,12 @@ func TestBackupV2FailedReceiptWithCommittedLegacyMigration(t *testing.T) {
 			archive := store.StorageArchive{SchemaVersion: 3, Path: targetPath, SHA256: targetHash, ByteLength: int64(len(plan.ManifestBytes))}
 			inventory := store.StorageInventory{SessionID: sessionID, OwnerID: owner, Archive: &archive, Migration: &migration, Resources: plan.Resources, ArchiveBundle: &bundle, ArchiveTimeline: &timeline, ArchiveFilesV2: []store.StorageArchiveFileV2{failed}}
 			switch tc.name {
+			case "wrong ledger digest":
+				ledger.Entries[0].SHA256 = archiveDigest([]byte("different"))
+				bundle.Ledger = encode(ledger)
+			case "wrong ledger revision":
+				ledger.Entries[0].Revision = "2"
+				bundle.Ledger = encode(ledger)
 			case "wrong migration identity":
 				migration.MigrationID = uuid.NewString()
 			case "wrong published manifest":
