@@ -428,9 +428,20 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `CREATE OR REPLACE VIEW task_resource_rows AS
+			SELECT t.id, t.project_id, t.title, t.description, t.status, t.version,
+			       t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents,
+			       t.required_platform, t.deleted_at, t.assigned_to, t.cancelled_at,
+			       t.type, t.parent_id, p.type AS parent_type, p.deleted_at AS parent_deleted_at,
+			       COALESCE(t.deleted_at, CASE WHEN t.type = 'task' AND p.type = 'goal' THEN p.deleted_at END) AS effective_deleted_at
+			FROM tasks t
+			LEFT JOIN tasks p ON p.project_id = t.project_id AND p.id = t.parent_id;
+			ALTER TABLE tasks DROP COLUMN ancestor_deleted_at`); err != nil {
+			t.Fatal(err)
+		}
 		// The ledger must stay an ordered prefix, so a later data-only backfill
 		// is withdrawn here too even though it reconstructs no schema.
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 44 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version>76`); err != nil || result.RowsAffected() != 45 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -468,6 +479,10 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	}
 	if err := db.QueryRow(f.context, `SELECT count(*) FROM schema_migrations WHERE version=121`).Scan(&migrationCount); err != nil || migrationCount != 1 {
 		t.Fatalf("upgraded Worker platform task mode: migration count=%d error=%v", migrationCount, err)
+	}
+	var ancestorVisibilityColumn bool
+	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='ancestor_deleted_at'), (SELECT count(*) FROM schema_migrations WHERE version=123)`).Scan(&ancestorVisibilityColumn, &migrationCount); err != nil || !ancestorVisibilityColumn || migrationCount != 1 {
+		t.Fatalf("upgraded Task ancestor visibility: column=%t migration count=%d error=%v", ancestorVisibilityColumn, migrationCount, err)
 	}
 	var historyPolicyColumn bool
 	if err := db.QueryRow(f.context, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='task_sessions' AND column_name='history_content_policy'), (SELECT count(*) FROM schema_migrations WHERE version=114)`).Scan(&historyPolicyColumn, &migrationCount); err != nil || !historyPolicyColumn || migrationCount != 1 {

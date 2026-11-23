@@ -31,9 +31,9 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'resource test',now())`, pat, user, make([]byte, 32))
 	principal := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: pat}
 
-	for _, kind := range []string{"thread", "attachment", "transfer", "transfer_lifecycle"} {
+	for _, kind := range []string{"thread", "attachment", "transfer", "transfer_lifecycle", "session", "session_registration", "steps"} {
 		t.Run(kind, func(t *testing.T) {
-			testutil.MustExec(t, db.Pool, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, goal)
+			testutil.MustExec(t, db.Pool, `UPDATE tasks SET deleted_at=NULL,ancestor_deleted_at=NULL WHERE project_id=$1`, project)
 			acquired, release := make(chan struct{}), make(chan struct{})
 			run := func(wait bool) error {
 				admit := func(p store.TaskPresence, e error) error {
@@ -54,6 +54,23 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 					return nil
 				}
 				switch kind {
+				case "session", "session_registration":
+					_, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+						var e error
+						if kind == "session_registration" {
+							_, e = scope.SessionDAO().LockTaskRegistration(ctx, project, task)
+						} else {
+							_, e = scope.SessionDAO().LockTask(ctx, project, task)
+						}
+						return admit(store.TaskPresence{Found: e == nil}, e)
+					})
+					return err
+				case "steps":
+					_, err := db.WriteProject(ctx, project, func(scope store.ProjectWriteScope) error {
+						header, e := scope.TaskDAO().TaskHeader(ctx, task)
+						return admit(store.TaskPresence{Found: e == nil, DeletedAt: header.DeletedAt}, e)
+					})
+					return err
 				case "thread":
 					_, err := db.WriteThread(ctx, func(scope store.ThreadScope) error {
 						p, e := scope.TaskDAO().LockTaskPresence(ctx, project, task)
@@ -128,10 +145,10 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 			}
 			deleted := make(chan error, 1)
 			go func() {
-				_, err := db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, goal)
+				_, err := db.Pool.Exec(ctx, `WITH stamp AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=stamp.deleted_at FROM stamp WHERE id=$2`, goal, task)
 				deleted <- err
 			}()
-			testutil.WaitForQueryLock(t, db.Pool, `UPDATE tasks SET deleted_at=now() WHERE id=`)
+			testutil.WaitForQueryLock(t, db.Pool, `WITH stamp AS (UPDATE tasks SET deleted_at=statement_timestamp()`)
 			close(release)
 			if err := testutil.ReceiveQueryResult(t, ctx, result); err != nil {
 				t.Fatalf("resource commit: %v", err)
@@ -154,6 +171,29 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInheritedHiddenTaskRetainsArchiveFinalizationGate(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	project, task := uuid.NewString(), uuid.NewString()
+	if _, err := db.CreateProject(t.Context(), project, "Archive finalization", "https://example.test/archive"); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, db.Pool, `INSERT INTO tasks(id,project_id,type,title,status,ancestor_deleted_at) VALUES($1,$2,'task','Hidden','done',statement_timestamp())`, task, project)
+	completion, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+		state, deleted, e := scope.SessionDAO().LockArchiveTask(t.Context(), project, task)
+		if e != nil {
+			return e
+		}
+		if !deleted || !state.Deleted || state.Type != model.TaskTypeTask || state.Status != string(model.TaskDone) {
+			return fmt.Errorf("archive finalization facts: %+v deleted=%v", state, deleted)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("archive finalization gate: %+v %v", completion, err)
 	}
 }
 

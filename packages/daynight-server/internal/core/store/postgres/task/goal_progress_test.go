@@ -21,6 +21,8 @@ func TestGoalProgressBatchAndBodies(t *testing.T) {
      ($3,$8,'todo','task',$6,'todo',NULL,NULL),($4,$8,'deleted','task',$6,'done',NULL,now()),
      ($5,$8,'hidden child','task',$7,'done',NULL,NULL)`, ids[0], ids[1], ids[2], ids[3], ids[4], goal, hidden, f.project)
 	mustOK(t, err)
+	_, err = f.tx.Exec(t.Context(), `UPDATE tasks SET ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$1) WHERE parent_id=$1`, hidden)
+	mustOK(t, err)
 	reader := task.NewReader(f.tx)
 	got, err := reader.GoalProgresses(t.Context(), f.project, []string{goal, empty, hidden})
 	mustOK(t, err)

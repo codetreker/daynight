@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -50,11 +51,48 @@ func (d scopeAdmissionTestGoalDAO) LockTeam(ctx context.Context) error { return 
 
 type scopeAdmissionTestTaskDAO struct {
 	store.TaskWriteDAO
-	header func(context.Context, string) (model.TaskHeader, error)
+	header  func(context.Context, string) (model.TaskHeader, error)
+	visible func(context.Context, string) (model.TaskHeader, error)
 }
 
 func (d scopeAdmissionTestTaskDAO) TaskHeader(ctx context.Context, id string) (model.TaskHeader, error) {
 	return d.header(ctx, id)
+}
+
+func (d scopeAdmissionTestTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.visible(ctx, id)
+}
+
+func TestScopedDeletionAuthorizationLeavesTaskLocksToPlanner(t *testing.T) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:delete"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []bool{false, true} {
+		t.Run(fmt.Sprint(hidden), func(t *testing.T) {
+			ctx := WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, false)
+			ctx = withTaskWriteTarget(withTaskWriteOperations(ctx, scopepolicy.TaskDelete), "target", false)
+			calls := 0
+			dao := scopeAdmissionTestTaskDAO{visible: func(actual context.Context, id string) (model.TaskHeader, error) {
+				calls++
+				if actual != ctx || id != "target" {
+					t.Fatal("nonlocking visibility changed identity")
+				}
+				if hidden {
+					return model.TaskHeader{}, model.ErrTaskDeleted
+				}
+				return model.TaskHeader{ID: id}, nil
+			}, header: func(context.Context, string) (model.TaskHeader, error) {
+				t.Fatal("deletion authorization acquired the locking Steps header")
+				return model.TaskHeader{}, nil
+			}}
+			err := (&Tasks{}).authorizeTaskWrite(ctx, scopeAdmissionTestScope{task: dao}, principal, true)
+			if calls != 1 || (hidden && !errors.Is(err, model.ErrTaskDeleted)) || (!hidden && err != nil) {
+				t.Fatalf("visibility calls=%d hidden=%v error=%v", calls, hidden, err)
+			}
+		})
+	}
 }
 
 type scopeAdmissionTestProjectDAO struct{ store.ProjectWriteDAO }
@@ -127,7 +165,7 @@ func TestScopedTaskWriteChecksVisibilityAndGoalLocks(t *testing.T) {
 				calls = append(calls, "access")
 				return model.ProjectAccess{}, tc.accessErr
 			}}}
-			err := service.authorizeTaskWrite(ctx, scope, principal)
+			err := service.authorizeTaskWrite(ctx, scope, principal, false)
 			if !reflect.DeepEqual(calls, tc.want) {
 				t.Fatalf("calls %v, want %v", calls, tc.want)
 			}

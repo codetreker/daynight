@@ -2554,3 +2554,11 @@ func (d *sessionHTTPDAO) WorkerExecutionVersion(ctx context.Context, user, worke
 	// fail above; production admission still requires its transaction capability.
 	return nil, nil
 }
+
+func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (d *taskHTTPWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

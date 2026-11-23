@@ -63,7 +63,7 @@ func TestUsageTaskAuthorizationReadRejectsChildHiddenByDeletedGoal(t *testing.T)
 	goal := uuid.NewString()
 	testutil.MustExec(t, f.db.Pool, `INSERT INTO tasks(id,project_id,type,title,description,status) VALUES($1,$2,'goal','Parent','','todo')`, goal, f.project)
 	testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, goal, f.task)
-	testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, goal)
+	testutil.MustExec(t, f.db.Pool, `WITH deleted AS (UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal)
 	err := f.db.ReadUsage(ctx, func(scope store.UsageScope) error {
 		session, err := scope.UsageDAO().Session(ctx, f.session)
 		if err != nil {

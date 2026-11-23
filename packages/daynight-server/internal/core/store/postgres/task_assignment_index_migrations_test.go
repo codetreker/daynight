@@ -21,7 +21,7 @@ func TestTaskAssignmentAllIndexMigration(t *testing.T) {
 		VALUES($1,$3,'Visible',$4,NULL),($2,$3,'Deleted',$4,statement_timestamp())`,
 		queryID(10), queryID(11), project.ID, queryID(20))
 	var before string
-	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t)-'ancestor_deleted_at' ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	// An incomplete ledger write must roll back the index with the migration.
@@ -63,7 +63,7 @@ func TestTaskAssignmentAllIndexMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT (SELECT applied_at FROM schema_migrations WHERE version=63),
-		(SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t)`).Scan(&repeated, &after); err != nil || !applied.Equal(repeated) || before != after {
+		(SELECT jsonb_agg(to_jsonb(t)-'ancestor_deleted_at' ORDER BY id)::text FROM tasks t)`).Scan(&repeated, &after); err != nil || !applied.Equal(repeated) || before != after {
 		t.Fatalf("migration changed task facts or repeated ledger: %v", err)
 	}
 }

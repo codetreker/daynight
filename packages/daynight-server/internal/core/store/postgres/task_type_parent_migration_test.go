@@ -20,7 +20,7 @@ func TestTaskTypeParentMigrationPreservesResources(t *testing.T) {
 	mustQueryExec(t, db, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'evidence.txt','text/plain',7)`, project.ID, first)
 	snapshot := func(typed bool) string {
 		t.Helper()
-		taskExpr := `to_jsonb(t)`
+		taskExpr := `to_jsonb(t) - 'ancestor_deleted_at'`
 		if typed {
 			taskExpr += ` - 'type' - 'parent_id'`
 		}

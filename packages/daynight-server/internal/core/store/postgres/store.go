@@ -42,6 +42,9 @@ func OpenWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger
 			return nil, databaseFailure(worker.Error(), err)
 		}
 		var cause *pgconn.PgError
+		if errors.As(err, &cause) && cause.Code == "DN120" {
+			return nil, databaseFailure(cause.Message+" ("+cause.Detail+")", err)
+		}
 		if errors.As(err, &cause) && cause.Code == "P1047" {
 			return nil, databaseFailure("migration requires active login transactions to be consumed or expired", err)
 		}

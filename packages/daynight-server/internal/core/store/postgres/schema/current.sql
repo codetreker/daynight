@@ -1,4 +1,4 @@
--- Schema snapshot version: 122
+-- Schema snapshot version: 123
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1065,6 +1065,7 @@ CREATE TABLE "tasks" (
     "cancelled_at" timestamp with time zone,
     "type" "text" DEFAULT 'task'::"text" NOT NULL,
     "parent_id" "uuid",
+    "ancestor_deleted_at" timestamp with time zone,
     CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
     CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
     CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
@@ -1092,11 +1093,7 @@ CREATE VIEW "task_resource_rows" AS
     "t"."parent_id",
     "p"."type" AS "parent_type",
     "p"."deleted_at" AS "parent_deleted_at",
-    COALESCE("t"."deleted_at",
-        CASE
-            WHEN (("t"."type" = 'task'::"text") AND ("p"."type" = 'goal'::"text")) THEN "p"."deleted_at"
-            ELSE NULL::timestamp with time zone
-        END) AS "effective_deleted_at"
+    COALESCE("t"."deleted_at", "t"."ancestor_deleted_at") AS "effective_deleted_at"
    FROM ("tasks" "t"
      LEFT JOIN "tasks" "p" ON ((("p"."project_id" = "t"."project_id") AND ("p"."id" = "t"."parent_id"))));
 
