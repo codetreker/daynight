@@ -409,3 +409,11 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 删除测试设置真实 writer/reader 屏障，覆盖初始权限通过后暂停、实例失联、迟到 rename、cleanup 失败重启和 GC；只有 cancel+join、最终清扫/fsync 及同 delete epoch 回执全齐才是 completed。验证其他记录、unknown、native/resume 引用不被误删，物理删除失败仍计费。
 
 兼容验证分别读取 schema1 真实字节与缺失资源、schema2 Herdr、schema3、旧数据边界归一和原始摘要；回滚保留新读者和查询。备份恢复同时校验 DB、manifest/timeline及统一资源原件闭包，不能用重新取源补造旧图。检查执行范围及证据等级遵循[图片验收规格](../spec/session-image-acceptance.md)和仓库现行检查规则，受控测试不能替代当前支持范围内 Codex、Copilot 的真实 Provider 与实际平台证据；Claude 历史记录仍须保留原始身份和读取权限。
+
+## 编号块的配对备份读取
+
+归档文件记录的 `upload_version` 区分旧逐块表格式（1）与编号块格式（2）；迁移将既有行保留为 1。版本 2 在原 `(session_id, file_id)` 行保存确认偏移、32 字节前缀证明、可空 successor 和结构化终态错误，不依赖逐块表。公开上传入口仍使用版本 1。版本 2 的每个块大小为 512 KiB，末块可短；路径为归档 Session 命名空间下 `files/<fileId>/chunks/<offset>`，偏移为十进制字节数。路径生成要求规范 UUID 和块对齐偏移。
+
+空前缀证明为 `SHA256(UTF-8("daynight-archive-prefix-v2"))`。每个确认块依次计算 `SHA256(previous || uint64be(offset) || uint32be(length) || SHA256(block))`；证明和偏移必须作为一个持久事实更新。`verify-storage` 在同一个只读 PG 快照内取得库存，从零枚举到确认偏移，检查每个对象的精确长度并重算证明；第一个未确认对象无论是否存在均不构成恢复前提。已收满但尚未完成的 receiving 记录仍按此规则验证。零字节迁移资源使用空证明，不需要块。
+
+完成的 timeline 和资源使用已发布对象及既有引用闭包验证；seal 前当前完成 history 对照 bundle 的 ID、revision、phase 和持久账本，不要求已清理的 history 暂存。封存后即使 timeline 尚未完成，也验证封存的资源账本及原件；完成 timeline 时按当前文件身份核对内容和闭包，支持 v1/v2 混合。已经登记的资源上传在后续 history 修改及 seal 后仍按其确认前缀验证。合法退休或 failed 记录的暂存只用于清理。验证器不修复或重新取得原始内容。版本 1 继续读取其逐块库存；数据库迁移账本必须与验证器版本一致，升级前的备份使用相同 schema 版本的验证器。部署迁移前停止所有旧写入方；旧二进制不能读取新 schema，回滚须使用理解当前 schema 的版本或恢复匹配的旧配对备份。选择该布局的原因见[编号块备份决策](../../.agents/notes/implemented/architecture/2026-11-23-archive-v2-backup.md)。

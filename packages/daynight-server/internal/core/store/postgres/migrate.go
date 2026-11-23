@@ -352,6 +352,9 @@ var workerWindowsProcessCleanupSQL string
 //go:embed schema/migrations/113_webhook_endpoint_client_key.sql
 var webhookEndpointClientKeySQL string
 
+//go:embed schema/migrations/114_archive_upload_version.sql
+var archiveUploadVersionSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -471,6 +474,7 @@ var schemaMigrations = []migration{
 	{version: 111, sql: credentialScopeActivationSQL},
 	{version: 112, sql: workerWindowsProcessCleanupSQL},
 	{version: 113, sql: webhookEndpointClientKeySQL},
+	{version: 114, sql: archiveUploadVersionSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
