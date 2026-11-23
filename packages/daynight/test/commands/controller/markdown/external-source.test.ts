@@ -56,15 +56,35 @@ test.each(["timeout", "abort", "peer close"] as const)("a connected socket inter
   const policy = createExternalImagePolicy({ assertEgressPolicy() {}, beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
     async assertTarget({ address }) { if (address && ++checks === 2) { await accepted; entered(); await gate; } },
   });
+  const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;
+  if (action === "timeout") {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fakeSetTimeout = globalThis.setTimeout, fakeClearTimeout = globalThis.clearTimeout, controlled = new Set<Parameters<typeof clearTimeout>[0]>();
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((...timerArgs: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...args] = timerArgs;
+      if (delay !== 5000) return realSetTimeout(callback, delay, ...args);
+      const timer = fakeSetTimeout(callback, delay, ...args); controlled.add(timer); return timer;
+    }) as typeof setTimeout);
+    vi.spyOn(globalThis, "clearTimeout").mockImplementation(((timer) => {
+      if (timer && controlled.delete(timer)) fakeClearTimeout(timer); else realClearTimeout(timer);
+    }) as typeof clearTimeout);
+  }
   const controller = new AbortController(), work = start(`http://fixture.example:${port}/original`, policy, controller.signal);
   try {
     await Promise.race([blocked, work.then(() => { throw new Error("Capture completed before the connected authorization checkpoint."); })]);
+    if (action === "timeout") {
+      let settled = false; void work.then(() => { settled = true; }, () => { settled = true; });
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(4999); expect(vi.getTimerCount()).toBe(1); expect(settled).toBe(false); expect(requests).toBe(0);
+      await vi.advanceTimersByTimeAsync(1); expect(vi.getTimerCount()).toBe(0);
+    }
     if (action === "abort") controller.abort();
     if (action === "peer close") (await accepted).destroy();
     await expect(work).rejects.toMatchObject({ code: action === "timeout" ? "source_timeout" : action === "abort" ? "source_cancelled" : "source_unavailable" });
     expect(requests).toBe(0);
+    if (action === "timeout") { vi.restoreAllMocks(); vi.useRealTimers(); }
     await vi.waitFor(() => expect(sockets.size).toBe(0));
-  } finally { release(); controller.abort(); }
+  } finally { vi.restoreAllMocks(); vi.useRealTimers(); release(); controller.abort(); }
 }, 10_000);
 
 test("a peer closing while authorization waits after connect never reaches the HTTP request", async () => {
