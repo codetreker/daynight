@@ -80,7 +80,7 @@ test.each(["codex", "claude", "copilot"] as const)("%s meters only Tasks and exp
       ...(scope === "bot" ? { [`${provider}BotRecovery`]: { botId: "00000000-0000-4000-8000-000000000014", directory: path.resolve("/private/recovery") } } : {}),
       resumeNativeSessionId: resumed ? "00000000-0000-4000-8000-000000000015" : null,
     };
-    const metering = { ready: vi.fn(), gap: vi.fn(), observe: vi.fn(), close: vi.fn(async () => {}) };
+    const metering = { ready: vi.fn(), bindTurn: vi.fn(), gap: vi.fn(), observe: vi.fn(), close: vi.fn(async () => {}) };
     const create = vi.spyOn(usageRuntime, "createUsageRuntime").mockReturnValue(metering);
     fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
     const running = runController({ homeDirectory: "/private", provider, launchId: "00000000-0000-4000-8000-000000000004" });
