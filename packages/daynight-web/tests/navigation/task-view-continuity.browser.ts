@@ -1028,7 +1028,10 @@ test('category switching preserves real scroll and only the browser clamps short
   });
   try {
     for (const width of [1100, 390]) {
-      await page.setViewportSize({ width, height: 700 }); await page.evaluate(() => window.scrollTo(0, 120));
+      await page.setViewportSize({ width, height: 700 });
+      await position(page);
+      await page.evaluate(() => window.scrollTo(0, 120));
+      await expect.poll(() => position(page)).toBe(120);
       for (const name of ['Task chains', 'Standalone tasks', 'Task chains', 'Standalone tasks']) {
         await trace.evaluate(value => value.reset()); await select(page, name);
         expect(await position(page)).toBe(120); expect(await trace.evaluate(value => value.count())).toBe(0);
