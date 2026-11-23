@@ -21,8 +21,14 @@ use without backfill.
 
 Main-site activity is admitted only at registered application authentication
 entries with the configured authority and consistent same-origin evidence.
-Registered method refusals carry a request role before authentication and remain
-read-only, including qualified refusals that shadow wildcard business routes.
+Method-qualified registrations declare business methods directly. Internal
+dispatchers declare their supported business methods, including supported HEAD,
+through a private request role before authentication. Their existing method
+tables own this declaration; unsupported methods cannot inherit an outer
+dispatcher's admission. Assistant Task, Bot detail, Webhook and OAuth consent
+therefore share the same activity contract as directly registered handlers.
+Registered method refusals carry a separate request role and remain read-only,
+including qualified refusals that shadow wildcard business routes.
 Their authentication, policy and CSRF checks keep the same ordering.
 Cookie writes require the exact Origin independently of Fetch Metadata. A shared
 Origin check excludes invalid writes before renewal while the read-only path
@@ -50,8 +56,10 @@ It would let those requests prolong browser authority without application use.
 **Infer business activity solely from a method-qualified route pattern.**
 Qualified GET, PATCH and DELETE refusals prevent a reserved action path from
 matching a wildcard resource handler. Such patterns identify the selected
-method but cannot distinguish business use from a registered refusal; an
-explicit request role must precede the authentication write.
+method but cannot distinguish business use from a registered refusal. Conversely,
+internal business dispatchers have no method-qualified mux pattern. Explicit
+request roles must declare both supported methods and pure refusals before the
+authentication write; the route pattern alone cannot own this distinction.
 
 **Choose the timestamp before acquiring the row lock.** A request can wait until
 after the stored deadline and still revive the row using its stale timestamp.
@@ -63,7 +71,7 @@ domains. Long-lived issuance separates browser retention from server authority.
 
 ## Consequences
 
-Expired, deleted and rotated credentials cannot revive sessions. Qualified
+Expired, deleted and rotated credentials cannot revive sessions. Admitted
 background reads and 304 responses extend the same row used by preview access.
 Each eligible request writes the row and its expiry index, with lock contention
 and WAL cost under concurrent polling; independent load evidence owns measured

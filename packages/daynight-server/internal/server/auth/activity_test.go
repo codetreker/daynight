@@ -64,6 +64,7 @@ func TestBrowserActivityEntryAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, pattern, origin, host, site, mode, dest, user string
 		active                                                      bool
+		dispatch                                                    []string
 	}{
 		{name: "same_origin_fetch", method: "GET", pattern: "GET /api/v1/me", site: "same-origin", mode: "cors", dest: "empty", active: true},
 		{name: "same_origin_navigation", method: "GET", pattern: "GET /api/v1/me", site: "same-origin", mode: "navigate", dest: "iframe", user: "?1", active: true},
@@ -77,6 +78,13 @@ func TestBrowserActivityEntryAdmission(t *testing.T) {
 		{name: "implied_head", method: "HEAD", pattern: "GET /api/v1/me", origin: "https://daynight.test", active: true},
 		{name: "explicit_head_refusal", method: "HEAD", pattern: "HEAD /api/v1/me", origin: "https://daynight.test"},
 		{name: "method_fallback", method: "DELETE", pattern: "/api/v1/me", origin: "https://daynight.test"},
+		{name: "dispatched_get", method: "GET", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET", "HEAD", "POST"}, active: true},
+		{name: "dispatched_head", method: "HEAD", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET", "HEAD", "POST"}, active: true},
+		{name: "dispatched_post", method: "POST", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET", "HEAD", "POST"}, active: true},
+		{name: "dispatched_refusal", method: "DELETE", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET", "HEAD", "POST"}},
+		{name: "dispatched_options", method: "OPTIONS", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"OPTIONS"}},
+		{name: "dispatched_public", method: "GET", pattern: "/public", origin: "https://daynight.test", dispatch: []string{"GET"}},
+		{name: "dispatched_login", method: "GET", pattern: "/api/v1/auth/login", origin: "https://daynight.test", dispatch: []string{"GET"}},
 		{name: "server_poll", method: "GET", pattern: "GET /api/v1/me"},
 		{name: "cross_site_automatic", method: "GET", pattern: "GET /api/v1/me", site: "cross-site", mode: "no-cors", dest: "image"},
 		{name: "preview_same_site", method: "GET", pattern: "GET /api/v1/me", site: "same-site", mode: "cors", dest: "empty"},
@@ -110,12 +118,16 @@ func TestBrowserActivityEntryAdmission(t *testing.T) {
 				return principal, nil
 			})
 			mux := http.NewServeMux()
-			mux.HandleFunc(tc.pattern, h.Require(func(w http.ResponseWriter, _ *http.Request, p model.Principal) {
+			handler := h.Require(func(w http.ResponseWriter, _ *http.Request, p model.Principal) {
 				if p != principal {
 					t.Fatal("principal changed")
 				}
 				w.WriteHeader(http.StatusNotModified)
-			}))
+			})
+			if tc.dispatch != nil {
+				handler = httpx.MethodDispatch(handler, tc.dispatch...)
+			}
+			mux.HandleFunc(tc.pattern, handler)
 			r := httptest.NewRequest(tc.method, "https://daynight.test/api/v1/me", nil)
 			_, path, _ := strings.Cut(tc.pattern, " ")
 			if path == "" {

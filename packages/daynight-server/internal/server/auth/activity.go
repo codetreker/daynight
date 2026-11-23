@@ -30,8 +30,18 @@ func (h *RequestAuthentication) admitsBrowserActivity(r *http.Request) bool {
 		return false
 	}
 	method, pattern, qualified := strings.Cut(r.Pattern, " ")
-	if !qualified || !(method == r.Method || method == http.MethodGet && r.Method == http.MethodHead) || method == http.MethodHead || method == http.MethodOptions {
+	if r.Method == http.MethodOptions {
 		return false
+	}
+	if qualified {
+		if !(method == r.Method || method == http.MethodGet && r.Method == http.MethodHead) || method == http.MethodHead {
+			return false
+		}
+	} else {
+		if !httpx.IsDispatchedMethod(r) {
+			return false
+		}
+		pattern = r.Pattern
 	}
 	if !strings.HasPrefix(pattern, "/api/") || strings.HasPrefix(pattern, "/api/v1/auth/") && pattern != "/api/v1/auth/device/inspect" && pattern != "/api/v1/auth/device/decision" {
 		return false

@@ -217,7 +217,7 @@ func (f *botExpiryFixture) unexpected(method string) error {
 func (f *botExpiryFixture) sameContext(ctx context.Context) bool {
 	actualDeadline, actualHasDeadline := ctx.Deadline()
 	wantDeadline, wantHasDeadline := f.sourceContext.Deadline()
-	return ctx == f.requestContext && ctx.Done() == f.sourceContext.Done() && actualHasDeadline == wantHasDeadline && actualDeadline.Equal(wantDeadline) && ctx.Value(botExpiryContextKey{}) == "request" && ctx.Err() == nil
+	return ctx.Done() == f.requestContext.Done() && ctx.Done() == f.sourceContext.Done() && actualHasDeadline == wantHasDeadline && actualDeadline.Equal(wantDeadline) && ctx.Value(botExpiryContextKey{}) == "request" && ctx.Err() == nil
 }
 
 func (f *botExpiryFixture) invoke(ctx context.Context, p model.Principal, method, worker, bot string, input any) (any, error) {

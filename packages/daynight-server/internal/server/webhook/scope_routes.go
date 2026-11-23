@@ -1,11 +1,11 @@
 package webhook
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 // ScopeRoute identifies a method and, where a handler dispatches internally,
@@ -63,6 +63,15 @@ func (r routeRegistry) handle(pattern string, handler http.HandlerFunc, branches
 		} else if branch.Method == "" {
 			panic("missing webhook route method")
 		}
+	}
+	if !hasMethod {
+		var methods []string
+		for _, branch := range branches {
+			if branch.Profile == "credential" {
+				methods = append(methods, branch.Method)
+			}
+		}
+		handler = httpx.MethodDispatch(handler, methods...)
 	}
 	r.mux.HandleFunc(pattern, handler)
 	if r.observe == nil {
