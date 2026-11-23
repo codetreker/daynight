@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, writeFile, readFile, rm, access, chmod } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanupAll, finalizeRun, initializeRun, readProcessIdentity, recordCleanupBinary, planPostgres, recordPostgres, planRedis, recordRedis, setPhase, terminateOwnedProcess } from "./integration-runtime.mts";
+import { cleanupAll, finalizeRun, initializeRun, readProcessIdentity, recordCleanupBinary, planPostgres, recordPostgres, planRedis, recordRedis, setPhase, terminateOwnedProcess, terminateReviewerChildren } from "./integration-runtime.mts";
 
 const moduleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const environment = { DAYNIGHT_TEST_DATABASE_URL: "postgres://fixture", GITHUB_RUN_ID: "runtime-tools", GITHUB_JOB: "cleanup", GITHUB_RUN_ATTEMPT: "1" };
@@ -22,9 +22,10 @@ const ownedRun = async (t: TestContext) => {
   return { ownerModule, root, output: join(ownerModule, ".tmp/integration-results", basename(root)) };
 };
 
-const child = async (t: TestContext, root?: string, ignoreTerm = false) => {
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "DAYNIGHT_INTEGRATION_RUN_ROOT"));
+const child = async (t: TestContext, root?: string, ignoreTerm = false, reviewerRoot?: string) => {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "DAYNIGHT_INTEGRATION_RUN_ROOT" && key !== "DAYNIGHT_INTEGRATION_REVIEWER_ROOT"));
   if (root !== undefined) inherited.DAYNIGHT_INTEGRATION_RUN_ROOT = root;
+  if (reviewerRoot !== undefined) inherited.DAYNIGHT_INTEGRATION_REVIEWER_ROOT = reviewerRoot;
   const command = spawn(process.execPath, ["-e", `${ignoreTerm ? 'process.on("SIGTERM", () => {});' : ''} process.stdout.write("ready\\n"); setInterval(() => {}, 1000);`], { env: inherited, stdio: ["ignore", "pipe", "inherit"] });
   const closed = once(command, "exit");
   await once(command.stdout, "data");
@@ -74,6 +75,18 @@ test("cleanup drains run-root-marked children and leaves unrelated processes ali
   assert.equal(await readProcessIdentity(owned.identity.pid), null);
   assert.deepEqual(await readProcessIdentity(unrelated.identity.pid), unrelated.identity);
   await assert.rejects(access(run.root), { code: "ENOENT" });
+});
+
+test("reviewer cleanup drains only the marked fixture while the run remains active", async (t) => {
+  const run = await ownedRun(t);
+  const owned = await child(t, run.root, false, join(run.root, "reviewer-worker"));
+  const server = await child(t, run.root);
+  const unrelated = await child(t);
+  await terminateReviewerChildren(run.ownerModule, run.root);
+  await owned.closed;
+  assert.equal(await readProcessIdentity(owned.identity.pid), null);
+  assert.deepEqual(await readProcessIdentity(server.identity.pid), server.identity);
+  assert.deepEqual(await readProcessIdentity(unrelated.identity.pid), unrelated.identity);
 });
 
 test("cleanup failure retains receipts and cannot erase the original failing command", async (t) => {

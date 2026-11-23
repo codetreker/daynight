@@ -1,6 +1,7 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  review: { title: 'PR 审查', label: '参与 PR 审查', detail: '支持 PR 审查的 Worker 在下次成功轮询时应用此设置。关闭后将停止进行中的 PR 审查。保存仅确认服务端设置，不代表 Worker 已处理。', loading: '正在读取 PR 审查设置…', unavailable: 'PR 审查设置不可用。', readError: '读取 PR 审查设置失败。', saving: '正在保存…', saved: 'PR 审查设置已保存。', rejected: '保存 PR 审查设置失败。', conflict: '设置已被其他位置修改，请核对当前值后再操作。', unknown: '保存结果未知。当前值不能确认原保存是否成功。', checkError: '无法核对当前值。' },
   toolPaths: {
     title: '工具路径', detail: '填写此 Worker 机器上的绝对文件路径；恢复自动发现请使用对应按钮。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
     unsupportedService: '升级服务后可配置工具路径。', unsupportedWorker: 'Worker 尚未上报工具路径能力，请升级或等待支持版本上报。',

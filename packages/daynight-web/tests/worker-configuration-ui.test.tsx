@@ -4,6 +4,7 @@ import type { Project } from '../src/api/types';
 import type { WorkerConfigurationKey, WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
+import { useWorkerReviewParticipation } from '../src/features/workers/configuration/useWorkerReviewParticipation';
 import { ConfigurationProjectsDialog } from '../src/features/workers/configuration/ConfigurationDialogs';
 import { browserNavigation } from '../src/app/navigation';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
@@ -29,10 +30,11 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
   const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : handler(url, init));
   vi.stubGlobal('fetch', fetch); return fetch;
 };
-type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
+type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'review' | 'confirming' | 'visible'>;
 const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
   const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled, ...(props.platform === undefined ? {} : { platform: props.platform }) });
-  return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
+  const review = useWorkerReviewParticipation(props.workerId, false);
+  return <WorkerConfigurationPanel {...props} visible state={state} review={review} confirming={false} />;
 };
 const mount = (props: Partial<ConfigurationFixtureProps> = {}) => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} {...props} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const input = (name = 'Concurrent task limit') => screen.getByRole('textbox', { name }) as HTMLInputElement;

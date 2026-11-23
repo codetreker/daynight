@@ -1,4 +1,5 @@
 export type WorkerConfigurationMessages = {
+  readonly review: Readonly<Record<'title' | 'label' | 'detail' | 'loading' | 'unavailable' | 'readError' | 'saving' | 'saved' | 'rejected' | 'conflict' | 'unknown' | 'checkError', string>>;
   readonly toolPaths: {
     readonly title: string; readonly detail: string; readonly auto: string; readonly awaitingImport: string; readonly reset: string;
     readonly unsupportedService: string; readonly unsupportedWorker: string; readonly invalidPath: string; readonly unsaved: string;
