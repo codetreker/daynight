@@ -43,7 +43,7 @@ Daynight ─┘        （个人出站 HTTP 端点指向不含令牌的收件箱
 | `service/task` 等写入用例 | 把经核验的 Bot 身份作为操作者传给 Webhook 捕获 |
 | `server/assistanttask` | 收件箱管理 REST、公开入站路由、令牌提取、正文与媒体类型限制、错误映射与安全日志 |
 | `server/task` | Task、Step 和 Thread 写入路由解析可选的 `X-Daynight-Bot-Id` |
-| CLI | `assistant-task inbox` 管理命令与 `inbound` 事件读取；Task、Step 和 Thread 写命令在存在 `DAYNIGHT_BOT_ID` 时携带 Bot 请求头 |
+| CLI | `assistant-task inbox` 管理命令与 `inbound` 事件读取；Task 和 Thread 写命令在存在 `DAYNIGHT_BOT_ID` 时携带 Bot 请求头 |
 | Worker `worker/bots/assistant-tasks*` | `inbound` 通知渲染、压缩与字节预算、不可信数据提示、手册与附录指引 |
 | Web `features/bots/AssistantTask*` | 收件箱面板、订阅面板与入站事件展示 |
 
@@ -76,13 +76,13 @@ service 在 ReadCommitted 事务中按以下顺序处理。锁顺序为负责 Bo
 
 Task、Step 和 Thread 的写入路由解析可选的 `X-Daynight-Bot-Id`，在写入事务内按助手任务相同的规则核验归属与删除状态，然后把操作者传给 Webhook 捕获并写入事实行。没有 Bot 身份的用户凭据记为 `user`；GitHub 同步等服务端内部写入记为 `system`。出站渲染保持现有 wire 格式，不输出操作者，因此现有严格校验的接收方不受影响。
 
-CLI 在设置了 `DAYNIGHT_BOT_ID` 的环境中，为 Task、Step 和 Thread 写命令附加该请求头。Worker 已为每个助手设置该环境变量。
+CLI 在设置了 `DAYNIGHT_BOT_ID` 的环境中，为 Task 和 Thread 写命令附加该请求头。Worker 已为每个助手设置该环境变量。
 
 ## Worker 通知渲染
 
 `inbound` 事件与现有助手任务事件在同一批次中选择与确认。渲染规则如下：
 
-- 同一项目 Task 的多个 `daynight` 事件合并为一段，每个事件一行，列出类型、时间、操作者和关键字段；段末给出一次 `daynight task show`、`task step list`、`task thread` 与 `task session` 读取命令，并说明读取到的内容是他人写入的数据。
+- 同一项目 Task 的多个 `daynight` 事件合并为一段，每个事件一行，列出类型、时间、操作者和关键字段；段末给出一次 `daynight task show`、`task thread` 与 `task session` 读取命令，并说明读取到的内容是他人写入的数据。
 - `external` 事件只投递前 4 KiB 的 UTF-8 安全预览，放在带“不可信外部数据”标签的围栏内，并给出读取完整事件的命令。
 - Worker 先以排除 `inbound` 的筛选执行现有的事件选择，再以只选 `inbound` 的筛选单独分页，直到入站渲染正文达到 32 KiB 或整批达到已有的 512 KiB 上限。未选中的 `inbound` 事件留在 pending，入站积压不会阻塞其他助手任务通知，也不会产生逐个跳过的请求。
 - 每批末尾给出读取当前手册和附录的命令。

@@ -42,12 +42,6 @@ const fixture = (operation = createOperation()) => {
     listObservedTasks: vi.fn<ApiClient["listObservedTasks"]>().mockResolvedValue({ items: [observe(task)], partial: false, unsupported: false }),
     getObservedTaskGraph: vi.fn<ApiClient["getObservedTaskGraph"]>().mockResolvedValue(observeGraph(graph)),
     previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectRepository: vi.fn(), setProjectRepository: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
-    updateTaskStep: async () => { throw new Error("Unused Step API method"); },
-    setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
-    moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
-    addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
-    deleteTaskStep: vi.fn<ApiClient["deleteTaskStep"]>(),
-    listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
     inspectInvitation: vi.fn<ApiClient["inspectInvitation"]>(), acceptInvitation: vi.fn<ApiClient["acceptInvitation"]>(),
@@ -96,6 +90,14 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
+  it.each([[], ["--help"], ["list", taskId], ["add", taskId, "--title", "Retired"]].map((args) => ({ args })))("rejects retired Step commands before resolving business dependencies: $args", async ({ args }) => {
+    const f = fixture();
+    await expect(runTaskCommand(["step", ...args], f.context, f.dependencies)).rejects.toThrow("Unknown command");
+    expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
   it.each([[], ["--help"], ...["create", "list", "search", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
