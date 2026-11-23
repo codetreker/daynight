@@ -32,7 +32,7 @@ const response = (data: unknown, status = 200) => new Response(JSON.stringify(da
 const failure = (status: number, code: string) => response({ error: { code, message: "Request failed.", requestId: "test-request" } }, status);
 const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
-const mount = async ({ strict = false, initial = [endpoint()], expand = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
+const mount = async ({ strict = false, initial = [endpoint()], expand = true, includeSteps = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly includeSteps?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
   const initialFailure = firstReadFailure !== undefined;
   const first = initial.find(value => value.owner.kind === "personal");
   const initialDetail = barrier<Response>();
@@ -96,7 +96,7 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
   });
   vi.stubGlobal("fetch", fetch);
   act(() => navigate("/webhooks?owner=personal"));
-  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
+  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, items: catalog.items.filter(item => includeSteps || item.key !== "task.step_updated"), service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
   const content = () => strict ? <StrictMode><View/></StrictMode> : <View/>;
   const rendered = renderWithLocale(content(), { locale: "en" });
   if (initialFailure) await screen.findByRole("alert");
@@ -132,6 +132,26 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
 };
 
 describe("Webhook configuration page", () => {
+  it.each([false, true])("uses catalog choices when creating and editing subscriptions (Steps=%s)", async includeSteps => {
+    const original = endpoint();
+    const events = includeSteps ? ["task.created", "task.step_updated"] as const : ["task.created"] as const;
+    const view = await mount({ includeSteps, initial: [{ ...original, subscriptions: [{ ...original.subscriptions[0]!, eventTypes: [...events] }] }] });
+    fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    expect(screen.queryByRole("checkbox", { name: /task.step_updated/ }) !== null).toBe(includeSteps);
+    expect(within(screen.getByRole("group", { name: "Select events" })).getAllByRole("checkbox").map(input => input.closest("label")?.querySelector("strong")?.textContent)).toEqual([
+      "task.status_changed", "task.created", "task.deleted", ...(includeSteps ? ["task.step_updated"] : []), "task.thread_posted", "task.paused",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Subscriptions/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit subscription Project one" }));
+    expect(screen.queryByRole("checkbox", { name: /task.step_updated/ }) !== null).toBe(includeSteps);
+    if (includeSteps) expect(screen.getByRole("checkbox", { name: /task.step_updated/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: /task.paused/ })); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1));
+    expect(view.writes[0]!.body.subscriptions).toEqual([{ id: id(7), projectId, eventTypes: [...events, "task.paused"] }]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("reveals before copying the secret, selects it on denial, and permits retry", async () => {
     const oldClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);

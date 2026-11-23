@@ -41,6 +41,7 @@ const fixture = async () => {
     await fs.writeFile(path.join(target, "obsolete"), "old resource");
     await fs.mkdir(path.join(target, "references"));
     await fs.writeFile(path.join(target, "references/manual.md"), "old monolithic manual");
+    await fs.writeFile(path.join(target, "references/steps.md"), "daynight task step list <task-id>\n");
     return target;
   };
   return { directory, home, project, source, context, output, errors, entrypoint, seed };
@@ -59,6 +60,7 @@ describe("refresh existing agent skills", () => {
       expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe(f.entrypoint);
       for (const filename of manualTopicFiles) expect(await fs.readFile(path.join(target, filename))).toEqual(await fs.readFile(path.join(f.source, filename)));
       await expect(fs.lstat(path.join(target, "references/manual.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.lstat(path.join(target, "references/steps.md"))).rejects.toMatchObject({ code: "ENOENT" });
     }
     await expect(fs.lstat(path.join(f.home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.lstat(path.join(f.project, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });

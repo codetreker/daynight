@@ -10,7 +10,7 @@ import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 it("forwards separate arguments through both installed native launchers", async () => {
   const installed = await createAcceptanceCli();
   const { receipt } = installed;
-  const fixture = path.join(receipt.root, ".tmp", "Step Add launcher 中文");
+  const fixture = path.join(receipt.root, ".tmp", "Task update launcher 中文");
   const home = path.join(fixture, "home");
   const state = path.join(fixture, "configuration");
   const temporary = path.join(fixture, "temporary");
@@ -18,11 +18,8 @@ it("forwards separate arguments through both installed native launchers", async 
   const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
   const title = "  <packed&> 中文😀  ";
   const description = "# Packed [Plan](plan.md) <&> 😀";
-  const collectionPath = `/api/v1/projects/${projectId}/tasks/${taskId}/steps`;
-  const result = {
-    projectId, taskId, version: 2,
-    steps: [{ id: "00abcdef", title, description, status: "todo", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }],
-  };
+  const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+  const result = { projectId, taskId, version: 2 };
   const requests: { method: string | undefined; path: string | undefined; body: unknown }[] = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -32,7 +29,7 @@ it("forwards separate arguments through both installed native launchers", async 
       try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { response.writeHead(400); response.end(); return; }
       requests.push({ method: request.method, path: request.url, body });
-      response.writeHead(201, { "Content-Type": "application/json", "Daynight-User-ID": "cccccccc-3333-4333-8333-333333333333", Location: `${collectionPath}/00abcdef` });
+      response.writeHead(200, { "Content-Type": "application/json", "Daynight-Return": "receipt-v1" });
       response.end(`${JSON.stringify(result)}\n`);
     });
   });
@@ -47,7 +44,7 @@ it("forwards separate arguments through both installed native launchers", async 
   });
   const children = new Map<ChildProcess, Promise<unknown>>();
   const invoke = async (launcher: string): Promise<string> => {
-    const args = ["task", "step", "add", taskId, "--id", "00abcdef", "--title", title, "--description", description, "--json", "--project", projectId, "--if-version", "1"];
+    const args = ["task", "update", taskId, "--title", title, "--description", description, "--project", projectId, "--if-version", "1"];
     const child = crossSpawn(launcher, args, { cwd: path.parse(receipt.root).root, env: environment, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", launchFailure: unknown;
     child.stdout!.setEncoding("utf8").on("data", (value: string) => { stdout += value; });
@@ -77,9 +74,9 @@ it("forwards separate arguments through both installed native launchers", async 
     const alias = path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");
     const first = await invoke(receipt.launcherPath);
     const second = await invoke(alias);
-    const expected = { method: "POST", path: collectionPath, body: { version: 1, id: "00abcdef", title, description } };
+    const expected = { method: "PATCH", path: taskPath, body: { version: 1, title, description } };
     expect(requests).toEqual([expected, expected]);
-    expect(JSON.parse(first)).toEqual(result);
+    expect(first).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: 2\n`);
     expect(second).toBe(first);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];
