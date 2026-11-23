@@ -7,6 +7,7 @@ import { expect, test, type Locator, type Page, type Request } from '@playwright
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
+import { progressiveGraph } from '../helpers/graphData';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import { expectDescriptionCard } from '../helpers/description-card';
@@ -407,6 +408,13 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'A very long external owner name that should truncate', ready: false }),
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-08T08:21:00Z',
         allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } })];
+    currentGraph = graphFixture(details);
+  }, addProgressiveChain: () => {
+    details = progressiveGraph.tasks.map(task => detailFixture(projectId, task.id, {
+      title: task.titlePreview, status: task.status, dependsOn: task.dependsOn,
+      externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready,
+      createdAt: task.createdAt, updatedAt: task.updatedAt,
+    }));
     currentGraph = graphFixture(details);
   }, addTwoExternalTasks: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
@@ -3429,6 +3437,14 @@ for (const kind of ['Goal', 'chain'] as const) for (const locale of ['en', 'zh-C
     await expect(external.locator('.task-external-label')).toBeVisible();
     await expect(external.locator('.task-node-expansions')).toHaveCount(kind === 'Goal' ? 0 : 1);
     await expectGraphCardBadges(external);
+    await expect(external.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+    for (const selector of ['.task-node-id', '.task-external-label', '.task-paused-badge', '.task-agent-permission', '.task-platform', '.task-node-usage', '.task-duration', '.graph-status', '.task-stuck-label', '.task-node-details']) {
+      await expect(external.locator(selector)).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    }
+    if (kind === 'chain') await expect(external.locator('.task-node-navigate span')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    const member = graph.locator(`.react-flow__node[data-id="${firstId}"] .task-node`);
+    await expect(member.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+    await expect(member.locator('.graph-blocked-badge')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
     const measure = async () => external.evaluate(element => {
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
@@ -3451,6 +3467,30 @@ for (const kind of ['Goal', 'chain'] as const) for (const locale of ['en', 'zh-C
     expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: (kind === 'Goal' ? 124 : 184) * rootSize / 16, threeLines: true, readingsUnclipped: true, inside: true, overlaps: [] });
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const rootSize of [16, 32]) test(`chain expansion text and keyboard controls at ${rootSize}px root in ${locale}`, async ({ page }) => {
+  const fixture = await install(page, locale); fixture.addProgressiveChain();
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(`/projects/${projectId}`);
+  await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+  await page.locator('#project-section-tab-tasks').click();
+  const root = '00000000-0000-4000-8000-000000003000';
+  const join = '00000000-0000-4000-8000-000000003001';
+  await page.locator(`#task-chain-graph-${root}`).click();
+  const graph = page.locator('.task-chain-dialog');
+  const checkExpansion = async (direction: 'prerequisites' | 'successors', id: string) => {
+    const node = graph.locator(`.react-flow__node[data-id="${id}"]`);
+    const control = node.locator(`.task-node-expand[data-direction="${direction}"]`);
+    await expect(control.locator('span')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    await expect(control.locator('small')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    await control.focus();
+    await expect(control).toBeFocused();
+    await control.press('Enter');
+    await expect(node.locator('.task-node-body')).toBeFocused();
+  };
+  await checkExpansion('prerequisites', join);
+  await checkExpansion('successors', root);
+});
 
 for (const kind of ['Goal', 'chain'] as const) for (const direction of ['horizontal', 'vertical'] as const) test(`${kind} graph keeps interaction state as reading rows change in ${direction}`, async ({ page }) => {
   await install(page);
