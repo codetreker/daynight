@@ -729,7 +729,7 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 | 配置 | 要求 |
 |---|---|
 | `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
-| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。显式 HTTP 测试可用同站测试域名，或同一数字 loopback IP 的不同端口。 |
+| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。除同一数字 loopback IP 不同端口的显式 HTTP 夹具外，两边 hostname 均须为小写、含点且无末尾点的 DNS 名称，并且不同；同一 DNS hostname 的不同端口不足以隔离 Cookie。显式 HTTP 测试可用同站 `.test` 或 `.localhost` 域名。hostname 非法时按主站优先归因到实际字段，保留校验阶段及 env/YAML 来源，错误不回显配置值。 |
 | `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
 | `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
 | `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |

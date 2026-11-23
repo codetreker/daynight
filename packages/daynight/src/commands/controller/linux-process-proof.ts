@@ -9,12 +9,35 @@ export const isProcessBirth = (value: unknown): value is string => typeof value 
 
 type ProcessState = { proof: ProcessProof; zombie: boolean; exiting: boolean; status: string };
 
+export function parseLinuxBoot(text: string): string {
+  const value = text.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) throw new Error("Linux boot identity cannot be established.");
+  return value;
+}
+export function parseLinuxStat(pid: number, text: string): { parent: number; group: number; ticks: string; zombie: boolean; exiting: boolean } {
+  const boundary = text.lastIndexOf(") ");
+  if (text.length > 8192 || boundary < 0 || !text.startsWith(`${pid} (`)) throw new Error("Linux process stat cannot be interpreted.");
+  const fields = text.slice(boundary + 2).trim().split(/\s+/);
+  const ticks = fields[19], flags = fields[6];
+  if (!/^[A-Za-z]$/.test(fields[0] ?? "") || !/^(0|[1-9][0-9]*)$/.test(fields[1] ?? "")
+    || !/^[1-9][0-9]*$/.test(fields[2] ?? "") || ticks === undefined || !/^(0|[1-9][0-9]{0,19})$/.test(ticks)
+    || BigInt(ticks) > 18_446_744_073_709_551_615n || flags === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(flags)
+    || BigInt(flags) > 4_294_967_295n) throw new Error("Linux process stat has invalid identity fields.");
+  const parent = Number(fields[1]), group = Number(fields[2]);
+  if (!Number.isSafeInteger(parent) || parent > 2_147_483_647 || !Number.isSafeInteger(group) || group > 2_147_483_647) throw new Error("Linux process stat has invalid process IDs.");
+  // PF_EXITING precedes address-space teardown; it permits waiting, not a
+  // stopped conclusion: https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h
+  return { parent, group, ticks, zombie: fields[0] === "Z", exiting: (BigInt(flags) & 4n) !== 0n };
+}
+
 /** Self-contained so the extraction child uses the same sampler before loading any tool. */
 export function createLinuxProcessCapture(
   readText: (path: string, timeoutMs: number) => Promise<string>,
   readPs: (pid: number, timeoutMs: number) => Promise<string>,
   hash: (text: string) => string,
   now: () => number = () => performance.now(),
+  boot: typeof parseLinuxBoot = parseLinuxBoot,
+  parseStat: typeof parseLinuxStat = parseLinuxStat,
 ): (pid: number, timeoutMs: number) => Promise<ProcessState> {
   return async (pid, timeoutMs) => {
     const deadline = now() + timeoutMs;
@@ -24,26 +47,7 @@ export function createLinuxProcessCapture(
       return Math.max(1, Math.ceil(left));
     };
     const read = async (path: string) => { const text = await readText(path, remaining()); remaining(); return text; };
-    const boot = (text: string) => {
-      const value = text.trim();
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) throw new Error("Linux boot identity cannot be established.");
-      return value;
-    };
-    const stat = (text: string) => {
-      const boundary = text.lastIndexOf(") ");
-      if (text.length > 8192 || boundary < 0 || !text.startsWith(`${pid} (`)) throw new Error("Linux process stat cannot be interpreted.");
-      const fields = text.slice(boundary + 2).trim().split(/\s+/);
-      const ticks = fields[19], flags = fields[6];
-      if (!/^[A-Za-z]$/.test(fields[0] ?? "") || !/^(0|[1-9][0-9]*)$/.test(fields[1] ?? "")
-        || !/^[1-9][0-9]*$/.test(fields[2] ?? "") || ticks === undefined || !/^(0|[1-9][0-9]{0,19})$/.test(ticks)
-        || BigInt(ticks) > 18_446_744_073_709_551_615n || flags === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(flags)
-        || BigInt(flags) > 4_294_967_295n) throw new Error("Linux process stat has invalid identity fields.");
-      const parent = Number(fields[1]), group = Number(fields[2]);
-      if (!Number.isSafeInteger(parent) || parent > 2_147_483_647 || !Number.isSafeInteger(group) || group > 2_147_483_647) throw new Error("Linux process stat has invalid process IDs.");
-      // PF_EXITING precedes address-space teardown; it permits waiting, not a
-      // stopped conclusion: https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h
-      return { parent, group, ticks, zombie: fields[0] === "Z", exiting: (BigInt(flags) & 4n) !== 0n };
-    };
+    const stat = (text: string) => parseStat(pid, text);
     const ps = async () => {
       const output = await readPs(pid, remaining()); remaining();
       const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);

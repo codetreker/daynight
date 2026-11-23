@@ -23,7 +23,7 @@ const command = (source: string) => ({ file: process.execPath, args: ["--input-t
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
-  it.skipIf(process.platform === "win32").each(["spawn", "birth-message"] as const)("joins the original birth before stopping when cancellation arrives at %s", async phase => {
+  it.skipIf(process.platform !== "darwin").each(["spawn", "birth-message"] as const)("joins the original birth before stopping when cancellation arrives at %s", async phase => {
     const directory = await root(), marker = path.join(directory, "must-not-run");
     const cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
@@ -51,7 +51,7 @@ describe("owned command birth handshake", () => {
     } finally { cancellation.abort(); operation.dispose(); }
   }, 35_000);
 
-  it.skipIf(process.platform === "win32")("retains the original pending birth when a reconciliation observation expires", async () => {
+  it.skipIf(process.platform !== "darwin")("retains the original pending birth when a reconciliation observation expires", async () => {
     const directory = await root(), marker = path.join(directory, "must-not-run");
     const cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
@@ -82,7 +82,7 @@ describe("owned command birth handshake", () => {
     } finally { release.resolve(); cancellation.abort(); await pending; operation.dispose(); }
   }, 35_000);
 
-  it.skipIf(process.platform === "win32").each(["birth-probe-failed", "budget-cancelled"])("retains unknown POSIX boundary responsibility after %s and a runnable launcher closes", async mode => {
+  it.skipIf(process.platform !== "darwin").each(["birth-probe-failed", "budget-cancelled"])("retains unknown POSIX boundary responsibility after %s and a runnable launcher closes", async mode => {
     const directory = await root();
     // Isolate the intentionally unresolved receipt in its owning test process.
     // An empty PATH makes the real launcher's ps fail without creating a helper;

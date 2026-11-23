@@ -33,7 +33,7 @@ type RetainedCommand = {
   proof: ProcessProof | null; lease: ControllerJobLease | undefined; sequence: number;
   neverSpawned: boolean; unstartedClosed: boolean; closure: PromiseWithResolvers<void>; joinSave: () => Promise<void>;
   save: (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number) => Promise<void>;
-  closeHandles?: () => void; joinOutput?: () => Promise<void>;
+  closeHandles?: () => void; joinOutput?: () => Promise<void>; joinUnsubmitted?: () => Promise<void>;
 };
 const retained = new Map<string, RetainedCommand>();
 const reconciliations = new Map<string, Promise<void>>();
@@ -70,8 +70,11 @@ const reconcileBoundary = async (resourceId: string, sink: OwnedCommandLifecycle
     await withinExecutionDeadline(producer, deadline);
     if (!retained.has(resourceId)) return;
   }
-  const original = retained.get(resourceId);
+  let original = retained.get(resourceId);
   if (original === undefined) throw new Error("Original owned command boundary evidence is unavailable.");
+  if (original.joinUnsubmitted !== undefined) await withinExecutionDeadline(original.joinUnsubmitted(), deadline);
+  original = retained.get(resourceId);
+  if (original === undefined) return;
   // A timed-out observation did not cancel the original filesystem write.
   // No later terminal save may overtake it or discard its live responsibility.
   await withinExecutionDeadline(original.joinSave(), deadline);
@@ -173,8 +176,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     registerOwnedCommandCleanupConfirmation(cleanup, () => !retained.has(resourceId));
     throw cleanup;
   }
-  let joinOutput: (() => Promise<void>) | undefined;
-  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
+  let joinOutput: (() => Promise<void>) | undefined, joinUnsubmitted: (() => Promise<void>) | undefined;
+  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(joinUnsubmitted === undefined ? {} : { joinUnsubmitted }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
   let closed = false, dispatchClosed = false, birthClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
   const captureFailures: unknown[] = [];
@@ -237,7 +240,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     // alone does not. Stream writers still have their independent join below.
     if (failedSpawn && !spawned && child.pid === undefined) { neverSpawned = true; remember(); }
   });
-  let bound = false;
+  let bound = false, dispatchAttempted = false;
   const handshake = async (message: unknown): Promise<void> => {
     if (typeof message !== "object" || message === null || !("kind" in message)) throw new Error("Invalid owned launcher message.");
     if (message.kind === "bound") {
@@ -245,11 +248,19 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       if (bound || !("launchId" in message) || message.launchId !== resourceId || !("proof" in message)) throw new Error("Owned launcher identity conflict.");
       bound = true;
       const observed = message.proof as ProcessProof;
-      if (observed.pid !== child.pid) throw new Error("Owned launcher process identity conflict.");
+      if (typeof observed !== "object" || observed === null || observed.pid !== child.pid) throw new Error("Owned launcher process identity conflict.");
       // Capture independently rather than trusting a serialized proof alone.
-      const current = await captureProcessProof(child.pid!, birthBudget());
-      if (current.startedAt !== observed.startedAt || current.commandHash !== observed.commandHash || current.processGroupId !== observed.processGroupId) throw new Error("Owned launcher birth identity conflict.");
+      let current: ProcessProof;
+      try { current = await captureProcessProof(child.pid!, birthBudget()); }
+      catch (error) {
+        if (process.platform === "linux" && birthClosed && !dispatchAttempted) return;
+        throw error;
+      }
+      if (process.platform === "linux" && birthClosed) return;
+      if (current.startedAt !== observed.startedAt || current.processGroupId !== observed.processGroupId || (process.platform === "linux" && current.parentPid !== observed.parentPid)
+        || (process.platform !== "linux" && current.commandHash !== observed.commandHash)) throw new Error("Owned launcher birth identity conflict.");
       if (suspended === undefined) { proof = current; remember(); await event("bound"); }
+      if (process.platform === "linux" && birthClosed) return;
       if (proof === null) throw new Error("Owned launcher has no committed process identity.");
       birth.resolve();
       if (dispatchClosed) return;
@@ -260,6 +271,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       // must be checked again in the same turn as the irreversible send.
       operation.check();
       if (dispatchClosed || failure !== undefined) return;
+      dispatchAttempted = true;
       child.send({ kind: "run", file: command.file, args: command.args, environment: command.environment, ...(options.stdin === undefined ? {} : { input: options.stdin }) });
     } else if (message.kind === "result") {
       if (!("code" in message) || !("signal" in message)) throw new Error("Incomplete owned launcher result.");
@@ -308,15 +320,26 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     const deadline = cleanupBoundaryLimit();
     // Cancellation closes dispatch, not the original birth handshake. A trusted
     // POSIX launcher may still own proof helpers before sending its first message.
-    if (suspended === undefined && proof === null && !neverSpawned && !closed && !failedSpawn) {
+    if (process.platform !== "linux" && suspended === undefined && proof === null && !neverSpawned && !closed && !failedSpawn) {
       try { await withinExecutionDeadline(birth.promise, deadline); }
       catch (error) { failure ??= error; }
     }
     // Seal birth admission and join the original message chain before native
     // stopping. A queued late bound cannot publish after the terminal event.
     birthClosed = true;
-    await messages;
-    if (proof !== null && (suspended === undefined || lease !== undefined)) {
+    if (process.platform === "linux" && !dispatchAttempted && !neverSpawned) {
+      // The Linux launcher cannot create a child before run. Seal dispatch in
+      // this turn, then retain the original close and message/output joins.
+      const close = closed ? Promise.resolve() : new Promise<void>(resolve => child.once("close", () => resolve()));
+      child.kill("SIGKILL");
+      const joining = (async () => { await close; await messages; await joinOutput!(); unstartedClosed = true; remember(); })();
+      joinUnsubmitted = () => joining;
+      remember();
+      await withinExecutionDeadline(joining, deadline);
+    } else await messages;
+    if (unstartedClosed) {
+      // The original Linux launcher has closed without any run attempt.
+    } else if (proof !== null && (suspended === undefined || lease !== undefined)) {
       if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
       if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Owned command boundary remains occupied.");
     } else {
@@ -340,8 +363,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     } finally { clearTimeout(outputTimer); }
     suspended?.closeHandles();
     if (suspended !== undefined && !resumed) { unstartedClosed = true; remember(); }
-    // A runnable POSIX launcher can itself start proof helpers before dispatch.
-    // Its direct close cannot establish that those descendants also stopped.
+    // Other runnable launchers can start proof helpers before dispatch.
     if (proof === null && !neverSpawned && !unstartedClosed) throw new Error("Owned launcher birth and boundary closure remain unconfirmed.");
     await event("stopped");
     if (lease !== undefined) releaseControllerJobLease(lease);

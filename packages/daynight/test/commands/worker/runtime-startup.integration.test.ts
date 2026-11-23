@@ -2134,7 +2134,7 @@ describe("real runtime resource isolation", () => {
       expect(controls).toHaveLength(1); expect(controls[0]!.snapshot().stopped).toBe(true);
       expect(retainedOwnedCommandBoundaries()).toEqual([]);
       const record = JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", `${original!.resourceId}.json`), "utf8"));
-      expect(record).toMatchObject({ generation: "1", event: { resourceId: original!.resourceId, stage: "stopped", proof: { pid: original!.pid } } });
+      expect(record).toMatchObject({ generation: "1", event: { resourceId: original!.resourceId, stage: "stopped", proof: process.platform === "linux" ? null : { pid: original!.pid } } });
       const lock = await tryAcquireWorkerInstanceLock(f.paths);
       expect(lock).not.toBeNull(); await lock?.release();
     } finally {
