@@ -26,14 +26,27 @@ A graph-owned relationship session calls the existing Goal relationship GET for
 qualified active roots. It displays the local graph first, limits concurrent
 sources to four and reads each source's successor pages sequentially. Complete
 prerequisites and accumulated readable successors form session-only
-contributions. Source phases distinguish pending coverage, partial results,
+contributions. An initial traversal publishes verified partial pages; a repeated
+traversal stages new pages and keeps the prior still-authorized legal contribution
+until the complete replacement passes protocol, scope and cycle checks. Failure,
+conflicting replacement or unsupported capability does not prove withdrawal;
+the explicit source phase records the result while its prior contribution stays
+authorized and legal against the current synchronized graph. An initial conflict
+can retain only an already verified prefix still admitted by the current cycle
+filter; an initially unsupported read contributes nothing. Actual access or
+history loss and trusted resource denial withdraw prior content immediately.
+Source phases distinguish pending coverage, partial results,
 failures, unsupported reads, withdrawal and conflicting observations. There is
 no graph polling loop; root/version changes, qualified reentry and explicit
 retry drive reads, and closing cancels queued and in-flight work.
 
 External cards retain the API's actual Project, Goal, title and status without
 invented Task versions or child progress. Only synchronization supplies internal
-edges. Hidden prerequisites remain inaccessible indicators, and local or partial
+edges. Inspection uses complete synchronized Goal relations and metadata rather
+than just the visible canvas. Raw relationship data supplements external and
+inspection-only context without replacing local relations, titles or lifecycle
+states already observed through synchronization. Hidden prerequisites remain
+inaccessible indicators, and local or partial
 coverage cannot prove global acceptance. The service continues to own the final
 completion decision. Subject, source generation and history fences qualify each
 publication; trusted withdrawal clears affected nodes, edges and inspection data
@@ -82,6 +95,12 @@ its finite source scheduling and cancellation.
 does not provide their business versions, timestamps or child progress. A narrow
 external node keeps rendering truthful and prevents made-up fields from becoming
 cache or detail admission evidence.
+
+**Replace a prior traversal with each newly read page.** Early successor pages
+are not a complete replacement and can omit still-readable old successors.
+Staging repeated reads preserves their cards and reading state until the complete
+new contribution is known, while initial reads can still show useful partial
+context immediately.
 
 ## Consequences
 

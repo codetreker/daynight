@@ -12,13 +12,22 @@ export type GoalAcceptanceProjection = GraphProjection & {
   readonly progress: ReadonlyMap<string, { readonly done: number; readonly total: number }>;
 };
 
-export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary>, focusId: string | null = null): GoalAcceptanceProjection => {
+export const projectGoalRelations = (summaries: ReadonlyMap<string, TaskSummary>) => {
   const available = new Map([...summaries].filter(([, task]) => task.type === 'goal'));
-  const visible = new Set([...available.values()].filter(goal => goal.status === 'todo' || goal.status === 'in_progress').map(goal => goal.id));
-  if (focusId !== null && available.has(focusId)) visible.add(focusId);
-  for (const id of [...visible]) for (const prerequisite of available.get(id)!.dependsOn) if (available.has(prerequisite)) visible.add(prerequisite);
-  const included = new Map([...available].filter(([id]) => visible.has(id)));
-  const goals = new Map([...included].map(([id, goal]) => [id, { id, titlePreview: goal.titlePreview, titleTruncated: goal.titleTruncated, status: goal.status }]));
+  const goals = new Map<string, GoalAcceptanceGoal>([...available].map(([id, goal]) => [id, { id, titlePreview: goal.titlePreview, titleTruncated: goal.titleTruncated, status: goal.status }]));
+  const prerequisites = new Map([...goals.keys()].map(id => [id, [] as string[]])), successors = new Map([...goals.keys()].map(id => [id, [] as string[]]));
+  for (const goal of available.values()) for (const source of goal.dependsOn) if (goals.has(source)) {
+    prerequisites.get(goal.id)!.push(source); successors.get(source)!.push(goal.id);
+  }
+  return { goals, prerequisites, successors };
+};
+
+export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary>, focusId: string | null = null): GoalAcceptanceProjection => {
+  const known = projectGoalRelations(summaries);
+  const visible = new Set([...known.goals.values()].filter(goal => goal.status === 'todo' || goal.status === 'in_progress').map(goal => goal.id));
+  if (focusId !== null && known.goals.has(focusId)) visible.add(focusId);
+  for (const id of [...visible]) for (const prerequisite of known.prerequisites.get(id)!) visible.add(prerequisite);
+  const goals = new Map([...known.goals].filter(([id]) => visible.has(id)));
   const prerequisites = new Map([...goals.keys()].map(id => [id, [] as string[]]));
   const successors = new Map([...goals.keys()].map(id => [id, [] as string[]]));
   const progress = new Map([...goals.keys()].map(id => [id, { done: 0, total: 0 }]));
@@ -27,9 +36,9 @@ export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary
     const parent = progress.get(task.parentId);
     if (parent !== undefined) { parent.total++; if (task.status === 'done') parent.done++; }
   }
-  const edges = [...included.values()].flatMap(goal => goal.dependsOn.filter(id => goals.has(id)).map(source => {
-    prerequisites.get(goal.id)!.push(source); successors.get(source)!.push(goal.id);
-    return { source, target: goal.id, external: false };
+  const edges = [...goals.keys()].flatMap(target => known.prerequisites.get(target)!.filter(id => goals.has(id)).map(source => {
+    prerequisites.get(target)!.push(source); successors.get(source)!.push(target);
+    return { source, target, external: false };
   }));
   return { goals, prerequisites, successors, progress, mainIds: visible, externalIds: new Set(), edges };
 };

@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Background, BackgroundVariant, Controls, getViewportForBounds, ReactFlow, useReactFlow, useStore } from '@xyflow/react';
 import type { TaskSummary } from '../../api/types';
+import type { RelatedGoal } from '../../api/goal-dependencies';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { DependencyEdges } from '../task-graph/DependencyEdges';
 import { TaskInspectionContext, InspectionLegend, type TaskInspection } from '../task-graph/inspection';
@@ -9,7 +10,7 @@ import { scaleGraph, useGraphFontScale } from '../task-graph/graph-scale';
 import { TaskGraphToolbar } from '../task-graph/TaskGraphToolbar';
 import { useGraphFocusRecovery } from '../task-graph/TaskGraphCanvas';
 import { GoalAcceptanceNode, type GoalAcceptanceFlowNode } from './GoalAcceptanceNode';
-import { acceptanceTopology, projectGoalAcceptance, traceGoalRelations, type GoalAcceptanceGoal } from './model';
+import { acceptanceTopology, projectGoalAcceptance, projectGoalRelations, traceGoalRelations, type GoalAcceptanceGoal } from './model';
 import { goalAcceptanceMessages } from './messages';
 import './goal-acceptance-graph.css';
 import { combineGoalRelations, relationTargets, selectLegalContributions } from './relation-projection';
@@ -47,6 +48,7 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
   const m = goalAcceptanceMessages(locale);
   const [direction, setDirection] = useState<GraphDirection>('horizontal');
   const [selected, setSelected] = useState(initialSelectedId);
+  const known = useMemo(() => projectGoalRelations(summaries), [summaries]);
   const projection = useMemo(() => {
     const baseline = projectGoalAcceptance(summaries, initialSelectedId);
     return relationSnapshot === undefined ? baseline : combineGoalRelations(projectId, baseline,
@@ -98,13 +100,19 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
   const targets = readingSnapshot === undefined ? new Map() : relationTargets(
     [...readingSnapshot.sources.values()].flatMap(source => source.contribution === null ? [] : [source.contribution]), readingSnapshot.deniedIds);
   const selectedRelations = selectedId === null ? null : readingSnapshot?.sources.get(selectedId)?.contribution;
-  const inspectedPrerequisites = selectedRelations == null ? selectedId === null ? [] : projection.prerequisites.get(selectedId)!
-    : selectedRelations.prerequisites.flatMap(item => item.target === null || readingSnapshot!.deniedIds.has(item.target.goalId) || !projection.goals.has(item.target.goalId) && !targets.has(item.target.goalId) ? [] : [item.target.goalId]);
-  const inspectedSuccessors = selectedRelations == null ? selectedId === null ? [] : projection.successors.get(selectedId)!
-    : selectedRelations.successors.filter(goal => !readingSnapshot!.deniedIds.has(goal.goalId) && (projection.goals.has(goal.goalId) || targets.has(goal.goalId))).map(goal => goal.goalId);
+  // Local successor changes advance the dependent Goal while the source's cached read can remain older.
+  const localSelected = selectedId !== null && known.goals.has(selectedId);
+  const inspectRelations = (localIds: readonly string[], displayedIds: readonly string[], readTargets: readonly RelatedGoal[] | undefined) => {
+    const readIds = readTargets === undefined ? displayedIds.filter(id => !localSelected || !known.goals.has(id))
+      : readTargets.filter(goal => !localSelected || goal.projectId !== projectId && !known.goals.has(goal.goalId)).map(goal => goal.goalId);
+    return [...new Set([...localIds, ...readIds])].filter(id => !readingSnapshot?.deniedIds.has(id) && (known.goals.has(id) || projection.goals.has(id) || targets.has(id)));
+  };
+  const inspectedPrerequisites = selectedId === null ? [] : inspectRelations(localSelected ? known.prerequisites.get(selectedId)! : [], projection.prerequisites.get(selectedId)!,
+    selectedRelations?.prerequisites.flatMap(item => item.target === null ? [] : [item.target]));
+  const inspectedSuccessors = selectedId === null ? [] : inspectRelations(localSelected ? known.successors.get(selectedId)! : [], projection.successors.get(selectedId)!, selectedRelations?.successors);
   const relations = (label: string, ids: readonly string[]) => <section><h4>{label}</h4>{ids.length === 0 ? <p>{m.none}</p>
     : <ul>{ids.map(id => { const related = targets.get(id);
-      const goal: GoalAcceptanceGoal = projection.goals.get(id) ?? { id, titlePreview: related!.title, titleTruncated: false, status: related!.status,
+      const goal: GoalAcceptanceGoal = known.goals.get(id) ?? projection.goals.get(id) ?? { id, titlePreview: related!.title, titleTruncated: false, status: related!.status,
         ...(related!.projectId === projectId ? {} : { project: { id: related!.projectId, name: related!.projectName } }) }; return <li key={id}>
       <button type="button" className="goal-acceptance-relation" onClick={event => projection.goals.has(id) ? followRelation(id) : onOpenGoal(id, event.currentTarget)}>{goal.titlePreview}</button>
       {goal.project !== undefined && <span className="goal-acceptance-context">{goal.project.name}</span>}<span className={`graph-status graph-status-${goal.status}`}>{common.status[goal.status]}</span>

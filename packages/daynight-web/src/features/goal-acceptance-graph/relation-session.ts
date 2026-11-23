@@ -119,6 +119,10 @@ export class GoalRelationSession {
     }
   };
   private load = async (source: Source) => {
+    // An incomplete replacement prefix cannot prove that later successors disappeared.
+    const replacing = source.view.contribution !== null;
+    const retainedContribution = () => selectLegalContributions(this.projectId, projectGoalAcceptance(this.summaries), this.contributions(), this.denied).accepted
+      .find(contribution => contribution.sourceId === source.view.goalId) ?? null;
     const controller = new AbortController(); source.controller = controller;
     const generation = source.generation;
     const signal = AbortSignal.any([controller.signal, this.scope.signal, this.scope.mismatchSignal]);
@@ -141,7 +145,10 @@ export class GoalRelationSession {
         });
         if (timeout !== null) clearTimeout(timeout); timeout = null;
         if (!current() || !await this.scope.verifyTaskRead(fence, signal) || !current()) return;
-        if (result.kind === 'unavailable') { source.view = { ...source.view, phase: 'unavailable', contribution: null, hiddenCount: 0, error: null }; this.publish(); return; }
+        if (result.kind === 'unavailable') {
+          const retained = retainedContribution();
+          source.view = { ...source.view, phase: 'unavailable', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.publish(); return;
+        }
         const page = result.page;
         if (identity !== null && identity !== pageIdentity(page)) throw new ApiError('protocol');
         if (page.nextCursor !== null && seen.has(page.nextCursor)) throw new ApiError('protocol');
@@ -151,11 +158,14 @@ export class GoalRelationSession {
         const candidate: GoalRelationContribution = { sourceId: source.view.goalId, sourceProjectId: source.view.projectId, prerequisites, successors: [...successors.values()] };
         const denied = new Set(this.denied); denied.delete(source.view.goalId);
         if (contributionConflicts(this.projectId, projectGoalAcceptance(this.summaries), this.contributions(candidate), denied)) {
-          source.view = { ...source.view, phase: 'conflict', contribution: null, error: null }; this.publish(); return;
+          const retained = retainedContribution();
+          source.view = { ...source.view, phase: 'conflict', contribution: retained, hiddenCount: retained === null ? 0 : source.view.hiddenCount, error: null }; this.publish(); return;
         }
         this.denied.delete(source.view.goalId);
-        source.view = { ...source.view, phase: page.nextCursor === null ? 'ready' : 'partial', contribution: candidate,
-          hiddenCount: prerequisites.filter(item => item.target === null).length, error: null }; this.publish();
+        const complete = page.nextCursor === null;
+        source.view = { ...source.view, phase: complete ? 'ready' : 'partial',
+          contribution: replacing && !complete ? source.view.contribution : candidate,
+          hiddenCount: replacing && !complete ? source.view.hiddenCount : prerequisites.filter(item => item.target === null).length, error: null }; this.publish();
         cursor = page.nextCursor;
         if (cursor !== null) seen.add(cursor);
       } while (cursor !== null && current());

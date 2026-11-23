@@ -31,6 +31,35 @@ const prepare = async (read: ConstructorParameters<typeof GoalRelationSession>[2
 const settled = (session: GoalRelationSession, goalId = id(1), phase = 'ready') => waitFor(() => expect(session.snapshot().sources.get(goalId)?.phase).toBe(phase));
 
 describe('Goal graph relationship session', () => {
+  it('retains prior downstream pages through held and failed replacement, removing absent Goals only on complete replacement', async () => {
+    let round = 0, rejectPage!: (error: unknown) => void;
+    const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
+      if (cursor === null) return page(goalId, { successors: [related(20)], nextCursor: 'next' });
+      if (round === 1) return new Promise((_resolve, reject) => { rejectPage = reject; });
+      return page(goalId, { successors: round === 0 ? [related(21)] : [] });
+    });
+    const { session } = await prepare(read);
+    session.setRoots(roots()); await settled(session);
+    const prior = session.snapshot().sources.get(id(1))!.contribution;
+    round = 1; session.retry(id(1)); await settled(session, id(1), 'partial');
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(4));
+    expect(session.snapshot().sources.get(id(1))!.contribution).toBe(prior);
+    rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors.map(goal => goal.goalId)).toEqual([id(20), id(21)]);
+    round = 2; session.retry(id(1)); await settled(session);
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors.map(goal => goal.goalId)).toEqual([id(20)]);
+  });
+
+  it('retains a legal prior read when capability becomes unavailable while trusted withdrawal still removes it immediately', async () => {
+    let supported = true;
+    const read = vi.fn(async (_project: string, goalId: string): Promise<GoalDependenciesRead> => supported ? page(goalId, { successors: [related(20)] }) : { kind: 'unavailable' });
+    const { session, event } = await prepare(read);
+    session.setRoots(roots()); await settled(session);
+    supported = false; session.retry(id(1)); await settled(session, id(1), 'unavailable');
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors[0]?.goalId).toBe(id(20));
+    event({ projectId: externalProject, accessRevoked: true });
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors).toEqual([]);
+  });
   it('bounds source concurrency at four and cancels every owned request on close', async () => {
     const pending: { goalId: string; signal: AbortSignal; resolve: (page: GoalDependenciesRead) => void }[] = [];
     const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal) => new Promise<GoalDependenciesRead>((resolve, reject) => {
@@ -85,7 +114,8 @@ describe('Goal graph relationship session', () => {
     const input = roots(2); input.set(id(2), { ...input.get(id(2))!, dependsOn: [id(1)] });
     session.setRoots(input); await settled(session, id(2));
     reversed = true; session.retry(id(2)); await settled(session, id(2), 'conflict');
-    expect(session.snapshot().sources.get(id(2))?.contribution).toBeNull();
+    expect(session.snapshot().sources.get(id(2))?.contribution?.prerequisites[0]?.target?.goalId).toBe(id(10));
+    expect(session.snapshot().sources.get(id(2))?.contribution?.successors).toEqual([]);
     expect(session.snapshot().sources.get(id(1))?.contribution?.prerequisites[0]?.target?.goalId).toBe(id(10));
     expect(input.get(id(2))?.dependsOn).toEqual([id(1)]);
   });

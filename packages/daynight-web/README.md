@@ -30,8 +30,15 @@ The project Goals toolbar opens a separate Goal acceptance graph from the
 existing committed TaskSync baseline. It first displays active isolated Goals
 and their direct local prerequisites, including completed and cancelled context,
 then reads direct cross-project relationships through the existing Goal API.
-The graph session limits concurrent sources, follows each source's downstream
-pages sequentially, retains partial authorized results and exposes retries,
+The graph session limits concurrent sources and follows each source's downstream
+pages sequentially. First reads publish verified partial results; repeated reads
+stage a complete replacement while retaining the prior still-authorized legal
+contribution. Failed, conflicting or unsupported replacement reads retain that
+contribution with their explicit phase while it remains authorized and legal;
+trusted withdrawal removes
+affected content immediately. Inspection takes local relations, titles and states
+from full synchronized Goal indexes, combining raw external context without
+overwriting newer local facts or growing the canvas. The session exposes retries,
 unsupported reads and inaccessible prerequisites. External cards use their
 actual Project and lifecycle data without invented summary versions or progress.
 Graph sessions have no polling loop and do not change TaskSync requests or
