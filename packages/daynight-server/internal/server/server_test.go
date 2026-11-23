@@ -1092,7 +1092,7 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 			Dispatch bool `json:"dispatchEnabled"`
 		} `json:"service"`
 	}
-	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 6 || data.Service.Dispatch {
+	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 5 || data.Service.Dispatch {
 		t.Fatalf("catalog: %s (%v)", catalog, err)
 	}
 	empty := f.expect("GET", "/api/v1/me/webhooks", "", 200)

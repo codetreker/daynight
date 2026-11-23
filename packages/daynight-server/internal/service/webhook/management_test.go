@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 )
 
@@ -851,5 +852,41 @@ func TestManagementClientKeyInputRules(t *testing.T) {
 		if f.reads != 0 {
 			t.Fatalf("%s %q reached storage", tc.kind, tc.key)
 		}
+	}
+}
+
+func TestRetiredSubscriptionIntentPreservesReplayAndConflict(t *testing.T) {
+	for _, scenario := range []string{"new", "replay", "conflict", "stale version"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newMgmtFixture(t)
+			m := f.mutation("endpoint.update")
+			m.HasSubscriptions = true
+			m.Subscriptions = []core.SubscriptionInput{{ProjectID: "77777777-7777-4777-8777-777777777777", EventTypes: []string{"task.step_updated"}}}
+			if scenario == "stale version" {
+				m.IfVersion++
+			}
+			if scenario == "replay" || scenario == "conflict" {
+				op := f.respondMutation(m, f.endpoint, "applied", []wm.SigningKey{f.key})
+				if scenario == "conflict" {
+					op.Fingerprint = "different"
+				}
+				f.writer.OperationFn = func(context.Context, wm.Owner, string) (wm.Operation, error) { return op, nil }
+				f.postDAO.OperationFn = func(context.Context, wm.Owner, string) (wm.Operation, error) { return op, nil }
+			}
+			got, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
+			switch scenario {
+			case "new":
+				mgmtWantFault(t, err, "invalid_input")
+			case "conflict":
+				mgmtWantFault(t, err, "operation_conflict")
+			case "stale version":
+				mgmtWantFault(t, err, "version_conflict")
+			case "replay":
+				if err != nil || !got.Replay {
+					t.Fatalf("replay=%#v err=%v", got, err)
+				}
+			}
+			f.noEffects()
+		})
 	}
 }

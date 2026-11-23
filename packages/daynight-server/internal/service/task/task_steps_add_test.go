@@ -53,7 +53,6 @@ type strictStepWrite struct {
 	outcome                                                                  store.TransactionOutcome
 	observed                                                                 time.Time
 	expectedWrite                                                            model.TaskStep
-	expectedFact                                                             protocol.Fact
 }
 type strictWriteProject struct {
 	f *strictStepWrite
@@ -183,13 +182,11 @@ func (f *strictStepWrite) TouchTask(ctx context.Context, id string, at time.Time
 	}
 	return nil
 }
-func (f *strictStepWrite) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, _ webhook.Actor, facts []protocol.Fact) error {
-	f.scoped("capture")
-	if ctx != f.ctx || dao != f.captureDAO || len(facts) != 1 || !reflect.DeepEqual(facts[0], f.expectedFact) {
-		f.t.Fatalf("capture: %+v want %+v", facts, f.expectedFact)
-	}
+func (f *strictStepWrite) CaptureBatch(context.Context, store.WebhookCaptureDAO, webhook.Actor, []protocol.Fact) error {
+	f.t.Fatal("Step write captured a Webhook event")
 	return nil
 }
+
 func newStrictStepWrite(t *testing.T, h model.TaskHeader, rows []model.TaskStep) *strictStepWrite {
 	t.Helper()
 	f := &strictStepWrite{t: t, ctx: t.Context(), principal: model.Principal{Kind: model.SessionCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "33333333-3333-4333-8333-333333333333"}, header: h, current: rows, expectedCurrent: slices.Clone(rows), projectID: h.ProjectID, taskID: h.ID, outcome: store.TransactionCommitted}
@@ -248,7 +245,7 @@ func writePath(stop string) []string {
 		path[len(path)-1] = "update"
 		return append(path, "complete")
 	}
-	return append(path, "taskDAO", "touch", "taskDAO", "header", "captureDAO", "capture", "complete")
+	return append(path, "taskDAO", "touch", "complete")
 }
 func expectReceipt(t *testing.T, r StepsWriteResult, err error, changed bool) {
 	t.Helper()
@@ -273,10 +270,9 @@ func expectInternal(t *testing.T, r StepsWriteResult, err, cause error) {
 		t.Fatal("internal failure became refusal")
 	}
 }
-func (f *strictStepWrite) changed(step model.TaskStep, observed time.Time, action string, fields []string, previous, status string) {
+func (f *strictStepWrite) changed(step model.TaskStep, observed time.Time, _ string, _ []string, _, _ string) {
 	f.expectedWrite = step
 	f.observed = observed
-	f.expectedFact = protocol.Fact{Type: protocol.StepUpdated, ProjectID: f.header.ProjectID, TaskID: f.header.ID, TaskVersion: f.header.Version + 1, OccurredAt: observed, StepID: step.ID, Action: action, ChangedFields: fields, PreviousStatus: previous, Status: status}
 }
 
 func TestTaskStepsAddUsesHeaderAndPreservesExistingContent(t *testing.T) {

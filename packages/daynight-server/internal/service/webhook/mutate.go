@@ -239,6 +239,15 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				return e
 			}
 		}
+		// Retired types remain valid during normalization and receipt lookup.
+		// A new intent cannot configure them after version checks.
+		for _, sub := range m.Subscriptions {
+			for _, event := range sub.EventTypes {
+				if event == "task.step_updated" {
+					return fault("invalid_input", "Invalid subscription event types.")
+				}
+			}
+		}
 		authorityErr := sc.LockConfigurationSources(ctx, o, p.UserID, configurationProjects(plannedSubscriptions, m))
 		if failed, _ := store.DatabaseErrorFacts(authorityErr); failed {
 			return authorityErr

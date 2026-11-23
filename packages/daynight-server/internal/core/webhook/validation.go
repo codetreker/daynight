@@ -170,10 +170,14 @@ type SubscriptionInput struct {
 	EventTypes []string
 }
 
-// EventTypes is the fixed catalog accepted by configuration and dispatch.
-var EventTypes = [...]string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+// EventTypes contains the events available for new subscriptions.
+var EventTypes = [...]string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 
+// ValidEventType includes retired types so historical intents and bindings remain readable.
 func ValidEventType(value string) bool {
+	if value == "task.step_updated" {
+		return true
+	}
 	for _, eventType := range EventTypes {
 		if value == eventType {
 			return true

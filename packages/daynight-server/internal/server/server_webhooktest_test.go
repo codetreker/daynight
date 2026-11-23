@@ -375,7 +375,7 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 	}
 	catalog := get("/api/v1/webhook-event-types")
 	items := catalog["items"].([]any)
-	names := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+	names := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.thread_posted"}
 	if len(items) != len(names) {
 		t.Fatalf("catalog=%v", catalog)
 	}
