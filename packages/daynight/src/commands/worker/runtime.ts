@@ -12,6 +12,7 @@ import { openWebExecutionStore } from "./backends/web-store.js";
 import { createWebExecutionBackend } from "./backends/web.js";
 import { createWebControllerLauncher } from "./backends/web-process.js";
 import { createControllerJobLeases } from "./backends/controller-job-leases.js";
+import { createRetiredClaimNativeCleanup } from "./backends/retired-claim-native.js";
 import { createWorkerSessionApi } from "./backends/session-api.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
@@ -534,6 +535,7 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
       };
       web = await createWebRuntime({ ...options, managementOnly: true }, paths, root.store!, git, local.serverUrl, local.serverToken, identity.workerId, identity.userId, currentWorkerPlatform(), emit, signal);
       coordinator = createWorkerCoordinator({ store: root.store!, git, remote, webStore: web.webStore, webBackend: web.webBackend,
+        retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity, lifecycle, jobLeases: web.jobLeases }),
         verifyWebUnregistered: web.verifyWebUnregistered, serverOrigin: identity.serverOrigin, workerId: identity.workerId, userId: identity.userId,
         platform: currentWorkerPlatform(), machine: machineDescription(currentWorkerPlatform()), repositories: [], globalConfiguration: null, maxConcurrent: 1,
         platformTaskMode: "all", emit });
@@ -1489,6 +1491,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" };
         coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, cleanupCommandLifecycle,
+          retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases, ...(root.lifecycle === undefined ? {} : { lifecycle: root.lifecycle }) }),
           store: currentStore, git: getGit(), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
           archiveSessions: () => manager.current().effective.archiveSessions,
           prepareProject: async (projectId, preparationSignal) => {
@@ -1856,6 +1859,7 @@ export const runWorkerControl = async (options: {
     const taskTagFilterKey = configurationManager?.current().effective.taskTagFilterKey;
     const coordinator = createWorkerCoordinator({
       freezeConfiguration: toolRuntime.freezeConfiguration, store, git, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
+      retiredNativeCleanup: createRetiredClaimNativeCleanup({ homeDirectory: options.homeDirectory, identity: { serverOrigin: serverUrl, userId, workerId }, jobLeases: web.jobLeases, ...(controlLifecycle === undefined ? {} : { lifecycle: controlLifecycle }) }),
       ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }),
       archiveSessions: controlArchiveSessions,
       emit: diagnostics.emit, signal,

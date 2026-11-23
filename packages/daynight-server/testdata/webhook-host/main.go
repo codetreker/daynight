@@ -221,7 +221,6 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(f.db), auth, logger)
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(f.db), auth, logger).RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.db, capture), nil, auth, logger)
-	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(f.db, capture), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(f.db, capture), auth, logger)
 	mux.HandleFunc("POST /__fixture/runner/start", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 		if p.UserID != user {

@@ -35,8 +35,9 @@ service while the other interfaces are retired separately.
 
 ## Consequences
 
-Web users cannot read or change Steps, including through old tab links. REST
-Steps functionality remains available. The
+Web users cannot read or change Steps, including through old tab links. The
+[REST retirement](2026-11-23-retire-rest-task-steps.md) removes the HTTP entry
+points. The
 [CLI retirement](2026-11-23-retire-cli-task-steps.md) removes its Steps commands,
 and [MCP retirement](2026-11-23-retire-mcp-task-steps.md) removes its tools and
 dedicated manual. Legacy navigation continues to open the Task or attachment

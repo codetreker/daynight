@@ -24,7 +24,7 @@ import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
-import { controllerJournalFormat } from "./journal-format.js";
+import { controllerJournalFormat, inspectReadCompatibleControllerJournal } from "./journal-format.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
@@ -138,6 +138,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
           if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
           if (process.platform === "win32") validateWindowsStoredStopProof(previous, existing.ticket_hash);
+          if (previous.controllerProcess !== null) retainStoppedGeneration(db, existing.ticket_hash, previous);
           db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(ticket), JSON.stringify({ ...initial, initialInputState: previous.initialInputState, controlsRevisionFloor: (() => {
             let floor = BigInt(previous.controls?.revision ?? previous.controlsRevisionFloor ?? "0");
             // Old source events are replayed before new provider state. Keep their
@@ -511,8 +512,13 @@ export const readControllerSnapshot = (file: SqliteDatabaseSource, permit?: Cont
 });
 
 type ControllerStopRow = { snapshot: ControllerSnapshot; rawSnapshot: string; ticketHash: string; ownerPid: number | null };
-const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit): ControllerStopRow | null => {
-  const read = (db: Database.Database): ControllerStopRow | null => {
+const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit, historicalTicketHash?: string, allowPreviousFormat = false): ControllerStopRow | null => {
+  const read = (db: Database.Database, historyAvailable = true): ControllerStopRow | null => {
+    if (historicalTicketHash !== undefined) {
+      if (!historyAvailable) return null;
+      const historical = db.prepare("SELECT snapshot,ticket_hash FROM stopped_generations WHERE ticket_hash=?").get(historicalTicketHash) as { snapshot: string; ticket_hash: string } | undefined;
+      return historical === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(historical.snapshot)), rawSnapshot: historical.snapshot, ticketHash: historical.ticket_hash, ownerPid: null };
+    }
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
     return row === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), rawSnapshot: row.snapshot, ticketHash: row.ticket_hash, ownerPid: row.owner_pid };
   };
@@ -534,10 +540,10 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
       db.pragma(`busy_timeout = ${remaining()}`); remaining();
       result = db.transaction(() => {
         remaining();
-        const source = inspectSqlite(db, controllerJournalFormat);
-        if (source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
+        const source = allowPreviousFormat ? inspectReadCompatibleControllerJournal(db) : inspectSqlite(db, controllerJournalFormat);
+        if (!allowPreviousFormat && source.kind !== "current") throw new Error("Controller stop recording requires the current journal format.");
         db.pragma(`busy_timeout = ${remaining()}`);
-        const row = read(db); remaining(); return row;
+        const row = read(db, source.kind === "current"); remaining(); return row;
       }).deferred();
     }, "not-started");
     remaining(); return result;
@@ -551,14 +557,9 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
   }
 };
 
-/** Read the current journal without migration and verify its original ticket fence. */
-export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {
-  try {
-    const row = readControllerStopRow(file, deadline, true);
-    if (row === null) throw new Error("Original controller journal evidence is unavailable.");
-    const value = row.snapshot;
+const validateControllerSnapshot = (value: ControllerSnapshot, ticket: ControllerLaunchTicket, ticketHash: string): ControllerSnapshot => {
     const processProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && isProcessBirth(proof.startedAt) && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
-    if (value === null || typeof value !== "object" || Array.isArray(value) || row.ticketHash !== controllerPayloadHash(ticket)
+    if (value === null || typeof value !== "object" || Array.isArray(value) || ticketHash !== controllerPayloadHash(ticket)
       || value.executionId !== ticket.executionId || value.sessionId !== ticket.sessionId || value.claimId !== ticket.claimId || value.testExecutionId !== ticket.testExecutionId
       || value.executionGeneration !== ticket.executionGeneration || value.controllerInstanceId !== ticket.controllerInstanceId
       || !["starting", "ready", "working", "stopping", "stopped", "paused", "failed"].includes(value.lifecycle)
@@ -569,12 +570,37 @@ export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLa
       || typeof value.nativeStopped !== "boolean" || !(value.stoppedAt === null || typeof value.stoppedAt === "string" && Number.isFinite(Date.parse(value.stoppedAt)))
       || !(value.error === null || typeof value.error === "string") || !(value.currentTurnId === null || typeof value.currentTurnId === "string")
       || value.capabilities === null || typeof value.capabilities !== "object" || ["send", "steer", "cancel", "respond"].some(key => typeof value.capabilities[key as keyof SessionCapabilities] !== "boolean")) throw new Error("Controller current journal conflicts with its original ticket or snapshot format.");
+    return value;
+};
+
+const readValidatedControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline: number | undefined, allowPreviousFormat: boolean): ControllerSnapshot => {
+  try {
+    const row = readControllerStopRow(file, deadline, true, undefined, undefined, allowPreviousFormat);
+    if (row === null) throw new Error("Original controller journal evidence is unavailable.");
+    const value = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
     if (deadline !== undefined && Date.now() >= deadline) throw new Error("Controller stop recording exceeded its deadline.");
     return value;
   } catch (cause) {
     if (deadline !== undefined && Date.now() >= deadline && !(cause instanceof Error && /deadline/.test(cause.message))) throw new AggregateError([cause, new Error("Controller stop recording exceeded its deadline.")], "Controller journal observation failed at its deadline.", { cause });
     throw cause;
   }
+};
+
+/** Read the current journal without migration and verify its original ticket fence. */
+export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, false);
+
+/** Read a validated v16 or current snapshot without modifying protected or retained evidence. */
+export const readCompatibleControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => readValidatedControllerSnapshot(file, ticket, deadline, true);
+
+/** Immutable launch attempts can share a generation; only the journal's exact ticket owns its snapshot. */
+export const readCurrentControllerInventorySnapshot = (file: string, tickets: readonly ControllerLaunchTicket[], deadline: number): { ticket: ControllerLaunchTicket; snapshot: ControllerSnapshot } | null => {
+  const row = readControllerStopRow(file, deadline, true, undefined, undefined, true);
+  if (row === null) return null;
+  const ticket = tickets.find(candidate => controllerPayloadHash(candidate) === row.ticketHash);
+  if (ticket === undefined) throw new Error("Original Controller journal generation has no matching inventory ticket.");
+  const snapshot = validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
+  if (Date.now() >= deadline) throw new Error("Controller journal inventory observation exceeded its deadline.");
+  return { ticket, snapshot };
 };
 
 /** Hashes bind durable evidence for consistency; they are not authentication against a local writer. */
@@ -598,9 +624,31 @@ export const validateWindowsControllerStopProof = (snapshot: ControllerSnapshot,
     || snapshot.controllerProcess?.jobObjectName !== `Local\\Daynight-${ticket.launchId}`) throw new Error("Windows Job stop proof conflicts with its original ticket or snapshot.");
 };
 
+const retainStoppedGeneration = (db: Database.Database, ticketHash: string, snapshot: ControllerSnapshot): void => {
+  if (!/^[a-f0-9]{64}$/.test(ticketHash) || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.controllerProcess === null
+    || snapshot.stoppedAt === null || !Number.isFinite(Date.parse(snapshot.stoppedAt))) throw new Error("Controller stopped generation evidence is incomplete.");
+  if (process.platform === "win32") validateWindowsStoredStopProof(snapshot, ticketHash);
+  const previous = db.prepare("SELECT snapshot FROM stopped_generations WHERE ticket_hash=?").get(ticketHash) as { snapshot: string } | undefined;
+  if (previous !== undefined) {
+    if (controllerPayloadHash(JSON.parse(previous.snapshot)) !== controllerPayloadHash(snapshot)) throw new Error("Controller stopped generation receipt conflicts with its original evidence.");
+    return;
+  }
+  db.prepare("INSERT INTO stopped_generations(ticket_hash,snapshot) VALUES(?,?)").run(ticketHash, JSON.stringify(snapshot));
+};
+
+/** Historical receipts retain the exact stopped boundary after recovery replaces the current writer. */
+export const readHistoricalWindowsStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline: number): ControllerSnapshot | null => {
+  const row = readControllerStopRow(file, deadline, true, undefined, controllerPayloadHash(ticket), true);
+  if (row === null) return null;
+  validateControllerSnapshot(row.snapshot, ticket, row.ticketHash);
+  validateWindowsControllerStopProof(row.snapshot, ticket, row.ticketHash);
+  if (Date.now() >= deadline) throw new Error("Controller stopped generation observation exceeded its deadline.");
+  return row.snapshot;
+};
+
 export const readProvenWindowsStoppedControllerGeneration = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {
   try {
-    const row = readControllerStopRow(file, deadline, true);
+    const row = readControllerStopRow(file, deadline, true, undefined, undefined, true);
     if (row === null) throw new Error("Original controller stop evidence is unavailable.");
     validateWindowsControllerStopProof(row.snapshot, ticket, row.ticketHash);
     if (deadline !== undefined && Date.now() >= deadline) throw new Error("Controller stop recording exceeded its deadline.");
@@ -648,8 +696,19 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   const ticketHash = controllerPayloadHash(ticket);
   if (observedRow!.ticketHash !== ticketHash || observed.sessionId !== ticket.sessionId) throw new Error("Original controller stop ticket conflicts with its journal.");
   if (process.platform === "win32" && observed.windowsJobStopProof !== undefined) {
-    try { validateWindowsControllerStopProof(observed, ticket, observedRow!.ticketHash); remaining(); return observed; }
-    catch (error) { return failedAtDeadline(error, "not-started", true); }
+    try {
+      validateWindowsControllerStopProof(observed, ticket, observedRow!.ticketHash); remaining();
+      const db = new Database(sqliteFilename(file), { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) });
+      closeJournal(db, file, () => runSqliteImmediate(db, () => {
+        remaining(); assertCurrentSqlite(db, controllerJournalFormat);
+        const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null };
+        if (row.snapshot !== observedRow!.rawSnapshot || row.ticket_hash !== ticketHash || row.owner_pid !== observedRow!.ownerPid) throw new Error("The controller state changed during stop verification.");
+        retainStoppedGeneration(db, ticketHash, observed); remaining();
+      }));
+      if (deadline !== undefined && Date.now() >= deadline) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "stop-deadline" }, { outcome: "committed", connectionClosed: true, cause: new Error("Controller stop recording exceeded its deadline after commit.") });
+      return observed;
+    }
+    catch (error) { return failedAtDeadline(error, error instanceof SqliteAccessError ? error.outcome : sqliteTransactionOutcome(error), error instanceof SqliteAccessError ? error.connectionClosed : true); }
   }
   if (process.platform === "win32" && lease === undefined) throw new Error("Windows Job stop proof and original Job lease are unavailable; complete process-tree stop is unconfirmed.");
   if (!await (lease === undefined ? confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline) : confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline, lease))) throw new Error("The original controller or its descendants are still running.");
@@ -673,6 +732,7 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
           validateWindowsControllerStopProof(value, ticket, row.ticket_hash);
         }
         db.prepare("UPDATE execution SET snapshot=?,owner_pid=NULL WHERE id=1").run(JSON.stringify(value));
+        retainStoppedGeneration(db, ticketHash, value);
         if (deadline !== undefined) db.pragma(`busy_timeout = ${remaining()}`);
         remaining();
         return value;
@@ -706,3 +766,26 @@ export const readControllerOperation = (file: SqliteDatabaseSource, operationId:
   const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined;
   return row === undefined ? null : json<ControllerOperation>(row.value);
 });
+
+/** Live observations must not acquire migration ownership from the original Controller. */
+export const readCompatibleControllerOperation = (file: string, ticket: ControllerLaunchTicket, operationId: string, deadline?: number): ControllerOperation | null => {
+  const remaining = () => {
+    const time = deadline === undefined ? 5000 : deadline - Date.now();
+    if (time <= 0) throw new Error("Controller operation observation exceeded its deadline.");
+    return Math.max(1, Math.min(5000, time));
+  };
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+  let result: ControllerOperation | null = null;
+  closeJournal(db, file, () => {
+    result = db.transaction(() => {
+      inspectReadCompatibleControllerJournal(db);
+      const owner = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+      if (owner === undefined) throw new Error("Original controller journal evidence is unavailable.");
+      validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(owner.snapshot)), ticket, owner.ticket_hash);
+      const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined;
+      remaining();
+      return row === undefined ? null : json<ControllerOperation>(row.value);
+    }).deferred();
+  }, "not-started");
+  return result;
+};

@@ -207,7 +207,6 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	}, scopedAuth, logger); err != nil {
 		return nil, err
 	}
-	taskhttp.TaskStepsScopedRoutes(routes.scoped("step-operation-and-response"), app.Scoped.Steps, scopedAuth, logger)
 	taskhttp.ScopedTaskThreadRoutesObserved(routes.scoped("thread-operation-and-response"), app.Scoped.Threads, scopedAuth, logger, observeScopeRoutes[taskhttp.ThreadScopeRoute](routes))
 	attachmenthttp.RegisterScopedRoutesWithScopeObserver(routes.scoped("attachment-method-host-and-response"), app.Scoped.Attachments, scopedAuth, logger, config.Server.PreviewOrigin, observeScopeRoutes[attachmenthttp.ScopeRoute](routes))
 	taskPreviewMux := http.NewServeMux()
