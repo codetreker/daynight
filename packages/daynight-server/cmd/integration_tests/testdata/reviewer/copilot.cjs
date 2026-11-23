@@ -23,6 +23,14 @@ if (args.includes('skill') && args.includes('list')) {
   fs.mkdirSync(path.join(process.env.COPILOT_HOME, 'session-state', session), {recursive: true});
   fs.writeFileSync(path.join(process.env.COPILOT_HOME, 'session-state', session, 'fixture.jsonl'), 'fixture');
   fs.writeFileSync(process.env.REVIEW_FIXTURE_INPUT, JSON.stringify({prompt, sha, session}));
+  if (process.env.REVIEW_FIXTURE_BLOCK && fs.existsSync(process.env.REVIEW_FIXTURE_BLOCK)) {
+    fs.appendFileSync(process.env.REVIEW_FIXTURE_STARTS, `${process.pid}\n`);
+    process.on('SIGTERM', () => {
+      fs.writeFileSync(process.env.REVIEW_FIXTURE_STOPPED, String(process.pid));
+      process.exit(0);
+    });
+    await new Promise(() => { setInterval(() => {}, 1_000); });
+  }
   const publication = {id: 'fixture-review', author: {id: 'fixture-viewer'}, commit: {oid: sha}, body: '<!-- ' + match[1] + ' -->', state: 'APPROVED'};
   const temp = process.env.REVIEW_FIXTURE_PUBLICATION + '.tmp';
   fs.writeFileSync(temp, JSON.stringify(publication));

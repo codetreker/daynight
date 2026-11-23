@@ -520,7 +520,7 @@ func (d *mcpAttachmentTaskReader) TaskWorkGroups(context.Context, string, store.
 	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkGroups")
 	panic("unreachable")
 }
-func (d *mcpAttachmentTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (d *mcpAttachmentTaskReader) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkTargets")
 	panic("unreachable")
 }

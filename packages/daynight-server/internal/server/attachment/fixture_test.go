@@ -791,7 +791,7 @@ func (s *unexpectedTaskReader) TaskWorkGroups(context.Context, string, store.Tas
 	s.reject("TaskWorkGroups")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	s.reject("TaskWorkTargets")
 	panic("unreachable")
 }

@@ -9,6 +9,7 @@ import (
 
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	migration115 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/115"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -352,6 +353,9 @@ var workerWindowsProcessCleanupSQL string
 //go:embed schema/migrations/113_webhook_endpoint_client_key.sql
 var webhookEndpointClientKeySQL string
 
+//go:embed schema/migrations/114_session_history_policy.sql
+var sessionHistoryPolicySQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -471,6 +475,8 @@ var schemaMigrations = []migration{
 	{version: 111, sql: credentialScopeActivationSQL},
 	{version: 112, sql: workerWindowsProcessCleanupSQL},
 	{version: 113, sql: webhookEndpointClientKeySQL},
+	{version: 114, sql: sessionHistoryPolicySQL},
+	{version: 115, sql: migration115.SQL(), transform: migration115.Apply, transformSource: migration115.TransformSource()},
 }
 
 const migrationLock int64 = 0x4441594e49474854

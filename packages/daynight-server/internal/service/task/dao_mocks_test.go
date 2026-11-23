@@ -946,7 +946,7 @@ func (mock *taskReaderMock) TaskWorkGroups(context.Context, string, store.TaskWo
 	mock.need("TaskWorkGroups", false)
 	return store.TaskWorkGroups{}, nil
 }
-func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	mock.need("TaskWorkTargets", false)
 	return store.TaskWorkTargets{}, nil
 }

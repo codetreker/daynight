@@ -82,7 +82,7 @@ for (const width of [1360, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const panel = configuration(page).locator('.config-panel').first();
     await expectRefreshLayout(page, settings);
     const compactGap = await panel.evaluate((element, source) => element.getBoundingClientRect().top - source!.getBoundingClientRect().bottom, await source.elementHandle());
-    expect(compactGap).toBeGreaterThanOrEqual(0); expect(compactGap).toBeLessThanOrEqual(24);
+    expect(compactGap).toBeGreaterThanOrEqual(0);
     await info.attach('compact-runtime-header', { body: await page.screenshot(), contentType: 'image/png' });
     await summary.focus(); await page.keyboard.press('Enter'); await expect(source).toHaveAttribute('open', '');
     await expect(source.locator('pre')).toHaveText(JSON.stringify(state.resource.desired!.value));

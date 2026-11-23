@@ -1,6 +1,7 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  review: { title: 'PR review', label: 'Participate in PR review', detail: 'A Worker that supports PR reviews applies this setting on its next successful poll. Turning it off stops reviews in progress. Saving confirms the service setting, not Worker activity.', loading: 'Loading PR review setting…', unavailable: 'PR review setting unavailable.', readError: 'Could not load the PR review setting.', saving: 'Saving…', saved: 'PR review setting saved.', rejected: 'Could not save the PR review setting.', conflict: 'The setting changed elsewhere. Check the current value before changing it again.', unknown: 'The save outcome is unknown. The current value cannot confirm whether that save succeeded.', checkError: 'Could not check the current value.' },
   toolPaths: {
     title: 'Tool paths', detail: 'Use an absolute file path on this Worker. Restore automatic discovery explicitly.', auto: 'Automatic', awaitingImport: 'Waiting for Worker import', reset: 'Restore automatic',
     unsupportedService: 'Upgrade the service to configure tool paths.', unsupportedWorker: 'This Worker has not reported tool path support. Upgrade it or wait for a supported report.',

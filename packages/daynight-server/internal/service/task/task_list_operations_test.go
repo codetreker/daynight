@@ -337,7 +337,7 @@ func (c *listOperationCapability) TaskWorkGroups(context.Context, string, store.
 	return store.TaskWorkGroups{}, c.fail("TaskWorkGroups")
 }
 
-func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	return store.TaskWorkTargets{}, c.fail("TaskWorkTargets")
 }
 

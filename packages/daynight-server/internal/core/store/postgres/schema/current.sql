@@ -1,4 +1,4 @@
--- Schema snapshot version: 113
+-- Schema snapshot version: 115
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1126,10 +1126,12 @@ CREATE TABLE "task_sessions" (
     "backend" "text" DEFAULT 'web'::"text" NOT NULL,
     "terminal_state" "jsonb",
     "bot_id" "uuid",
+    "history_content_policy" "text",
     CONSTRAINT "session_backend_content" CHECK (((("backend" = 'web'::"text") AND ("snapshot" IS NOT NULL) AND ("terminal_state" IS NULL)) OR (("backend" = 'herdr'::"text") AND ("scope" = 'task'::"text") AND ("snapshot" IS NULL) AND ("terminal_state" IS NOT NULL)))),
     CONSTRAINT "session_bot_scope" CHECK ((("bot_id" IS NULL) OR (("scope" = 'test'::"text") AND ("backend" = 'web'::"text")))),
     CONSTRAINT "session_scope_binding" CHECK (((("scope" = 'task'::"text") AND ("project_id" IS NOT NULL) AND ("task_id" IS NOT NULL) AND ("claim_id" IS NOT NULL) AND ("test_execution_id" IS NULL)) OR (("scope" = 'test'::"text") AND ("project_id" IS NULL) AND ("task_id" IS NULL) AND ("claim_id" IS NULL) AND ("test_execution_id" IS NOT NULL)))),
-    CONSTRAINT "task_sessions_backend_check" CHECK (("backend" = ANY (ARRAY['web'::"text", 'herdr'::"text"])))
+    CONSTRAINT "task_sessions_backend_check" CHECK (("backend" = ANY (ARRAY['web'::"text", 'herdr'::"text"]))),
+    CONSTRAINT "task_sessions_history_content_policy_check" CHECK (("history_content_policy" = ANY (ARRAY['legacy'::"text", 'task_body'::"text"])))
 );
 
 CREATE TABLE "task_steps" (
@@ -2322,6 +2324,20 @@ CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 CREATE UNIQUE INDEX "sessions_preview_token_hash" ON "sessions" USING "btree" ("preview_token_hash") WHERE ("preview_token_hash" IS NOT NULL);
 
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
+
+CREATE INDEX "task_properties_worker_active_claim_idx" ON "task_properties" USING "btree" (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'userId'::"text")) COLLATE "C", ((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'workerId'::"text")) COLLATE "C", "task_id") WHERE (("name" = 'worker'::"text") AND (((
+CASE
+    WHEN ("name" = 'worker'::"text") THEN ("value")::"jsonb"
+    ELSE NULL::"jsonb"
+END ->> 'state'::"text") COLLATE "C") = 'active'::"text"));
 
 CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_id", "task_id", "created_at" DESC, "id" DESC) WHERE ("scope" = 'task'::"text");
 

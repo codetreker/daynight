@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	graphutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/graph"
 )
 
 // componentRepresentatives uses disjoint sets so large, dense closures need no
@@ -11,24 +12,13 @@ import (
 func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, seeds []string) (map[string]string, error) {
 	n := len(graph.Nodes)
 	index := make(map[string]int, n)
-	parent := make([]int, n)
-	sizes := make([]int, n)
+	sets := graphutil.NewDisjointSets(n)
 	indegree := make([]int, n)
 	for i, node := range graph.Nodes {
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		index[node.ID] = i
-		parent[i] = i
-		sizes[i] = 1
-	}
-	var find func(int) int
-	find = func(x int) int {
-		for parent[x] != x {
-			parent[x] = parent[parent[x]]
-			x = parent[x]
-		}
-		return x
 	}
 	for i, edge := range graph.Edges {
 		if i%256 == 0 && ctx.Err() != nil {
@@ -37,14 +27,7 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 		a := index[edge.TaskID]
 		b := index[edge.DependsOnID]
 		indegree[a]++
-		ra, rb := find(a), find(b)
-		if ra != rb {
-			if sizes[ra] < sizes[rb] {
-				ra, rb = rb, ra
-			}
-			parent[rb] = ra
-			sizes[ra] += sizes[rb]
-		}
+		sets.Union(a, b)
 	}
 	representatives := make(map[int]int, n)
 	for i, node := range graph.Nodes {
@@ -54,7 +37,7 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 		if indegree[i] != 0 {
 			continue
 		}
-		root := find(i)
+		root := sets.Find(i)
 		old, ok := representatives[root]
 		if !ok || node.CreatedAt.Before(graph.Nodes[old].CreatedAt) || node.CreatedAt.Equal(graph.Nodes[old].CreatedAt) && node.ID < graph.Nodes[old].ID {
 			representatives[root] = i
@@ -66,8 +49,8 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 			return nil, ctx.Err()
 		}
 		i := index[id]
-		root := find(i)
-		if sizes[root] == 1 {
+		root := sets.Find(i)
+		if sets.Size(i) == 1 {
 			result[id] = ""
 			continue
 		}

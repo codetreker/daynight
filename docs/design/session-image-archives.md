@@ -82,6 +82,12 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 旧 prepare/register 保留身份、权限、来源与生命周期校验，容量申请不为未来内容预留字节或资源槽；其兼容 `reserved` 状态不证明占额。实际内容超过上限返回 `quota_exceeded`，实际磁盘失败按存储错误返回；已接纳内容不被截断或删除。文件已发布而数据库结果未知时保留原身份、路径及清理责任，沿原结果协调；确认重放不重复计量。独立媒体 lease 和实际清理屏障仍有效。
 
+### 无活动账本的停止准备
+
+无活动 bundle 的已停止执行可直接建立 settling 准备。服务在原 Session 锁下固定执行已有的 `history_content_policy`，随后核对最终 history、timeline 和 manifest；未绑定策略的旧执行保留既有语义。该可空字段只提供存储与归档读取，当前不提供协商写入；策略的首次绑定必须在执行授权连接时完成，不能在停止准备后改变或补填。已有活动账本继续核对其已确认前缀。
+
+已绑定策略且无活动 bundle 时，服务读取 capture 库存核对最终正文中的已提交图片出现及其原 resourceId。`task_body` 的工具和 reasoning 图片仅在线保留；正文复用同一原件时保留其引用，其他 pin 和 lease 继续保护原件。读取租约仍持有待退休图片时，最终同步返回 `resource_busy`，保留引用并允许原文件重试。未结算的 capture 保持原状态，返回 `archive_incomplete`，不能封存或伪造缺图。停止后对账和提交已冻结图片结果的入口尚未实现；补充该能力须沿原 attempt、停止身份、实际提交证据和本机正文同步恢复，不得重新启动来源读取。
+
 ## 归档与完整历史同步合同
 
 本节唯一发布归档、完整历史同步、封存文件和显式历史导入的 DTO。TS/Go 公共 codec 按这些定义实现一次；公共协议文档仅提供 `UUID`、`Decimal`、`SHA256`、`SessionFence`、`SessionResource`、`ImageError` 和图片 timeline part 的基础合同。以下对象全部严格解析：所有列出字段必填，拒绝未声明字段、重复键、非法 Unicode 和错误判别值；`null` 不等于省略。请求及回执都不增加时间戳字段。
