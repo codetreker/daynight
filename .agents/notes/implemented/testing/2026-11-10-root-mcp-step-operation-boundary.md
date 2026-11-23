@@ -25,7 +25,7 @@ operation and wire observations; Root retained application assembly proofs.
 The [MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md)
 removes that protocol matrix with the seven tools. Production HTTP sessions now
 verify the absence of the retired entry points and preserve ordinary Task and
-Thread calls. The shared REST Step service retains its coordination proofs;
+Thread calls. The shared internal Step service retains its coordination proofs after the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md);
 Core owns admission and encoding, and the Webhook Capturer owns event freezing.
 Store tests retain SQL, transaction and persisted-state proofs. The
 [Root DAO decision](2026-11-09-root-http-test-dao-ownership.md) records the

@@ -26,9 +26,11 @@ Task HTTP reads, writes and sync run with their real Task components and
 narrowly controlled snapshot and project-write capabilities. Task deletion
 retains a Root cross-route tombstone proof. The Task assignee stress sample
 retains the real application, SQL capture and query plans at the Task adapter.
-Step and Thread HTTP scenarios use their real registrars and services with
-controlled DAO facts; file-effect witnesses use local files. Root retains the
-assembled Step-to-Attachment authorization proof.
+Thread HTTP scenarios use their real registrar and service with controlled DAO
+facts; file-effect witnesses use local files. The [REST Steps retirement](../simplification/2026-11-23-retire-rest-task-steps.md)
+removes Step HTTP scenarios and the assembled Step-to-Attachment proof; ordinary
+Task, Thread and attachment authorization and tombstone proofs retain their own
+fixtures.
 
 Go tests live in the package and directory of the tested object, normally in
 `xxx_test.go` for `xxx.go`. Files over about 1000 lines may be split by cohesive
@@ -74,9 +76,9 @@ Thread scenarios retain the real service with controlled DAO facts. Attachment,
 upload and download MCP scenarios use their real services,
 Core, SDK and local files with controlled DAO facts through a focused host;
 Root retains the assembled PAT isolation and revocation path. Controlled DAO
-results do not prove database persistence. REST Step stress tests retain their
-physical resource witnesses; the retired MCP Step stress test has no live tool
-behavior to exercise.
+results do not prove database persistence. Retired REST and MCP Step stress
+tests have no live protocol behavior to exercise; remaining internal Steps
+owners retain their own physical resource and capacity witnesses.
 The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
 records why those operation-level observations were introduced.
 Webhook management and history mappings use the real HTTP registrar, Service

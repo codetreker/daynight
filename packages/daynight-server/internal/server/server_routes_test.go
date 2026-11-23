@@ -2339,81 +2339,13 @@ func mcpIsolationRevokedAuthentication(t *testing.T, tx *httpTestStore, revokedT
 	}
 }
 
-func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
-	f, handler, task := stepsHTTPFixture(t, io.Discard)
-	path := taskPath(task) + "/steps"
-	file := attachmentFilePath(task, "plans/evidence.bin")
-	content := []byte{0, 0xff, 0x80, '\n', 'x'}
-	metadata := f.referencedAttachment("plans/evidence.bin", "application/octet-stream", content)
-	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
-	at := f.observed
-	original := model.TaskStep{ID: "abcdef01", Title: "Evidence", Description: "[Evidence](plans/evidence.bin)", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: original, Observed: at})
-	added := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "id": "abcdef01", "title": "Evidence", "description": "[Evidence](plans/evidence.bin)"})), http.StatusCreated)
-	if len(added.Steps) != 1 {
-		t.Fatalf("initial Step: %+v", added)
-	}
-	header.Version = 2
-	at = at.Add(time.Minute)
-	candidate := original
-	candidate.Title = "Updated evidence"
-	candidate.Description = ""
-	candidate.UpdatedAt = at
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{original}, Operation: "change", Candidate: candidate, Observed: at})
-	changed := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPatch, path+"/abcdef01", jsonBody(t, map[string]any{"version": added.Version, "title": "Updated evidence", "description": ""})), http.StatusOK)
-	if changed.Version != added.Version+1 || len(changed.Steps) != 1 || changed.Steps[0].ID != original.ID || changed.Steps[0].Title != "Updated evidence" || changed.Steps[0].Description != "" || changed.Steps[0].Status != original.Status || changed.Steps[0].CreatedAt != original.CreatedAt {
-		t.Fatalf("edited Step: %+v", changed)
-	}
-	f.expectAttachmentRead(metadata, 3)
-	response := attachmentRequest(handler, http.MethodGet, file, "", nil)
-	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), content) {
-		t.Fatalf("editing changed attachment bytes: %d %x", response.Code, response.Body.Bytes())
-	}
-	f.expectAttachmentRead(metadata, 2)
-	page := decodeResponse[api.AttachmentPage](t, projectRequest(handler, http.MethodGet, taskPath(task)+"/attachments", ""), http.StatusOK)
-	want := api.Attachment{Path: metadata.Path, ContentType: metadata.ContentType, SizeBytes: metadata.SizeBytes, CreatedAt: metadata.CreatedAt, UpdatedAt: metadata.UpdatedAt}
-	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], want) {
-		t.Fatalf("editing changed attachment metadata: %+v", page)
-	}
-}
-
-func TestStepsHTTPRevokedMemberCannotRead(t *testing.T) {
-	f, _, task := stepsHTTPFixture(t, io.Discard)
-	admin := defaultHTTPPrincipal()
-	admin.Kind = model.SessionCredential
-	member := model.Principal{UserID: "b6666666-6666-4666-8666-666666666666", CredentialID: "c7777777-7777-4777-8777-777777777777", Kind: model.SessionCredential}
-	path := taskPath(task) + "/steps"
-	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
-	at := f.observed
-	step := model.TaskStep{ID: "abcdef01", Title: "Secret Step", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: step, Observed: at})
-	created := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":1,"id":"abcdef01","title":"Secret Step"}`, configuredTestConfig().Server.PublicOrigin, 201, ""), 201)
-	header.Version = 2
-	f.principal = member
-	f.role = model.ProjectMemberRole
-	f.expectStepsRead(header, []model.TaskStep{step})
-	before := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "GET", path, "", "", 200, ""), 200)
-	if !reflect.DeepEqual(before, created) {
-		t.Fatal("member could not read granted Step")
-	}
-	for _, suffix := range []string{"", "/abcdef01"} {
-		f.expectStepAccessError(false)
-		f.authenticatedRequest(member, "GET", path+suffix, "", "", 404, "not_found")
-	}
-	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsRead(header, []model.TaskStep{step})
-	after := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "GET", path, "", "", 200, ""), 200)
-	if !reflect.DeepEqual(after, created) {
-		t.Fatal("denied member read changed owner's Steps")
-	}
-}
-
 func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 	var logs bytes.Buffer
-	f, handler, task := stepsHTTPFixture(t, &logs)
+	project, target, principal := taskHTTPMockModels()
+	f := &taskHTTPFixture{t: t, store: newHTTPTestStore(t), project: project, target: target, principal: principal, observed: target.UpdatedAt.Add(time.Minute)}
+	f.handler = resourceTestServer(t, f.store, attachmentTestFiles(t), &logs)
+	handler := f.handler
+	task := startupTaskDocument(t, f.target)
 	path := taskPath(task)
 	current := f.target
 	current.Title = "Private deleted body"
@@ -2615,7 +2547,6 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		"taskhttp.RegisterScopedWriteRoutes":                   3,
 		"taskhttp.RegisterScopedWorkerClaimRoutes":             2,
 		"taskhttp.ScopedTaskSearchRoutes":                      2,
-		"taskhttp.TaskStepsScopedRoutes":                       2,
 		"taskhttp.ScopedTaskThreadRoutesObserved":              2,
 		"attachmenthttp.RegisterScopedRoutesWithScopeObserver": 2,
 		"webhookhttp.RegisterScopedRoutes":                     2,
@@ -2841,11 +2772,6 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	for _, op := range []string{"release", "withdraw"} {
 		add("POST", task+"/worker-claim/"+op)
 	}
-	add("GET POST", task+"/steps")
-	add("GET PATCH DELETE", task+"/steps/{stepId}")
-	for _, op := range []string{"status", "position"} {
-		add("PUT", task+"/steps/{stepId}/"+op)
-	}
 	add("GET POST", task+"/thread/messages")
 	add("GET", task+"/attachments")
 	add("GET PUT DELETE", task+"/attachments/files/{path...}")
@@ -2934,7 +2860,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		p + "/tasks", task, task + "/status", p + "/task-work", p + "/task-assignees", p + "/task-graph", p + "/task-sync",
 		"/api/v1/task-properties/schema", task + "/properties", task + "/properties/{name}",
 		task + "/worker-claim", task + "/worker-claim/release", task + "/worker-claim/withdraw",
-		task + "/steps", task + "/steps/{stepId}", task + "/steps/{stepId}/status", task + "/steps/{stepId}/position", task + "/thread/messages",
+		task + "/thread/messages",
 		task + "/attachments", task + "/attachments/files/{path...}", task + "/preview/{path...}",
 		"/api/v1/me/bots", "/api/v1/me/bots/defaults", "/api/v1/me/bots/{botId}", worker + "/bots",
 		worker + "/bots/{botId}/register", worker + "/bots/{botId}/grant", worker + "/bots/{botId}/report", worker + "/bots/{botId}/deletion-complete",
@@ -3006,7 +2932,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	urlFor := strings.NewReplacer(
 		"{projectId}", id, "{taskId}", id, "{workerId}", id, "{teamId}", id,
 		"{tokenId}", id, "{id}", id, "{userId}", id, "{inviteId}", id,
-		"{name}", "name", "{stepId}", "abcdef01", "{path...}", "file",
+		"{name}", "name", "{path...}", "file",
 		"{botId}", id, "{sessionId}", id, "{operationId}", id, "{resourceId}", id,
 		"{evidenceId}", id, "{recoveryId}", id, "{uploadId}", id, "{imageId}", id,
 		"{fileId}", id, "{endpointId}", id, "{deliveryId}", id,

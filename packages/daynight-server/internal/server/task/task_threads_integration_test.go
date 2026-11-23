@@ -70,7 +70,7 @@ func TestThreadHTTPResourcesAndExactBudgets(t *testing.T) {
 		if !bytes.Equal(response.Body.Bytes(), document.JSON) || got.ID != message.ID || got.Body != body || got.Author.UserID != testUserID || got.Author.Agent || got.Author.Execution != nil || got.ReplyTo != nil || len(got.CreatedAt) != 24 || got.CreatedAt[23] != 'Z' || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("Thread bytes/headers: %d %s", response.Code, response.Body)
 		}
-		if strings.Contains(logs.String(), body) || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) || !strings.Contains(logs.String(), `"component":"task_thread"`) || h.Tasks.TotalCalls() != 0 || h.Steps.TotalCalls() != 0 {
+		if strings.Contains(logs.String(), body) || !strings.Contains(logs.String(), `"message_id":"`+message.ID+`"`) || !strings.Contains(logs.String(), `"component":"task_thread"`) || h.Tasks.TotalCalls() != 0 {
 			t.Fatalf("Thread operation leaked content or crossed service boundaries: %s", &logs)
 		}
 	})

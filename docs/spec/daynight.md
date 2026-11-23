@@ -21,7 +21,7 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和本仓库任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
-CLI 不提供 `task step` 命令、专用客户端、补全项或 Steps 手册主题。旧命令按未知 Task 操作失败，普通 Task、附件、Thread 和 Session 命令保持。服务端仍可用的 Steps 行为由[Steps 资源契约](daynight-task-steps.md)拥有。
+CLI 不提供 `task step` 命令、专用客户端、补全项或 Steps 手册主题。旧命令按未知 Task 操作失败，普通 Task、附件、Thread 和 Session 命令保持。REST 和 MCP 也不提供 Steps 入口；旧路径拒绝及剩余内部边界由[Steps 退役要求](daynight-task-steps.md)拥有。
 
 ## 需求
 
