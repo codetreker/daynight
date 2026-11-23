@@ -2,7 +2,7 @@
 
 ## 职责与数据
 
-Goal 验收语义由[Goal 需求](../spec/daynight-goals.md)定义。`core/task` 拥有关系编辑、完成约束和投影规则，`service/task` 协调快照、Project 写事务与 Team 图锁；`core/store` 定义关系读取与编辑能力，PostgreSQL DAO 实现 SQL 和持久化。关系操作使用独立入口，不经过普通 Task 元数据 mutation；真实改边同事务推进下游 Goal 的 Task 版本和更新时间。现有同步投影尚不包含关系边。
+Goal 验收语义由[Goal 需求](../spec/daynight-goals.md)定义。`core/task` 拥有关系编辑、完成约束和投影规则，`service/task` 协调快照、Project 写事务与 Team 图锁；`core/store` 定义关系读取与编辑能力，PostgreSQL DAO 实现 SQL 和持久化。关系操作使用独立入口，不经过普通 Task 元数据 mutation；真实改边同事务推进下游 Goal 的 Task 版本和更新时间。TaskSync 摘要批量包含项目内直接验收前置；跨项目关系及验收阻塞仍由独立关系读取提供。
 
 Goal 边复用 `task_dependencies` 中固定的 `dependency_type='goal'`，每条边持有独立随机 `goal_edge_id`。保留一条边会保留其 ID；删除再新增产生新 ID。`goal_dependency_revisions` 独立保存下游关系修订，初始逻辑值为 1，实际变化推进一次，空操作保持，清空保留已写修订。修订耗尽拒绝整次编辑。项目清理继续遵循[原子清理机制](daynight-server.md#项目生命周期中的-goal-边清理)。
 
@@ -18,7 +18,7 @@ Goal 边复用 `task_dependencies` 中固定的 `dependency_type='goal'`，每�
 
 PostgreSQL 查询限定所选源 Goal 和前置 Goal 均为本项目、有效且 `type='goal'`，只读取 `dependency_type='goal'` 的边。目标不受摘要更新时间窗口限制，因此本批次有变化的 Goal 仍能取得未变化的直接前置。返回 map 仅包含选中的有效源 Goal，每项为按 UUID 排序的完整直接前置 ID；无边为非 nil 空数组。空输入返回非 nil 空 map；普通 Task、外项目、缺失及有效删除的源不产生条目。读取只投影 ID，复用现有下游关系主键，不新增索引或锁。
 
-此能力独立于公开 TaskSync 输出：现有 `TaskSyncTasks` 继续使用普通 Task 边投影，`TaskSyncDependencyStates` 和 ordinary graph 仍只处理普通执行依赖。跨项目 Goal 关系继续由上述独立关系读取提供。批量查询与摘要的组合由存储测试证明；服务端和浏览器同步格式的启用须共同满足[摘要同步设计](daynight-task-sync.md)的版本接纳约定。取舍见[批量读取决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-prerequisite-batch-reader.md)。
+公开 TaskSync 通过 `core/task.ReadSync` 组合摘要和此批量结果。`TaskSyncTasks` 先返回原 typed 摘要，`ReadSync` 在同一个读取快照中只收集本批次 Goal ID，调用一次批量读取并覆盖对应 Goal 的 `dependsOn`；没有 Goal 时跳过。Goal 的 `externalDependsOn` 始终为 `[]`。snapshot 和 delta 都返回选中 Goal 的完整前置，无项目内边明确返回 `[]`；实际改边推进下游 Goal 的 Task version/updatedAt，删除最后一条边因此可由正常增量观察。`TaskSyncDependencyStates` 和 ordinary graph 仍只处理普通执行依赖。跨项目 Goal 关系继续由上述独立关系读取提供。服务端输出与浏览器 schema 14 的一次旧摘要重建共同启用，部署顺序和详情字段覆盖遵循[摘要同步设计](daynight-task-sync.md)。取舍见[批量读取决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-prerequisite-batch-reader.md)和[Goal 摘要决策](../../.agents/notes/implemented/architecture/2026-11-23-goal-summary-admission.md)。
 
 ## 写入事务
 

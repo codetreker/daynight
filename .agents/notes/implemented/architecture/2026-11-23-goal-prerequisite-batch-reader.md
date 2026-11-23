@@ -20,9 +20,11 @@ Goals without edges. The query uses the existing downstream dependency key.
 The [Goal relationship design](../../../../docs/design/goal-dependencies.md#项目内前置批量读取)
 owns the full storage contract.
 
-This storage capability is independently callable. Public TaskSync summaries
-retain their existing dependency projection until the Server and embedded Web
-consumer can switch together. Ordinary dependency states and graph traversal
+The initial storage delivery left public TaskSync output unchanged so the Server
+and embedded Web consumer could switch together without conflicting with old
+cached Goal summaries. The [Goal summary decision](2026-11-23-goal-summary-admission.md)
+now combines this batch reader with public snapshot and delta summaries and a
+paired browser cache rebuild. Ordinary dependency states and graph traversal
 continue to use typed Task edges.
 
 ## Alternatives
