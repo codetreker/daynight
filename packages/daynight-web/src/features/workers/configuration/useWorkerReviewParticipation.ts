@@ -74,5 +74,5 @@ export const useWorkerReviewParticipation = (workerId: string, readEnabled: bool
   }, [scope, workerId]);
   useLayoutEffect(() => { actions.current.enable(readEnabled); }, [scope, workerId, readEnabled]);
   const current = state.scope === scope && state.workerId === workerId && !scope.isInvalidated ? state : initial(scope, workerId);
-  return { ...current, refresh, toggle };
+  return { ...current, readEnabled, refresh, toggle };
 };

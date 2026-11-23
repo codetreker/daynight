@@ -128,7 +128,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   const actionsDisabled = !readEnabled || disabled;
   const metadata = new Map(choices.items.map(project => [project.id, project]));
   const shell = (content: ReactNode) => <div className="worker-configuration">{content}</div>;
-  const reviewPanel = <WorkerReviewParticipation state={review} enabled={readEnabled && !confirming} />;
+  const reviewPanel = <WorkerReviewParticipation state={review} enabled={review.readEnabled && !confirming} />;
   if (state.unavailable) return shell(<>{reviewPanel}<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section></>);
   if (resource === null) return shell(<>{reviewPanel}<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section></>);
   if (resource.desired === null || draft === null) return shell(<>{reviewPanel}<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section></>);

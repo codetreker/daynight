@@ -10,13 +10,14 @@ import { useWorkerReviewParticipation } from './useWorkerReviewParticipation';
 import { configurationDraftsEqual } from './model';
 import { useWorkerConfigurationNavigation } from './WorkerConfigurationNavigation';
 
-export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabled, online, tasks, toolPaths, onRevealToolPaths, onContinueEditing, onRetentionChange }: {
+export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabled, reviewEnabled = true, online, tasks, toolPaths, onRevealToolPaths, onContinueEditing, onRetentionChange }: {
   readonly onRevealToolPaths?: () => void;
   readonly id: string;
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
   readonly section: 'overview' | 'system' | 'configuration' | 'prompt';
   readonly readEnabled: boolean;
+  readonly reviewEnabled?: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];
   readonly toolPaths?: ToolPathTelemetry;
@@ -25,7 +26,7 @@ export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabl
 }) => {
   const configurationRead = readEnabled && section === 'configuration', promptRead = readEnabled && section === 'prompt';
   const state = useWorkerConfiguration(workerId, { readEnabled: configurationRead, toolPathsEditable: toolPaths !== undefined, ...(platform === undefined ? {} : { platform }) });
-  const review = useWorkerReviewParticipation(workerId, configurationRead);
+  const review = useWorkerReviewParticipation(workerId, configurationRead && reviewEnabled);
   const [purpose, setPurpose] = useState<PromptPurpose>('worker');
   const prompt = useWorkerPrompt({ scope: 'worker', workerId }, { readEnabled: promptRead && purpose === 'worker' });
   const reviewer = useWorkerPrompt({ scope: 'worker', workerId, purpose: 'reviewer' }, { readEnabled: promptRead && purpose === 'reviewer' });
