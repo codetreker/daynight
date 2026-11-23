@@ -14,6 +14,16 @@ import (
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 )
 
+func TestBrowserActivityBindingRejectsMissingVerifier(t *testing.T) {
+	h := &RequestAuthentication{}
+	defer func() {
+		if recover() == nil {
+			t.Error("browser activity binding accepted a missing verifier")
+		}
+	}()
+	h.BindBrowserActivity(nil)
+}
+
 func TestBrowserActivityEntryAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, pattern, origin, host, site, mode, dest, user string
