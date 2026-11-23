@@ -380,15 +380,16 @@ describe("Bot deletion receipts", () => {
     expect(bodies).toEqual([completion]); expect({ value, completion }).toEqual(before);
   });
 
-  it.each([409, 500])("retains HTTP %s completion status and classifies only a valid refusal as definite", async status => {
-    let requests = 0;
-    const fixture = await listen((_request, response) => {
-      requests++; response.statusCode = status;
-      response.end(JSON.stringify({ error: { code: status === 409 ? "session_conflict" : "internal_error", message: "Completion unavailable", requestId: "completion-response" } }));
+  it.each([[401, "unauthenticated"], [403, "forbidden"], [409, "session_conflict"], [500, "internal_error"]] as const)("retains HTTP %s without treating an error response as proof the receipt was not applied", async (status, code) => {
+    const bodies: unknown[] = [];
+    const fixture = await listen((_request, response, body) => {
+      bodies.push(body); response.statusCode = status;
+      response.end(JSON.stringify({ error: { code, message: "Completion unavailable", requestId: "completion-response" } }));
     });
-    const failure = await fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal()).catch((cause: unknown) => cause);
+    const value = deleting(fixture.record), completion = receipt(), before = structuredClone({ value, completion });
+    const failure = await fixture.api.completeDeletion(value, completion, signal()).catch((cause: unknown) => cause);
     expect(failure).toBeInstanceOf(ApiError);
-    expect(failure).toMatchObject({ status, phase: "response", code: status === 409 ? "session_conflict" : "internal_error", outcomeUnconfirmed: status === 500, confirmedRefusal: status === 409 });
-    expect(requests).toBe(1);
+    expect(failure).toMatchObject({ status, phase: "response", code, outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(bodies).toEqual([completion]); expect({ value, completion }).toEqual(before);
   });
 });

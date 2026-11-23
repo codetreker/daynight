@@ -118,7 +118,7 @@ describe("Bot local deletion recovery command", () => {
     expect(error).toMatchObject({ deletionId, outcomeUnconfirmed: true, reconcile: `daynight bot show ${botId} --json` });
     expect(error).not.toHaveProperty("confirmed"); expect(result.err).not.toContain("SECRET-PAT");
   });
-  it.each(["disconnect", "truncated", "confirmed-output"])("propagates %s from the real completion client and HTTP socket to CLI output", async outcome => {
+  it.each(["disconnect", "truncated", "unauthenticated-after-receipt", "confirmed-output"])("propagates %s from the real completion client and HTTP socket to CLI output", async outcome => {
     const received: { method: string; url: string; body: unknown }[] = [];
     let accepted = false;
     const server = createServer((request, response) => {
@@ -134,6 +134,10 @@ describe("Bot local deletion recovery command", () => {
           if (outcome === "disconnect") { request.socket.destroy(); return; }
           if (outcome === "truncated") {
             response.setHeader("Content-Length", "4096"); response.setHeader("Connection", "close"); response.end('{"id":'); return;
+          }
+          if (outcome === "unauthenticated-after-receipt") {
+            response.statusCode = 401;
+            response.end(JSON.stringify({ error: { code: "unauthenticated", message: "Cleanup credential expired", requestId: "cleanup-auth" } })); return;
           }
           response.end(JSON.stringify(state(true))); return;
         }
@@ -170,6 +174,7 @@ describe("Bot local deletion recovery command", () => {
     else {
       expect(error).not.toHaveProperty("confirmed"); expect(error).not.toHaveProperty("reason", "stop_unproven");
       expect(error.phase).toBe(outcome === "disconnect" ? "request" : "response");
+      if (outcome === "unauthenticated-after-receipt") expect(error).toMatchObject({ status: 401, code: "unauthenticated" });
       expect(received.map(request => request.method)).toEqual(["GET", "GET", "POST"]);
     }
     expect(result.err).not.toContain("SECRET-PAT");

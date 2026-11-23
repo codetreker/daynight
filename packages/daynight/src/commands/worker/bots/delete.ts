@@ -110,8 +110,8 @@ export const createBotDeletion = (options: {
           options.onReceiptConfirmed?.();
           options.store.observe(record.owner, result, now());
         } catch (cause) {
-          // The service rejected this receipt, so it cannot establish cleanup.
-          // Preserve that failure without inferring an unavailable Session binding.
+          // A conflict alone does not prove the receipt was unapplied. Read its
+          // original cleanup state before classifying unsupported stop evidence.
           if (cause instanceof ApiError && cause.phase === "response" && cause.status === 409 && cause.code === "session_conflict"
             && (receipt.stop === null || receipt.stop.stopProof.kind === "never_started")) {
             const latest = await refresh(record, signal);

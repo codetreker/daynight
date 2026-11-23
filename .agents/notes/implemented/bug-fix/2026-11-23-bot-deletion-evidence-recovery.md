@@ -37,10 +37,14 @@ recovery. The duty grants no new stop, start or general hosting authority. The
 original Worker keeps its existing ownership admission; a replacement Worker
 handling an older duty without this identity still needs confirmed hosting evidence.
 
-The completion request distinguishes failures before submission, definite HTTP
-rejection and unknown outcomes after dispatch. A lost response preserves that
-uncertainty through CLI diagnostics; the caller reads the original Bot before
-another attempt, without treating transport failure as missing stop proof.
+The completion request distinguishes failures before submission from unknown
+outcomes after dispatch. The server commits the Worker receipt before cleanup
+opens another transaction and checks credentials again. Even an authenticated
+HTTP 401 can follow a committed receipt; an error status cannot prove rollback.
+All errors after dispatch retain uncertainty through CLI diagnostics until a
+matching success response or an authoritative Bot read confirms the result.
+The caller reads the original Bot before another attempt, without treating a
+request failure as missing stop proof.
 
 The [website](../../../../docs/design/bot-management-web.md#删除协调) reads the
 existing Bot status for known deletions, shows the CLI instructions and preserves
@@ -51,6 +55,11 @@ the ordinary completion rules. It cannot settle missing evidence.
 **Only suppress repeated receipts.** This avoids the loop but does not use valid
 remaining local material to stop the original execution. Explicit compensation
 recovers that opportunity without making automatic retries destructive.
+
+**Treat validated HTTP 4xx as definite receipt rejection.** This would distinguish
+ordinary admission failures, but the existing endpoint returns the same errors
+from cleanup after the receipt commits. Without a submission-stage guarantee,
+that classification can incorrectly report a durable receipt as unapplied.
 
 **Accept null proof or report completed after user confirmation.** Neither an
 empty store nor an attestation proves that the bound native execution stopped.
@@ -77,3 +86,7 @@ The CLI reports that distinction and preserves the original journal and ticket.
 If evidence cannot be recovered, the Bot can remain failed and server cleanup is
 not guaranteed. No process is identified by name alone, no ordinary cwd or shared
 Provider history is removed, and no shared PAT is revoked.
+
+Some actual pre-commit server refusals also require a Bot read because the error
+response does not prove their submission stage. This conservative extra read
+preserves uncertainty without adding a server recovery protocol.

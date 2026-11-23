@@ -94,8 +94,10 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       catch { throw new ProtocolError("Bot lifecycle response contains invalid JSON or UTF-8."); }
       if (response.status !== 200) {
         const error = parseServerError(value);
+        // Receipt persistence precedes server cleanup, whose credential checks
+        // can still return 4xx. An error response cannot disprove that commit.
         throw new ApiError({ operation: "worker.bots.lifecycle" }, "response", { status: response.status, serverError: error,
-          ...(completion === undefined ? {} : { outcomeUnconfirmed: response.status < 400 || response.status >= 500, confirmedRefusal: response.status >= 400 && response.status < 500 }),
+          ...(completion === undefined ? {} : { outcomeUnconfirmed: true, confirmedRefusal: false }),
           cause: new Error("Bot lifecycle request failed; observe the original identity before another write.") });
       }
       return value;
