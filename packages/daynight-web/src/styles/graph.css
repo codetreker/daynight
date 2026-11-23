@@ -108,11 +108,11 @@
 .task-node-body { padding-block:2px 4px; }
 .task-node-meta { margin-bottom:0; }
 .task-node-details { bottom:4px; }
-/* An overdue card uses its reading row for Details, leaving the full footer
-   width to the status and its warning. */
-.task-node-stuck .task-node-details { bottom:calc(4px + 1.5 * var(--text-sm)); }
-.task-node-stuck:has(.task-node-expansions) .task-node-details { bottom:calc(3.75rem + 4px + 1.5 * var(--text-sm)); }
-.task-node-stuck .task-node-readings { margin-right:calc(5.5 * var(--text-sm)); }
+/* An overdue card reserves space beside the title for Details, keeping the
+   reading row and the status with its warning at full width. */
+.task-node-stuck .task-node-title { margin-right:calc(4.5 * var(--text-sm)); }
+.task-node-stuck .task-node-details,
+.task-node-stuck:has(.task-node-expansions) .task-node-details { top:calc(5px + 1.25 * var(--text-xs)); bottom:auto; }
 .task-node-stuck .task-node-bottom { padding-right:0; }
 .task-node-title { line-height:1.2; min-height:1.2em; }
 .task-node-bottom { padding-top:0; }

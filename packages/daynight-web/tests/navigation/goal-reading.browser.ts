@@ -388,7 +388,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, outsideId, { title: 'Hidden root' })];
     currentGraph = graphFixture(details);
   }, addComplexExternalGoalTask: (title: string) => {
-    details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false },
+    details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false }, second,
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'A very long external owner name that should truncate', ready: false }),
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-08T08:21:00Z',
         allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } })];
@@ -3419,8 +3419,8 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await expect(nested).toHaveCount(0);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 390, 320]) for (const rootSize of [16, 20, 24, 32]) {
-  test(`Goal graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+for (const kind of ['Goal', 'chain'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 390, 320]) for (const rootSize of [16, 20, 24, 32]) {
+  test(`${kind} graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
     const title = locale === 'en' ? 'A long task title deliberately occupying three lines while the external marker and compact readings remain visible in this dense card' : '这是一个用于验证依赖图卡片三行标题与外部标记以及紧凑读数同时保持可读的非常长的任务标题';
     const fixture = await install(page, locale); fixture.addComplexExternalGoalTask(title);
     await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
@@ -3440,33 +3440,37 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 3
     await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
     await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
     await page.getByRole('tab', { name: /^Goal/ }).click();
-    await page.locator(`#project-goal-graph-${goalId}`).click();
-    const graph = page.locator(`#task-graph-${goalId}`);
+    if (kind === 'Goal') await page.locator(`#project-goal-graph-${goalId}`).click();
+    else { await page.locator(`#project-goal-detail-${goalId}`).click(); await restoreGoalGraph(page, page.locator('.goal-detail-surface')); }
+    const graph = kind === 'Goal' ? page.locator(`#task-graph-${goalId}`) : page.locator('.task-chain-dialog').last();
     const external = graph.locator(`.react-flow__node[data-id="${otherTaskId}"] .task-node`);
     await expect(external.locator('.task-node-usage')).toBeVisible();
+    await expect(external.locator('.task-node-usage')).toHaveText('Token ≥1,000T');
+    await expect(external.locator('.task-duration > span')).toHaveText(locale === 'en' ? '14d 1h' : '14 天 1 小时');
     await expect(external.locator('.task-node-owner')).toHaveCount(0);
     await expect(external.locator('.task-external-label')).toBeVisible();
-    await expect(external.locator('.task-node-expansions')).toHaveCount(0);
+    await expect(external.locator('.task-node-expansions')).toHaveCount(kind === 'Goal' ? 0 : 1);
     await expectGraphCardBadges(external);
     const measure = async () => external.evaluate(element => {
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
       const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-bottom .graph-status', '.task-stuck-label', '.task-node-details']
+      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-bottom .graph-status', '.task-stuck-label', '.task-node-details', '.task-node-expansions']
         .flatMap(selector => [...card.querySelectorAll(selector)].map(part => ({ selector, box: part.getBoundingClientRect() })));
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
       return { width: card.offsetWidth, height: card.offsetHeight, threeLines: title.offsetHeight >= lineHeight * 2.8 && title.offsetHeight <= lineHeight * 3.1,
+        readingsUnclipped: [...card.querySelectorAll<HTMLElement>('.task-node-usage, .task-duration > span')].every(part => part.scrollWidth <= part.clientWidth),
         inside: parts.every(({ box: part }) => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
         overlaps: parts.flatMap((part, index) => parts.slice(index + 1).filter(other => !separate(part.box, other.box)).map(other => ({ a: part.selector, b: other.selector, aBox: part.box.toJSON(), bBox: other.box.toJSON() }))) };
     });
-    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
+    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: (kind === 'Goal' ? 124 : 184) * rootSize / 16, threeLines: true, readingsUnclipped: true, inside: true, overlaps: [] });
     expect(await graph.locator('.graph-orientation').evaluate(element => {
       const box = element.getBoundingClientRect(), dialog = element.closest('[role="dialog"]')!.getBoundingClientRect();
       return box.left >= dialog.left && box.right <= dialog.right;
     })).toBe(true);
     await graph.locator('[data-direction="vertical"]').click();
     await expect(graph.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
-    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
+    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: (kind === 'Goal' ? 124 : 184) * rootSize / 16, threeLines: true, readingsUnclipped: true, inside: true, overlaps: [] });
   });
 }
 
