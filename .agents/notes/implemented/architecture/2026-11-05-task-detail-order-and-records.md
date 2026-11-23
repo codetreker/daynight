@@ -11,12 +11,13 @@ are not ready; none of those states establishes that history is empty.
 
 ## Decision
 
-The shared detail panels order Overview, Attachments, Steps, optional Discussion,
-and optional Session. The same ordered collection drives panels and keyboard
-navigation. Steps retains its URL and mounted draft behavior, and attachment
-controllers retain their selection and preview state. The
-[Steps reading decision](../../archived/architecture/2026-11-04-task-steps-web-reading.md) records the rationale for the shared
-reader and its resource lifecycle.
+The shared detail panels order Overview, Attachments, Discussion and optional
+Session. The same ordered collection drives panels and keyboard navigation;
+attachment controllers retain their selection and preview state. Steps occupied
+a position between Attachments and Discussion under the original decision. The
+[Web Steps retirement](../simplification/2026-11-23-retire-web-task-steps.md)
+removes that entry, while the [Steps reading decision](../../archived/architecture/2026-11-04-task-steps-web-reading.md)
+records the former reader and resource lifecycle rationale.
 
 The managed records section omits a successfully exhausted empty inventory;
 unknown, failed and incomplete results retain a loading or recovery path, and

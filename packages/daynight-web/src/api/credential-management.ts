@@ -14,7 +14,7 @@ export const credentialOperation = async <T>(signal: AbortSignal, operation: () 
   try { return await operation(); }
   catch (error) {
     signal.throwIfAborted();
-    if (error instanceof ApiError && !isAbortError(error)) throw new ApiError(error.kind, error.status, error.code, error.requestId, undefined, undefined, undefined, error.writeOutcome);
+    if (error instanceof ApiError && !isAbortError(error)) throw new ApiError(error.kind, error.status, error.code, error.requestId, undefined, undefined, error.writeOutcome);
     throw error;
   }
 };

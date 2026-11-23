@@ -47,7 +47,6 @@ const setup = () => {
     if (path === `/api/v1/projects/${otherProject}/task-sync`) return Promise.resolve(taskSyncResponse(graphFixture([task]), { viewerId: userId, actorAccess: access(otherProject), query: taskSyncQuery(new URL(url, location.origin)), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
     if (path === `/api/v1/projects/${otherProject}/task-graph`) return Promise.resolve(resourceResponse(graphFixture([task]), userId));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}`) return Promise.resolve(resourceResponse(task, userId));
-    if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/steps`) return Promise.resolve(json({ projectId: otherProject, taskId, version: 1n, steps: [] }));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/attachments`) return Promise.resolve(json({ items: [], nextCursor: null }));
     if (path === `/api/v1/projects/${otherProject}/task-assignees`) return Promise.resolve(json({ items: [], unresolvedUserIds: [] }));
     if (path === `/api/v1/projects/${otherProject}/tasks/${taskId}/sessions`) return Promise.resolve(json({ items: [], nextCursor: null }));

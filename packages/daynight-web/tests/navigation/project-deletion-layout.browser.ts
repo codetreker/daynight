@@ -137,7 +137,7 @@ test('a collapsed deletion result reserves space for the task Session composer',
     if (path === `/api/v1/projects/${projectId}/access`) return send(access(projectId));
     if (path === root) return route.fulfill({ status: 200, body: stringifyWireJson(detail), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': fixtureTaskEpoch(projectId) } });
     if (path === `${root}/sessions/current`) return send({ status: 'registered', session: snapshot });
-    if (path === `${root}/steps`) return send({ projectId, taskId, version: detail.version, steps: [] });
+    if (path === `${root}/thread/messages`) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path === `${root}/sessions/${snapshot.sessionId}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (path === `${root}/sessions` || path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'missing' } }, 404);
@@ -225,9 +225,8 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.keyboard.press('Escape');
   await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('.session-fullscreen-toggle')).toBeFocused();
-  await page.getByRole('tab', { name: 'Steps' }).click();
-  await page.getByRole('button', { name: 'Add step' }).click();
-  await page.getByRole('textbox', { name: 'Title' }).fill('Other task draft');
+  await page.getByRole('tab', { name: 'Discussion' }).click();
+  await page.locator('.thread-composer textarea').fill('Other task draft');
   // Keyboard activation gives every engine the same explicit focus owner.
   await lastResult.focus(); await page.keyboard.press('Enter');
   const confirmation = page.getByRole('alertdialog');
@@ -236,5 +235,5 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
   await expect(page.locator('.standalone-deletion-slot')).not.toHaveAttribute('inert');
   await expect(lastResult).toBeFocused();
-  await expect(page.getByRole('textbox', { name: 'Title' })).toHaveValue('Other task draft');
+  await expect(page.locator('.thread-composer textarea')).toHaveValue('Other task draft');
 });

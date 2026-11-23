@@ -31,7 +31,7 @@ it.each(calls.filter((call) => call.write))("keeps successful $name HTTP confirm
   expect(onWriteConfirmed).toHaveBeenCalledOnce();
 });
 
-it.each(['detail', 'steps'] as const)('ends %s publication after a committed transaction meets a real principal mismatch', async (kind) => {
+it('ends detail publication after a committed transaction meets a real principal mismatch', async () => {
   const { createTaskSessionWorld } = await import('./helpers/taskSessions');
   const { TaskDetailSessions } = await import('../src/features/task-detail/TaskDetailSession');
   const { pauseAuthRequests } = await import('../src/api/client');
@@ -39,16 +39,14 @@ it.each(['detail', 'steps'] as const)('ends %s publication after a committed tra
   const { wireResponse } = await import('./helpers/wireJson');
   let resume = () => {}; const world = createTaskSessionWorld({ onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
   const sessions = new TaskDetailSessions(world.scope); const initial = detailFixture(project, task, { title: 'Retained' });
-  const step = { id: '00000001', title: 'Retained step', description: '', status: 'todo', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T10:00:00Z' };
   let mismatchRequest = false, sawMismatch = false, attempts = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => mismatchRequest
     ? wireResponse(initial, { headers: viewerHeaders('99999999-9999-4999-8999-999999999999') })
-    : wireResponse(url.endsWith('/steps') ? { projectId: project, taskId: task, version: 1n, steps: [step] } : initial,
+    : wireResponse(initial,
       { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': fixtureTaskEpoch(project) }) })));
   try {
     await world.sync([initial]); sessions.subscribe(project, task, () => {}); sessions.observe(project, task, world.node(project, task));
     sessions.load(project, task, 1); await vi.waitFor(() => expect(sessions.snapshot(project, task).detail?.title).toBe('Retained'));
-    if (kind === 'steps') { sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await vi.waitFor(() => expect(sessions.stepsSnapshot(project, task).resource?.steps[0]?.title).toBe('Retained step')); }
     const transact = world.scope.detailTransaction.bind(world.scope); const ready = world.scope.ready.bind(world.scope);
     vi.spyOn(world.scope, 'detailTransaction').mockImplementation(async <T,>(...args: Parameters<typeof transact<T>>) => {
       const result = await transact<T>(...args);
@@ -62,11 +60,10 @@ it.each(['detail', 'steps'] as const)('ends %s publication after a committed tra
       if (world.scope.hasIdentityMismatch && ++attempts > 2) throw new Error('Permanent mismatch was retried');
       return ready(currentSignal);
     });
-    if (kind === 'detail') sessions.load(project, task, 2, 'refresh'); else sessions.loadSteps(project, task, true);
+    sessions.load(project, task, 2, 'refresh');
     await vi.waitFor(() => expect(attempts).toBeGreaterThan(0));
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(attempts).toBe(1); expect(world.scope.signal.aborted).toBe(false);
     expect(sessions.snapshot(project, task).detail?.title).toBe('Retained');
-    if (kind === 'steps') expect(sessions.stepsSnapshot(project, task).resource?.steps[0]?.title).toBe('Retained step');
   } finally { resume(); sessions.dispose(); world.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals(); }
 });

@@ -31,7 +31,7 @@ const install = async (page: Page): Promise<State> => {
       await send({ items: url.searchParams.has('afterId') ? [] : [message], hasMoreBefore: false, hasMoreAfter: false });
       return;
     }
-    if (path.endsWith('/sessions') || path.endsWith('/attachments') || path.endsWith('/steps')) return send({ items: [], nextCursor: null });
+    if (path.endsWith('/sessions') || path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
   return state;
