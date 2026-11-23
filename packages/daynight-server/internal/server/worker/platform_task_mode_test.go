@@ -3,11 +3,15 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 )
@@ -100,5 +104,71 @@ func TestPlatformTaskModeObservationProjectionHasNoSyntheticSupport(t *testing.T
 	encoded, err := (rawConfigurationProjection{raw: raw}).MarshalJSON()
 	if err != nil || !strings.Contains(string(encoded), `"preferPlatformSpecificTasks":true`) || !strings.Contains(string(encoded), `1234567890123456789012345`) || strings.Contains(string(encoded), "platformTaskMode") {
 		t.Fatalf("raw projection: %s %v", encoded, err)
+	}
+}
+
+func TestPlatformTaskModeRefusalsThroughServiceHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name, previous, code string
+		legacy               bool
+	}{
+		{"legacy exit", "only", "worker_platform_task_mode_upgrade_required", true},
+		{"unsupported enable", "all", "worker_platform_task_mode_unsupported", false},
+	} {
+		for _, completion := range []string{"rollback", "unknown", "cleanup", "database"} {
+			t.Run(tc.name+"/"+completion, func(t *testing.T) {
+				f := newConfigurationHTTPFixture(t, io.Discard)
+				value := configurationHTTPModel(t, configurationHTTPValue())
+				value.PlatformTaskMode = model.WorkerPlatformTaskMode(tc.previous)
+				current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: value}, ObservationRevision: "0"}
+				calls := 0
+				dao := &workerHTTPWriteDAO{t: t, WorkerConfigurationCall: func(_ context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+					calls++
+					if user != f.handler.principal.UserID || worker != f.workerID {
+						t.Fatal("incorrect configuration identity")
+					}
+					return current, nil
+				}}
+				f.tx.WriteWorkerCall = func(_ context.Context, op func(store.WorkerScope) error) (store.Completion, error) {
+					err := op(&workerHTTPWriteScope{t: t, DAO: dao})
+					var fault *model.Fault
+					if !errors.As(err, &fault) || fault.Code != tc.code {
+						t.Fatalf("core refusal: %v", err)
+					}
+					tx := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: err}
+					switch completion {
+					case "unknown":
+						tx.Phase, tx.Outcome = "commit", store.TransactionUnknown
+					case "cleanup":
+						tx.CleanupFailed = true
+					case "database":
+						tx.Cause = errors.Join(err, &store.Error{DatabaseFailure: true, Cause: errors.New("database failure")})
+					}
+					return store.Completion{Outcome: tx.Outcome}, tx
+				}
+				input := configurationHTTPValue()
+				if tc.legacy {
+					input["preferPlatformSpecificTasks"] = false
+				} else {
+					delete(input, "preferPlatformSpecificTasks")
+					input["platformTaskMode"] = "only"
+				}
+				body := jsonBody(t, map[string]any{"revision": "1", "value": input})
+				var response *httptest.ResponseRecorder
+				if tc.legacy {
+					response = projectRequest(f.handler, http.MethodPut, f.path(), body)
+				} else {
+					response = f.request(http.MethodPut, f.path(), body)
+				}
+				if calls != 1 {
+					t.Fatalf("configuration reads = %d", calls)
+				}
+				if completion == "rollback" {
+					assertProjectError(t, response, http.StatusConflict, tc.code)
+				} else {
+					assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+				}
+			})
+		}
 	}
 }
