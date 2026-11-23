@@ -381,7 +381,7 @@ Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览
 
 ### 显式浏览器预览 SSO
 
-`server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` 是必填的精确预览 origin，生产使用与主站同站的独立 HTTPS hostname。配置按默认值、两层 YAML、显式环境变量加载，错误保留字段及来源。启动只校验配置，不探测外部 DNS/TLS。显式 HTTP 测试模式允许同站测试域名；既有 socket 夹具可使用同一数字 loopback IP 的不同端口，真实跨子域 Cookie 证明使用独立域名。
+`server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` 是必填的精确预览 origin，生产使用与主站同站的独立 HTTPS hostname。配置按默认值、两层 YAML、显式环境变量加载，错误保留字段、validate 阶段及该字段的实际来源。数字 loopback HTTP 夹具例外之后，先校验主站 hostname，再校验预览 hostname；分别归因到 `server.public_origin` 和 `server.preview_origin`，规则说明不回显配置值。DNS hostname 必须小写且含点，排除 IP、单标签和末尾点。两个合法 hostname 相同时归因到预览字段，并明确不同端口不足以隔离 Cookie。启动只校验配置，不探测外部 DNS/TLS。显式 HTTP 测试模式允许同站 `.test` 或 `.localhost` 测试域名；既有 socket 夹具可使用同一数字 loopback IP 的不同端口，真实跨子域 Cookie 证明使用独立域名。
 
 | Host | GET 路径 | 行为 |
 | --- | --- | --- |
