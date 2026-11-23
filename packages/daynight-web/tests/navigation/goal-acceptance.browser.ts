@@ -266,3 +266,32 @@ test('existing Goal child Task graph address retains ordinary Task edges', async
   expect(new URL(page.url()).search).toBe(`?tab=tasks&goalGraph=${activeId}`);
   expect(state.syncRequests.length).toBeGreaterThan(0);
 });
+
+for (const fullscreen of [false, true]) test(`keyboard inspector navigation retains focus and Escape ${fullscreen ? 'exits fullscreen before closing' : 'closes the graph'}`, async ({ page }) => {
+  const state = await install(page), { dialog, trigger } = await open(page, state.syncRequests);
+  if (fullscreen) {
+    await dialog.getByRole('button', { name: 'View fullscreen', exact: true }).click();
+    await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+  }
+  await card(dialog, activeId).locator('.task-node-body').click();
+  const inspection = dialog.locator('.goal-acceptance-inspection');
+  const prerequisite = inspection.getByRole('button', { name: 'Accepted identity', exact: true });
+  const requests = [...state.syncRequests], viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  await prerequisite.focus();
+  await prerequisite.press('Enter');
+  await expect(card(dialog, doneId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(inspection.getByRole('heading', { name: 'Accepted identity', exact: true })).toBeFocused();
+  await expect(viewport).toHaveAttribute('style', position!);
+  expect(state.syncRequests).toEqual(requests);
+  expect(state.relationRequests).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  if (fullscreen) {
+    await expect(dialog).toBeVisible();
+    await expect(dialog).not.toHaveClass(/task-chain-dialog-fullscreen/);
+    await expect(dialog.getByRole('button', { name: 'View fullscreen', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+  }
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(state.syncRequests).toEqual(requests);
+});

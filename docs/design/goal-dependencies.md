@@ -52,7 +52,7 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 `projectGoalAcceptance` 从 typed 摘要选择 `todo` 和 `in_progress` Goal 根及其直接项目内前置，保留孤点与终态前置，省略无关终态。图边只从 Goal 的 `dependsOn` 生成，不使用普通 Task 索引推断验收关系。局部前置和下游索引供检查及高亮使用；检查栏按真实状态区分已满足与已知阻塞，同时明确本项目覆盖和全局待核验。TaskSync 不包含跨项目关系或权威验收阻塞，不能由已知边推导全局可完成。
 
-`GoalAcceptanceGraph` 与专属 Goal 卡片复用中立布局、几何缩放、边绘制、检查配色及工具栏，保持 Goal 自身四态和独立 Details 动作。选择不参与拓扑键，状态或标题变化只更新内容；拓扑变化通过已有节点位置锚定新几何，保留有效选择与视口。方向或显式全图动作决定新的 framing，手机检查栏按布局断点置于画布下方。
+`GoalAcceptanceGraph` 与专属 Goal 卡片复用中立布局、几何缩放、边绘制、检查配色及工具栏，保持 Goal 自身四态和独立 Details 动作。检查栏的关系按钮切换到另一 Goal 时，将焦点以 `preventScroll` 移到持续挂载且 `tabIndex={-1}` 的检查标题；标题随选择原位更新，不进入普通 Tab 顺序。关系按钮可能因新选中项而卸载，标题承接焦点使图层保留 Escape 与全屏 Escape，同时保持滚动位置。选择不参与拓扑键，状态或标题变化只更新内容；拓扑变化通过已有节点位置锚定新几何，保留有效选择与视口。方向或显式全图动作决定新的 framing，手机检查栏按布局断点置于画布下方。
 
 验收图使用 `TaskGraphDialogShell` 的 portal、全屏、焦点约束及分层 Escape。项目详情 owner 将图内 Goal Details 归入同一阅读层，保留背景列表和关闭回焦。同步失败沿现有项目反馈保留仍获准内容；账号、项目或历史准入失效仍撤销相应阅读资格，最后显示的数据不能重新授权详情。项目图与现有普通 Task 图的地址和范围分别拥有各自语义。需求由[Goal 验收依赖图](../spec/daynight-goals.md#goal-验收依赖图)拥有，取舍见[验收图决策](../../.agents/notes/implemented/feature/2026-11-23-project-goal-acceptance-graph.md)。
 

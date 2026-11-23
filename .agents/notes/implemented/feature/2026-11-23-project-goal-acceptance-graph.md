@@ -28,6 +28,10 @@ acceptance decision.
 Goal-specific projection, cards and inspection reuse neutral geometry, edge
 painting, semantic highlights, toolbar and dialog mechanisms. Valid selection
 and viewport survive updates, and an existing position anchors topology changes.
+Following an inspector relationship transfers focus to the persistent inspection
+heading without scrolling before the changing relation list can remove its
+trigger. The programmatically focusable heading remains outside ordinary Tab
+order and keeps the graph's Escape and fullscreen handling reachable.
 Goal Details use the existing project reading owner and restore their actual
 graph trigger. The [relationship design](../../../../docs/design/goal-dependencies.md#项目-goal-验收图)
 owns the mechanism and the [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-验收依赖图)

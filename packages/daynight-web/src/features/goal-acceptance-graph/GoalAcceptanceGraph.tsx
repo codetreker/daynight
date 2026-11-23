@@ -74,9 +74,14 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
     data: { goal: projection.goals.get(node.id)!, progress: projection.progress.get(node.id)!, onInspect: inspect, onOpen: onOpenGoal },
   })), [geometry, projection.goals, projection.progress, inspect, onOpenGoal]);
   const [fitRevision, setFitRevision] = useState(0);
+  const inspectionHeading = useRef<HTMLHeadingElement>(null);
+  const followRelation = (id: string) => {
+    setSelected(id);
+    inspectionHeading.current?.focus({ preventScroll: true });
+  };
   const relations = (label: string, ids: readonly string[]) => <section><h4>{label}</h4>{ids.length === 0 ? <p>{m.none}</p>
     : <ul>{ids.map(id => { const goal = projection.goals.get(id)!; return <li key={id}>
-      <button type="button" className="goal-acceptance-relation" onClick={() => setSelected(id)}>{goal.titlePreview}</button>
+      <button type="button" className="goal-acceptance-relation" onClick={() => followRelation(id)}>{goal.titlePreview}</button>
       <span className={`graph-status graph-status-${goal.status}`}>{common.status[goal.status]}</span>
       {label === m.prerequisites && <span className="goal-acceptance-relation-state">{goal.status === 'done' ? m.satisfied : m.blocking}</span>}
     </li>; })}</ul>}</section>;
@@ -97,7 +102,7 @@ export const GoalAcceptanceGraph = ({ projectId, summaries, onOpenGoal, initialS
     </div></TaskInspectionContext>
     <aside className="goal-acceptance-inspection" aria-label={m.inspect}>
       <p className="goal-acceptance-scope">{m.knownOnly}</p>
-      {selectedId === null ? <p>{m.inspect}</p> : <><h3>{projection.goals.get(selectedId)!.titlePreview}</h3>
+      {selectedId === null ? <p>{m.inspect}</p> : <><h3 ref={inspectionHeading} tabIndex={-1}>{projection.goals.get(selectedId)!.titlePreview}</h3>
         <p><span className={`graph-status graph-status-${projection.goals.get(selectedId)!.status}`}>{common.status[projection.goals.get(selectedId)!.status]}</span></p>
         <p>{m.progress(projection.progress.get(selectedId)!.done, projection.progress.get(selectedId)!.total)}</p>
         {relations(m.prerequisites, projection.prerequisites.get(selectedId)!)}{relations(m.successors, projection.successors.get(selectedId)!)}
