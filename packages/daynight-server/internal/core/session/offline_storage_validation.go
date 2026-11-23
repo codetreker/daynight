@@ -53,7 +53,8 @@ func ValidateOfflineStorageState(state store.OfflineStorageState) error {
 			return errors.New("offline archive ownership mismatch")
 		}
 		bundle := item.Bundle
-		if bundle.SessionID != file.SessionID || file.Purpose == "history" && (bundle.HistoryID != file.FileID || bundle.Phase != "settling" || bundle.Revision != file.TimelineRevision) || file.Purpose == "timeline" && (bundle.TimelineID != file.FileID || bundle.Phase != "sealed" || bundle.Revision != file.TimelineRevision) {
+		historyPhase := bundle.Phase == "settling" || file.UploadVersion == 1 && bundle.Phase == "active"
+		if bundle.SessionID != file.SessionID || file.Purpose == "history" && (bundle.HistoryID != file.FileID || !historyPhase || bundle.Revision != file.TimelineRevision) || file.Purpose == "timeline" && (bundle.TimelineID != file.FileID || bundle.Phase != "sealed" || bundle.Revision != file.TimelineRevision) {
 			return errors.New("offline archive current registration mismatch")
 		}
 		for _, chunk := range item.Chunks {

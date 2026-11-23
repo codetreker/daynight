@@ -190,28 +190,32 @@ func migrateStorage(ctx context.Context, database migrationDatabase, source migr
 					return err
 				}
 			}
+			optionalReader := reader
 			if stage == "source" {
-				objects := make([]store.StorageObject, 0, len(inventory.Objects))
-				for _, object := range inventory.Objects {
-					if object.Optional {
-						value, err := source.Open(ctx, object.Bucket, object.Path)
-						if migrationMissingOnly(err) {
+				optionalReader = source
+			}
+			objects := make([]store.StorageObject, 0, len(inventory.Objects))
+			for _, object := range inventory.Objects {
+				if object.Optional {
+					value, err := optionalReader.Open(ctx, object.Bucket, object.Path)
+					if migrationMissingOnly(err) {
+						if stage == "source" {
 							if err = emit(StorageMigrationEvent{Kind: "object", Status: "skipped", Bucket: object.Bucket, Path: object.Path, Detail: "unconfirmed optional source object absent"}); err != nil {
 								return err
 							}
-							continue
 						}
-						if err != nil {
-							return err
-						}
-						if err = value.Body.Close(); err != nil {
-							return err
-						}
+						continue
 					}
-					objects = append(objects, object)
+					if err != nil {
+						return errors.Join(err, emit(StorageMigrationEvent{Kind: "session", Status: stage + "_mismatch", SessionID: inventory.SessionID}))
+					}
+					if err = value.Body.Close(); err != nil {
+						return errors.Join(err, emit(StorageMigrationEvent{Kind: "session", Status: stage + "_mismatch", SessionID: inventory.SessionID}))
+					}
 				}
-				inventory.Objects = objects
+				objects = append(objects, object)
 			}
+			inventory.Objects = objects
 			if err := sessioncore.VerifyStorageBackup(ctx, reader, inventory); err != nil {
 				return errors.Join(err, emit(StorageMigrationEvent{Kind: "session", Status: stage + "_mismatch", SessionID: inventory.SessionID}))
 			}

@@ -446,6 +446,6 @@ Azure 使用 Append Blob、有限租约和预期追加位置条件。观察返�
 
 停写的 `verify-storage` 在同一个只读 PG 快照内取得库存，并在配对卷检查每个 receiving 暂存对象的存在和长度，报告恢复偏移。已收满的文件核对整文件 SHA-256；部分前缀的等长损坏由完成时的整文件摘要拦截。完成的 timeline 和资源使用已发布对象及既有引用闭包验证；seal 前当前完成 history 对照 bundle 的 ID、revision、phase 和持久账本，不要求已清理的 history 暂存。封存后即使 timeline 尚未完成，也验证封存的资源账本及原件；完成 timeline 时按当前文件身份核对内容和闭包，支持 v1/v2 混合。合法退休或 failed 记录的暂存只用于清理。旧归档转换的源归档与迁移闭包沿既有规则核对。验证器不修复或重新取得原始内容。
 
-本地到 Azure 的 `migrate-storage` 复用上述保留对象与闭包规则，并在隔离目标库存中投影确认未完成的归档登记撤销。它只清空指向被撤销文件的当前 `history_id`/`timeline_id`，保留原 revision、此前完成的 ledger history 与同批完成回执。原冻结 `fileId` 在切换后按普通未登记 `404` 从 `0` 首次上传；若源或目标已存在正式发布对象但未得到完成回执，迁移报告差异并保留事实。源配对材料始终只读，图片释放和 MCP 私有内容结算仅发生在目标。具体复制顺序、报告和恢复边界见[离线迁移设计](offline-storage-migration.md)。
+本地到 Azure 的 `migrate-storage` 复用上述保留对象与闭包规则，并在隔离目标库存中投影确认未完成的归档登记撤销。版本 1 的在线 history 在 `active` 阶段也可保持合法 receiving 登记；迁移按原 Session、当前指针和 revision 核对并撤销。它只清空指向被撤销文件的当前 `history_id`/`timeline_id`，保留原 revision、此前完成的 ledger history 与同批完成回执。原冻结 `fileId` 在切换后按普通未登记 `404` 从 `0` 首次上传；若源或目标已存在正式发布对象但未得到完成回执，迁移报告差异并保留事实。源配对材料始终只读，图片释放和 MCP 私有内容结算仅发生在目标。具体复制顺序、报告和恢复边界见[离线迁移设计](offline-storage-migration.md)。
 
 版本 1 继续读取逐块库存。数据库迁移账本必须与验证器版本一致，部署迁移前停止旧写入方；回滚须使用理解当前 schema 的版本或恢复匹配的旧配对备份。选择该布局的原因见[单文件暂存决策](../../.agents/notes/implemented/architecture/2026-11-23-archive-single-file-staging.md)。

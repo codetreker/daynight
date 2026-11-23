@@ -1,6 +1,7 @@
 package session
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -9,6 +10,72 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+func TestOfflineValidationResetsV1ActiveHistoryWithoutChangingCompletedLedger(t *testing.T) {
+	op, dao, record, writer := activeHistoryFixture(t)
+	body := activeHistoryBytes(record, localEntry(t, "1"))
+	completedID, replacementID := uuid.NewString(), uuid.NewString()
+	if _, err := op.PutHistoryLedger(t.Context(), writer, completedID, 0, int64(len(body)), archiveDigest(body), archiveDigest(body), body); err != nil {
+		t.Fatal(err)
+	}
+	ledger := append([]byte(nil), dao.bundle.Ledger...)
+	completed := dao.files[completedID]
+	half := len(body) / 2
+	if _, err := op.PutHistoryLedger(t.Context(), writer, replacementID, 0, int64(len(body)), archiveDigest(body), archiveDigest(body[:half]), body[:half]); err != nil {
+		t.Fatal(err)
+	}
+	file, bundle := dao.files[replacementID], *dao.bundle
+	originalFile := file
+	// The v1 DAO insert persists upload_version=1 through the database default.
+	file.UploadVersion = 1
+	if bundle.Phase != "active" || bundle.HistoryID != replacementID || bundle.Revision != 2 || file.State != "receiving" || file.AcceptedOffset != int64(half) || file.TimelineRevision != bundle.Revision || !jsonEqual(ledger, bundle.Ledger) {
+		t.Fatal("online history replacement fixture lost its previous ledger", file, bundle)
+	}
+	item := store.OfflineArchiveFile{ProjectID: op.project, OwnerID: op.owner, File: file, Bundle: &bundle}
+	for _, chunk := range dao.chunks[replacementID] {
+		item.Chunks = append(item.Chunks, store.StorageObject{Bucket: archiveBucket, Path: chunk.Path, SHA256: chunk.SHA256, ByteLength: chunk.ByteLength})
+	}
+	state := store.OfflineStorageState{ArchiveFiles: []store.OfflineArchiveFile{item}}
+	if err := ValidateOfflineStorageState(state); err != nil {
+		t.Fatal("valid v1 online history rejected", err)
+	}
+	inventory := store.StorageInventory{SessionID: op.id, ProjectID: op.project, OwnerID: op.owner, ArchiveBundle: &bundle, ArchiveFilesV2: []store.StorageArchiveFileV2{archiveRevocationFile(completed), archiveRevocationFile(file)}, Objects: item.Chunks}
+	projected, err := ProjectOfflineStorageInventory(inventory, state)
+	expected := bundle
+	expected.HistoryID = ""
+	if err != nil || !reflect.DeepEqual(projected.ArchiveBundle, &expected) || len(projected.ArchiveFilesV2) != 1 || !reflect.DeepEqual(projected.ArchiveFilesV2[0], archiveRevocationFile(completed)) || len(projected.Objects) != 0 {
+		t.Fatal("revocation changed completed receipt, ledger, identity or revision", projected, err)
+	}
+	if !reflect.DeepEqual(*dao.bundle, bundle) || !reflect.DeepEqual(dao.files[replacementID], originalFile) || !reflect.DeepEqual(dao.files[completedID], completed) || inventory.ArchiveBundle.HistoryID != replacementID || len(inventory.Objects) != len(item.Chunks) {
+		t.Fatal("offline projection mutated the source snapshot")
+	}
+}
+
+func TestOfflineValidationKeepsHistoryPhaseAndCurrentIdentityRestrictions(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		for _, phase := range []string{"active", "settling", "sealed", "complete"} {
+			item := offlineArchiveValidationFixture(t, "history")
+			item.File.UploadVersion, item.Bundle.Phase = version, phase
+			err := ValidateOfflineStorageState(store.OfflineStorageState{ArchiveFiles: []store.OfflineArchiveFile{item}})
+			valid := phase == "settling" || version == 1 && phase == "active"
+			if (err == nil) != valid {
+				t.Fatal(version, phase, err)
+			}
+		}
+	}
+	for _, change := range []func(*store.OfflineArchiveFile){
+		func(v *store.OfflineArchiveFile) { v.Bundle.HistoryID = uuid.NewString() },
+		func(v *store.OfflineArchiveFile) { v.Bundle.SessionID = uuid.NewString() },
+		func(v *store.OfflineArchiveFile) { v.Bundle.Revision++ },
+	} {
+		item := offlineArchiveValidationFixture(t, "history")
+		item.File.UploadVersion, item.Bundle.Phase = 1, "active"
+		change(&item)
+		if err := ValidateOfflineStorageState(store.OfflineStorageState{ArchiveFiles: []store.OfflineArchiveFile{item}}); err == nil {
+			t.Fatal("active history accepted a mismatched current identity")
+		}
+	}
+}
 
 func offlineArchiveValidationFixture(t *testing.T, purpose string) store.OfflineArchiveFile {
 	t.Helper()

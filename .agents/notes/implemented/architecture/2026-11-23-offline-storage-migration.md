@@ -26,6 +26,11 @@ A failed predecessor retains its public successor receipt and an internal proof
 of the successor revocation, so a later run can distinguish the valid unregistered
 state from a broken chain. The Controller adopts that confirmed successor using
 its saved replacement intent and accepts an ordinary 404 as first-upload state.
+V1 online history can remain receiving while its bundle is active; revocation
+checks its original identity and preserves the previously committed ledger.
+Optional-object absence is classified in migration orchestration for both local
+and Azure verification. Pure BlobNotFound and filesystem absence permit omission;
+joined transport failures and present-object integrity failures remain visible.
 Only matching current bundle pointers are cleared; revision, ledger and terminal
 receipts remain intact. Image and MCP cleanup settle only destination private
 namespaces after confirmed cleanup. The original pair remains a restore point. Both Go coverage partitions provide

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -195,5 +196,89 @@ func TestStorageMigrationOptionalMissingChunkReportsSkipped(t *testing.T) {
 	summary := events[len(events)-1]
 	if summary.Counts["skipped"] != 1 || summary.Counts["missing"] != 0 {
 		t.Fatal(summary)
+	}
+}
+
+func TestStorageMigrationOptionalAzureAbsenceAcrossTargetVerification(t *testing.T) {
+	for _, scenario := range []string{"absent", "mixed_before_commit", "mixed_after_commit", "other_404", "required_absent", "present_verified", "corrupt_before_commit", "corrupt_after_commit"} {
+		t.Run(scenario, func(t *testing.T) {
+			project, owner, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
+			path := "projects/" + project + "/" + id[:2] + "/" + id + "/uploads/" + uuid.NewString() + "/0"
+			hash := sha256.Sum256([]byte("original"))
+			inventory := store.StorageInventory{ProjectID: project, OwnerID: owner, SessionID: id, Objects: []store.StorageObject{{Bucket: "session-resources", Path: path, ByteLength: 8, SHA256: hex.EncodeToString(hash[:]), Optional: scenario != "required_absent"}}}
+			missing := &azcore.ResponseError{StatusCode: 404, ErrorCode: "BlobNotFound"}
+			transportFailure := errors.New("Azure transport unavailable")
+			present := scenario == "required_absent" || scenario == "present_verified" || scenario == "corrupt_before_commit" || scenario == "corrupt_after_commit"
+			source := migrationReadFunc(func(context.Context, string, string) (filestorage.Object, error) {
+				if present {
+					return migrationStringObject("original"), nil
+				}
+				return filestorage.Object{}, fs.ErrNotExist
+			})
+			inventories, applied, targetPasses := 0, 0, 0
+			database := migrationDatabaseFixture{
+				state: func(context.Context) (store.OfflineStorageState, error) { return store.OfflineStorageState{}, nil },
+				inventory: func(ctx context.Context, verify func(store.StorageInventory) error) error {
+					inventories++
+					if inventories > 1 {
+						targetPasses++
+					}
+					return verify(inventory)
+				},
+				attachments: func(context.Context, func(model.Attachment) error) error { return nil },
+				apply: func(context.Context, store.OfflineStorageState, []store.SessionUploadRecord, []model.PrivateTransfer) (store.Completion, error) {
+					applied++
+					return store.Completion{Outcome: store.TransactionCommitted}, nil
+				},
+			}
+			target := migrationTargetFixture{migrationCopyTarget: migrationCopyTarget{migrationReadFunc: func(context.Context, string, string) (filestorage.Object, error) {
+				if inventories == 1 && present || scenario == "present_verified" || scenario == "corrupt_after_commit" && inventories == 2 {
+					return migrationStringObject("original"), nil
+				}
+				if scenario == "corrupt_before_commit" || scenario == "corrupt_after_commit" {
+					return migrationStringObject("damaged!"), nil
+				}
+				if scenario == "other_404" {
+					return filestorage.Object{}, errors.Join(fs.ErrNotExist, &azcore.ResponseError{StatusCode: 404, ErrorCode: "ContainerNotFound"})
+				}
+				if scenario == "mixed_before_commit" || scenario == "mixed_after_commit" && inventories == 3 {
+					return filestorage.Object{}, errors.Join(fs.ErrNotExist, missing, transportFailure)
+				}
+				return filestorage.Object{}, errors.Join(fs.ErrNotExist, missing)
+			}}}
+			var events []StorageMigrationEvent
+			err := migrateStorage(t.Context(), database, source, target, func(e StorageMigrationEvent) error { events = append(events, e); return nil })
+			wantSuccess := scenario == "absent" || scenario == "present_verified"
+			if (err == nil) != wantSuccess {
+				t.Fatalf("scenario=%s err=%v", scenario, err)
+			}
+			wantApplied := wantSuccess || scenario == "mixed_after_commit" || scenario == "corrupt_after_commit"
+			if (applied == 1) != wantApplied || targetPasses != 1+applied {
+				t.Fatalf("incorrect target verification boundary: applied=%d passes=%d", applied, targetPasses)
+			}
+			if scenario == "mixed_before_commit" || scenario == "mixed_after_commit" {
+				if !errors.Is(err, missing) || !errors.Is(err, transportFailure) {
+					t.Fatal("mixed Azure failure chain lost", err)
+				}
+			}
+			if scenario == "required_absent" && !errors.Is(err, missing) {
+				t.Fatal("required object absence hidden", err)
+			}
+			summary := events[len(events)-1]
+			if (summary.Status == "verified") != wantSuccess || scenario == "absent" && (summary.Counts["skipped"] != 1 || summary.Counts["missing"] != 0) {
+				t.Fatal("incorrect optional object summary", summary)
+			}
+			if !wantSuccess {
+				found := false
+				for _, event := range events {
+					if event.Status == "target_mismatch" && event.SessionID == id {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("target verification failure not reported", events)
+				}
+			}
+		})
 	}
 }

@@ -1009,7 +1009,10 @@ azure-blob` and the ordinary Azure settings; `storage.root` must be separate
 scratch. The command validates the current schema without applying migrations,
 copies retained attachments and Session objects, verifies length, SHA-256 and
 closure, then settles destination-only unfinished uploads. It preserves completed
-receipts, bundle revision and ledger. Existing equal target objects are reusable;
+receipts, bundle revision and ledger, including valid active v1 history uploads.
+Optional unconfirmed image chunks may be absent on either backend; present bytes
+still require integrity verification, and mixed storage failures remain errors.
+Existing equal target objects are reusable;
 conflicting objects are never overwritten. JSON events report the run, objects,
 state transitions and differences on stderr. Only exit status 0 permits Azure
 activation. Keep every writer stopped and preserve the untouched original
