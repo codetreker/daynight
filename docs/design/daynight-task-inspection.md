@@ -33,6 +33,10 @@ flowchart LR
 
 ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列表浏览状态；ChainList 在同一浮层会话中保留最初列表按钮 `opener` 及最初 task witness `openedTask`，用于关闭焦点恢复。`TaskGraph` 拥有链投影、渐进可见集合、局部检查和根节点 framing，不与详情 ID 绑定。`GraphProjection` 只包含主体、外部节点和真实边，`ChainProjection` 另保留实际 root 和完成数；`layoutGraph` 以共享投影计算几何。`TaskGraphCanvas` 接收控制器生成的节点、几何、检查状态及视口计算，不推导链成员；图局部 Context 为节点和边提供呈现状态。`TaskGraphToolbar` 接收调用方的摘要、文案和动作。`TaskGraphDialogShell` 拥有 portal、浮层、滚动锁、焦点约束、Escape 和全屏，`TaskChainDialog` 提供实际链元数据和内容。完整索引拥有 H 和 D，渐进可见规则拥有 S；不能从已淡化或已显示元素反推完整依赖和统计。
 
+## Goal 验收图
+
+项目 Goals 工具栏的验收图以 Goal 为节点，直接读取已提交的项目同步摘要，使用专属投影和检查索引。它复用中立几何、边绘制、工具栏和 `TaskGraphDialogShell`，图内 Details 仍交给现有项目阅读 owner。Goal 验收边不进入普通 Task 的 `GraphIndex` 或执行检查；详细范围、数据与生命周期由[Goal 关系设计](goal-dependencies.md#项目-goal-验收图)拥有。
+
 ## Goal 整体图
 
 项目 Goal 整体图与普通链图共享 `GraphProjection`、画布、工具栏和弹窗机械层，但各自拥有布局、成员和交互策略。`projectGoal` 从完整索引按 Parent 选择全部直接成员，再读取成员完整 `dependsOn`，将可访问的范围外直接前置按 ID 去重；只以成员为 target 产生真实边，边的 external 分类取目标的 `externalDependsOn`。外部节点之间的边、更深祖先和仅反向后续不进入投影。空成员集合是有效空图，不使用虚拟根。Goal 标题与自身状态来自 typed Goal，进度和暂停统计只计算直接成员。

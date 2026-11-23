@@ -26,6 +26,16 @@ server for single-origin delivery. The [localhost deployment](../../deployment/l
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
 provides an isolated instance of the same production build.
 
+The project Goals toolbar opens a separate Goal acceptance graph from the
+existing committed TaskSync baseline. It includes active isolated Goals and
+their direct project-local prerequisites, including completed and cancelled
+context. Selection and relationship inspection are local; the inspector states
+that global acceptance remains unverified. Graph interactions do not change
+TaskSync requests, polling or watermarks. Existing Task and Goal-child execution
+graphs retain their own projection and navigation. The
+[Goal relationship design](../../docs/design/goal-dependencies.md#项目-goal-验收图)
+owns the acceptance projection, reading layer and update continuity.
+
 Goal detail shows read-only acceptance dependencies before its general information.
 Prerequisites retain the service's hidden-target projection; dependent Goals use
 cursor pages, and external links open the actual Project/Goal resource with draft

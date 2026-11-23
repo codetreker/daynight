@@ -237,6 +237,12 @@ export const useTaskGraph = (projectId: string) => {
   const projection = useMemo(() => visible.snapshot === null ? null : projectCommittedTasks(visible.snapshot, committed, { cacheGeneration, scopeRevision, historyGeneration }),
     [visible.snapshot, committed, cacheGeneration, scopeRevision, historyGeneration]);
   const displaySnapshot = visible.snapshot !== null && visible.snapshot === visible.displaySnapshot ? projection?.snapshot ?? visible.displaySnapshot : visible.displaySnapshot;
+  const synchronizedDisplay = useRef<{ projectId: string; scope: TaskCacheScope; access: ProjectAccessSession | null; snapshot: GraphSnapshot | null }>({ projectId, scope, access, snapshot: null });
+  if (synchronizedDisplay.current.projectId !== projectId || synchronizedDisplay.current.scope !== scope || synchronizedDisplay.current.access !== access || visible.displaySnapshot === null)
+    synchronizedDisplay.current = { projectId, scope, access, snapshot: null };
+  if (visible.snapshot !== null) synchronizedDisplay.current.snapshot = visible.snapshot;
   useLayoutEffect(() => { displayed.current = { projectId, scope, access, snapshot: displaySnapshot }; }, [projectId, scope, access, displaySnapshot]);
-  return { snapshot: projection?.snapshot ?? visible.snapshot, displaySnapshot, reconcile, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore, observationStore };
+  // Retained synchronized presentation is read-only during history recovery;
+  // the qualified snapshot remains the authority for opening resource details.
+  return { syncedSnapshot: synchronizedDisplay.current.snapshot, snapshot: projection?.snapshot ?? visible.snapshot, displaySnapshot, reconcile, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore, observationStore };
 };

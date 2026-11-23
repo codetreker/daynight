@@ -1096,7 +1096,7 @@ describe('project overview and task workspace', () => {
   it('resolves a retained overview task witness against its latest representative without reopening the graph or repeating navigation', async () => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seed(canonicalTask(0), 'done'), seed(canonicalTask(1), 'done', [canonicalTask(0)]), ...seeds.slice(1)], 2);
@@ -1120,7 +1120,7 @@ describe('project overview and task workspace', () => {
   ])('keeps the requested category focused when the overview chain is %s before navigation', async (_name, tasks) => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot(tasks, 2);
@@ -1139,7 +1139,7 @@ describe('project overview and task workspace', () => {
   it('locates a chain completed after the overview was rendered', () => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seeds[0]!, seed(canonicalTask(2), 'done', [canonicalTask(1)]), ...seeds.slice(2)], 2);
@@ -1153,8 +1153,8 @@ describe('project overview and task workspace', () => {
 
   it('consumes an overview target when project access disappears and returns focus to the visible Tasks section', () => {
     const getNavigate = interceptOverviewNavigation();
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), syncedSnapshot: null, displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state = { ...state, snapshot: null, status: 'error', error: new ApiError('server', 404, 'not_found', 'missing-project') };
@@ -1613,7 +1613,7 @@ describe('recent task browsing and pagination', () => {
       seed(canonicalTask(200)), seed(canonicalTask(201), 'todo', [canonicalTask(200)])];
     const refreshed = [seed(replacement), ...initial.map((task) => task.id === source ? { ...task, dependsOn: [replacement] } : task)];
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mount(); await openChain(source);
     const removed = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${first}`));
@@ -1631,8 +1631,8 @@ describe('recent task browsing and pagination', () => {
     installGraphMeasurements();
     const goal = canonicalTask(500);
     const tasks = [{ ...seed(goal), type: 'goal' as const }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), syncedSnapshot: null, displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
     selectTasks(); fireEvent.click(tab('goals'));
@@ -1656,8 +1656,8 @@ describe('recent task browsing and pagination', () => {
     const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2);
     const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(source), parentId: goal },
       { ...seed(child, 'todo', [source]), parentId: goal }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), syncedSnapshot: null, displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
     selectTasks(); fireEvent.click(tab('goals'));
@@ -1702,7 +1702,7 @@ describe('recent task browsing and pagination', () => {
   it('waits for a complete project index before consuming a chain query', async () => {
     const source = canonicalTask(1), witness = canonicalTask(2);
     const preview = mockNavigationSnapshot([], 0);
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(),
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), syncedSnapshot: null, displaySnapshot: null, reconcile: vi.fn(),
       snapshot: { ...preview, observedAt: null, receivedAt: null, revision: 0, localTime: Date.now() }, status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot }));
     history.replaceState(null, '', `/projects/${project}?tab=tasks&chain=${witness}`);
@@ -1733,7 +1733,7 @@ describe('recent task browsing and pagination', () => {
       ? initial.map((task) => task.id === dependency ? { ...task, dependsOn: [] } : task)
       : initial.filter((task) => task.id !== dependency).map((task) => task.id === canonicalTask(101) ? { ...task, dependsOn: [source], externalDependsOn: [] } : task);
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, syncedSnapshot: state.snapshot, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mount(); await openChain(source);
     const trigger = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
