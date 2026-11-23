@@ -269,7 +269,7 @@ export const createWorkerDiagnostics = async (options: {
       const output = serialize(event);
       if (blocked !== undefined || fatal !== undefined || queue.length >= maximumQueuedRecords) omittedRecords++;
       else { queue.push(output.line); start(); }
-      foreground(output.foreground);
+      if (event.kind !== "worker-configuration-stage" || (event.configuration?.status !== "started" && event.configuration?.status !== "succeeded")) foreground(output.foreground);
     } catch (error) { fail(error); }
   };
   const flush = async (): Promise<void> => {
