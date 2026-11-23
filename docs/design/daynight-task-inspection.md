@@ -35,7 +35,7 @@ ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列�
 
 ## Goal 验收图
 
-项目 Goals 工具栏的验收图以 Goal 为节点，直接读取已提交的项目同步摘要，使用专属投影和检查索引。它复用中立几何、边绘制、工具栏和 `TaskGraphDialogShell`，图内 Details 仍交给现有项目阅读 owner。Goal 验收边不进入普通 Task 的 `GraphIndex` 或执行检查；详细范围、数据与生命周期由[Goal 关系设计](goal-dependencies.md#项目-goal-验收图)拥有。
+项目 Goals 工具栏的验收图以 Goal 为节点，项目内边直接读取已提交的项目同步摘要，图会话按需读取活跃根的直接跨项目关系，使用专属投影和检查索引。它复用中立几何、边绘制、工具栏和 `TaskGraphDialogShell`，图内 Details 仍交给现有项目阅读 owner。Goal 验收边不进入普通 Task 的 `GraphIndex` 或执行检查；详细范围、数据与生命周期由[Goal 关系设计](goal-dependencies.md#项目-goal-验收图)拥有。
 
 ## Goal 整体图
 

@@ -48,13 +48,19 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 ## 项目 Goal 验收图
 
-`goal-acceptance-graph` 是 Goal 节点的验收关系视图，`GoalGraphDialog` 和 `GoalTaskGraph` 继续承担普通子 Task 的整体执行图。项目 Goals 工具栏打开独立的验收图浮层；项目现有 `useTaskGraph` 所有者以 `syncedSnapshot` 暴露已经提交且未经详情回执投影的摘要基线，`GoalAcceptanceHost` 将其交给画布。图不建立第二个同步读取生命周期，也不以详情回执的临时投影更新边。请求、epoch/since、水位与轮询继续由[任务同步](daynight-task-sync.md)拥有。
+`goal-acceptance-graph` 是 Goal 节点的验收关系视图，`GoalGraphDialog` 和 `GoalTaskGraph` 继续承担普通子 Task 的整体执行图。项目 Goals 工具栏打开独立的验收图浮层；项目现有 `useTaskGraph` 所有者以 `syncedSnapshot` 暴露未经详情回执投影的摘要基线，`GoalAcceptanceHost` 将其交给画布。最后显示的基线只保持呈现，当前已获准同步基线另行决定关系请求和详情资格。图不建立第二个同步读取生命周期；请求、epoch/since、水位与轮询继续由[任务同步](daynight-task-sync.md)拥有。
 
-`projectGoalAcceptance` 从 typed 摘要选择 `todo` 和 `in_progress` Goal 根及其直接项目内前置，保留孤点与终态前置，省略无关终态。图边只从 Goal 的 `dependsOn` 生成，不使用普通 Task 索引推断验收关系。局部前置和下游索引供检查及高亮使用；检查栏按真实状态区分已满足与已知阻塞，同时明确本项目覆盖和全局待核验。TaskSync 不包含跨项目关系或权威验收阻塞，不能由已知边推导全局可完成。
+`projectGoalAcceptance` 从 typed 摘要选择 `todo` 和 `in_progress` Goal 根及其直接项目内前置，保留孤点与终态前置，省略无关终态。项目内边只从同步 Goal 的 `dependsOn` 生成，不从普通 Task 索引推断，也不以独立关系页覆盖。局部前置和下游索引供检查及高亮使用，子 Task 摘要只提供项目内 Goal 的进度。外部节点保留 `RelatedGoal` 实际提供的 Project、Goal、标题和状态，不合成 Task version、更新时间、权限或子 Task 进度。
 
-`GoalAcceptanceGraph` 与专属 Goal 卡片复用中立布局、几何缩放、边绘制、检查配色及工具栏，保持 Goal 自身四态和独立 Details 动作。检查栏的关系按钮切换到另一 Goal 时，将焦点以 `preventScroll` 移到持续挂载且 `tabIndex={-1}` 的检查标题；标题随选择原位更新，不进入普通 Tab 顺序。关系按钮可能因新选中项而卸载，标题承接焦点使图层保留 Escape 与全屏 Escape，同时保持滚动位置。选择不参与拓扑键，状态或标题变化只更新内容；拓扑变化通过已有节点位置锚定新几何，保留有效选择与视口。方向或显式全图动作决定新的 framing，手机检查栏按布局断点置于画布下方。
+`GoalRelationSession` 直接调用既有 `getGoalDependencies`，不复用带轮询和详情资格的描述关系 hook。开图立即绘制项目内结果，并为获准活跃根调度直接关系。最多四个源同时读取，一个源的后继页按游标顺序前进并按 Goal ID 去重；重复游标或不一致的前置／关系修订页是协议错误。每页通过既有身份校验及 scope/history fence 后才发布，30 秒读取期限从真实请求派发起算。返回的完整前置和累积后继只形成图会话内贡献；隐藏前置保留不可访问提示，不暴露身份，终态下游供检查而不作为默认画布根。
 
-验收图使用 `TaskGraphDialogShell` 的 portal、全屏、焦点约束及分层 Escape。项目详情 owner 将图内 Goal Details 归入同一阅读层，保留背景列表和关闭回焦。同步失败沿现有项目反馈保留仍获准内容；账号、项目或历史准入失效仍撤销相应阅读资格，最后显示的数据不能重新授权详情。项目图与现有普通 Task 图的地址和范围分别拥有各自语义。需求由[Goal 验收依赖图](../spec/daynight-goals.md#goal-验收依赖图)拥有，取舍见[验收图决策](../../.agents/notes/implemented/feature/2026-11-23-project-goal-acceptance-graph.md)。
+源的 queued、loading、partial、ready、failed、unavailable、denied、conflict 和 interrupted 状态分别表达覆盖及读取结果。已有贡献在瞬时失败和重试期间保留；接口不可用和首次失败不能显示为空关系。未读取或未完成覆盖的检查明确保持全局待核验，已知未完成或取消前置仍可显示阻塞，最终完成资格由服务端写入检查。关系会话没有 interval；活跃根版本／范围变化、恢复获准阅读和显式重试驱动读取，关闭会话取消排队及在途请求，不写入项目缓存或同步水位。
+
+请求组合会话取消、scope 与主体冲突信号，并在每次发布时检查源读取代次、主体和历史。权限或历史撤回取消在途页，清除相应 Project 的贡献及检查内容；当前项目不再获准时不派发新读。可信源拒绝撤下相应节点和关系，迟到响应不能恢复；源 Goal 拒绝不是整个 Project 不可读的证明。外部贡献按真实端点 ID 去重；候选集合与已同步项目内边一起检查环，独立读取的边反转若形成环则拒绝冲突贡献并保留合法图与重试。更新后的同步基线同样重新核对外部贡献。
+
+`GoalAcceptanceGraph` 与专属 Goal 卡片复用中立布局、几何缩放、边绘制、检查配色及工具栏，保持 Goal 自身四态、外部 Project 标记和独立 Details 动作。检查栏的关系按钮切换到另一 Goal 时，将焦点以 `preventScroll` 移到持续挂载且 `tabIndex={-1}` 的检查标题；标题随选择原位更新，不进入普通 Tab 顺序。关系按钮可能因新选中项而卸载，标题承接焦点使图层保留 Escape 与全屏 Escape，同时保持滚动位置。选择不参与拓扑键，状态或标题变化只更新内容；拓扑变化通过已有节点位置锚定新几何，保留有效选择与视口。方向或显式全图动作决定新的 framing，手机检查栏按布局断点置于画布下方。
+
+验收图使用 `TaskGraphDialogShell` 的 portal、全屏、焦点约束及分层 Escape。`GoalAcceptanceHost` 将图内 Goal Details 交给既有详情与草稿阅读层，保留背景列表和关闭回焦。同步失败沿现有项目反馈保留仍获准内容，关系读取失败在图内按源提供重试；账号、项目或历史准入失效仍撤销相应阅读资格。项目图与现有普通 Task 图的地址和范围分别拥有各自语义。需求由[Goal 验收依赖图](../spec/daynight-goals.md#goal-验收依赖图)拥有，取舍见[验收图决策](../../.agents/notes/implemented/feature/2026-11-23-project-goal-acceptance-graph.md)。
 
 ## 验证归属
 

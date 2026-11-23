@@ -7,6 +7,10 @@
 .goal-acceptance-scope { color: var(--task-helper); }
 .goal-acceptance-progress { color: var(--task-helper); font-size: var(--text-xs); line-height: 1.5; }
 .goal-acceptance-relation-state { display: block; color: var(--task-helper); font-size: var(--text-xs); }
+.goal-acceptance-context { display: block; color: var(--task-helper); font-size: var(--text-xs); }
+.goal-relation-status { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; max-height: 140px; overflow: auto; border-bottom: 1px solid #e1e5ed; }
+.goal-relation-source { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.goal-relation-source .button { font-size: var(--text-xs); padding: 2px 6px; }
 .goal-acceptance-relation { border: 0; background: transparent; color: var(--task-focus); font: inherit; text-align: left; text-decoration: underline; padding: 4px 0; overflow-wrap: anywhere; }
 .goal-acceptance-node { width: 100%; height: 100%; box-sizing: border-box; }
 .goal-acceptance-empty { position: absolute; inset: 0; padding: 20px; pointer-events: none; font-size: var(--text-sm); }

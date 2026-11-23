@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { TaskDetail } from '../../src/api/types';
+import type { GoalDependencies, RelatedGoal } from '../../src/api/goal-dependencies';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -13,13 +14,20 @@ const unrelatedId = '00000000-0000-4000-8000-000000000405';
 const childId = '00000000-0000-4000-8000-000000000406';
 const secondChildId = '00000000-0000-4000-8000-000000000407';
 const teamId = '00000000-0000-4000-8000-000000000701';
+const externalProjectId = '00000000-0000-4000-8000-000000000101';
+const externalId = '00000000-0000-4000-8000-000000000501';
+const externalSuccessorId = '00000000-0000-4000-8000-000000000502';
+const nextSuccessorId = '00000000-0000-4000-8000-000000000503';
 const time = '2026-10-22T10:00:00Z';
 
 const graphDialog = (page: Page) => page.getByRole('dialog', { name: 'Goal acceptance dependencies', exact: true });
 const card = (dialog: Locator, id: string) => dialog.locator(`.react-flow__node[data-id="${id}"] .goal-acceptance-node`);
 const edge = (dialog: Locator, source: string, target: string) => dialog.locator(`.task-dependency-edge[data-source="${source}"][data-target="${target}"]`);
 
-const install = async (page: Page) => {
+const pendingFixtures = new Set<() => void>();
+test.afterEach(() => { for (const release of pendingFixtures) release(); pendingFixtures.clear(); });
+
+const install = async (page: Page, options: { external?: boolean; bulk?: boolean; cycle?: boolean } = {}) => {
   let details: TaskDetail[] = [
     detailFixture(projectId, activeId, { type: 'goal', title: 'Release client', status: 'in_progress', startedAt: time, ready: false, dependsOn: [doneId, cancelledId] }),
     detailFixture(projectId, doneId, { type: 'goal', title: 'Accepted identity', status: 'done', completedAt: time, ready: false }),
@@ -29,6 +37,14 @@ const install = async (page: Page) => {
     detailFixture(projectId, childId, { parentId: activeId, title: 'First child' }),
     detailFixture(projectId, secondChildId, { parentId: activeId, title: 'Second child', dependsOn: [childId], blockedBy: [childId], ready: false }),
   ];
+  if (options.cycle) details = details.map(detail => detail.id === isolatedId ? { ...detail, dependsOn: [activeId] } : detail);
+  if (options.bulk) details.push(...Array.from({ length: 6 }, (_, index) => detailFixture(projectId,
+    `00000000-0000-4000-8000-${String(600 + index).padStart(12, '0')}`, { type: 'goal', title: `Acceptance branch ${index + 1}`, ready: false })));
+  const externalDetails = [
+    detailFixture(externalProjectId, externalId, { type: 'goal', title: 'External authentication', status: 'in_progress', startedAt: time, ready: false }),
+    detailFixture(externalProjectId, externalSuccessorId, { type: 'goal', title: 'External rollout', ready: false }),
+    detailFixture(externalProjectId, nextSuccessorId, { type: 'goal', title: 'External second rollout', ready: false }),
+  ];
   let syncDetails = details;
   let epoch = taskSyncEpoch(projectId);
   let failingSync = false;
@@ -37,9 +53,30 @@ const install = async (page: Page) => {
   let releaseReplacement: (() => void) | null = null;
   const syncRequests: string[] = [];
   const relationRequests: string[] = [];
+  const failedSources = new Set<string>(), failedPages = new Set<string>(), heldSources = new Set<string>();
+  const heldReplies = new Map<string, () => void>();
+  const cancelledRequests: string[] = [];
+  const revokedProjects = new Set<string>();
+  const sourceReplies = new Map<string, (cursor: string | null) => GoalDependencies>();
+  let relationInFlight = 0, maxRelationInFlight = 0;
+  const related = (detail: TaskDetail, sourceProject = projectId): RelatedGoal => ({ projectId: detail.projectId, projectName: detail.projectId === projectId ? 'Client' : 'Authentication',
+    goalId: detail.id, title: detail.title, status: detail.status as RelatedGoal['status'], kind: detail.projectId === sourceProject ? 'internal' : 'external' });
+  const defaultRelations = (source: TaskDetail, cursor: string | null): GoalDependencies => {
+    const peers = source.projectId === projectId ? syncDetails : externalDetails;
+    const prerequisites = source.dependsOn.map(id => ({ target: related(peers.find(detail => detail.id === id)!, source.projectId) }));
+    const successors = peers.filter(detail => detail.type === 'goal' && detail.dependsOn.includes(source.id)).map(detail => related(detail, source.projectId));
+    if (options.external && source.id === activeId) {
+      prerequisites.push({ target: related(externalDetails[0]!) });
+      successors.push(related(externalDetails[cursor === null ? 1 : 2]!));
+    }
+    if (options.cycle && source.id === isolatedId) prerequisites.push({ target: related(externalDetails[0]!) });
+    return { goalId: source.id, canEdit: false, completionBlocked: prerequisites.some(item => item.target.status !== 'done'), prerequisites, successors,
+      nextCursor: options.external && source.id === activeId && cursor === null ? 'second-page' : null };
+  };
   const unexpected: string[] = [];
   await page.clock.install({ time: new Date(time) });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  page.on('requestfailed', request => { if (new URL(request.url()).pathname.endsWith('/goal-dependencies')) cancelledRequests.push(request.url()); });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body),
@@ -47,7 +84,7 @@ const install = async (page: Page) => {
     const fail = () => send({ error: { code: 'not_found', message: 'Not found', requestId: activeId } }, 404);
     const graph = graphFixture(syncDetails), base = `/api/v1/projects/${projectId}`;
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: teamId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
-    if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === '/api/v1/projects') return send({ items: [graph.project, ...(options.external ? [graphFixture(externalDetails).project] : [])], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send({ id: teamId, kind: 'personal', name: null, version: 1n, createdAt: time, updatedAt: time,
       membership: { teamId, userId: TEST_VIEWER_ID, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
@@ -66,10 +103,28 @@ const install = async (page: Page) => {
         propertiesForTask: task => syncDetails.find(detail => detail.id === task.id)!.properties }));
     }
     if (path.endsWith('/goal-dependencies')) {
-      relationRequests.push(path);
+      relationRequests.push(`${path}${url.search}`);
       const goalId = path.split('/').at(-2)!;
-      return send({ goalId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null });
+      const source = [...syncDetails, ...externalDetails].find(detail => detail.id === goalId);
+      if (source === undefined) throw new Error(`Unexpected Goal relation source: ${goalId}`);
+      if (failedSources.has(goalId) || failedPages.has(`${goalId}:${url.searchParams.get('cursor')}`)) return send({ error: { code: 'unavailable', message: 'Temporarily unavailable', requestId: goalId } }, 503);
+      const body = (sourceReplies.get(goalId) ?? (cursor => defaultRelations(source, cursor)))(url.searchParams.get('cursor'));
+      relationInFlight++; maxRelationInFlight = Math.max(maxRelationInFlight, relationInFlight);
+      try {
+        if (heldSources.has(goalId)) await new Promise<void>(resolve => { heldReplies.set(goalId, resolve); });
+        heldReplies.delete(goalId);
+        return await send(body);
+      } finally { relationInFlight--; }
     }
+    const externalGraph = graphFixture(externalDetails), externalBase = `/api/v1/projects/${externalProjectId}`;
+    if (path.startsWith(externalBase) && revokedProjects.has(externalProjectId)) return fail();
+    if (path === externalBase) return send(externalGraph.project);
+    if (path === `${externalBase}/access`) return send(directAccessFixture(externalProjectId));
+    if (path === `${externalBase}/task-sync`) return send(taskSyncFixture(externalGraph, { query: taskSyncQuery(url), versionForTask: () => 1n }));
+    if (path === `${externalBase}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(externalProjectId), nextCursor: null });
+    if (path === `${externalBase}/task-assignees`) return send({ items: [], unresolvedUserIds: [] });
+    const externalDetail = externalDetails.find(detail => path === `${externalBase}/tasks/${detail.id}`);
+    if (externalDetail !== undefined) return send(externalDetail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(externalProjectId) });
     const detail = details.find(detail => path === `${base}/tasks/${detail.id}`);
     if (detail !== undefined) {
       if (request.method() === 'PATCH') {
@@ -85,8 +140,21 @@ const install = async (page: Page) => {
     unexpected.push(`${request.method()} ${path}`);
     return fail();
   });
+  const releaseAll = () => { heldSources.clear(); for (const release of heldReplies.values()) release(); heldReplies.clear(); releaseReplacement?.(); };
+  pendingFixtures.add(releaseAll);
   return {
-    syncRequests, relationRequests, unexpected,
+    syncRequests, relationRequests, unexpected, cancelledRequests,
+    externalGoal: related(externalDetails[0]!),
+    maxRelationInFlight: () => maxRelationInFlight,
+    sourceReply: (id: string, reply: (cursor: string | null) => GoalDependencies) => sourceReplies.set(id, reply),
+    failSource: (id: string, fail: boolean) => { if (fail) failedSources.add(id); else failedSources.delete(id); },
+    failPage: (id: string, cursor: string, fail: boolean) => { if (fail) failedPages.add(`${id}:${cursor}`); else failedPages.delete(`${id}:${cursor}`); },
+    holdSource: (id: string) => heldSources.add(id),
+    sourceHeld: (id: string) => heldReplies.has(id),
+    releaseSource: (id: string) => { heldSources.delete(id); heldReplies.get(id)?.(); },
+    holdAllRoots: () => { for (const detail of syncDetails) if (detail.type === 'goal' && ['todo', 'in_progress'].includes(detail.status)) heldSources.add(detail.id); },
+    releaseAll,
+    revokeExternal: () => revokedProjects.add(externalProjectId),
     changeEdges: (dependsOn: readonly string[]) => {
       syncDetails = syncDetails.map(detail => detail.id === activeId ? { ...detail, dependsOn, version: detail.version + 1n, updatedAt: '2026-10-22T10:01:00Z' } : detail);
       details = syncDetails;
@@ -269,6 +337,7 @@ test('existing Goal child Task graph address retains ordinary Task edges', async
 
 for (const fullscreen of [false, true]) test(`keyboard inspector navigation retains focus and Escape ${fullscreen ? 'exits fullscreen before closing' : 'closes the graph'}`, async ({ page }) => {
   const state = await install(page), { dialog, trigger } = await open(page, state.syncRequests);
+  await expect(dialog.locator('.goal-relation-source[data-phase="ready"]')).toHaveCount(2);
   if (fullscreen) {
     await dialog.getByRole('button', { name: 'View fullscreen', exact: true }).click();
     await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
@@ -277,13 +346,14 @@ for (const fullscreen of [false, true]) test(`keyboard inspector navigation reta
   const inspection = dialog.locator('.goal-acceptance-inspection');
   const prerequisite = inspection.getByRole('button', { name: 'Accepted identity', exact: true });
   const requests = [...state.syncRequests], viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  const relationRequests = [...state.relationRequests];
   await prerequisite.focus();
   await prerequisite.press('Enter');
   await expect(card(dialog, doneId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
   await expect(inspection.getByRole('heading', { name: 'Accepted identity', exact: true })).toBeFocused();
   await expect(viewport).toHaveAttribute('style', position!);
   expect(state.syncRequests).toEqual(requests);
-  expect(state.relationRequests).toHaveLength(0);
+  expect(state.relationRequests).toEqual(relationRequests);
   await page.keyboard.press('Escape');
   if (fullscreen) {
     await expect(dialog).toBeVisible();
@@ -294,4 +364,137 @@ for (const fullscreen of [false, true]) test(`keyboard inspector navigation reta
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
   expect(state.syncRequests).toEqual(requests);
+});
+
+const sourceStatus = (dialog: Locator, id: string) => dialog.locator(`.goal-relation-source[data-goal-id="${id}"]`);
+const retryRelations = (dialog: Locator, title: string) => dialog.getByRole('button', { name: `Retry relationships: ${title}`, exact: true });
+const relationPath = (goalId: string) => `/api/v1/projects/${projectId}/tasks/${goalId}/goal-dependencies`;
+
+test('direct external context loads after the project graph and follows source pages sequentially', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.holdSource(activeId);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect.poll(() => state.sourceHeld(activeId)).toBe(true);
+  await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'loading');
+  const reads = state.syncRequests.length;
+  state.releaseSource(activeId);
+  await expect(card(dialog, externalId)).toBeVisible();
+  await expect(card(dialog, externalId)).toContainText('Authentication');
+  await expect(edge(dialog, externalId, activeId)).toHaveAttribute('data-external', 'true');
+  await expect(edge(dialog, activeId, externalSuccessorId)).toHaveCount(1);
+  await expect(edge(dialog, activeId, nextSuccessorId)).toHaveCount(1);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  const requests = state.relationRequests.filter(value => value.startsWith(relationPath(activeId)));
+  expect(requests.map(value => new URL(value, 'https://fixture.invalid').searchParams.get('cursor'))).toEqual([null, 'second-page']);
+  expect(requests.every(value => new URL(value, 'https://fixture.invalid').searchParams.get('limit') === '20')).toBe(true);
+  expect(state.syncRequests).toHaveLength(reads);
+});
+
+test('root relationship reads keep a finite concurrency bound while retaining the immediate project graph', async ({ page }) => {
+  const state = await install(page, { bulk: true });
+  state.holdAllRoots();
+  const { dialog } = await open(page, state.syncRequests);
+  await expect.poll(() => state.relationRequests.length).toBe(4);
+  await expect(card(dialog, activeId)).toBeVisible();
+  expect(state.maxRelationInFlight()).toBeLessThanOrEqual(4);
+  await expect(dialog.locator('.goal-relation-source[data-phase="queued"]')).toHaveCount(4);
+  const reads = state.syncRequests.length;
+  state.releaseAll();
+  await expect(dialog.locator('.goal-relation-source[data-phase="ready"]')).toHaveCount(8);
+  expect(state.maxRelationInFlight()).toBeLessThanOrEqual(4);
+  expect(state.syncRequests).toHaveLength(reads);
+});
+
+test('a failed successor page leaves partial context visible and retries the source without TaskSync', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.failPage(activeId, 'second-page', true);
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'failed');
+  await expect(card(dialog, externalId)).toBeVisible();
+  await expect(edge(dialog, activeId, externalSuccessorId)).toHaveCount(1);
+  await expect(card(dialog, nextSuccessorId)).toHaveCount(0);
+  await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+  const reads = state.syncRequests.length;
+  state.failPage(activeId, 'second-page', false);
+  await retryRelations(dialog, 'Release client').click();
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await expect(edge(dialog, activeId, nextSuccessorId)).toHaveCount(1);
+  expect(state.syncRequests).toHaveLength(reads);
+});
+
+test('an implicit unavailable prerequisite displays a warning without exposing a peer identity', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.sourceReply(activeId, () => ({ goalId: activeId, canEdit: false, completionBlocked: true, prerequisites: [{ target: null }], successors: [], nextCursor: null }));
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await card(dialog, activeId).locator('.task-node-body').click();
+  await expect(dialog).toContainText('You cannot access');
+  await expect(card(dialog, externalId)).toHaveCount(0);
+  await expect(dialog).not.toContainText('External authentication');
+  await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+});
+
+test('independently observed reversed external edges cannot replace the legal project graph with a cycle', async ({ page }) => {
+  const state = await install(page, { external: true, cycle: true });
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await expect(sourceStatus(dialog, isolatedId)).toHaveAttribute('data-phase', 'ready');
+  await expect(edge(dialog, activeId, isolatedId)).toHaveCount(1);
+  await expect(edge(dialog, externalId, activeId)).toHaveCount(1);
+  await card(dialog, activeId).locator('.task-node-body').click();
+  const viewport = dialog.locator('.react-flow__viewport'), position = await viewport.getAttribute('style');
+  const reads = state.syncRequests.length;
+  state.sourceReply(isolatedId, () => ({ goalId: isolatedId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [state.externalGoal], nextCursor: null }));
+  await retryRelations(dialog, 'Independent acceptance').click();
+  await expect(sourceStatus(dialog, isolatedId)).toHaveAttribute('data-phase', 'conflict');
+  await expect(sourceStatus(dialog, isolatedId)).toContainText('conflict');
+  await expect(edge(dialog, isolatedId, externalId)).toHaveCount(0);
+  await expect(edge(dialog, activeId, isolatedId)).toHaveCount(1);
+  await expect(card(dialog, activeId).locator('.task-node-body')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewport).toHaveAttribute('style', position!);
+  expect(state.syncRequests).toHaveLength(reads);
+});
+
+test('closing the graph aborts its held relation request and creates no TaskSync request', async ({ page }) => {
+  const state = await install(page, { external: true });
+  state.holdSource(activeId);
+  const { dialog, trigger } = await open(page, state.syncRequests);
+  await expect.poll(() => state.sourceHeld(activeId)).toBe(true);
+  const reads = state.syncRequests.length;
+  await dialog.getByRole('button', { name: 'Close acceptance graph', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => state.cancelledRequests.some(value => value.includes(relationPath(activeId)))).toBe(true);
+  state.releaseSource(activeId);
+  await expect(trigger).toBeFocused();
+  expect(state.syncRequests).toHaveLength(reads);
+});
+
+test('credible peer withdrawal removes cards and rejects a late relationship response', async ({ page }) => {
+  const state = await install(page, { external: true });
+  const { dialog } = await open(page, state.syncRequests);
+  await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+  await expect(card(dialog, externalId)).toBeVisible();
+  const peer = await page.context().newPage();
+  try {
+    const peerState = await install(peer, { external: true });
+    await peer.goto(`/projects/${externalProjectId}/tasks/${externalId}`);
+    await expect(peer.locator('.task-detail-title')).toHaveText('External authentication');
+    await page.bringToFront();
+    await expect(sourceStatus(dialog, activeId)).toHaveAttribute('data-phase', 'ready');
+    state.holdSource(activeId);
+    await retryRelations(dialog, 'Release client').click();
+    await expect.poll(() => state.sourceHeld(activeId)).toBe(true);
+    peerState.revokeExternal();
+    await peer.clock.fastForward(61_000);
+    await expect(peer.locator('.goal-detail-surface .goal-information')).toHaveCount(0);
+    await expect(card(dialog, externalId)).toHaveCount(0);
+    await expect(edge(dialog, externalId, activeId)).toHaveCount(0);
+    state.releaseSource(activeId);
+    await page.bringToFront();
+    await expect(card(dialog, externalId)).toHaveCount(0);
+    await expect(dialog).not.toContainText('External authentication');
+    await expect(edge(dialog, doneId, activeId)).toHaveCount(1);
+  } finally { await peer.close(); }
 });

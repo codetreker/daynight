@@ -1,8 +1,12 @@
 import type { TaskSummary } from '../../api/types';
 import type { GraphProjection } from '../task-graph/model';
 
+export type GoalAcceptanceGoal = Pick<TaskSummary, 'id' | 'titlePreview' | 'titleTruncated' | 'status'> & {
+  readonly project?: { readonly id: string; readonly name: string };
+};
+
 export type GoalAcceptanceProjection = GraphProjection & {
-  readonly goals: ReadonlyMap<string, TaskSummary>;
+  readonly goals: ReadonlyMap<string, GoalAcceptanceGoal>;
   readonly prerequisites: ReadonlyMap<string, readonly string[]>;
   readonly successors: ReadonlyMap<string, readonly string[]>;
   readonly progress: ReadonlyMap<string, { readonly done: number; readonly total: number }>;
@@ -13,7 +17,8 @@ export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary
   const visible = new Set([...available.values()].filter(goal => goal.status === 'todo' || goal.status === 'in_progress').map(goal => goal.id));
   if (focusId !== null && available.has(focusId)) visible.add(focusId);
   for (const id of [...visible]) for (const prerequisite of available.get(id)!.dependsOn) if (available.has(prerequisite)) visible.add(prerequisite);
-  const goals = new Map([...available].filter(([id]) => visible.has(id)));
+  const included = new Map([...available].filter(([id]) => visible.has(id)));
+  const goals = new Map([...included].map(([id, goal]) => [id, { id, titlePreview: goal.titlePreview, titleTruncated: goal.titleTruncated, status: goal.status }]));
   const prerequisites = new Map([...goals.keys()].map(id => [id, [] as string[]]));
   const successors = new Map([...goals.keys()].map(id => [id, [] as string[]]));
   const progress = new Map([...goals.keys()].map(id => [id, { done: 0, total: 0 }]));
@@ -22,7 +27,7 @@ export const projectGoalAcceptance = (summaries: ReadonlyMap<string, TaskSummary
     const parent = progress.get(task.parentId);
     if (parent !== undefined) { parent.total++; if (task.status === 'done') parent.done++; }
   }
-  const edges = [...goals.values()].flatMap(goal => goal.dependsOn.filter(id => goals.has(id)).map(source => {
+  const edges = [...included.values()].flatMap(goal => goal.dependsOn.filter(id => goals.has(id)).map(source => {
     prerequisites.get(goal.id)!.push(source); successors.get(source)!.push(goal.id);
     return { source, target: goal.id, external: false };
   }));
