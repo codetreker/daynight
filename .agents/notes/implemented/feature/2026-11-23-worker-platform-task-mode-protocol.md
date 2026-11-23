@@ -26,7 +26,9 @@ negotiated view for editing.
 An independent capability selects the enum target and application kind. Legacy
 readers receive the boolean projection, with `only` projected as true. Legacy
 edits preserve a saved `only` when that projection is unchanged, and require an
-upgrade to change it. This decision occurs after the existing target revision
+upgrade to change it. Both that refusal and an unsupported strict-mode enablement
+are classified as conflicts only when transaction failure and cleanup facts permit
+a deterministic refusal. This decision occurs after the existing target revision
 check under the Worker row lock, together with support checks from the latest
 accepted observation. A real enum application item proves protocol support;
 its state and value separately describe actual application. Old and new items

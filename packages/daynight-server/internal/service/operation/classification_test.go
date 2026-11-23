@@ -167,3 +167,23 @@ func TestTagFaultsRequireReliableCompletion(t *testing.T) {
 		}
 	}
 }
+
+func TestPlatformTaskModeFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"worker_platform_task_mode_upgrade_required", "worker_platform_task_mode_unsupported"} {
+		t.Run(code, func(t *testing.T) {
+			fault := &model.Fault{Code: code, Message: "refused"}
+			if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+				t.Fatalf("confirmed refusal suppressed: %v %v", got, ok)
+			}
+			for _, failure := range []error{
+				&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault},
+				&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: fault},
+				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("database failure")}),
+			} {
+				if got, ok := operation.KnownFault(failure); ok {
+					t.Fatalf("unsafe failure exposed: %v", got)
+				}
+			}
+		})
+	}
+}
