@@ -17,32 +17,35 @@ import { definition, id, owner, proof } from "./bot-execution-store.fixtures.js"
 
 export { id, owner };
 const cleanups: (() => void)[] = [];
+export const cleanupMigrationResources = (resources: (() => void)[]) => {
+  for (const cleanup of resources.splice(0).reverse()) cleanup();
+};
 export const cleanupMigrations = () => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  cleanupMigrationResources(cleanups);
   vi.restoreAllMocks(); vi.unstubAllEnvs();
 };
-const retain = <T extends { close(): void }>(handle: T): T => {
+const retain = <T extends { close(): void }>(handle: T, resources = cleanups): T => {
   let closed = false;
   const original = handle.close.bind(handle);
   handle.close = () => { if (!closed) { original(); closed = true; } };
-  cleanups.push(() => handle.close()); return handle;
+  resources.push(() => handle.close()); return handle;
 };
 
-export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean; aliasRoot?: "shared" | "bot" } = {}) => {
+export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean; aliasRoot?: "shared" | "bot" } = {}, resources = cleanups) => {
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-migration-tests");
   mkdirSync(root, { recursive: true });
   const homeDirectory = mkdtempSync(path.join(root, "case-"));
-  cleanups.push(() => rmSync(homeDirectory, { recursive: true, force: true }));
+  resources.push(() => rmSync(homeDirectory, { recursive: true, force: true }));
   vi.stubEnv("DN_CONFIG_DIR", path.join(homeDirectory, "config"));
   const stateDirectory = resolveConfigurationPaths(homeDirectory).stateDirectory;
   const legacyDatabaseFile = path.join(stateDirectory, "worker", "state.sqlite");
   mkdirSync(path.dirname(legacyDatabaseFile), { recursive: true, mode: 0o700 });
-  const bots = retain(openBotStore(legacyDatabaseFile, { onMigration: () => {} }));
-  const executions = retain(openBotExecutionStore(legacyDatabaseFile, { onMigration: () => {} }));
+  const bots = retain(openBotStore(legacyDatabaseFile, { onMigration: () => {} }), resources);
+  const executions = retain(openBotExecutionStore(legacyDatabaseFile, { onMigration: () => {} }), resources);
   const lock = acquireInstanceLockSync(path.join(path.dirname(legacyDatabaseFile), "instance.lock"), legacyDatabaseFile);
   let released = false;
   const releaseWorker = () => { if (!released) { lock.release(); released = true; } };
-  cleanups.push(releaseWorker);
+  resources.push(releaseWorker);
   const bot = { ...definition(), resolvedConfiguration: { ...definition().resolvedConfiguration, cwd: homeDirectory } };
   bots.observe(owner, bot, 1);
   bots.prepare(owner, bot.id, { homeDirectory, recoveryLimit: 3 });
@@ -64,8 +67,8 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
   await writeLaunchTicket(homeDirectory, ticket);
   mkdirSync(path.dirname(intent.journalPath), { recursive: true, mode: 0o700 });
   writeFileSync(intent.credentialFile, "original credential fixture", { mode: 0o600 });
-  const journal = retain(openControllerLifecycleStore(intent.journalPath, ticket, { contentOwnedLocally: true }));
-  const pin = options.keepWal ? retain(new Database(sqliteFilename(intent.journalPath), { readonly: true })) : null;
+  const journal = retain(openControllerLifecycleStore(intent.journalPath, ticket, { contentOwnedLocally: true }), resources);
+  const pin = options.keepWal ? retain(new Database(sqliteFilename(intent.journalPath), { readonly: true }), resources) : null;
   pin?.exec("BEGIN; SELECT * FROM execution");
   const entry = { entryId: id(50), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "Original history 中文 🐈" }] };
   journal.projectTimeline(entry);
@@ -89,7 +92,7 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
     snapshot, aliasDirectory,
   });
   const execution = executions.get(record)!;
-  const openRaw = (file: string, readonly = true) => retain(new Database(sqliteFilename(file), { readonly, fileMustExist: true }));
+  const openRaw = (file: string, readonly = true) => retain(new Database(sqliteFilename(file), { readonly, fileMustExist: true }), resources);
   const confirmStopped = vi.fn(async (_ticket: ControllerLaunchTicket, observed: ControllerSnapshot) => {
     if (observed.lifecycle !== "stopped" || !observed.nativeStopped) throw new Error("fixture execution has not stopped");
   });
