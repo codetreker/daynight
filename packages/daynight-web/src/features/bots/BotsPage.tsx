@@ -125,7 +125,7 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
   const detailsUnavailable = botId === null || blocked(botId) || denied || deleted || scope.isInvalidated;
   useEffect(() => { if (detailsUnavailable) setDetailsOpen(false); }, [detailsUnavailable]);
   const selectedName = !denied && !deleted && botId !== null && !blocked(botId) ? visibleBots.find(item => item.id === botId)?.name : null;
-  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, ...(bot ? { observation: observations.get(bot.id) } : {}), name: bot?.name ?? selectedName ?? (selectedDeletion?.name || (selectedDeletion?.phase === 'completed' ? m.title : m.loading)), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
+  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, ...(bot ? { observation: observations.get(bot.id) } : {}), name: bot?.name ?? selectedName ?? (selectedDeletion?.name || (selectedDeletion?.result ? m.title : m.loading)), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
   const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); observations.refresh(); };
   const deleteDialog = deleteTarget && !scope.isInvalidated && !targetUnavailable ? <div className="bot-details-confirmation" onKeyDown={event => {
     // Native dialog cancel and Tab own this layer before fullscreen handles keys.

@@ -1,12 +1,13 @@
 import { assertWorkerLifecycleAdmission, currentLifecycleBinding } from "../lifecycle-context.js";
 import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
@@ -37,6 +38,12 @@ export class BotAdmissionBlockedError extends Error {
   constructor(options?: ErrorOptions) {
     super("Bot initialization is waiting for Worker configuration.", options);
     this.name = "BotAdmissionBlockedError";
+  }
+}
+export class BotExecutionEvidenceMissingError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(`execution_evidence_missing: The original Bot execution submission or stop evidence is unavailable.${options?.cause instanceof Error ? ` ${options.cause.message}` : ""}`, options);
+    this.name = "BotExecutionEvidenceMissingError";
   }
 }
 
@@ -562,7 +569,36 @@ export const createBotProcess = (options: {
     }
     return record;
   };
-  const stopForDeletion = async (input: BotRecord, signal: AbortSignal): Promise<BotDeletionStop | null> => {
+  const stopRetainedDeletionGeneration = async (record: BotRecord, signal: AbortSignal): Promise<BotDeletionStop> => {
+    const intent = record.intent!;
+    if (record.observed.deletion?.workerCleanup.code !== "execution_evidence_missing" || record.observed.deletion.workerCleanup.state !== "failed") throw new BotExecutionEvidenceMissingError();
+    const deadline = Date.now() + 10_000, ticket = await checkedTicket(record);
+    signal.throwIfAborted(); deletionRecord(record);
+    const snapshot = readCurrentControllerSnapshot(intent.journalPath, ticket, deadline);
+    validateBotExecutionSnapshot(record, snapshot);
+    if (snapshot.controllerProcess === null) throw new BotExecutionEvidenceMissingError();
+    let stopped: ControllerSnapshot;
+    try {
+      // A durable stop needs no second termination. Windows additionally requires
+      // its authenticated Job proof; a stopped PID alone cannot prove the tree.
+      if (snapshot.lifecycle === "stopped" && snapshot.nativeStopped) {
+        stopped = await recordWithLease(intent.journalPath, ticket, deadline);
+      } else {
+        if (jobLeases.enabled) await jobLeases.retain(intent.launchId, snapshot.controllerProcess, deadline);
+        signal.throwIfAborted(); deletionRecord(record);
+        await stopWithLease(intent.launchId, snapshot.controllerProcess, snapshot.nativeProcesses, deadline);
+        stopped = await recordWithLease(intent.journalPath, ticket, deadline);
+      }
+      validateBotExecutionSnapshot(record, stopped);
+      if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.controllerProcess === null) throw new Error("Original Bot generation stop remains unproven.");
+    } finally { await jobLeases.release(intent.launchId); }
+    // The original journal owns this proof. Missing execution history cannot be
+    // reconstructed into a Bot execution row or a complete private cleanup plan.
+    return { protocol: "daynight.session.v1", sessionId: intent.sessionId!, testExecutionId: intent.executionId,
+      executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
+      stopProof: { recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: stopped.stoppedAt } };
+  };
+  const stopForDeletion = async (input: BotRecord, signal: AbortSignal, settings?: { recoverMissingExecution?: boolean }): Promise<BotDeletionStop | null> => {
     signal.throwIfAborted();
     assertBotMigrationExecutable(input);
     let record = deletionRecord(input);
@@ -571,7 +607,7 @@ export const createBotProcess = (options: {
     record = deletionRecord(input);
     const intent = record.intent;
     if (intent === null) {
-      if (record.definition?.sessionId != null) throw new Error("Bot deletion lost the original execution evidence for its registered Session.");
+      if (record.definition?.sessionId != null) throw new BotExecutionEvidenceMissingError();
       // Preflight can own aliases before launch intent exists. A failed release
       // retains this handle; registered execution aliases use the durable plan.
       const prepared = environments.get(record.botId);
@@ -580,7 +616,13 @@ export const createBotProcess = (options: {
       return null;
     }
     const execution = options.executions.get(record);
-    const unsubmitted = execution === null || execution.launchSubmission === "not-submitted";
+    // A missing row cannot distinguish an interrupted preparation from lost
+    // history. Only a persisted submission state can prove never-started.
+    if (execution === null) {
+      if (settings?.recoverMissingExecution === true) return stopRetainedDeletionGeneration(record, signal);
+      throw new BotExecutionEvidenceMissingError();
+    }
+    const unsubmitted = execution.launchSubmission === "not-submitted";
     const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
       && execution.controllerProcess === null && execution.snapshot === null;
     if (unsubmitted || rejected) {
@@ -593,7 +635,11 @@ export const createBotProcess = (options: {
         executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
         stopProof: { kind: "never_started", recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: new Date(now()).toISOString() } };
     }
-    await shutdown(record, signal);
+    try { await shutdown(record, signal); }
+    catch (cause) {
+      if (!signal.aborted && !existsSync(intent.journalPath)) throw new BotExecutionEvidenceMissingError({ cause });
+      throw cause;
+    }
     record = deletionRecord(input);
     const stopped = options.executions.get(record)?.snapshot;
     if (stopped?.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.controllerProcess === null || intent.sessionId === null) {
@@ -607,14 +653,14 @@ export const createBotProcess = (options: {
     /** Join launch/renewal, then retain the same lock through stop and private cleanup.
      * A persisted deletion receipt lets the caller skip stop after journal removal.
      */
-    withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
+    withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: (settings?: { recoverMissingExecution?: boolean }) => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
       assertBotMigrationExecutable(record);
       if (record.cleanup === undefined && options.canControl?.(record) === false) throw new Error("Bot deletion requires confirmed local hosting.");
       signal.throwIfAborted(); deletionRecord(record);
       let active = true;
-      try { return await action(() => {
+      try { return await action(settings => {
         if (!active) return Promise.reject(new Error("Bot deletion stop must remain inside its serialized cleanup."));
-        return stopForDeletion(record, signal);
+        return stopForDeletion(record, signal, settings);
       }); }
       finally { active = false; }
     }),

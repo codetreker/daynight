@@ -163,8 +163,8 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex") => {
-  const f = fixture(provider, configuration, false, dedicated), signal = new AbortController().signal;
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex", persistent = false) => {
+  const f = fixture(provider, configuration, persistent, dedicated), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   if (unacknowledged) {
     f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); await options.onSpawned(proof); throw new Error("observation unavailable"); });
@@ -586,6 +586,68 @@ test("only an unsubmitted first generation can attest never started", async () =
   const proof = await f.process.withDeletion(record, signal, stop => stop());
   expect(proof).toMatchObject({ sessionId: original.sessionId, executionGeneration: "1", stopProof: { kind: "never_started", recordId: original.launchId, previousControllerInstanceId: original.controllerInstanceId } });
   expect(f.launch).not.toHaveBeenCalled();
+});
+
+test("a lost execution row cannot turn a retained launch intent into never-started proof", async () => {
+  const f = fixture("codex", {}, true), signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const database = new Database(path.join(f.home, "worker.sqlite"));
+  try { database.prepare("DELETE FROM bot_executions").run(); } finally { database.close(); }
+  const record = markDeleting(f);
+  let cleaned = false;
+  await expect(f.process.withDeletion(record, signal, async stop => { await stop(); cleaned = true; })).rejects.toThrow("execution_evidence_missing");
+  expect(cleaned).toBe(false); expect(existsSync(record.intent!.ticketPath)).toBe(true);
+  expect(f.current().intent).toEqual(record.intent);
+});
+
+const journalOnlyDeletion = async () => {
+  const f = await recoveryFixture({}, false, false, 3, false, "codex", true);
+  const database = new Database(path.join(f.home, "worker.sqlite"));
+  try { database.prepare("DELETE FROM bot_executions").run(); } finally { database.close(); }
+  const deleting = markDeleting(f), observed = deleting.observed;
+  if (observed.deletion === null) throw new Error("Expected deletion fixture");
+  const record = f.store.observe(f.owner, { ...observed, version: String(BigInt(observed.version) + 1n),
+    deletion: { ...observed.deletion, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } }, 3);
+  return { ...f, record };
+};
+
+test("explicit journal-only deletion stops its original generation without reconstructing execution or cleanup", async () => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  try {
+    const stop = () => f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }));
+    expect(await stop()).toMatchObject({ sessionId: f.record.intent!.sessionId, stopProof: { stoppedAt: "2026-11-05T00:00:00Z" } });
+    expect(f.deps.stopProcesses).toHaveBeenCalledOnce(); expect(f.deps.recordStopped).toHaveBeenCalledOnce();
+    expect(await stop()).toMatchObject({ stopProof: { stoppedAt: "2026-11-05T00:00:00Z" } });
+    expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith(f.record.intent!.journalPath, f.getTicket(), expect.any(Number));
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+    expect(f.current().intent).toEqual(f.record.intent); expect(existsSync(f.record.intent!.ticketPath)).toBe(true);
+    expect(f.current().observed.deletion?.workerCleanup).toEqual({ state: "failed", code: "execution_evidence_missing" });
+    expect(f.launch).toHaveBeenCalledOnce(); expect(f.deps.request).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+test.each(["ticket", "journal"])("journal-only deletion rejects a conflicting %s before stopping", async kind => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  const ticket = kind === "ticket" ? vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...f.getTicket(), controllerInstanceId: id(99) }) : undefined;
+  if (kind === "journal") f.patch({ controllerInstanceId: id(99) });
+  try {
+    await expect(f.manager.withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).rejects.toThrow(/original|fence/);
+    expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+    expect(f.executions.get(f.record)).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+  } finally { ticket?.mockRestore(); read.mockRestore(); }
+});
+
+test("journal-only deletion refuses an unavailable Windows Job identity before termination", async () => {
+  const f = await journalOnlyDeletion(), read = vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => f.saved());
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => {},
+    retain: vi.fn(async () => { throw new Error("Windows original Job identity unavailable"); }), get: async () => undefined, release: vi.fn(async () => {}), close: async () => {} };
+  try {
+    await expect(f.createProcess(f.deps, 0, leases).withDeletion(f.record, f.signal, stop => stop({ recoverMissingExecution: true }))).rejects.toThrow("Windows original Job identity unavailable");
+    expect(leases.retain).toHaveBeenCalledWith(f.record.intent!.launchId, f.saved().controllerProcess, expect.any(Number));
+    expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+    expect(f.current().cleanup).toBeUndefined(); expect(f.executions.get(f.record)).toBeNull();
+  } finally { read.mockRestore(); }
 });
 
 test("an unsubmitted recovery with unknown server generation cannot manufacture a deletion stop proof", async () => {

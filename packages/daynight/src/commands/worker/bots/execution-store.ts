@@ -95,6 +95,21 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   return value;
 };
 
+/** Revalidate the retained launch before granting replay of its never-started deletion. */
+export const hasNeverStartedDeletionEvidence = (record: BotRecord, execution: BotExecution | null): boolean => {
+  const intent = record.intent, stop = record.cleanup?.stop;
+  if (intent === null || intent.executionGeneration !== "1" || intent.sessionId === null || intent.nativeSessionId !== null || execution === null
+    || stop == null || stop.stopProof.kind !== "never_started") return false;
+  check(record, execution);
+  const rejected = execution.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
+    && execution.controllerProcess === null && execution.snapshot === null;
+  return (execution.launchSubmission === "not-submitted" && execution.startup === null || rejected)
+    && stop.protocol === "daynight.session.v1" && stop.sessionId === intent.sessionId && stop.testExecutionId === intent.executionId
+    && stop.executionGeneration === intent.executionGeneration && stop.controllerId === intent.registration.controllerId
+    && stop.controllerInstanceId === intent.controllerInstanceId && stop.stopProof.previousControllerInstanceId === intent.controllerInstanceId
+    && stop.stopProof.recordId === intent.launchId;
+};
+
 /** The caller retains the owning storage lock; these rows never enter Task capacity or cleanup inventory. */
 export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; format?: SqliteFormat } = {}) => {
   const format = options.format ?? workerStoreFormat;

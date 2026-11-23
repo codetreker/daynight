@@ -6,6 +6,8 @@ import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
 import type { Bot, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
+import { ApiError } from "../../../src/api/client.js";
+import { BotExecutionEvidenceMissingError } from "../../../src/commands/worker/bots/process.js";
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const cleanups:(()=>void)[]=[];
 afterEach(()=>{for(const cleanup of cleanups.splice(0).reverse())cleanup();vi.unstubAllEnvs();});
@@ -32,9 +34,170 @@ const fixture=()=>{
  const process={withDeletion:async<T>(_r:BotRecord,_s:AbortSignal,action:(stop:()=>Promise<typeof stopProof>)=>Promise<T>)=>action(stop)};
  const remote={owner,read:vi.fn(async()=>remoteBot),list:vi.fn(async()=>[remoteBot])};
  const api={completeDeletion:vi.fn(async(_record:BotRecord,receipt:any)=>{remoteBot={...remoteBot,version:String(Number(remoteBot.version)+1),deletion:{...remoteBot.deletion,workerCleanup:receipt.result,serverCleanup:{state:receipt.result.state==="completed"?"completed":"pending",code:null}}};return remoteBot;})};
- const create=(dependencies={})=>createBotDeletion({homeDirectory:home,store,executions,process:process as never,sessionApi:api as never,remote,dependencies});
- return {home,store,executions,intent,current,stop,stopProof,remote,api,create,setRemote:(bot:BotDeleted)=>{remoteBot=bot;}};
+ const create=(dependencies={},recoveryWorkerId?:string)=>createBotDeletion({homeDirectory:home,store,executions,process:process as never,sessionApi:api as never,remote,dependencies,...(recoveryWorkerId===undefined?{}:{recoveryWorkerId})});
+ return {home,database,store,executions,intent,current,stop,stopProof,remote,api,create,setRemote:(bot:BotDeleted)=>{remoteBot=bot;}};
 };
+
+const loseEvidence = (f: ReturnType<typeof fixture>, poisoned = false): void => {
+ const record = f.current(); record.intent = null; record.definition = null;
+ if (poisoned) record.cleanup = { deletionId: id(8), requestedVersion: "1", stop: null, targets: [], localCompleted: true };
+ f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(record));
+ f.database.prepare("DELETE FROM bot_executions").run();
+};
+
+test.each([false, true])("known missing evidence remains read-only without trusting localCompleted=%s", async poisoned => {
+ const f = fixture(); loseEvidence(f, poisoned);
+ f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ await f.create().advance(f.current(), new AbortController().signal);
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
+ await expect(f.create().advance(f.current(), new AbortController().signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(existsSync(f.intent.journalPath)).toBe(true);
+});
+
+test("a definitive old-service null-proof conflict transitions to the existing recovery failure", async () => {
+ const f = fixture(); loseEvidence(f, true);
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+ status: 409, serverError: { code: "session_conflict", message: "Stop proof required.", requestId: "fixture" }, cause: new Error("rejected") }));
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.api.completeDeletion.mock.calls.map(call => call[1].result.state)).toEqual(["completed", "failed"]);
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+});
+
+test.each([401, 500])("a null-proof HTTP %s failure cannot create a missing-evidence report", async status => {
+ const f = fixture(); loseEvidence(f, true);
+ const failure = new ApiError({ operation: "worker.bot.delete" }, "response", {
+   status, serverError: { code: "session_conflict", message: "No proof conclusion.", requestId: "fixture" }, cause: new Error("failed") });
+ f.api.completeDeletion.mockRejectedValueOnce(failure);
+ await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toBe(failure);
+ expect(f.api.completeDeletion).toHaveBeenCalledOnce();
+ expect(f.current().observed.deletion!.workerCleanup).toEqual({ state: "pending", code: null });
+});
+
+test("an unknown missing-evidence report is reconciled by GET without replaying the rejected receipt", async () => {
+ const f = fixture(); loseEvidence(f, true);
+ const complete = f.api.completeDeletion.getMockImplementation()!;
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+   status: 409, serverError: { code: "session_conflict", message: "Receipt rejected.", requestId: "fixture" }, cause: new Error("rejected") }))
+   .mockImplementationOnce(async (...args) => { await complete(...args); throw new Error("failure report response lost"); });
+ await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toThrow("response lost");
+ expect(f.current().observed.deletion!.workerCleanup.state).toBe("pending");
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+});
+
+test("a null-proof receipt can complete when the existing service accepts it", async () => {
+ const f = fixture(); loseEvidence(f, true);
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: null, result: { state: "completed" } });
+});
+
+test("only explicit recovery uses retained original evidence and a failed stop keeps recovery required", async () => {
+ const f = fixture(); f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ await f.create().advance(f.current(), new AbortController().signal); expect(f.stop).not.toHaveBeenCalled();
+ f.stop.mockRejectedValueOnce(new Error("original writer remains unconfirmed"));
+ await expect(f.create().advance(f.current(), new AbortController().signal, { recover: true })).rejects.toThrow("original writer");
+ expect(f.api.completeDeletion).not.toHaveBeenCalled();
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ await f.create().advance(f.current(), new AbortController().signal, { recover: true });
+ expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: f.stopProof, result: { state: "completed" } });
+});
+
+test("restored original evidence replaces an empty null-proof plan only after stopping again", async () => {
+ const f = fixture(), record = f.current();
+ record.cleanup = { deletionId: id(8), requestedVersion: "1", stop: null, targets: [], localCompleted: false };
+ f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(record));
+ f.setRemote({ ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ await f.create().advance(f.current(), new AbortController().signal, { recover: true });
+ expect(f.stop).toHaveBeenCalledOnce();
+ expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: f.stopProof, result: { state: "completed" } });
+});
+
+test("partial execution evidence loss reports recovery and retains the original private files", async () => {
+ const f = fixture(); f.stop.mockRejectedValue(new BotExecutionEvidenceMissingError());
+ await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toThrow("execution_evidence_missing");
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ expect(f.current().cleanup).toBeUndefined();
+ expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.stop).toHaveBeenCalledOnce(); expect(f.api.completeDeletion).toHaveBeenCalledOnce();
+});
+
+test.each(["not-submitted", "rejected"])("explicit recovery resumes a retained %s plan without replacing its proof or completed targets", async state => {
+ const f = fixture(), { captureBotDeletionFiles, removeBotDeletionFile } = await import("../../../src/commands/worker/bots/delete-files.js");
+ const signal = new AbortController().signal, record = f.current();
+ if (state === "rejected") f.executions.update(record, { launchSubmission: "unknown", startup: { state: "failed", reasonCode: "controller_launch_failed" } });
+ const targets = await captureBotDeletionFiles(f.home, record, f.executions.get(record), signal);
+ const plan = f.store.prepareDeletion(record, f.stopProof, targets);
+ const ticket = plan.cleanup!.targets.find(target => target.path === f.intent.ticketPath)!;
+ await removeBotDeletionFile(ticket, signal); f.store.completeDeletionTarget(plan, ticket.path);
+ writeFileSync(ticket.path, "replacement ticket must survive");
+ f.setRemote({ ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ await f.create().advance(f.current(), signal, { recover: true });
+ expect(f.stop).not.toHaveBeenCalled(); expect(existsSync(ticket.path)).toBe(true);
+ expect(f.api.completeDeletion.mock.calls[0]![1]).toEqual({ deletionId: id(8), stop: f.stopProof, result: { state: "completed", code: null } });
+});
+
+test.each(["missing", "submitted", "ready", "different proof", "stamped missing", "stamped submitted", "stamped ready", "stamped different proof"])("explicit recovery rejects a never-started plan with %s original evidence", async invalid => {
+ const f = fixture(), { captureBotDeletionFiles } = await import("../../../src/commands/worker/bots/delete-files.js");
+ const signal = new AbortController().signal, record = f.current();
+ const targets = await captureBotDeletionFiles(f.home, record, f.executions.get(record), signal);
+ f.store.prepareDeletion(record, f.stopProof, targets);
+ const failed = { ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted;
+ f.store.observe(record.owner, failed, 4); f.setRemote(failed);
+ if (invalid.startsWith("stamped")) f.store.bindDeletionWorker(f.current(), record.owner.workerId);
+ if (invalid.endsWith("missing")) f.database.prepare("DELETE FROM bot_executions").run();
+ else if (invalid.endsWith("submitted")) f.executions.update(f.current(), { launchSubmission: "unknown" });
+ else if (invalid.endsWith("ready")) f.executions.update(f.current(), { startup: { state: "ready", reasonCode: "ready" } });
+ else {
+  const changed = f.current(); changed.cleanup!.stop!.stopProof.recordId = id(90);
+  f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(changed));
+ }
+ await expect(f.create({}, record.owner.workerId).advance(f.current(), signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
+ expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
+});
+
+test("a definitive rejection revokes never-started recovery replay without treating transport loss as rejection", async () => {
+ const f = fixture(), signal = new AbortController().signal;
+ f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
+ const manager = f.create({}, f.current().owner.workerId);
+ f.api.completeDeletion.mockRejectedValueOnce(new Error("completion response lost"));
+ await expect(manager.advance(f.current(), signal, { recover: true })).rejects.toThrow("response lost");
+ expect(f.current().cleanup).toMatchObject({ localCompleted: true, workerId: f.current().owner.workerId });
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+  status: 409, serverError: { code: "session_conflict", message: "Original execution consumed its grant.", requestId: "fixture" }, cause: new Error("rejected") }));
+ await manager.advance(f.current(), signal, { recover: true });
+ expect(f.current().cleanup).not.toHaveProperty("workerId");
+ await expect(manager.advance(f.current(), signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+});
+
+test("a rejected historical never-started receipt retains the service failure without inferring a binding", async () => {
+ const f = fixture();
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+ status: 409, serverError: { code: "session_conflict", message: "Original execution consumed its grant.", requestId: "fixture" }, cause: new Error("rejected") }));
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.current()).toMatchObject({ intent: null, cleanup: { localCompleted: true, stop: { stopProof: { kind: "never_started" } } } });
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ await f.create().advance(f.current(), new AbortController().signal);
+ await expect(f.create().advance(f.current(), new AbortController().signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+});
+
+test("an unfinished historical never-started plan cannot erase files after its execution evidence was lost", async () => {
+ const f = fixture(), capture = (await import("../../../src/commands/worker/bots/delete-files.js")).captureBotDeletionFiles;
+ const record = f.current(), targets = await capture(f.home, record, f.executions.get(record), new AbortController().signal);
+ f.store.prepareDeletion(record, f.stopProof, targets);
+ f.database.prepare("DELETE FROM bot_executions").run();
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
+ expect(f.current().cleanup!.localCompleted).toBe(false);
+ expect(f.api.completeDeletion.mock.calls[0]![1].result).toEqual({ state: "failed", code: "execution_evidence_missing" });
+});
 
 test("cleans only private sources, strips execution records, and retains exact minimal receipt",async()=>{
  const f=fixture();await f.create().advance(f.current(),new AbortController().signal);

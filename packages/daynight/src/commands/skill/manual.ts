@@ -8,6 +8,7 @@ export const manualTopicFiles = [
   "references/webhooks.md",
   "references/worker-operations.md",
   "references/assistant-tasks.md",
+  "references/bot-deletion.md",
 ] as const;
 
 export const validateManualContents = (contents: Uint8Array): void => {

@@ -1,6 +1,9 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
+  deletionEvidenceMissing: 'Execution records are missing; deletion cannot be confirmed.', deletionRecoverySteps: 'Show original-machine recovery steps',
+  deletionRecoveryPrepare: 'On the machine that ran this assistant, stop its Worker and use the original DN_CONFIG_DIR, Daynight server and account. Keep any remaining execution records, then attempt local recovery:',
+  deletionRecoveryResult: 'Missing evidence can prevent recovery from completing deletion. Stopping the original execution does not prove that all local data was cleaned. Check the server result after recovery; only both cleanup phases completed means deletion completed.',
   legacyRoleNotice: 'Recreate this assistant to enable assistant task collaboration.',
   welcomeTitle: 'Start with a conversation', welcomeDescription: 'Check progress, clarify an idea, or move your work forward.',
   conversationStarters: [
@@ -19,6 +22,9 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
+  deletionEvidenceMissing: '执行记录缺失，无法确认删除完成', deletionRecoverySteps: '查看原机补偿步骤',
+  deletionRecoveryPrepare: '在运行此助手的原机器上停止 Worker，使用原来的 DN_CONFIG_DIR、Daynight 服务端和账号。保留尚存的执行记录，再尝试本机补偿：',
+  deletionRecoveryResult: '证据缺失时，补偿仍可能无法完成删除。原执行停止不代表本机数据已全部清理。补偿后核对服务端结果；只有两阶段清理都完成，才表示删除完成。',
   legacyRoleNotice: '重建后可获得助手任务协作能力',
   welcomeTitle: '从一段对话开始', welcomeDescription: '查进度、理清想法，或一起推进手头的工作。',
   conversationStarters: [

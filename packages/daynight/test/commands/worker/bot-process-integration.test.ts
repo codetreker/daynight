@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
+import { recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
@@ -272,7 +273,7 @@ test.skipIf(process.platform !== "darwin")("waits through a real same-birth comm
   await waiting;
 }, 20_000);
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; localRecovery?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -313,8 +314,13 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
   const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
-  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
-  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const workerPaths = resolveWorkerPaths(home), databaseFile = options.localRecovery ? workerPaths.databaseFile : path.join(home, "worker.sqlite");
+  if (options.localRecovery) {
+    await mkdir(workerPaths.workerDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(workerPaths.configFile, `workerId: ${owner.workerId}\n`, { mode: 0o600 });
+  }
+  const store = openBotStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const executions = openBotExecutionStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
   let bot: BotDefinition = { id: botId, ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
     resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: options.args ?? [] }, roleConfiguration: null, sessionId: null, testExecutionId: null,
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -485,11 +491,6 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
           }
           expect(stopped).toBe(true);
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
-      }
-      const recordNow = current();
-      if (recordNow.intent !== null && process.platform !== "win32") {
-        const ticket = await botProcess.readTicket(recordNow).catch(() => null);
-        if (ticket !== null) await rm(path.dirname(ticket.ipcEndpoint), { recursive: true, force: true });
       }
     } catch (error) {
       stopped = false; cleanupFailure = error;
@@ -896,6 +897,50 @@ test("deletes every private generation after real Controller stop while preservi
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
 
+
+test("explicit recovery stops a real journal-bound Controller after its Bot execution index is lost", async () => {
+  const f = await fixture({ hosted: true, localRecovery: true }), signal = new AbortController().signal;
+  await launchAndObserveReady(f, signal);
+  const ticket = await f.process.readTicket(f.current()), original = f.journal()!;
+  expect(original.controllerProcess).not.toBeNull(); expect(original.nativeStopped).toBe(false);
+  const proof = original.controllerProcess!;
+  const cleanupLease = process.platform === "win32" ? await acquireControllerJobLease(ticket.launchId, proof, Date.now() + 10_000) : undefined;
+  // Keep independently authenticated cleanup authority even if compensation fails.
+  cleanups.push(async () => {
+    try { await cleanupFixtureProcesses(proof, original.nativeProcesses, cleanupLease); }
+    finally { if (cleanupLease !== undefined) releaseControllerJobLease(cleanupLease); }
+  });
+  const paths = resolveWorkerPaths(f.home), db = new Database(paths.databaseFile);
+  try { db.prepare("DELETE FROM bot_executions").run(); } finally { db.close(); }
+  const bot = f.getBot();
+  const workerCleanup = { state: "failed", code: "execution_evidence_missing" } as const, serverCleanup = { state: "pending", code: null } as const;
+  const deleted: BotDeleted = { id: bot.id, workerId: bot.workerId, version: String(BigInt(bot.version) + 1n),
+    deletion: { deletionId: randomUUID(), requestedVersion: bot.version, workerCleanup, serverCleanup } };
+  f.store.observe(f.owner, deleted, Date.now());
+  const requests: string[] = [];
+  f.http!.on("request", (request, response) => {
+    requests.push(request.method!);
+    response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+    const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+    if (request.method !== "GET" || pathname !== `/api/v1/me/bots/${bot.id}`) {
+      response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Unexpected recovery request", requestId: "fixture" } })); return;
+    }
+    response.end(JSON.stringify(deleted));
+  });
+  const input = { homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd,
+    serverUrl: f.owner.serverOrigin, ownerUserId: f.owner.ownerUserId, serverToken: "fixture-parent-token", botId: bot.id, bot: deleted, signal };
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(await confirmControllerProcessesStopped(proof, original.nativeProcesses, undefined, cleanupLease)).toBe(true);
+  const stopped = f.journal()!;
+  expect(stopped).toMatchObject({ lifecycle: "stopped", nativeStopped: true, executionGeneration: original.executionGeneration, controllerInstanceId: original.controllerInstanceId });
+  if (process.platform === "win32") expect(readProvenWindowsStoppedControllerGeneration(f.current().intent!.journalPath, ticket)).toEqual(stopped);
+  await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
+  expect(f.journal()!.stoppedAt).toBe(stopped.stoppedAt);
+  expect(f.executions.get(f.current())).toBeNull(); expect(f.current().cleanup).toBeUndefined();
+  expect(f.current().observed).toEqual(deleted); expect(existsSync(f.current().intent!.ticketPath)).toBe(true);
+  expect(existsSync(f.current().intent!.journalPath)).toBe(true); expect(existsSync(paths.lockFile)).toBe(false);
+  expect(requests).toEqual(["GET", "GET"]); expect(await f.launches()).toHaveLength(1);
+}, 120_000);
 
 test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
   const f = await fixture({ hosted: true }), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];

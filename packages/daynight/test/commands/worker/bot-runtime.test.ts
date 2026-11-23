@@ -92,6 +92,16 @@ test("registers committed migration identity while retaining the missing-materia
   expect(record.migration?.state).toBe("registration_pending");
 });
 
+test("a deletion supersedes pending migration registration while other assistants continue", async () => {
+  const f = fixture(), record = f.records[0]!;
+  record.migration = { state: "registration_pending", manifestPath: "/private/migration.json" };
+  record.observed = { ...record.observed, deletion: { deletionId: id(80), requestedVersion: "1", workerCleanup: { state: "failed", code: "execution_evidence_missing" }, serverCleanup: { state: "pending", code: null } } };
+  await f.runtime.tick(new AbortController().signal);
+  expect(f.deletion.advance).toHaveBeenCalledOnce();
+  expect(f.api.registerRecovery).not.toHaveBeenCalled();
+  expect(f.process.advance.mock.calls.map(call => call[0].botId)).toEqual([id(4)]);
+});
+
 test("unknown migration registration does not prevent another Bot from advancing", async () => {
   const f = fixture();
   f.records[0]!.migration = { state: "registration_pending", manifestPath: "/private/migration.json" };

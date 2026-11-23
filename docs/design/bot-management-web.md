@@ -110,6 +110,8 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)及[独立核对生命周期决策](../../.agents/notes/implemented/architecture/2026-11-17-bot-deletion-check-lifetime.md)。
 
+`execution_evidence_missing` 直接取自既有 Bot 删除 DTO。`BotDeletionStatus` 为已知删除显示原机器的 `bot show` 核对与 `bot recover` 指引，保留真实失败并隐藏该状态的无效原 DELETE 重试，状态核对继续沿既有 GET 生命周期。没有独立恢复资源、账号级恢复集合、网页补偿写入或额外完成状态；停止原 generation 不能替代两端清理完成。CLI 补偿由[Worker 设计](worker-bot-runtime.md)拥有。
+
 ## 详情、焦点与全屏边界
 
 `BotsPage` 拥有局部 `detailsOpen` 和当前详情按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板在 `.bot-conversation-body` 中与 `.bot-conversation-content` 并列，接收当前 Bot 及页面共享的目标观测，不另行读取或保存选中 Bot。切换时账号、Bot ID 与详情选择隔离立即撤下旧目标值；面板可保留展开意图并显示局部加载，随后与标题及绑定接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时准入暂停保留已确认展示。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。

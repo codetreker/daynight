@@ -20,6 +20,12 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 删除投影保留停止与精确清理所需的原责任，只有本地私有清理完成后才裁剪定义和执行资料。Task 表、maxConcurrent、收尾期限和容量计算不读取 Bot 执行行；保留的私有路径也不授予删除普通 cwd 或共享 native home 的权限。
 
+`bots/delete.ts` 每次推进先用既有 Bot GET 核对原 deletionId/requestedVersion。已持久观察到 `workerCleanup=failed/execution_evidence_missing` 时，自动推进只读对账；明确证据缺失通过原失败回执协议保存此状态，不增加服务端资源。null/never_started 回执收到 session_conflict 后须先读取原删除，确认 Worker 清理仍未完成才报告证据缺失，错误状态码本身不证明回执未提交。`stopForDeletion` 不把缺失执行行当作未提交，真实持久 not-submitted 或明确启动拒绝仍走原正常路径。
+
+`bots/deletion-local.ts` 为 `bot recover` 取得原 Worker/Bot 锁，重新读取普通 Bot 删除责任并核对本地原归属及已确认承载身份，再调用既有 `withDeletion` 和精确清理；新执行准入关闭。执行行缺失但原 intent、ticket、journal 有效时，显式补偿复用 Controller stop 与 `recordStoppedControllerGeneration`，Windows 仍要求真实 Job 停证。原 journal 保存该代停止事实并保留 stoppedAt；缺失历史资料不能支持完整私有清理，因此不补造 execution 行、cleanup 计划或完成回执。CLI 通过既有 `reason=evidence_missing` 和 hint 表达部分停止结果，`generationStopped` 仅是本机 Error 标记，不是协议或持久字段。自动调度和普通 Worker 不使用此补偿。证据仍不足时保持失败，服务端完成条件保持原协议。用法见[删除补偿手册](../../packages/daynight/src/commands/skill/skills/using-daynight/references/bot-deletion.md)，取舍见[证据丢失决策](../../.agents/notes/implemented/bug-fix/2026-11-23-bot-deletion-evidence-recovery.md)。
+
+既有 `BotCleanup` 仅新增可选 `workerId`：显式补偿核实 hosting、原停止证明和完整 cleanup 计划后，在任何 remove 前保存。never_started 只接受仍保留的第一代未提交或明确 OS 拒绝执行，逐项匹配原 Session、execution、generation、Controller、instance 和 launchId。未完成计划重试时重新验证，不能用已有绑定跳过缺失或矛盾的原执行；既有计划可在同样验证后补记身份。finishDeletion 仍在提交回执前裁剪执行资料，保留绑定供同一 Worker 续做原回执；历史 localCompleted 的无绑定 never_started 责任仍拒绝。若该回执收到 session_conflict 且 GET 确认 Worker 清理未完成，只撤销该已完成 never_started 责任的重试绑定，传输未知不撤销；其余已核实身份不得改绑。清理移除 `recovery.json` 后，续做须匹配本机 workerId、原 deletionId/requestedVersion 和停证，只继续原计划及回执；尚存 pending、stale 或其他 Worker 的 hosting 记录仍拒绝。process 的停止、启动和一般 hosting 准入保持原规则。旧责任缺少该字段时沿用 `hosting.ownsHosting`：原 owner.workerId 与当前 Worker 相同仍按既有规则准入；由其他 Worker 承载时须有现存可确认的 hosting，不能从 Bot 原归属推定接管身份。`completeDeletion` 在实际请求提交边界记录结果可能未知，保留提交前失败的区别。服务端先提交 Worker 回执，再于另一事务执行清理并重新认证，因此完整 401 等错误也可能发生在回执已保存之后。提交后的错误沿错误链保留 CLI 的 `outcomeUnconfirmed:true`，不推定确定拒绝，也不包装为 `stop_unproven`；匹配的成功响应才确认回执，后续核对仍使用既有 Bot GET。
+
 ## 启动与授权
 
 `createBotProcess` 按 Bot 串行化启动、续期、停止和删除。Host 将独立 `canAdmitNewExecution()` 传给 runtime/process，Worker 依据 manager 存储 readiness 与已生效 native/recovery 配置实现它；`configuration()` 仍只用于能力和配置采样。首次预检先验证参数及目标配置环境，在每个 awaited preparation 后以及持久 intent、初次 register 与 launch submission 前重查门禁，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。
