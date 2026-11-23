@@ -49,6 +49,7 @@ export const browserConfigs = [
   'public-auth-typography-playwright.config.ts',
   'scoped-authorization-playwright.config.ts',
   'scoped-credential-management-playwright.config.ts',
+  'browser-sessions-playwright.config.ts',
   'setup-guide-playwright.config.ts',
   'native-select-playwright.config.ts',
   'bar-chart-playwright.config.ts',
@@ -73,6 +74,8 @@ export const browserConfigs = [
   'worker-alias-playwright.config.ts',
   'worker-lifecycle-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
+  'webhook-catalog-playwright.config.ts',
+  'webhook-tabs-playwright.config.ts',
 ] as const;
 
 // Playwright starts its webServer in a separate process group. Its inherited,

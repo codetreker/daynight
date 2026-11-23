@@ -18,6 +18,7 @@ import { operationNeedsAttention, operationPresentation } from './operation-pres
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import { SessionImageScope } from './images/SessionImageScope';
 import { useInvalidImageBindings } from './useInvalidImageBindings';
+import { useBrowserSessionActivity } from './useBrowserSessionActivity';
 import '../../styles/task-session.css';
 
 const emptyView: SessionViewState = { actionAdmitted: false, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: { text: '', revision: '0', submission: null }, state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyLoaded: false, historySettled: false, historyCoverage: null, historyRevision: 0, connectionGeneration: 0 };
@@ -29,6 +30,7 @@ const noResource = async (): Promise<Blob> => { throw new Error('Historical reso
 
 export function SessionView({ client, userId, active, current, reading, fullscreenBoundary, presentation: slots, historyPreview, pendingPhase, onRetry, error }: { readonly client: TaskSessionClient | null; readonly historyPreview?: SessionHistoryPreview; readonly pendingPhase?: 'binding' | 'snapshot' | 'history'; readonly onRetry?: () => void; readonly error?: string | null; readonly userId: string; readonly active: boolean; readonly current: boolean; readonly reading?: SessionTimelineReading; readonly fullscreenBoundary?: RefObject<HTMLElement | null>; readonly presentation?: SessionPresentationSlots }) {
   const view = useSyncExternalStore(client?.subscribe ?? emptySubscribe, client?.snapshot ?? emptySnapshot);
+  useBrowserSessionActivity(userId, client !== null && active && current && view.connected && !view.authPaused && view.state.snapshot?.lifecycle === 'active');
   const imageDraft = useSyncExternalStore(client?.imageDrafts?.subscribe ?? emptySubscribe, client?.imageDrafts?.getSnapshot ?? emptyImageDraft);
   useEffect(() => {
     client?.setImageDraftAdmission?.(active, current);
