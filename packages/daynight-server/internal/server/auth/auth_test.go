@@ -50,6 +50,7 @@ type identityHTTPScope struct {
 
 var _ store.IdentityScope = (*identityHTTPScope)(nil)
 var _ store.IdentityDAO = (*identityHTTPScope)(nil)
+var _ store.BrowserSessionDAO = (*identityHTTPScope)(nil)
 var _ store.PersonalTeamDAO = (*identityHTTPScope)(nil)
 
 func (s *identityHTTPScope) invoke(name string, args ...any) any {
@@ -72,8 +73,16 @@ func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
 	return nil
 }
 func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO { return s }
-func (s *identityHTTPScope) SessionTime(context.Context) (time.Time, error) {
-	return time.Now().UTC().Truncate(time.Microsecond), nil
+func (s *identityHTTPScope) SessionTime(ctx context.Context) (time.Time, error) {
+	return s.invoke("SessionTime", ctx).(time.Time), nil
+}
+func (s *identityHTTPScope) LockBrowserSession(ctx context.Context, hash []byte, preview bool) (model.Session, time.Time, error) {
+	result := s.invoke("LockBrowserSession", ctx, hash, preview).(identityHTTPBrowserSession)
+	return identityHTTPCloneSession(result.session), result.now, nil
+}
+func (s *identityHTTPScope) TouchBrowserSession(ctx context.Context, id string, used, expires time.Time) error {
+	s.invoke("TouchBrowserSession", ctx, id, used, expires)
+	return nil
 }
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) AdmitLogin(ctx context.Context, hash []byte, global, browser int) (time.Time, string, error) {
@@ -286,6 +295,7 @@ func identityHTTPUser(persona string) model.User {
 }
 
 func (p *identityHTTPPlan) complete(persona string) {
+	issuedAt := time.Date(2026, 11, 20, 10, 0, 0, 123000000, time.UTC)
 	user := identityHTTPUser(persona)
 	var teamID string
 	calls := []identityHTTPCall{{"UpsertUser", func(args []any) any {
@@ -338,10 +348,14 @@ func (p *identityHTTPPlan) complete(persona string) {
 		identityHTTPCheck(p.t, args[1].(string) == user.ID, "login identity read actor")
 		return user
 	}})
+	calls = append(calls, identityHTTPCall{"SessionTime", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil, "session issuance context")
+		return issuedAt
+	}})
 	calls = append(calls, identityHTTPCall{"InsertSession", func(args []any) any {
 		session := args[1].(model.Session)
 		_, err := uuid.Parse(session.ID)
-		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.ExpiresAt.Sub(session.CreatedAt) == identitycore.SessionLifetime, "session write arguments")
+		identityHTTPCheck(p.t, err == nil && session.UserID == user.ID && len(session.TokenHash) == 32 && session.CreatedAt == issuedAt && session.ExpiresAt == issuedAt.Add(identitycore.SessionLifetime) && session.LastUsedAt != nil && *session.LastUsedAt == issuedAt, "session write arguments")
 		identityHTTPNow(p.t, session.CreatedAt)
 		p.mu.Lock()
 		p.sessionDraft = identityHTTPCloneSession(session)
@@ -364,6 +378,27 @@ func (p *identityHTTPPlan) authenticate(user model.User, kind model.CredentialKi
 		}
 		return identityHTTPPrincipal(user, kind)
 	}})
+}
+
+type identityHTTPBrowserSession struct {
+	session model.Session
+	now     time.Time
+}
+
+func (p *identityHTTPPlan) activity(user model.User, token string) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 456000000, time.UTC)
+	principal := identityHTTPPrincipal(user, model.SessionCredential)
+	p.expect(identityHTTPCall{"LockBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && bytes.Equal(args[1].([]byte), secret.Hash(token)) && !args[2].(bool), "browser activity lock credential")
+		return identityHTTPBrowserSession{session: model.Session{ID: principal.CredentialID, UserID: user.ID, TokenHash: secret.Hash(token), CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}, now: now}
+	}}, identityHTTPCall{"TouchBrowserSession", func(args []any) any {
+		identityHTTPCheck(p.t, args[0].(context.Context).Err() == nil && args[1].(string) == principal.CredentialID && args[2].(time.Time) == now && args[3].(time.Time) == now.Add(identitycore.SessionLifetime), "browser activity write uses locked database time")
+		return nil
+	}})
+}
+
+func (integration *identityIntegration) activity(t *testing.T, browser *http.Client, user model.User) {
+	integration.plan.activity(user, identityCookie(t, browser, integration.server.URL, integration.sessionCookie))
 }
 
 func (p *identityHTTPPlan) user(user model.User) {
@@ -807,7 +842,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	sessionActor := identityHTTPPrincipal(aliceUser, model.SessionCredential)
 	integration.session(t, aliceBrowser, aliceUser)
 	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, nil, http.StatusForbidden)
-	integration.session(t, aliceBrowser, aliceUser)
+	integration.activity(t, aliceBrowser, aliceUser)
 	var draftedToken model.PersonalAccessToken
 	var draftMu sync.Mutex
 	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"CleanupCredentials", func(args []any) any { identityHTTPNow(t, args[1].(time.Time)); return nil }}, identityHTTPCall{"InsertPAT", func(args []any) any {
@@ -853,7 +888,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 	if len(listed.Items) != 1 || listed.Items[0].ID != token.ID || bytes.Contains(data, []byte(token.Token)) {
 		t.Fatal("token list must expose only its owner's token metadata")
 	}
-	integration.session(t, aliceBrowser, aliceUser)
+	integration.activity(t, aliceBrowser, aliceUser)
 	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"DeletePAT", func(args []any) any {
 		identityHTTPCheck(t, args[1].(string) == aliceUser.ID && args[2].(string) == token.ID, "PAT delete actor and ID")
 		return nil

@@ -2094,7 +2094,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	}
 	assertStatus("invalid", http.StatusUnauthorized)
 	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
-	mcpIsolationRevocation(t, database, browserPrincipal, principals[0].CredentialID)
+	mcpIsolationRevocation(t, database, browserPrincipal, browserToken, principals[0].CredentialID)
 	revoke, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, origin+"/api/v1/me/tokens/"+principals[0].CredentialID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2243,6 +2243,42 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 	}
 }
 
+type mcpIsolationActivityDAO struct {
+	httpRejectedIdentityDAO
+	principal model.Principal
+	hash      []byte
+	now       time.Time
+	calls     *httpCallPlan
+	position  int
+}
+
+func (d *mcpIsolationActivityDAO) SessionTime(context.Context) (time.Time, error) {
+	unexpectedHTTPCall(d.t, "activity separate clock")
+	panic("unreachable")
+}
+func (d *mcpIsolationActivityDAO) LockBrowserSession(ctx context.Context, hash []byte, preview bool) (model.Session, time.Time, error) {
+	d.calls.Called("activity lock")
+	mcpAttachmentCheck(d.t, d.position, 0)
+	mcpAttachmentCheck(d.t, hash, d.hash)
+	if ctx.Err() != nil || preview {
+		unexpectedHTTPCall(d.t, "activity lock context/source")
+	}
+	d.position++
+	return model.Session{ID: d.principal.CredentialID, UserID: d.principal.UserID, TokenHash: d.hash, CreatedAt: d.now.Add(-time.Hour), ExpiresAt: d.now.Add(time.Hour)}, d.now, nil
+}
+func (d *mcpIsolationActivityDAO) TouchBrowserSession(ctx context.Context, id string, used, expires time.Time) error {
+	d.calls.Called("activity touch")
+	mcpAttachmentCheck(d.t, d.position, 1)
+	mcpAttachmentCheck(d.t, id, d.principal.CredentialID)
+	mcpAttachmentCheck(d.t, used, d.now)
+	mcpAttachmentCheck(d.t, expires, d.now.Add(168*time.Hour))
+	if ctx.Err() != nil {
+		unexpectedHTTPCall(d.t, "activity write context")
+	}
+	d.position++
+	return nil
+}
+
 type mcpIsolationRevocationDAO struct {
 	httpRejectedIdentityDAO
 	session model.Principal
@@ -2263,15 +2299,17 @@ func (d *mcpIsolationRevocationDAO) DeletePAT(ctx context.Context, owner, id str
 	mcpAttachmentCheck(d.t, []string{owner, id}, []string{d.session.UserID, d.tokenID})
 	return nil
 }
-func mcpIsolationRevocation(t *testing.T, tx *httpTestStore, browser model.Principal, tokenID string) {
-	before := tx.WriteIdentityCall
-	calls := newHTTPCallPlan(t, map[string]int{"identity callback": 2, "session lock": 1, "PAT delete": 1})
+func mcpIsolationRevocation(t *testing.T, tx *httpTestStore, browser model.Principal, browserToken, tokenID string) {
+	calls := newHTTPCallPlan(t, map[string]int{"identity callback": 2, "activity lock": 1, "activity touch": 1, "session lock": 1, "PAT delete": 1})
 	phase := 0
 	tx.WriteIdentityCall = func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error) {
 		calls.Called("identity callback")
 		phase++
 		if phase == 1 {
-			return before(ctx, fn)
+			dao := &mcpIsolationActivityDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: browser, hash: secret.Hash(browserToken), now: time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC), calls: calls}
+			err := fn(httpAuthenticationScope{t: t, dao: dao})
+			mcpAttachmentCheck(t, dao.position, 2)
+			return mcpBotResult(err)
 		}
 		dao := &mcpIsolationRevocationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, session: browser, tokenID: tokenID, calls: calls}
 		return mcpBotResult(fn(httpAuthenticationScope{t: t, dao: dao}))
