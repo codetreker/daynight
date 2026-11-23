@@ -32,23 +32,27 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type Routes struct {
-	history               HistoryReader
-	service               serviceCalls
-	auth                  *authhttp.RequestAuthentication
-	logger                *slog.Logger
-	instance              string
-	pingInterval          time.Duration
-	mutex                 sync.Mutex
-	closing               bool
-	reserved              int
-	connections           map[*websocket.Conn]context.CancelFunc
-	active                sync.WaitGroup
-	drained               chan struct{}
-	drainErr              error
-	userChannelAdmission  UserChannelAdmission
-	readContext           ReadContextBinder
-	scopedImageOccurrence bool
+	history                HistoryReader
+	service                serviceCalls
+	auth                   *authhttp.RequestAuthentication
+	logger                 *slog.Logger
+	instance               string
+	pingInterval           time.Duration
+	mutex                  sync.Mutex
+	closing                bool
+	reserved               int
+	connections            map[*websocket.Conn]context.CancelFunc
+	active                 sync.WaitGroup
+	drained                chan struct{}
+	drainErr               error
+	userChannelAdmission   UserChannelAdmission
+	readContext            ReadContextBinder
+	scopedImageOccurrence  bool
+	archiveUploadV2Enabled bool
 }
+
+// SetArchiveUploadV2Enabled advertises support for new streaming uploads.
+func (h *Routes) SetArchiveUploadV2Enabled(enabled bool) { h.archiveUploadV2Enabled = enabled }
 
 // UserChannelAdmission binds a handshake's authenticated identity to an
 // authoritative Session read recheck. The returned function must use current

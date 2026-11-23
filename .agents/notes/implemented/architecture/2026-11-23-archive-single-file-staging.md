@@ -21,8 +21,9 @@ checks full-length data against its SHA-256, and verifies published closure.
 An exclusive lock on the actual Session directory protects staging I/O and
 namespace removal across processes. Archive-root coordination protects creation,
 directory identity and removal. A durable file and directory barrier precedes
-acknowledgement; incomplete tails are discarded on the next append. The public
-upload protocol remains version 1 until the streaming writer is delivered.
+acknowledgement; incomplete tails are discarded on the next append. The
+[streaming upload decision](2026-11-23-archive-streaming-upload.md) applies
+this storage contract to the public stopped-archive protocol.
 The [archive design](../../../../docs/design/session-image-archives.md#单文件暂存与配对备份读取)
 owns the storage and verification contract.
 
@@ -46,6 +47,5 @@ Recovery can resume from an earlier paired volume offset and retransmit bytes.
 Partial prefixes have no independent proof; equal-length corruption is detected
 by the full-file digest before publication. Shared volumes require demonstrated
 cross-process locking, visibility and sync semantics before new writes are
-enabled. The streaming HTTP writer and object-storage adapter are separate work;
-the storage contract must retain conditional creation and expected-offset append
-so those consumers can preserve the same guarantees.
+enabled. An object-storage adapter remains separate work; the storage contract
+retains conditional creation and expected-offset append for that consumer.

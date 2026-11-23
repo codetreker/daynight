@@ -563,7 +563,7 @@ func TestArchiveExistingNamespaceRequiresDurabilityBarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.AcquireArchiveStaging(t.Context(), n, false); !errors.Is(err, fs.ErrNotExist) {
+	if _, err = s.AcquireArchiveStaging(t.Context(), n, false); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
 		t.Fatalf("missing observation: %v", err)
 	}
 	if _, err = os.Stat(filepath.Join(root, sessionarchive.Bucket)); !errors.Is(err, fs.ErrNotExist) {
@@ -606,7 +606,7 @@ func TestArchiveExistingNamespaceRequiresDurabilityBarriers(t *testing.T) {
 		t.Fatal("retry omitted ancestor barrier")
 	}
 	fileID := uuid.NewString()
-	if _, err = guard.Observe(t.Context(), fileID, 4); !errors.Is(err, fs.ErrNotExist) {
+	if _, err = guard.Observe(t.Context(), fileID, 4); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
 		t.Fatalf("observation accepted missing file: %v", err)
 	}
 	if err = guard.Create(t.Context(), fileID); err != nil {
@@ -617,6 +617,40 @@ func TestArchiveExistingNamespaceRequiresDurabilityBarriers(t *testing.T) {
 	}
 	if err = guard.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestArchiveMissingDoesNotMaskVolumeOrCleanupErrors(t *testing.T) {
+	root := archivePersistentRoot(t)
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.EnableArchiveStaging(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	n, err := sessionarchive.NewNamespace(sessionarchive.Users, uuid.NewString(), uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := root + "-moved"
+	if err = os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := os.Rename(moved, root); e != nil {
+			t.Error(e)
+		}
+	})
+	_, err = s.AcquireArchiveStaging(t.Context(), n, false)
+	if !errors.Is(err, ErrArchiveVolumeUnverified) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("lost volume was classified as missing staging: %v", err)
+	}
+	closeErr := errors.New("close failure")
+	err = stagingCloseResult(filestorage.ErrArchiveStagingMissing, closeErr)
+	if !errors.Is(err, closeErr) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("cleanup failure retained an absence proof: %v", err)
 	}
 }
 
@@ -675,7 +709,7 @@ func TestArchiveAdoptsEmptyAfterUncertainCreate(t *testing.T) {
 	if dirBarriers < 2 {
 		t.Fatal("adoption omitted parent directory barrier")
 	}
-	if err = guard.AdoptEmpty(t.Context(), uuid.NewString()); !errors.Is(err, fs.ErrNotExist) {
+	if err = guard.AdoptEmpty(t.Context(), uuid.NewString()); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
 		t.Fatalf("adoption created absent object: %v", err)
 	}
 	if _, err = guard.Append(t.Context(), id, 4, 0, []byte("safe")); err != nil {

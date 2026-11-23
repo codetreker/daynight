@@ -28,16 +28,20 @@ type unifiedArchiveOperation interface {
 
 func (h *Routes) registerUnifiedArchiveRoutes(mux httpx.RouteRegistrar, base string, observe func(ProducerRoute)) {
 	for route, handler := range map[string]httpx.AuthenticatedHandler{
-		"GET " + base + "/prepare":                         h.archivePreparation,
-		"POST " + base + "/prepare":                        h.prepareArchive,
-		"POST " + base + "/source-tail":                    h.archiveSourceTail,
-		"POST " + base + "/seal":                           h.sealArchive,
-		"PUT " + base + "/content":                         h.putArchiveManifest,
-		"PUT " + base + "/prepare/history/{fileId}":        h.putArchiveHistory,
-		"GET " + base + "/prepare/history/{fileId}/status": h.archiveBundleFileStatus,
-		"PUT " + base + "/files/{fileId}":                  h.putArchiveTimeline,
-		"GET " + base + "/files/{fileId}/status":           h.archiveBundleFileStatus,
-		"GET " + base + "/files/{fileId}":                  h.archiveTimelineContent,
+		"GET " + base + "/prepare":                            h.archivePreparation,
+		"POST " + base + "/prepare":                           h.prepareArchive,
+		"POST " + base + "/source-tail":                       h.archiveSourceTail,
+		"POST " + base + "/seal":                              h.sealArchive,
+		"PUT " + base + "/content":                            h.putArchiveManifest,
+		"PUT " + base + "/prepare/history/{fileId}":           h.putArchiveHistory,
+		"GET " + base + "/prepare/history/{fileId}/status":    h.archiveBundleFileStatus,
+		"PUT " + base + "/files/{fileId}":                     h.putArchiveTimeline,
+		"GET " + base + "/files/{fileId}/status":              h.archiveBundleFileStatus,
+		"GET " + base + "/files/{fileId}":                     h.archiveTimelineContent,
+		"POST " + base + "/prepare/history/{fileId}/complete": h.completeArchiveHistory,
+		"POST " + base + "/prepare/history/{fileId}/restart":  h.restartArchiveHistory,
+		"POST " + base + "/files/{fileId}/complete":           h.completeArchiveTimeline,
+		"POST " + base + "/files/{fileId}/restart":            h.restartArchiveTimeline,
 	} {
 		next := h.auth.Require(h.unifiedArchiveParameters(handler, route == "GET "+base+"/files/{fileId}"))
 		if route[:3] != "GET" || route == "GET "+base+"/files/{fileId}" {
@@ -108,6 +112,9 @@ func (h *Routes) archivePreparation(w http.ResponseWriter, r *http.Request, p mo
 		return
 	}
 	out, err := h.service.ArchivePreparation(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"))
+	if err == nil && h.archiveUploadV2Enabled {
+		w.Header().Set("Daynight-Archive-Upload-Version", "2")
+	}
 	h.Result(w, r, http.StatusOK, out, err)
 }
 func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -137,6 +144,9 @@ func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
+	}
+	if h.archiveUploadV2Enabled {
+		w.Header().Set("Daynight-Archive-Upload-Version", "2")
 	}
 	h.archiveResult(w, r, out, op)
 }
@@ -193,6 +203,16 @@ func (h *Routes) putArchiveTimeline(w http.ResponseWriter, r *http.Request, p mo
 	h.putArchiveBundleFile(w, r, p, "timeline")
 }
 func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p model.Principal, purpose string) {
+	versions := r.Header.Values("Daynight-Archive-Upload-Version")
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != "1" && versions[0] != "2" {
+		httpx.CloseUnreadBody(w, r)
+		h.Failure(w, r, httpx.InvalidInput("Invalid archive upload version."))
+		return
+	}
+	if len(versions) == 1 && versions[0] == "2" {
+		h.putArchiveStream(w, r, p, purpose)
+		return
+	}
 	values, err := httpx.QueryValues(r, "offset", "purpose", "migrationOnly")
 	if err != nil {
 		h.Failure(w, r, err)
@@ -246,7 +266,11 @@ func historyFileResponse(file sp.ArchiveFileReceipt) map[string]any {
 	if file.State == "complete" {
 		revision = file.TimelineRevision
 	}
-	return map[string]any{"syncId": file.FileID, "state": file.State, "acceptedOffset": file.AcceptedOffset, "byteLength": file.ByteLength, "sha256": file.SHA256, "timelineRevision": revision, "error": file.Error}
+	result := map[string]any{"syncId": file.FileID, "state": file.State, "acceptedOffset": file.AcceptedOffset, "byteLength": file.ByteLength, "sha256": file.SHA256, "timelineRevision": revision, "error": file.Error}
+	if file.SuccessorFileID != nil {
+		result["successorFileId"] = *file.SuccessorFileID
+	}
+	return result
 }
 func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := httpx.QueryValues(r); err != nil {
@@ -255,9 +279,20 @@ func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request,
 	}
 	out, err := h.service.ArchiveFileStatus(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("fileId"))
 	if err != nil {
+		// A wrapped observation may also carry an unconfirmed cleanup failure.
+		// Only an unwrapped observation proves that its storage handle exited.
+		if corrupt, ok := err.(*sessioncore.ArchiveStagingCorruptError); ok {
+			h.archiveCorrupt(w, r, corrupt.Receipt)
+			return
+		}
 		h.Failure(w, r, err)
 		return
 	}
+	version := out.UploadVersion
+	if version == 0 {
+		version = 1
+	}
+	w.Header().Set("Daynight-Archive-Upload-Version", strconv.Itoa(version))
 	if len(r.Pattern) > 0 && containsHistoryPath(r.Pattern) {
 		h.Result(w, r, http.StatusOK, historyFileResponse(out), nil)
 	} else {

@@ -220,6 +220,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	sessions := app.Sessions
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger, app.TaskHistory)
+	relay.SetArchiveUploadV2Enabled(app.ArchiveUploadV2Enabled)
 	channelAdmission, err := sessionhttp.NewScopedUserChannelAdmission(scopedAuth.Resolve, sessionservice.NewScopedReadChecker(sessions, app.Scoped.Session.SessionWrite))
 	if err != nil {
 		return nil, err

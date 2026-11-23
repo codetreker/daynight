@@ -27,6 +27,15 @@ type ArchiveStaging struct {
 	frozen    bool
 }
 
+// A cleanup failure makes an absence observation inconclusive: do not let an
+// errors.Join expose the missing sentinel alongside the cleanup failure.
+func stagingCloseResult(result, cleanup error) error {
+	if cleanup != nil && errors.Is(result, filestorage.ErrArchiveStagingMissing) {
+		return fmt.Errorf("archive staging observation cleanup: %w", cleanup)
+	}
+	return errors.Join(result, cleanup)
+}
+
 // AcquireArchiveStaging locks the actual Session directory. Creation is only
 // for a newly admitted writer; observation must never create a missing namespace.
 func (s *Storage) AcquireArchiveStaging(ctx context.Context, namespace sessionarchive.Namespace, create bool) (handle filestorage.ArchiveStaging, result error) {
@@ -52,7 +61,7 @@ func (s *Storage) AcquireArchiveStaging(ctx context.Context, namespace sessionar
 				e = errors.Join(e, handle.Close())
 				handle = nil
 			}
-			result = errors.Join(result, e)
+			result = stagingCloseResult(result, e)
 		}
 	}()
 
@@ -61,7 +70,7 @@ func (s *Storage) AcquireArchiveStaging(ctx context.Context, namespace sessionar
 	var opened []*os.Root
 	defer func() {
 		for i := len(opened) - 1; i >= 0; i-- {
-			result = errors.Join(result, opened[i].Close())
+			result = stagingCloseResult(result, opened[i].Close())
 		}
 		if result != nil && handle != nil {
 			result = errors.Join(result, handle.Close())
@@ -77,8 +86,20 @@ func (s *Storage) AcquireArchiveStaging(ctx context.Context, namespace sessionar
 		if err = s.checkArchiveMount(parent); err != nil {
 			return nil, err
 		}
+		// Distinguish an observed absent entry from a failed open after Lstat:
+		// the latter can mean that the path changed while it was inspected.
+		_, statErr := parent.Lstat(name)
+		if errors.Is(statErr, fs.ErrNotExist) && !create {
+			if err = filestorage.GateError(ctx); err != nil {
+				return nil, err
+			}
+			return nil, filestorage.ErrArchiveStagingMissing
+		}
+		if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, statErr
+		}
 		dir, info, e := openArchiveDirectory(parent, name)
-		if errors.Is(e, fs.ErrNotExist) && create {
+		if errors.Is(statErr, fs.ErrNotExist) && create {
 			if e = verifyMutation(ctx); e != nil {
 				return nil, e
 			}
@@ -269,8 +290,21 @@ func recoveredOffset(size, total int64) (int64, error) {
 	return size / sessionarchive.BlockSize * sessionarchive.BlockSize, nil
 }
 
-func (s *ArchiveStaging) openFile(ctx context.Context, fileID string, flag int) (*os.File, error) {
+func (s *ArchiveStaging) openFile(ctx context.Context, fileID string, flag int) (file *os.File, result error) {
 	name, err := s.filename(fileID)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.storage.checkArchiveMount(s.root); err != nil {
+		return nil, err
+	}
+	_, err = s.root.Lstat(".staging")
+	if errors.Is(err, fs.ErrNotExist) {
+		if err = filestorage.GateError(ctx); err != nil {
+			return nil, err
+		}
+		return nil, filestorage.ErrArchiveStagingMissing
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -278,12 +312,26 @@ func (s *ArchiveStaging) openFile(ctx context.Context, fileID string, flag int) 
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
+	defer func() {
+		if err := dir.Close(); err != nil {
+			if file != nil {
+				err = errors.Join(err, file.Close())
+				file = nil
+			}
+			result = stagingCloseResult(result, err)
+		}
+	}()
 	if err = s.storage.checkArchiveMount(dir); err != nil {
 		return nil, err
 	}
 	name = strings.TrimPrefix(name, ".staging/")
 	info, err := dir.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err = filestorage.GateError(ctx); err != nil {
+			return nil, err
+		}
+		return nil, filestorage.ErrArchiveStagingMissing
+	}
 	if err != nil {
 		return nil, err
 	}

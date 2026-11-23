@@ -43,31 +43,32 @@ import (
 type App struct {
 	ScopeError error
 	*application.Application
-	GitHubRead           *coregithub.Reader
-	GitHubApps           *githubservice.AppManager
-	GitHubConfig         *githubservice.ConfigManager
-	GitHubAdmins         *githubservice.AdminManager
-	GitHubGrants         *githubservice.GrantManager
-	GitHubProject        *githubservice.ProjectAppManager
-	GitHubWebhook        *githubservice.AppWebhookReceiver
-	Metrics              *prometheus.Registry
-	Web                  *webresources.Resources
-	Ready                func(context.Context) error
-	Webhooks             *webhook.Service
-	AssistantTaskInbox   *assistanttask.Inbox
-	webhookRuntime       *webhookRuntime
-	githubRuntime        *githubRuntime
-	archiveCleanup       *sessionservice.ArchiveCleanupRunner
-	reviewAssignment     *reviewassignment.Runner
-	OAuthProfile         *OAuthProfile
-	OAuthError           error
-	PreviewSSOError      error
-	DirectMembers        *team.DirectMembers
-	ProjectDirectMembers *projectservice.DirectMembers
-	APIIssuer            *oauthservice.UserAPIIssuer
-	ImageValidationError error
-	UsageError           error
-	oauthMaintenance     *oauthservice.MaintenanceRunner
+	GitHubRead             *coregithub.Reader
+	GitHubApps             *githubservice.AppManager
+	GitHubConfig           *githubservice.ConfigManager
+	GitHubAdmins           *githubservice.AdminManager
+	GitHubGrants           *githubservice.GrantManager
+	GitHubProject          *githubservice.ProjectAppManager
+	GitHubWebhook          *githubservice.AppWebhookReceiver
+	Metrics                *prometheus.Registry
+	Web                    *webresources.Resources
+	Ready                  func(context.Context) error
+	Webhooks               *webhook.Service
+	AssistantTaskInbox     *assistanttask.Inbox
+	webhookRuntime         *webhookRuntime
+	githubRuntime          *githubRuntime
+	archiveCleanup         *sessionservice.ArchiveCleanupRunner
+	reviewAssignment       *reviewassignment.Runner
+	OAuthProfile           *OAuthProfile
+	OAuthError             error
+	PreviewSSOError        error
+	DirectMembers          *team.DirectMembers
+	ProjectDirectMembers   *projectservice.DirectMembers
+	APIIssuer              *oauthservice.UserAPIIssuer
+	ImageValidationError   error
+	UsageError             error
+	ArchiveUploadV2Enabled bool
+	oauthMaintenance       *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
 	drainLock         chan struct{}
@@ -133,6 +134,8 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		GitHubRead:      coregithub.NewReader(database, true),
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
+	app.Engine.SetArchiveV2RegistrationEnabled(c.Storage.ArchiveUploadV2Enabled)
+	app.ArchiveUploadV2Enabled = c.Storage.ArchiveUploadV2Enabled
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
 	if inbound, ok := database.(store.AssistantTaskInboundWriter); ok {
 		app.AssistantTaskInbox = assistanttask.NewInbox(inbound, c.Server.PublicOrigin)
@@ -256,6 +259,17 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	files, err := open.files(c.Storage.Root)
 	if err != nil {
 		return nil, &configvalue.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
+	}
+	if c.Storage.ArchiveStagingTopologyVerified {
+		staging, ok := files.(interface {
+			EnableArchiveStaging(context.Context, bool) error
+		})
+		if !ok {
+			return nil, errors.Join(errors.New("archive staging backend unavailable"), files.Close())
+		}
+		if err := staging.EnableArchiveStaging(startup, true); err != nil {
+			return nil, errors.Join(err, files.Close())
+		}
 	}
 	database, err := openPersistence(startup, c.Database.URL, open.database)
 	if err != nil {
