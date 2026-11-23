@@ -11,11 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-//go:embed lock.sql
+//go:embed migrations/114_worker_active_claim_index.sql
 var lockSQL string
 
-//go:embed index.sql
-var indexSQL string
+const indexSQL = `CREATE INDEX task_properties_worker_active_claim_idx ON task_properties (
+    (((CASE WHEN name='worker' THEN value::jsonb END)->>'userId') COLLATE "C"),
+    (((CASE WHEN name='worker' THEN value::jsonb END)->>'workerId') COLLATE "C"),
+    task_id
+)
+WHERE name='worker'
+    AND ((CASE WHEN name='worker' THEN value::jsonb END)->>'state') COLLATE "C" = 'active';
+`
 
 //go:embed migrate.go
 var migrationSource string
@@ -42,7 +48,7 @@ func SQL() string { return lockSQL }
 
 // TransformSource freezes the validator, original inventory decoder and DDL.
 func TransformSource() string {
-	return strings.ReplaceAll(strings.Join([]string{migrationSource, workerSource, objectSource, indexSQL}, "\x00"), "\r\n", "\n")
+	return strings.ReplaceAll(strings.Join([]string{migrationSource, workerSource, objectSource}, "\x00"), "\r\n", "\n")
 }
 
 func Apply(ctx context.Context, tx pgx.Tx) error {
