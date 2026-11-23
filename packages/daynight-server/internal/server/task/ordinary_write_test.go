@@ -22,7 +22,7 @@ func TestOrdinaryTaskCreateHTTPParentAndProjection(t *testing.T) {
 	for _, view := range []string{"default", "extended", "receipt"} {
 		t.Run(view, func(t *testing.T) {
 			f := newHTTPFixture(t, io.Discard)
-			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:write", "task:dependencies", "task:read"}, 1)
+			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:dependencies", "task:read", "task:write"}, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
