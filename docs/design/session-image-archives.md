@@ -270,7 +270,7 @@ timeline 和两种完整历史同步的版本 1 共用以下传输规则：
 
 `PUT` 使用原文件路径、`offset`、`application/octet-stream`、完整长度和摘要头以及准确的 `Content-Length`。正文是从该偏移开始的全部剩余 bytes，不包含逐块摘要。服务在读取前检查请求和存储偏移，以后端指定的有界缓冲追加；本地使用 512 KiB，Azure 使用 1 MiB，末段按实际长度追加。不完整的内存尾部不确认。取消或结果未知后查询同一 fileId 的 status，从存储报告的可恢复偏移继续；配对恢复可能使偏移比先前观察更小。接收时 PostgreSQL 不保存逐块进度或访问逐块表。
 
-Controller 在首传前持久冻结 history 和 timeline 字节及各文件身份，并按偏移读取；资源沿原受保护的来源和描述符读取。已登记文件以 status 确认实际版本，未登记文件才按 prepare 能力选择版本，因此同一归档可以继续旧版在途文件并使用新版传输新文件。每个版本选择和损坏文件的唯一 successor 在发送对应变更前持久化。旧失败回执确认与该 intent 相同的 successor 后，Controller 转入其文件身份；离线迁移撤销登记造成的普通 `404` 按首次 PUT 从 `0` 上传，缺失或不匹配的原始 successor intent 仍拒绝。timeline 完成后，manifest 使用实际完成的 fileId；归档回执确认前保留冻结来源。
+Controller 在首传前持久冻结 history 和 timeline 字节及各文件身份，并按偏移读取；资源沿原受保护的来源和描述符读取。回执的 `acceptedOffset` 必须是 `0..byteLength` 的规范非负 Decimal；Controller 保留原 fileId、长度、摘要、状态和版本校验，从后端报告的任意合法字节偏移续传，不对偏移施加本地块对齐规则。每次源读取最多 512 KiB，起点不要求对齐；满长 receiving 仍经 complete 对账，不能直接视为完成。已登记文件以 status 确认实际版本，未登记文件才按 prepare 能力选择版本，因此同一归档可以继续旧版在途文件并使用新版传输新文件。每个版本选择和损坏文件的唯一 successor 在发送对应变更前持久化。旧失败回执确认与该 intent 相同的 successor 后，Controller 转入其文件身份；离线迁移撤销登记造成的普通 `404` 按首次 PUT 从 `0` 上传，缺失或不匹配的原始 successor intent 仍拒绝。timeline 完成后，manifest 使用实际完成的 fileId；归档回执确认前保留冻结来源。
 
 读取绑定实际媒体操作的取消上下文；取消会中断阻塞的网络读取，存储保护和 lease 持有至操作退出。入口不能控制读取截止时间时拒绝流，不能以网络连接仍在等待代替写者已退出的证明。
 

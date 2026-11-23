@@ -49,7 +49,7 @@ export const transferArchiveStream = async (options: {
     return parseSessionArchiveFileReceipt({ fileId: syncId, ...rest });
   };
   const check = (receipt: Receipt, id: string): Receipt => {
-    if (receipt.fileId !== id || receipt.byteLength !== file.byteLength || receipt.sha256 !== file.sha256 || receipt.state === "receiving" && receipt.acceptedOffset !== file.byteLength && BigInt(receipt.acceptedOffset) % BigInt(BLOCK) !== 0n) throw new Error("Archive file differs from its original intent.");
+    if (receipt.fileId !== id || receipt.byteLength !== file.byteLength || receipt.sha256 !== file.sha256) throw new Error("Archive file differs from its original intent.");
     return receipt;
   };
   const versioned = async (method: string, suffix: string, replayable: boolean, body?: string | Uint8Array | ReadableStream<Uint8Array>, headers: Record<string, string> = {}, streaming = false): Promise<unknown> => {
