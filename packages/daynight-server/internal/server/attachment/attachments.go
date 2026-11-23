@@ -35,6 +35,7 @@ type handler[A any] struct {
 	principal       func(A) model.Principal
 	logger          *slog.Logger
 	bodyReadTimeout time.Duration
+	afterOpen       func(*http.Request, model.Principal) error
 }
 
 type operations[A any] struct {
@@ -60,8 +61,14 @@ func RegisterPreviewRoutes(mux httpx.RouteRegistrar, attachments *attachmentserv
 	RegisterPreviewRoutesWithScopeObserver(mux, attachments, require, logger, nil)
 }
 
-func RegisterPreviewRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterPreviewRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute), afterOpen ...func(*http.Request, model.Principal) error) {
 	handler := newAttachmentHandler(attachments, logger)
+	if len(afterOpen) > 1 || len(afterOpen) == 1 && afterOpen[0] == nil {
+		panic("invalid protected preview activity callback")
+	}
+	if len(afterOpen) == 1 {
+		handler.afterOpen = afterOpen[0]
+	}
 	routes := routeRegistry{mux: mux, observe: observe}
 	const route = "/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}"
 	routes.handle("GET "+route, require(handler.preview), routePreviewCookie, true)
@@ -246,6 +253,13 @@ func (h *handler[A]) content(w http.ResponseWriter, request *http.Request, princ
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", phase, err)
 		return
+	}
+	if h.afterOpen != nil {
+		if err := h.afterOpen(request, h.principal(principal)); err != nil {
+			err = errors.Join(err, object.Body.Close())
+			httpx.WriteError(w, request, logger, "attachment", phase, err)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", attachment.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(object.Info.Size, 10))

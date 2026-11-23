@@ -28,6 +28,8 @@ func TestAccountRegistrationReportsScopeClasses(t *testing.T) {
 	}
 	add("PATCH /api/v1/me", ScopeRoute{Operations: []scopepolicy.Operation{scopepolicy.AccountWrite}})
 	add("POST /api/v1/auth/logout", ScopeRoute{BrowserOnly: true})
+	add("POST /api/v1/auth/session/activity", ScopeRoute{BrowserOnly: true})
+	add("/api/v1/auth/session/activity", ScopeRoute{BrowserOnly: true, Fallback: true})
 	add("/api/v1/auth/logout", ScopeRoute{Fallback: true})
 	for _, method := range []string{"GET", "HEAD", "POST"} {
 		add(method+" /api/v1/me/tokens", ScopeRoute{BrowserOnly: true})

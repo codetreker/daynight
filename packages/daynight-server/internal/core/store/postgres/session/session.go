@@ -45,6 +45,20 @@ func (tx *DAO) credential(ctx context.Context, principal model.Principal, now ti
 		}
 		return nil
 	}
+	if principal.Kind == model.SessionCredential {
+		credential, err := pginternal.ThreadCredential(ctx, tx.tx, principal, lock)
+		if err != nil {
+			return err
+		}
+		var valid bool
+		if err := tx.tx.QueryRow(ctx, `SELECT $1::timestamptz>clock_timestamp()`, credential.ExpiresAt).Scan(&valid); err != nil {
+			return pginternal.QueryError("recheck browser session credential expiry", err)
+		}
+		if !valid {
+			return model.ErrNotFound
+		}
+		return nil
+	}
 	table := "sessions"
 	predicate := "expires_at>$3"
 	if principal.Kind == model.PATCredential {

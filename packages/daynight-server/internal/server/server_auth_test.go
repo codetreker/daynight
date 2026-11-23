@@ -70,7 +70,10 @@ func (s *identityHTTPScope) invoke(name string, args ...any) any {
 	return call.check(args)
 }
 
-func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
+func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO { return s }
+func (s *identityHTTPScope) SessionTime(context.Context) (time.Time, error) {
+	return time.Now().UTC().Truncate(time.Microsecond), nil
+}
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
 	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")

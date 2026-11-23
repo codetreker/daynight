@@ -170,7 +170,15 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
 handoff, local users, browser sessions, personal access tokens and project
 membership. The identity module implements persistent users, browser-bound login
-transactions, sessions, PATs and callable HTTP handlers;
+transactions, sessions, PATs and callable HTTP handlers. Browser sessions share a
+168-hour idle deadline across the main site and authorized preview reads. Eligible
+activity locks the actual credential row, reads the primary database clock after
+locking and renews only a still-valid session; ordinary responses never reissue
+Cookies. New login and preview SSO Cookies request 400-day persistence.
+POST `/api/v1/auth/session/activity` accepts a main-site Cookie, exact Origin and
+`{expectedUserId}` and returns 204 only after the account-bound renewal commits.
+The [browser session design](../../docs/design/daynight-auth.md#主站-session-与-pat)
+owns request admission, expiration, deployment and recovery.
 NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
 [identity admission](../../docs/design/daynight-auth.md#uniauth-一次性交接) limits the
 decompressed upstream response to 2 MiB and retains the 15-second deadline. It

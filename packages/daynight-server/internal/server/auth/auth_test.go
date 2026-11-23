@@ -71,7 +71,10 @@ func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
 	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
 	return nil
 }
-func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
+func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO { return s }
+func (s *identityHTTPScope) SessionTime(context.Context) (time.Time, error) {
+	return time.Now().UTC().Truncate(time.Microsecond), nil
+}
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) AdmitLogin(ctx context.Context, hash []byte, global, browser int) (time.Time, string, error) {
 	return s.invoke("AdmitLogin", ctx, hash, global, browser).(time.Time), "", nil

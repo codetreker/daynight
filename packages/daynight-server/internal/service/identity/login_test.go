@@ -236,11 +236,18 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 				f.bound(ctx, dao)
 				want := session
 				want.UserID = user.ID
+				want.CreatedAt = f.now
+				want.ExpiresAt = f.now.Add(core.SessionLifetime)
+				want.LastUsedAt = &f.now
 				f.equal(got, want)
 				if stage == "session" {
 					return failure
 				}
 				return nil
+			}
+			f.identity.ops.sessionTime = func(ctx context.Context, dao store.IdentityDAO) (time.Time, error) {
+				f.bound(ctx, dao)
+				return f.now, nil
 			}
 			got, err := f.identity.CompleteLogin(f.ctx, query, binding)
 			if stage == "success" {

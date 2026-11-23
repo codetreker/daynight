@@ -212,7 +212,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	attachmenthttp.RegisterScopedRoutesWithScopeObserver(routes.scoped("attachment-method-host-and-response"), app.Scoped.Attachments, scopedAuth, logger, config.Server.PreviewOrigin, observeScopeRoutes[attachmenthttp.ScopeRoute](routes))
 	taskPreviewMux := http.NewServeMux()
 	previewRoutes := newScopeRegistry(taskPreviewMux, "task-preview")
-	attachmenthttp.RegisterPreviewRoutesWithScopeObserver(previewRoutes.fixed("preview-cookie-only"), app.Attachments, preview.Require, logger, observeScopeRoutes[attachmenthttp.ScopeRoute](previewRoutes))
+	attachmenthttp.RegisterPreviewRoutesWithScopeObserver(previewRoutes.fixed("preview-cookie-only"), app.Attachments, preview.Require, logger, observeScopeRoutes[attachmenthttp.ScopeRoute](previewRoutes), preview.RenewAuthorized)
 	if app.Webhooks != nil {
 		if err := webhookhttp.RegisterScopedRoutes(routes.scoped("webhook-mutation-fields-and-delivery"), app.Webhooks, scopedAuth, logger, observeScopeRoutes[webhookhttp.ScopeRoute](routes)); err != nil {
 			return nil, err

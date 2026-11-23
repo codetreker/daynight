@@ -8,6 +8,10 @@ import (
 
 type User = profileprotocol.Response
 
+type SessionActivityRequest struct {
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
 type PersonalAccessToken struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`

@@ -349,6 +349,9 @@ var credentialScopeActivationSQL string
 //go:embed schema/migrations/112_worker_windows_process_cleanup.sql
 var workerWindowsProcessCleanupSQL string
 
+//go:embed schema/migrations/114_browser_session_activity.sql
+var browserSessionActivitySQL string
+
 //go:embed schema/migrations/113_webhook_endpoint_client_key.sql
 var webhookEndpointClientKeySQL string
 
@@ -471,6 +474,7 @@ var schemaMigrations = []migration{
 	{version: 111, sql: credentialScopeActivationSQL},
 	{version: 112, sql: workerWindowsProcessCleanupSQL},
 	{version: 113, sql: webhookEndpointClientKeySQL},
+	{version: 114, sql: browserSessionActivitySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
