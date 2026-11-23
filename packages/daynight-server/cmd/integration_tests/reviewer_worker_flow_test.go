@@ -262,23 +262,41 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 	// Worker must claim it and deliver its input to the controlled native peer.
 	task := createTask(t, f, api.Project{ID: projectID}, "Development while review is disabled", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
+	var nativeThread string
 	waitFor("waiting for the native peer to receive the development task", func() bool {
 		data, err := os.ReadFile(peerLog)
-		return err == nil && strings.Contains(string(data), `"method":"turn/start"`) && strings.Contains(string(data), "Assignment:")
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			var event struct {
+				Method   string `json:"method"`
+				ThreadID string `json:"threadId"`
+				Text     string `json:"text"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil && event.Method == "turn/start" && event.ThreadID != "" && strings.Contains(event.Text, "Assignment:") {
+				nativeThread = event.ThreadID
+				return true
+			}
+		}
+		return false
 	})
+	// Legacy task projection hides Web claims. Read the extended projection so
+	// the observed peer thread is bound to this Worker's original claim.
+	workerProtocol := http.Header{"Daynight-Worker-Protocol": {"2"}}
 	var active api.Task
 	waitFor("waiting for the same Worker to register its native session", func() bool {
-		active = requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK)
+		active = requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK, workerProtocol)
 		if active.Status != "in_progress" || active.Properties["worker"] == nil {
 			return false
 		}
 		claim := workerClaim(t, active)
-		return claim.WorkerID == workerID && claim.NativeSessionID != nil
+		return claim.WorkerID == workerID && claim.NativeSessionID != nil && *claim.NativeSessionID == nativeThread
 	})
 	claim := workerClaim(t, active)
 	var completed api.Task
 	for attempt := 0; attempt < 3; attempt++ {
-		current := requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK)
+		current := requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK, workerProtocol)
 		if current.Status != "in_progress" || workerClaim(t, current).ClaimID != claim.ClaimID || workerClaim(t, current).WorkerID != workerID {
 			t.Fatalf("development task assignment changed before completion: %+v", current)
 		}
@@ -291,6 +309,7 @@ func serverAPIReviewerWorkerFlow(t *testing.T, f *fixture, projectID, workerID, 
 			t.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Daynight-Worker-Protocol", "2")
 		response, err := f.client.Do(request)
 		if err != nil {
 			t.Fatalf("development completion result unknown: %v", err)
