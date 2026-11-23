@@ -131,7 +131,16 @@ func newTransferBoundaryWriter(t *testing.T, ctx context.Context, projectID stri
 	return db
 }
 
-func (s *transferBoundaryWriter) WriteProject(ctx context.Context, projectID string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+type transferPreflightReader struct{ store.ProjectReader }
+
+func (transferPreflightReader) ProjectAccess(_ context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+	role := model.ProjectAdmin
+	return model.ProjectAccess{ProjectID: id, UserID: actor.UserID, Role: role, TeamRole: &role}, nil
+}
+func (s *transferBoundaryWriter) ReadSnapshot(ctx context.Context, op func(store.SnapshotScope) error) error {
+	return op(resourceProjectSnapshot{dao: transferPreflightReader{}})
+}
+func (s *transferBoundaryWriter) WriteProjectTransfer(ctx context.Context, projectID string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 	s.t.Helper()
 	s.calls++
 	if s.calls != 1 || projectID != s.projectID {

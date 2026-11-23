@@ -39,6 +39,12 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 	return teamCompletion("project write", err)
 }
 
+func (s *Store) WriteProjectTransfer(ctx context.Context, projectID string, operation func(ProjectWriteScope) error) (Completion, error) {
+	return s.writeGoalProjectLifecycle(ctx, projectID, "project transfer", func(tx pgx.Tx) error {
+		return operation(&ProjectTx{tx: tx, projectID: projectID})
+	})
+}
+
 func (tx *ProjectTx) ProjectDAO() ProjectWriteDAO           { return project.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) EligibilityDAO() WebhookEligibilityDAO { return eligibility.New(tx.tx) }
 func (tx *ProjectTx) CaptureDAO() WebhookCaptureDAO {

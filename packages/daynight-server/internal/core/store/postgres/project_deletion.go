@@ -32,18 +32,7 @@ func (s *Store) ReadProjectDeletion(ctx context.Context, id string, operation fu
 }
 
 func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation func(store.ProjectDeletionScope) error) (store.Completion, error) {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin project deletion", err)
-	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error {
-		var locked string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&locked); err != nil {
-			return pg.QueryError("lock project for deletion", err)
-		}
-		if err := pg.LockGoalDependencyTeam(ctx, tx, id); err != nil {
-			return err
-		}
+	return s.writeGoalProjectLifecycle(ctx, id, "project deletion", func(tx pgx.Tx) error {
 		// Task rows are intentionally locked regardless of their deleted_at value.
 		rows, err := tx.Query(ctx, `SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE`, id)
 		if err != nil {
@@ -64,7 +53,6 @@ func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation f
 		}
 		return operation(&deletionScope{projectDeletion{tx: tx, projectID: id}})
 	})
-	return teamCompletion("project deletion", err)
 }
 
 func (s *deletionSnapshot) ProjectDAO() store.ProjectReader          { return project.NewReader(s.tx) }
