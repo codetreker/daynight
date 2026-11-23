@@ -15,10 +15,14 @@ changing Goal membership or dependency-graph semantics.
 Web Task requests select the ordinary-parent projection and retain the distinction
 between a missing `parentTaskId` and an explicit null. Direct child pages use the
 authorized parent filter and current Task and project-history admission. The
-ordinary relation controls are available as a shared detail component with separate
-parent and child slots; production composition is deferred until the related
-lifecycle and cache-withdrawal controls are ready. Links target the ordinary Task's
+ordinary relation controls share a detail component with separate parent and child
+slots, mounted in production Task Overview. Links target the ordinary Task's
 independent detail URL and use the existing draft-aware browser navigation.
+
+The initial relationship delivery kept production composition inactive until
+lifecycle feedback and cache withdrawal could be integrated. The
+[lifecycle and retirement decision](2026-11-24-web-subtask-lifecycle-retirement.md)
+completes that composition and owns its confirmation and deletion guarantees.
 
 The [server read projection decision](2026-11-23-task-parent-read-projection.md)
 owns the protocol and preserves the Goal meaning of `parentId`.
@@ -29,15 +33,16 @@ owns the protocol and preserves the Goal meaning of `parentId`.
 fields from the shared cache, producing a false empty list even when the server
 has children.
 
-**Publish the relationship controls immediately.** A partially activated Web
-would expose ordinary parent writes before the coordinated lifecycle and deletion
-feedback is available. Separate slots and a shared controller let the later
-composition retain the established detail layout without changing the relation
-read contract.
+**Publish relationship controls before lifecycle integration.** At the initial
+delivery, this would have exposed ordinary parent writes before coordinated
+cancellation and deletion feedback was available. Separate slots and a shared
+controller allowed composition to retain the established detail layout without
+changing the relation read contract.
 
 ## Consequences
 
 Child reads and pagination incur separate authorized requests. Missing projection
 fields remain unknown, and an unsupported server returns a visible error instead
-of a fabricated empty list. Production entry points remain unchanged until the
-lifecycle integration is delivered; the component can be exercised independently.
+of a fabricated empty list. Parent navigation, fixed-parent creation and all
+five child states share the production detail surface; their eligibility remains
+bound to current reads and project history.

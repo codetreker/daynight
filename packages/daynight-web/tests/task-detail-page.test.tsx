@@ -786,3 +786,5 @@ describe('typed Goal routes', () => {
     } finally { view.unmount(); }
   });
 });
+// Direct detail polling is independent of the ordinary-parent list controller.
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: () => null }));

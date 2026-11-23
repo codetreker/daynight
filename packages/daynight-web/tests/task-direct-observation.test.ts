@@ -155,15 +155,15 @@ it("preserves conflict attribution after direct reconciliation", async () => {
 });
 
 it("withdraws a 404 and permits a fresh opening after 410", async () => {
-  const { sessions } = world(); let mode: "ok" | "missing" | "deleted" = "ok";
-  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(mode === "ok" ? response(body()) : response({ error: { code: mode === "missing" ? "not_found" : "task_deleted", message: "Missing", requestId: "missing" } }, null, mode === "missing" ? 404 : 410))));
+  const { sessions } = world(); let mode: "ok" | "missing" | "deleted" = "ok"; let currentEpoch = epoch;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(mode === "ok" ? response(body(), currentEpoch) : response({ error: { code: mode === "missing" ? "not_found" : "task_deleted", message: "Missing", requestId: "missing" } }, null, mode === "missing" ? 404 : 410))));
   sessions.openDirect(project, task);
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
   mode = "missing"; sessions.load(project, task, 1, "refresh");
   await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "error", detail: null, error: { status: 404 } }));
   mode = "deleted"; sessions.load(project, task, 1, "refresh");
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("deleted"));
-  mode = "ok"; sessions.releaseRead(project, task); sessions.openDirect(project, task);
+  mode = "ok"; currentEpoch = replacement; sessions.releaseRead(project, task); sessions.openDirect(project, task);
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
 });
 
@@ -753,7 +753,7 @@ it("does not spin or retain a pending write on unrelated result-admission lifecy
 });
 
 it.each([
-  ["status", false], ["delete", false], ["refused", false], ["unknown", false],
+  ["status", false], ["refused", false], ["unknown", false],
   ["status", true], ["unknown", true],
 ] as const)("settles a %s outcome transferred during post-response history verification (throws: %s)", async (kind, throws) => {
   const { sessions, scope } = world();
@@ -763,16 +763,14 @@ it.each([
   let verifying = false; let held = false; let writes = 0; let recovering = false;
   const changedParent = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
   const currentParent = () => kind === "status" ? changedParent : body();
-  const deleted = () => response({ error: { code: "task_deleted", message: "Deleted", requestId: "deleted" } }, epoch, 410);
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
     if (init.method === "PUT" || init.method === "DELETE") {
       writes++;
-      if (kind === "delete") return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
       if (kind === "refused" || kind === "unknown") return Promise.resolve(response({ error: { code: kind === "refused" ? "forbidden" : "internal_error", message: "Failed", requestId: "write" } }, null, kind === "refused" ? 403 : 500));
       return Promise.resolve(response(changedParent));
     }
     if (recovering) { recovering = false; return recovery.promise; }
-    return Promise.resolve(kind === "delete" && writes ? deleted() : response(writes ? currentParent() : body()));
+    return Promise.resolve(response(writes ? currentParent() : body()));
   }));
   sessions.openDirect(project, task);
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
@@ -781,8 +779,7 @@ it.each([
     if (writes && !held) { held = true; verifying = true; await verification.promise; if (throws) throw new Error("verification failed"); }
     return verify(ticket, abortSignal);
   });
-  if (kind === "delete") sessions.deleteTask(project, task, 1n, false);
-  else sessions.setStatus(project, task, "in_progress", 1n);
+  sessions.setStatus(project, task, "in_progress", 1n);
   await waitFor(() => expect(verifying).toBe(true));
   expect(writes).toBe(1);
   recovering = true;
@@ -792,15 +789,30 @@ it.each([
   const confirmation = await scope.beginTaskRead(project, task, 1, 1, signal());
   expect(await scope.observeHistory(confirmation, epoch, signal())).toBe("current");
   verification.resolve();
-  recovery.resolve(kind === "delete" ? deleted() : response(currentParent()));
+  recovery.resolve(response(currentParent()));
   await waitFor(() => expect(retired.size).toBe(0));
-  if (kind === "delete") {
-    await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("deleted"));
-  } else {
-    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
-    expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
-  }
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
   expect(writes).toBe(1);
+});
+
+it('retires a confirmed direct deletion before post-response history verification', async () => {
+  const { sessions, scope } = world(); let writes = 0;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') { writes++; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) })); }
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  const verify = scope.verifyTaskRead.bind(scope);
+  const afterResponse = vi.fn();
+  vi.spyOn(scope, 'verifyTaskRead').mockImplementation(async (ticket, abortSignal) => {
+    if (writes) { afterResponse(); throw new Error('Post-response verification unavailable'); }
+    return verify(ticket, abortSignal);
+  });
+  sessions.deleteTask(project, task, 1n, false);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'deleted', detail: null, mutation: { phase: 'confirmed' } }));
+  expect(scope.getHistoryGeneration(project)).toBeGreaterThan(0);
+  expect(writes).toBe(1); expect(afterResponse).not.toHaveBeenCalled();
 });
 
 it("does not persist or admit a same-version detail from a replacement history against the old graph", async () => {

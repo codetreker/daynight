@@ -14,6 +14,7 @@ import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessio
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
+vi.mock('../src/features/task-detail/OrdinaryTaskRelations', () => ({ OrdinaryTaskRelations: ({ render }: { render: (slots: { parent: null; children: null }) => React.ReactNode }) => render({ parent: null, children: null }) }));
 
 vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,

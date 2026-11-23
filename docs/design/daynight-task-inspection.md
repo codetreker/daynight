@@ -13,6 +13,8 @@
 
 ## 责任与数据流
 
+`TaskDetailSurface` 的普通 Task 概览挂载 `OrdinaryTaskRelations`，以 parent/children 两个 slot 保留关联栏与主内容布局。普通父项读取使用当前身份、Task 和项目历史，直属子项通过 `parentTaskId` 过滤的授权 GET 分页，显示全部五态，并提供固定父 Task 的创建表单。字段缺省不证明无父项或空集合；旧共享快照不承担完整关系证明。父子链接使用真实 Task ID 的独立详情地址及既有草稿保护，不改变 Goal 的直属进度和普通依赖图。状态、取消和删除阻塞由共享 `TaskLifecycleBlockers` 呈现服务端原因与可读 Task ID，生命周期确认见[状态设计](daynight-task-status.md#web-读取缓存与进度)，删除退役见[删除设计](daynight-task-deletion.md#cli-与-web-操作)。
+
 ```mermaid
 flowchart LR
   Snapshot[完整项目快照] --> Index[GraphIndex]
@@ -47,7 +49,7 @@ ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列�
 
 `GoalGraphDialog` 普通与全屏共用页头，关闭按钮在右上角，操作行依次提供共享带文字复制按钮和“Goal 详情 / Goal details”；窄屏操作行位于标题下方。复制使用 router 的规范绝对地址构造器，共享写入状态按地址和挂载世代隔离，pending 同步防重且以 `aria-disabled` 保留焦点。成功和失败通知置于图内覆盖层，失败可重试，反馈不改变画布尺寸或阅读状态。详情按钮声明 `type="button"` 和 `aria-haspopup="dialog"`，文案取 `workspace.goals.details`，调用 `onOpenTask(goalId, event.currentTarget)`。`ProjectListGraphHost` 沿列表 Goal 回调或任务链宿主的既有回调进入 `ProjectPage` 图内读取路径，保留 `projectGraphWitness`，由 `TypedDetail` 读取实际 Goal 并打开既有详情；实际按钮成为回焦目标。该入口不依赖成员数或图同步成功，且不挂载到普通链或嵌入式图；权限、失败、草稿保护、历史与 Escape 继续由现有读取及 overlay owner 承担。
 
-`GoalGraphDialog` 使用共享弹窗外壳及项目已有 Clock/Pause provider，图内显示后台同步错误和重试，同时保留有效内容。项目图 target 由显示摘要中的资源类型决定：Goal 可以为空或在筛选/分页之外，Task witness 仍解析为多成员普通链。history 只保存 UUID；Goal 卡片打开详情时保留同一个图和 witness。内容历史退休时，`useProjectHistory` 在同一次渲染仅为同一用户、项目、scope 与已提交当前条目的已显示 Goal 保留分区、类别和 witness，清除详情及其子层；布局 effect 将该选择绑定当前代际。独立撤权计数确保 accessRevoked 与 historyChanged 同批或先后发生时都不能沿用旧选择；主体冲突、scope 失效或项目切换同样不保留。历史条目继续退休，已准入的关闭、切页和前进后退立即生效，不因快照到达自动打开或抢焦点。新当前快照确认 Goal 不存在时关闭图；成员数为零则同一弹窗及画布宿主保留，显示空态。最后一次显示的投影仅用于持续呈现，不能授权旧详情、读取或写入；准入机制由[任务同步设计](daynight-task-sync.md#6-投影时钟与详情)拥有。入口和来源焦点的所有权见 [Web 设计](daynight-web.md#项目详情-projectsprojectid)，范围及阅读要求见 [Goal 需求](../spec/daynight-goals.md#goal-整体依赖图)，共享卡片动作的取舍见[Goal 图检查决策](../../.agents/notes/implemented/feature/2026-11-15-goal-graph-inspection.md)。
+`GoalGraphDialog` 使用共享弹窗外壳及项目已有 Clock/Pause provider，图内显示普通后台同步错误和重试并保留当前历史的有效内容。项目图 target 按已准入显示摘要识别 Goal 或多成员普通链，history 只保存 UUID；Goal 卡片打开详情时保留同图和 witness。可信删除、epoch 更替或其他 `historyChanged` 立即撤下旧 displaySnapshot、详情及旧阅读子树；共享缓存可能缺少普通父边，已显示 Goal 不能据此获得跨历史保留资格。撤权、身份和 scope 失效同样撤下旧内容。已准入的关闭、切页和前进后退立即生效，新快照不自动重开退休条目或抢焦点。新历史中的空 Goal 是有效资源，新准入后显示空图。正常同历史成员更新保留同一弹窗、画布宿主及有效视口。准入机制由[任务同步设计](daynight-task-sync.md#6-投影时钟与详情)拥有；入口和来源焦点见[Web 设计](daynight-web.md#项目详情-projectsprojectid)，阅读要求见[Goal 需求](../spec/daynight-goals.md#goal-整体依赖图)。
 
 Goal 地址意图由原始查询解析，项目 owner 仅以当前身份和项目的已确认完整快照承认 Goal 类型；缓存显示、筛选和分页不提供准入证明。地址与阅读选择经同一历史提交，直接打开使用 Goals 视图并保留参数，以支持登录回跳和刷新。待验证的不同目标不显示旧图或详情；同一已承认条目保留图与有效阅读状态。关闭、切换阅读目标或确认目标不可用时清除绑定，遍历旧条目重新遵守当前准入。退休草稿可能接纳已到达的历史目标；清理旧图地址前须确认导航仍位于原条目，不能覆盖已接纳的目标。初始失败保留意图并可重试，后台失败保留已承认内容；权限、身份及读取世代失效不能由迟到结果恢复。详细地址约束和取舍见 [Goal 图地址决策](../../.agents/notes/implemented/feature/2026-11-18-goal-graph-address.md)。
 
@@ -246,7 +248,7 @@ Goal 持有共享需求、设计和整体验收，阶段 task 保留生产责任
 
 独立地从完整项目数据构造一层投影 P，再结合实际 S 推导普通卡片是否存在隐藏直接邻居，验证共享尺寸及根字号放大后的尺寸；P 外无关后续不产生普通方向 footer。链外卡片始终保留独立展开 footer，并验证该入口进入真实所属资源、原图不会追加祖先。实际DOM路线的端点/方向、平滑相切、全部可见卡片避让、真实CTM、完整body coverage、参考弧长/phase及原生箭头独立判断，不能由生产规划器输出充当有效预期。可选输入只做编译忠实度，负例覆盖缺/多边、错误箭头、穿卡片和相位/覆盖失败。稳定性比较使用图坐标/相对变换，页面滚动诊断单独保留，不能把一致的文档平移误判为图变化。
 
-Goal 图验证完整 Parent 投影、成员和外部卡片检查、真实可见边及箭头、前序到后继旁路及同源旁支不误亮、投影外上游去重提示，以及清除、换选、同步重算和 Goal 切换。方向、显式适应、详情与全屏保留有效选择；选择和详情前后比较几何及视口，详情关闭验证实际入口焦点和原有历史／草稿保护。删除验证覆盖真实 epoch 更替期间原对话框和画布持续连接、有效视口、全屏、选择和焦点保持，成员及关联边更新、最后成员删除后的同宿主空态、Goal 删除或失权关闭、同步失败与重试；同时覆盖旧读取迟到、已准入的关闭与前进后退、取消或拒绝导航和后续阅读选择。首次空 Goal 也验证不对空 bounds 执行 fit。覆盖长标题、中英文、320px、390px、桌面和键盘，卡片状态、执行时间与 Details 不重叠。
+Goal 图验证完整 Parent 投影、成员和外部卡片检查、真实可见边及箭头、前序到后继旁路及同源旁支不误亮、投影外上游去重提示，以及清除、换选、同步重算和 Goal 切换。方向、显式适应、详情与全屏保留有效选择；选择和详情前后比较几何及视口，详情关闭验证实际入口焦点和原有历史／草稿保护。删除验证覆盖父链缺失时可信回执或 410 立即撤下旧项目图、列表、搜索、详情及资料，epoch 更替、跨标签和刷新失败期间不能恢复旧投影；同历史有效成员更新另验证视口与宿主保持，新准入空 Goal 显示空态，Goal 删除或失权关闭，错误可重试；同时覆盖旧读取迟到、已准入的关闭与前进后退、取消或拒绝导航和后续阅读选择。首次空 Goal 也验证不对空 bounds 执行 fit。覆盖长标题、中英文、320px、390px、桌面和键盘，卡片状态、执行时间与 Details 不重叠。
 
 Web 模块测试和受控浏览器 fixture 分别验证数据、历史和真实交互的职责，不能证明真实服务或安装 CLI 的组合结果。
 全规模压力验证独立于常规 CI，保留四个完整 1,000 任务输入、999/5,000 边、每图五次、

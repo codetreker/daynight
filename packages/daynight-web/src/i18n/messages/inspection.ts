@@ -97,6 +97,14 @@ export type InspectionMessages = {
     readonly cancelQuestion: string;
     readonly confirmCancellation: string;
     readonly cancelExplanation: string;
+    readonly cancelDescendants: string;
+    readonly cancelDescendantsQuestion: string;
+    readonly cancelDescendantsExplanation: string;
+    readonly unfinishedChildren: string;
+    readonly parentTerminal: string;
+    readonly parentImmutable: string;
+    readonly blockingClaim: string;
+    readonly blockingTasks: string;
     readonly releaseBeforeCancel: string;
     readonly pending: string;
     readonly confirmed: string;

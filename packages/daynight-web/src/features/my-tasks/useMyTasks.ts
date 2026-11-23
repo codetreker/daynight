@@ -57,7 +57,7 @@ export const useMyTasks = (readEnabled: boolean) => {
         if (!current()) return;
         setState(old => {
           if (old.scope !== scope || !current()) return old;
-          const filtered = visible(scope, prepared, old.items);
+          const filtered = old.fence === null ? [] : visible(scope, old.fence, old.items);
           const denied = scope.projectionSnapshotHasDenials(prepared) || filtered.length !== old.items.length;
           return denied ? incomplete(old, filtered, scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? old.error) : old;
         });
@@ -119,7 +119,7 @@ export const useMyTasks = (readEnabled: boolean) => {
         const failedFence = fence;
         setState(old => {
           if (old.scope !== scope || !current()) return old;
-          const filtered = failedFence === null || readinessFailed ? [] : visible(scope, failedFence, old.items);
+          const filtered = failedFence === null || readinessFailed || old.fence === null ? [] : visible(scope, old.fence, old.items);
           const failure = failedFence === null ? scope.projectionError ?? error : scope.projectionSnapshotError(failedFence) ?? cleanupErrors.values().next().value ?? error;
           const denied = failedFence === null || readinessFailed || scope.projectionSnapshotHasDenials(failedFence) || filtered.length !== old.items.length;
           const base = { ...old, loading: false, stale: true, error: failure };
@@ -135,7 +135,7 @@ export const useMyTasks = (readEnabled: boolean) => {
     const cancel = () => { ++generation; controller?.abort(); controller = null; requestFence = null; };
     const unsubscribe = scope.subscribeProjection(event => {
       if (event.accessRestored) { cancel(); queued = false; void load(); return; }
-      if (!event.accessRevoked && !event.scopeSuspended) {
+      if (!event.accessRevoked && !event.scopeSuspended && !event.historyChanged) {
         if (scope.getAuthorizedProject(event.projectId) !== null) cleanupErrors.delete(event.projectId);
         return;
       }

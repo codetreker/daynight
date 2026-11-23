@@ -41,6 +41,16 @@ afterEach(() => { for (const [sessions, world] of worlds) { sessions.dispose(); 
 beforeEach(() => { reads.mockReset().mockResolvedValue(initial); writes.mockReset(); permissions.mockReset(); vi.mocked(setTaskRequiredPlatform).mockReset(); });
 
 describe('versioned status session', () => {
+  it('preserves recursive intent through an unknown response and GET-only reconciliation', async () => {
+    const sessions = createSessions(); await open(sessions);
+    writes.mockRejectedValueOnce(new ApiError('network')); reads.mockResolvedValueOnce(initial);
+    sessions.setStatus(project, task, 'cancelled', version, true);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
+    expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, 'cancelled', version, expect.any(AbortSignal), expect.any(Object), true);
+    expect(sessions.snapshot(project, task).mutation.operation).toEqual({ action: 'status', status: 'cancelled', version, cancelDescendants: true });
+    expect(sessions.snapshot(project, task).detail).toEqual(initial);
+    expect(reads).toHaveBeenCalledTimes(2);
+  });
   it.each((['todo', 'in_progress', 'done'] as const).flatMap((from) => (['todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('confirms $from → $to using its exact delta and complete persisted material', async ({ from, to }) => {
     const previous = source(from); const saved = result(previous, to); const pending = deferred<TaskDetail>(); reads.mockResolvedValueOnce(previous); writes.mockReturnValueOnce(pending.promise);
     const sessions = createSessions(); const refresh = vi.fn(); sessions.subscribeProject(project, refresh); await open(sessions, previous); submit(sessions, to);

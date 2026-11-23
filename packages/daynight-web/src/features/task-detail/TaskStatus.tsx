@@ -4,6 +4,7 @@ import type { TaskDetail, TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskMutationState } from './TaskDetailSession';
 import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
+import { TaskLifecycleBlockers, taskLifecycleReason } from './TaskLifecycleBlockers';
 
 const taskStatuses: readonly TaskStatus[] = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'];
 export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect, statuses = taskStatuses, allowCancelledReopen = false, menuLabel }: {
@@ -59,17 +60,19 @@ export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect, stat
   </div>;
 };
 
-const StatusError = ({ error }: { readonly error: unknown }) => {
+const StatusError = ({ error, projectId }: { readonly error: unknown; readonly projectId: string }) => {
   const { messages: { inspection: { status: m }, common } } = useI18n();
-  const message = error instanceof ApiError
+  const message = taskLifecycleReason(error, m) ?? (error instanceof ApiError
     ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError
       : error.code === 'version_conflict' ? m.versionConflict : error.code === 'dependency_unsatisfied' ? m.dependencyUnsatisfied
         : error.code === 'not_found' ? m.notFound : m.refused
-    : m.requestFailed;
-  return <><p>{message}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
+    : m.requestFailed);
+  return <><p>{message}</p><TaskLifecycleBlockers error={error} projectId={projectId} />{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
 };
 
-export const TaskStatusFeedback = ({ mutation, onReconcile }: {
+export const TaskStatusFeedback = ({ mutation, onReconcile, projectId, onCancelDescendants }: {
+  readonly projectId: string;
+  readonly onCancelDescendants?: () => void;
   readonly detail: TaskDetail | null;
   readonly mutation: TaskMutationState;
   readonly onReconcile: () => void;
@@ -85,7 +88,7 @@ export const TaskStatusFeedback = ({ mutation, onReconcile }: {
   return <TaskDetailNotice active={relevant} event={event} initiallyVisible={mutation.phase !== 'confirmed'} tone={tone} recoverable={unresolved}><section className="task-status-feedback" data-tone={tone} aria-label={m.menu} aria-busy={busy}>
     {unresolved && <div className="task-status-controls"><button className="button" type="button" disabled={busy} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.checkState}</button></div>}
     {summary !== null && <p className="task-status-message" role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{summary}</p>}
-    {mutation.error !== null && <div className="task-status-error" role="alert"><StatusError error={mutation.error} /></div>}
-    {mutation.reconciliationError !== null && <div className="task-status-error" role="alert"><p>{m.checkFailed}</p><StatusError error={mutation.reconciliationError} /></div>}
+    {mutation.error !== null && <div className="task-status-error" role="alert"><StatusError error={mutation.error} projectId={projectId} />{mutation.phase === 'refused' && mutation.operation?.action === 'status' && mutation.operation.status === 'cancelled' && mutation.operation.cancelDescendants === undefined && mutation.error instanceof ApiError && mutation.error.code === 'task_unfinished_children' && onCancelDescendants !== undefined && <button className="button danger" type="button" onClick={onCancelDescendants}>{m.cancelDescendants}</button>}</div>}
+    {mutation.reconciliationError !== null && <div className="task-status-error" role="alert"><p>{m.checkFailed}</p><StatusError error={mutation.reconciliationError} projectId={projectId} /></div>}
   </section></TaskDetailNotice>;
 };

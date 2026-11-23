@@ -95,7 +95,7 @@ it('does not publish a late child page after the real project history is retired
   try {
     await waitFor(() => expect(listReads).toBe(1));
     const generation = scope.getHistoryGeneration(projectId);
-    act(() => scope.retireGoalHistory(projectId, taskSyncEpoch(projectId)));
+    act(() => scope.retireTaskHistory(projectId, taskSyncEpoch(projectId)));
     expect(scope.getHistoryGeneration(projectId)).toBeGreaterThan(generation);
     await act(async () => { pending.resolve(resourceResponse({ items: [child], nextCursor: null }, TEST_VIEWER_ID)); await pending.promise; });
     expect(screen.queryByText('Child')).toBeNull();
@@ -159,7 +159,7 @@ it.each(['uncertain', 'retired'] as const)('handles a pending create when projec
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(writes).toBe(1));
-    act(() => { if (mode === 'uncertain') scope.fenceGoalHistory(projectId, taskSyncEpoch(projectId)); else scope.retireGoalHistory(projectId, taskSyncEpoch(projectId)); });
+    act(() => { if (mode === 'uncertain') scope.fenceTaskHistory(projectId, taskSyncEpoch(projectId)); else scope.retireTaskHistory(projectId, taskSyncEpoch(projectId)); });
     expect(screen.queryByRole('textbox', { name: 'Title' })).toBeNull();
     await act(async () => { pending.reject(new TypeError('connection lost')); await pending.promise.catch(() => {}); });
     if (mode === 'uncertain') {
