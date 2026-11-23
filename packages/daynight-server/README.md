@@ -929,7 +929,11 @@ The example explicitly enables a controlled local HTTP origin. Production uses
 HTTPS and leaves that exception disabled. Register the exact callback URL with
 UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
-owns the shared authentication setup.
+owns the shared authentication setup, including local wildcard resolution for
+the bare preview and Task/Goal UUID subdomains. Both origins may share a port
+with distinct lowercase dotted hostnames; different ports on one DNS hostname
+do not isolate preview Cookies. For direct access, changing the published port
+requires updating both origins and the exact registered callback together.
 
 The server selects an absolute root from `--root`, `DAYNIGHT_ROOT`, or
 `/var/lib/daynight`, in that order. It reads optional `config/config.yml` and
