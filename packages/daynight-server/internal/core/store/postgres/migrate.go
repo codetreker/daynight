@@ -374,7 +374,10 @@ var browserSessionManagementSQL string
 //go:embed schema/migrations/121_worker_platform_task_mode.sql
 var workerPlatformTaskModeSQL string
 
-//go:embed schema/migrations/122_task_ancestor_visibility.sql
+//go:embed schema/migrations/122_archive_single_staging.sql
+var archiveSingleStagingSQL string
+
+//go:embed schema/migrations/123_task_ancestor_visibility.sql
 var taskAncestorVisibilitySQL string
 
 type migration struct {
@@ -504,7 +507,8 @@ var schemaMigrations = []migration{
 	{version: 119, sql: retireStepWebhookBindingsSQL},
 	{version: 120, sql: browserSessionManagementSQL},
 	{version: 121, sql: workerPlatformTaskModeSQL},
-	{version: 122, sql: taskAncestorVisibilitySQL},
+	{version: 122, sql: archiveSingleStagingSQL},
+	{version: 123, sql: taskAncestorVisibilitySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

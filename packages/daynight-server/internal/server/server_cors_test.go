@@ -166,11 +166,6 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	for _, op := range []string{"release", "withdraw"} {
 		add("POST", task+"/worker-claim/"+op)
 	}
-	add("GET HEAD POST", task+"/steps")
-	add("GET HEAD PATCH DELETE", task+"/steps/abcdef01")
-	for _, op := range []string{"status", "position"} {
-		add("PUT", task+"/steps/abcdef01/"+op)
-	}
 	add("GET HEAD POST", task+"/thread/messages")
 	add("GET HEAD", task+"/attachments")
 	add("GET HEAD PUT DELETE", task+"/attachments/files/file")

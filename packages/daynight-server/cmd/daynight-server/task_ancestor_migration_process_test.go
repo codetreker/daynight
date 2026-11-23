@@ -29,7 +29,7 @@ func TestTaskAncestorMigrationCommittedStartupFailureAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err := postgres.ReplaySchema121ForTest(ctx, pool); err != nil {
+	if err := postgres.ReplaySchema122ForTest(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	project, goal, child := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -70,15 +70,15 @@ func TestTaskAncestorMigrationCommittedStartupFailureAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fresh.Close()
-	sql, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations", "122_task_ancestor_visibility.sql"))
+	sql, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "schema", "migrations", "123_task_ancestor_visibility.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	expectedChecksum := fmt.Sprintf("%x", sha256.Sum256(sql))
 	var committed bool
 	if err := fresh.QueryRow(ctx, `SELECT
- (SELECT checksum=$1 FROM schema_migrations WHERE version=122)
- AND (SELECT max(version)=122 FROM schema_migrations)
+ (SELECT checksum=$1 FROM schema_migrations WHERE version=123)
+ AND (SELECT max(version)=123 FROM schema_migrations)
  AND (SELECT ancestor_deleted_at='2026-01-03'::timestamptz AND deleted_at IS NULL AND parent_id=$3 AND version=9007199254740993 AND updated_at='2026-01-02'::timestamptz FROM tasks WHERE id=$2)
  AND (SELECT effective_deleted_at='2026-01-03'::timestamptz FROM task_resource_rows WHERE id=$2)
  AND (SELECT task_cache_epoch::text=$5 FROM projects WHERE id=$4)`, expectedChecksum, child, goal, project, epoch).Scan(&committed); err != nil || !committed {

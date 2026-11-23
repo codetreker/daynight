@@ -1,7 +1,7 @@
 import { sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { currentSqliteVersion, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
+import { currentSqliteVersion, inspectSqlite, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
 import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 import { migratePendingContent, migratePendingEntryPointers } from "./pending-content.js";
 import { assertNoOrphanTimelineSource, importControllerTimeline } from "./content/migration.js";
@@ -62,6 +62,13 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
 };
 
 export const controllerJournalFormat = controllerJournalFormatForMigration(() => { throw new Error("Controller journal migration requires its original storage permit."); });
+
+/** Protected copies, retained inventories and exited-launch observations can read shipped v16 data without mutation. */
+export const inspectReadCompatibleControllerJournal = (db: Database.Database): SqliteSource => {
+  const source = inspectSqlite(db, controllerJournalFormat);
+  if (source.kind !== "current" && !(source.kind === "outdated" && source.version === 16)) throw new Error("Controller journal is not a supported read-only format.");
+  return source;
+};
 
 export const assertJournalMigrationAllowed = (db: Database.Database, source: SqliteSource, toVersion = currentSqliteVersion(controllerJournalFormat)): undefined => {
   if (source.kind === "empty") return;

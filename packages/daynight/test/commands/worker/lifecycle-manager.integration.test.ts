@@ -1,14 +1,17 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
 import { lifecycleRequestHash, parseLifecycleObservationEnvelope, type LifecycleActivationRequest, type LifecycleActivationReceipt, type LifecycleInstanceRequest, type LifecycleInstanceReceipt, type LifecycleIntentRequest, type LifecycleIntentReceipt, type LifecycleObservationEnvelope, type LifecycleOperationResult, type LifecycleResolveRequest, type LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import type { WorkerLifecycleClient } from "../../../src/api/worker-lifecycle-client.js";
-import { createLifecycleManager, type LifecycleExecutionControl } from "../../../src/commands/worker/lifecycle-manager.js";
+import { createLifecycleManager, type LifecycleExecutionControl, type LifecycleManagerOptions } from "../../../src/commands/worker/lifecycle-manager.js";
 import { openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
 import type { OwnerStopResult } from "../../../src/commands/worker/execution-scope.js";
+
+vi.mock("node:timers/promises", { spy: true });
 
 const root = fileURLToPath(new URL("../../../../../.tmp/lifecycle-manager-tests/", import.meta.url));
 const id = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -28,7 +31,29 @@ const waitSignal = <T>(work: Promise<T>, signal?: AbortSignal): Promise<T> => {
 };
 const cleanups: (() => Promise<void>)[] = [];
 
-const fixture = () => {
+type PollWait = NonNullable<LifecycleManagerOptions["waitForPoll"]>;
+const shortPoll: PollWait = (_purpose, _milliseconds, signal) => delay(10, undefined, { signal });
+const pollBarrier = (purpose: Parameters<PollWait>[0]) => {
+  let waiting = deferred<void>();
+  let wake = deferred<void>();
+  const wait: PollWait = (current, milliseconds, signal) => {
+    if (current !== purpose) return shortPoll(current, milliseconds, signal);
+    waiting.resolve();
+    return waitSignal(wake.promise, signal);
+  };
+  return {
+    wait,
+    async advance(): Promise<void> {
+      await waitSignal(waiting.promise, AbortSignal.timeout(2500));
+      const pending = wake;
+      waiting = deferred<void>();
+      wake = deferred<void>();
+      pending.resolve();
+    },
+  };
+};
+
+const fixture = (waitForPoll: PollWait | "default" = shortPoll) => {
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "manager-")); chmodSync(directory, 0o700);
   const file = path.join(directory, "lifecycle.sqlite"), store = openLifecycleStore({ file, identity, allowCreate: true });
@@ -78,7 +103,11 @@ const fixture = () => {
     resolve: vi.fn(async (request: LifecycleResolveRequest) => { const result = receipts.get(request.request.operationId); if (result === undefined) throw new Error("Fixture requires an explicit original resolution."); return structuredClone(result); }),
   };
   const resources = vi.fn(async (_deadline: number) => {}), registration = vi.fn(async () => {});
-  const manager = createLifecycleManager({ store, api, platform: "macos", signal: cancellation.signal, reconcileResources: resources, ensureWorkerRegistered: registration, reportError: error => { errors.push(error); } });
+  const manager = createLifecycleManager({
+    store, api, platform: "macos", signal: cancellation.signal, reconcileResources: resources, ensureWorkerRegistered: registration,
+    reportError: error => { errors.push(error); },
+    ...(waitForPoll === "default" ? {} : { waitForPoll }),
+  });
   let closed = false;
   const dispose = async () => {
     if (closed) return; closed = true; cancellation.abort(new Error("Fixture stopped"));
@@ -122,10 +151,12 @@ describe("Worker lifecycle management with real local authority", () => {
   });
 
   it("observes local closure independently while the cloud read is pending", async () => {
-    const f = fixture(); await start(f); const owner = control(); f.manager.attach(owner);
+    const localPoll = pollBarrier("local-watch");
+    const f = fixture(localPoll.wait); await start(f); const owner = control(); f.manager.attach(owner);
     const gate = deferred<LifecycleResource>(); f.blockReads(gate.promise);
     await f.readStarted.promise;
     f.store.closeAdmission({ operationId: id(20), local: true });
+    await localPoll.advance();
     await owner.stopped.promise;
     expect(owner.stop).toHaveBeenCalled();
     expect(f.store.readState().admission).toBe("closed");
@@ -133,11 +164,22 @@ describe("Worker lifecycle management with real local authority", () => {
   }, 5000);
 
   it("refreshes disabled observations without repeatedly stopping the same closed owners", async () => {
-    const f = fixture(); await start(f); const owner = control(); f.manager.attach(owner);
+    const localPoll = pollBarrier("local-watch"), cloudPoll = pollBarrier("cloud-poll");
+    const f = fixture((purpose, milliseconds, signal) => {
+      const poll = purpose === "local-watch" ? localPoll : cloudPoll;
+      return poll.wait(purpose, milliseconds, signal);
+    });
+    await start(f); const owner = control(); f.manager.attach(owner);
     f.store.closeAdmission({ operationId: id(20), local: true });
+    await localPoll.advance();
+    await cloudPoll.advance();
     await expect.poll(() => ({ phase: f.store.readState().phase, desired: f.cloud().desired })).toEqual({ phase: "disabled", desired: "disabled" });
     await owner.stopped.promise;
     const reconciliations = vi.mocked(owner.reconcile).mock.calls.length, stops = vi.mocked(owner.stop).mock.calls.length, reports = vi.mocked(f.api.report).mock.calls.length;
+    await localPoll.advance();
+    await cloudPoll.advance();
+    await localPoll.advance();
+    await cloudPoll.advance();
     await expect.poll(() => vi.mocked(f.api.report).mock.calls.length, { timeout: 3500 }).toBeGreaterThanOrEqual(reports + 2);
     expect(vi.mocked(owner.reconcile).mock.calls).toHaveLength(reconciliations);
     expect(vi.mocked(owner.stop).mock.calls).toHaveLength(stops);
@@ -238,7 +280,7 @@ describe("Worker lifecycle management with real local authority", () => {
       if (recovered) local.recordResource({ resourceId: id(70), stage: "stopped", stopProof: { joined: true }, saveState: "durable", error: null });
     });
     const replacement = createLifecycleManager({ store: local, api: f.api, platform: "macos", signal: cancellation.signal,
-      reconcileResources: resources, reportError: error => f.errors.push(error) });
+      waitForPoll: shortPoll, reconcileResources: resources, reportError: error => f.errors.push(error) });
     replacement.attach(owner);
     const activations = vi.mocked(f.api.activate).mock.calls.length;
     try {
@@ -300,7 +342,7 @@ describe("Worker lifecycle management with real local authority", () => {
       return operation(request.request.operationId);
     });
     const owner = control(), replacement = createLifecycleManager({ store: local, api: f.api, platform: "macos", signal: cancellation.signal,
-      reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+      waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     replacement.attach(owner);
     const activations = vi.mocked(f.api.activate).mock.calls.length;
     try {
@@ -399,7 +441,7 @@ describe("Worker lifecycle management with real local authority", () => {
       return operation(operationId);
     });
     const replacement = createLifecycleManager({ store: local, api: f.api, platform: "macos", signal: cancellation.signal,
-      reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+      waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     try {
       // Initialization reports its unresolved request and returns without execution
       // readiness; the remainder of this same local resume can now resolve it.
@@ -421,7 +463,7 @@ describe("Worker lifecycle management with real local authority", () => {
       const reports = vi.mocked(f.api.report).mock.calls.length, errors = f.errors.length;
       const registrations = vi.mocked(f.api.register).mock.calls.length, activations = vi.mocked(f.api.activate).mock.calls.length;
       replacement.start();
-      // start() polls immediately; the second report requires the actual timer tick.
+      // start() polls immediately; the second report requires a later poll.
       await expect.poll(() => vi.mocked(f.api.report).mock.calls.length, { timeout: 3500 }).toBeGreaterThanOrEqual(reports + 2);
       expect(executionActive).toBe(true);
       expect(owner.stop).not.toHaveBeenCalled();
@@ -457,7 +499,7 @@ describe("Worker lifecycle management with real local authority", () => {
       return structuredClone(f.receipts.get(original.operationId)!);
     });
     const owner = control(), replacement = createLifecycleManager({ store: local, api: f.api, platform: "macos", signal: cancellation.signal,
-      reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+      waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     replacement.attach(owner);
     try {
       // Matching live authority is deliberately available, but cannot prove the original write's outcome.
@@ -530,11 +572,13 @@ describe("Worker lifecycle management with real local authority", () => {
   }, 10_000);
 
   it("reconciles an unknown report from the saved same-sequence observation before producing a new report", async () => {
-    const f = fixture(), lost = deferred<void>(); let once = true;
+    const cloudPoll = pollBarrier("cloud-poll");
+    const f = fixture(cloudPoll.wait), lost = deferred<void>(); let once = true;
     f.onReport(() => { if (once) { once = false; lost.resolve(); throw unknown(); } });
     f.manager.start(); await lost.promise;
     await expect.poll(() => f.store.listOutbox().filter(row => row.uploadState === "unknown").length).toBe(1);
     const original = f.store.listOutbox().find(row => row.uploadState === "unknown")!;
+    await cloudPoll.advance();
     await f.manager.waitForAdmission();
     expect(vi.mocked(f.api.report).mock.calls.filter(([request]: Parameters<WorkerLifecycleClient["report"]>) => request.reportSequence === original.reportSequence)).toHaveLength(1);
     expect(f.store.readOutboxHistory(original.id)).toMatchObject({ uploadState: "confirmed", receipt: { receivedAt: time } });
@@ -981,7 +1025,7 @@ describe("Worker lifecycle management with real local authority", () => {
     await expect(f.manager.resume(id(22))).rejects.toThrow();
     f.cancellation.abort(new Error("Management process ended after intent submission")); await f.manager.close();
     const cancellation = new AbortController();
-    const replacement = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: cancellation.signal, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+    const replacement = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: cancellation.signal, waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     try {
       replacement.start();
       await expect.poll(() => f.cloud().observation?.instanceEpoch).toBe("2");
@@ -1008,7 +1052,7 @@ describe("Worker lifecycle management with real local authority", () => {
     f.cancellation.abort(new Error("Management process ended before local commit")); await f.manager.close();
     f.onActivation(undefined);
     const replacementCancellation = new AbortController();
-    const replacement = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: replacementCancellation.signal, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+    const replacement = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: replacementCancellation.signal, waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     try {
       replacement.start();
       await expect.poll(() => f.store.readState().phase).toBe("disabled");
@@ -1074,7 +1118,7 @@ describe("Worker lifecycle management with real local authority", () => {
     const f = fixture(); await start(f);
     f.store.closeForRestart(); f.cancellation.abort(); await f.manager.close();
     const cancellation = new AbortController();
-    const manager = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: cancellation.signal, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+    const manager = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: cancellation.signal, waitForPoll: shortPoll, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
     try {
       const binding = await manager.initializeForControl();
       expect(binding).toMatchObject({ instanceEpoch: "2", scopeGeneration: "2" });
@@ -1193,7 +1237,11 @@ describe("Worker lifecycle management with real local authority", () => {
   }, 5000);
 
   it("does not erase normal reconnect eligibility when the root aborts a cloud read", async () => {
-    const f = fixture(); await start(f);
+    vi.mocked(delay).mockClear();
+    const f = fixture("default"); await start(f);
+    expect(delay).toHaveBeenCalledWith(100, undefined, { signal: f.cancellation.signal });
+    expect(vi.mocked(delay).mock.calls.filter(([milliseconds, , options]) =>
+      milliseconds === 1000 && options?.signal === f.cancellation.signal)).toHaveLength(2);
     const gate = deferred<LifecycleResource>(); f.blockReads(gate.promise); await f.readStarted.promise;
     f.store.closeForRestart(); f.cancellation.abort(new Error("Normal Worker shutdown"));
     await f.manager.close();

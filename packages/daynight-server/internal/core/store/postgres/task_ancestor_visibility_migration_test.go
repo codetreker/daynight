@@ -15,8 +15,8 @@ import (
 
 func ancestorVisibilityMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
 	t.Helper()
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 122 })
-	if index < 1 || schemaMigrations[index-1].version != 121 {
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 123 })
+	if index < 1 || schemaMigrations[index-1].version != 122 {
 		t.Fatal("ancestor visibility migration must follow the actual previous ledger")
 	}
 	pool := emptyPool(t)
@@ -49,7 +49,7 @@ func ancestorMigrationFacts(t *testing.T, pool *pgxpool.Pool) string {
  (SELECT jsonb_agg(to_jsonb(a) ORDER BY task_id,path) FROM task_attachments a),
  (SELECT jsonb_agg(to_jsonb(d) ORDER BY task_id,depends_on_task_id) FROM task_dependencies d),
  (SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),
- (SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<122))::text`).Scan(&facts); err != nil {
+ (SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<123))::text`).Scan(&facts); err != nil {
 		t.Fatal(err)
 	}
 	return facts
@@ -84,7 +84,7 @@ func TestTaskAncestorVisibilityMigrationPreservesHistoricalResources(t *testing.
  (SELECT count(*)=1 FROM tasks WHERE ancestor_deleted_at IS NOT NULL)
  AND (SELECT ancestor_deleted_at='2026-01-03'::timestamptz AND deleted_at IS NULL FROM tasks WHERE id=$1)
  AND (SELECT ancestor_deleted_at IS NULL AND deleted_at='2026-01-02'::timestamptz FROM tasks WHERE id=$2)
- AND (SELECT checksum=$3 FROM schema_migrations WHERE version=122)
+ AND (SELECT checksum=$3 FROM schema_migrations WHERE version=123)
  AND to_regclass('tasks_project_parent_created_id') IS NOT NULL`, queryID(14), queryID(15), schemaMigrations[index].checksum()).Scan(&valid); err != nil || !valid {
 		t.Fatalf("backfill, physical tombstone, checksum or existing index: valid=%v err=%v", valid, err)
 	}
@@ -108,7 +108,7 @@ func assertAncestorMigrationRolledBack(t *testing.T, pool *pgxpool.Pool, before,
 	t.Helper()
 	var intact bool
 	if err := pool.QueryRow(t.Context(), `SELECT
- NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=122)
+ NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=123)
  AND NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='tasks'::regclass AND attname='ancestor_deleted_at' AND NOT attisdropped)`).Scan(&intact); err != nil || !intact {
 		t.Fatalf("failed migration left column or ledger: intact=%v err=%v", intact, err)
 	}
@@ -159,7 +159,7 @@ func TestTaskAncestorVisibilityMigrationLedgerFailureRollsBackAndRecovers(t *tes
 	pool, _ := ancestorVisibilityMigrationFixture(t)
 	before, view := ancestorMigrationFacts(t, pool), ancestorMigrationView(t, pool)
 	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION reject_ancestor_visibility_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
- BEGIN IF NEW.version=122 THEN RAISE EXCEPTION 'injected ancestor visibility ledger failure'; END IF; RETURN NEW; END $$;
+ BEGIN IF NEW.version=123 THEN RAISE EXCEPTION 'injected ancestor visibility ledger failure'; END IF; RETURN NEW; END $$;
  CREATE TRIGGER reject_ancestor_visibility_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_ancestor_visibility_ledger()`); err != nil {
 		t.Fatal(err)
 	}
