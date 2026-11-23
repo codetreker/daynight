@@ -49,6 +49,8 @@ describe("webhook API boundaries", () => {
   it("rejects inconsistent full and metadata-only disclosure", () => {
     const view = { id: deliveryId, endpointId, eventId: operationId, owner, eventType: "task.created", resource: { projectId: operationId, taskId: operationId, stepId: null, messageId: null, displayName: null }, occurredAt: time, resourceVersion: "1", target: { destinationRevision: "1", url: null, displayUrl: "https://example.test/…" }, generation: "1", state: "pending", attemptCount: 0, automaticAttemptCount: 0, manualOperationCount: 0, nextAttemptAt: null, lastAttemptAt: null, expiresAt: time, automaticExpiresAt: time, payloadExpiresAt: time, lastAcknowledgedAt: null, lastResult: null, payloadAvailable: true, disclosure: "full" };
     expect(parseWebhookDelivery(view, owner, endpointId, deliveryId).eventType).toBe("task.created");
+    const historicalStep = { ...view, eventType: "task.step_updated", resource: { ...view.resource, stepId: "00000001" } };
+    expect(parseWebhookDelivery(historicalStep, owner, endpointId, deliveryId)).toMatchObject({ eventType: "task.step_updated", resource: { stepId: "00000001" } });
     expect(() => parseWebhookDelivery({ ...view, eventType: null }, owner, endpointId)).toThrow();
     expect(() => parseWebhookDelivery({ ...view, lastResult: { category: "http_error", code: "HTTP", httpStatus: 999, durationMs: null } }, owner, endpointId)).toThrow();
     expect(() => parseWebhookDelivery({ ...view, disclosure: "metadata_only" }, owner, endpointId)).toThrow();
