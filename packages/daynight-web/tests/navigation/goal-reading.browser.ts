@@ -403,7 +403,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, outsideId, { title: 'Hidden root' })];
     currentGraph = graphFixture(details);
   }, addComplexExternalGoalTask: (title: string) => {
-    details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false },
+    details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false }, second,
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'A very long external owner name that should truncate', ready: false }),
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-08T08:21:00Z',
         allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } })];
@@ -3397,8 +3397,8 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await expect(nested).toHaveCount(0);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 390, 320]) for (const rootSize of [16, 20, 24, 32]) {
-  test(`Goal graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+for (const kind of ['Goal', 'chain'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 390, 320]) for (const rootSize of [16, 20, 24, 32]) {
+  test(`${kind} graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
     const title = locale === 'en' ? 'A long task title deliberately occupying three lines while the external marker and compact readings remain visible in this dense card' : '这是一个用于验证依赖图卡片三行标题与外部标记以及紧凑读数同时保持可读的非常长的任务标题';
     const fixture = await install(page, locale); fixture.addComplexExternalGoalTask(title);
     await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
@@ -3418,35 +3418,122 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 3
     await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
     await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
     await page.getByRole('tab', { name: /^Goal/ }).click();
-    await page.locator(`#project-goal-graph-${goalId}`).click();
-    const graph = page.locator(`#task-graph-${goalId}`);
+    if (kind === 'Goal') await page.locator(`#project-goal-graph-${goalId}`).click();
+    else { await page.locator(`#project-goal-detail-${goalId}`).click(); await restoreGoalGraph(page, page.locator('.goal-detail-surface')); }
+    const graph = kind === 'Goal' ? page.locator(`#task-graph-${goalId}`) : page.locator('.task-chain-dialog').last();
     const external = graph.locator(`.react-flow__node[data-id="${otherTaskId}"] .task-node`);
     await expect(external.locator('.task-node-usage')).toBeVisible();
+    await expect(external.locator('.task-node-usage')).toHaveText('Token ≥1,000T');
+    await expect(external.locator('.task-duration > span')).toHaveText(locale === 'en' ? '14d 1h' : '14 天 1 小时');
     await expect(external.locator('.task-node-owner')).toHaveCount(0);
     await expect(external.locator('.task-external-label')).toBeVisible();
-    await expect(external.locator('.task-node-expansions')).toHaveCount(0);
+    await expect(external.locator('.task-node-expansions')).toHaveCount(kind === 'Goal' ? 0 : 1);
     await expectGraphCardBadges(external);
     const measure = async () => external.evaluate(element => {
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
       const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-state', '.task-node-details']
+      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-bottom .graph-status', '.task-stuck-label', '.task-node-details', '.task-node-expansions']
         .flatMap(selector => [...card.querySelectorAll(selector)].map(part => ({ selector, box: part.getBoundingClientRect() })));
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
       return { width: card.offsetWidth, height: card.offsetHeight, threeLines: title.offsetHeight >= lineHeight * 2.8 && title.offsetHeight <= lineHeight * 3.1,
+        readingsUnclipped: [...card.querySelectorAll<HTMLElement>('.task-node-usage, .task-duration > span')].every(part => part.scrollWidth <= part.clientWidth),
         inside: parts.every(({ box: part }) => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
         overlaps: parts.flatMap((part, index) => parts.slice(index + 1).filter(other => !separate(part.box, other.box)).map(other => ({ a: part.selector, b: other.selector, aBox: part.box.toJSON(), bBox: other.box.toJSON() }))) };
     });
-    expect(await measure()).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
+    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: (kind === 'Goal' ? 124 : 184) * rootSize / 16, threeLines: true, readingsUnclipped: true, inside: true, overlaps: [] });
     expect(await graph.locator('.graph-orientation').evaluate(element => {
       const box = element.getBoundingClientRect(), dialog = element.closest('[role="dialog"]')!.getBoundingClientRect();
       return box.left >= dialog.left && box.right <= dialog.right;
     })).toBe(true);
     await graph.locator('[data-direction="vertical"]').click();
     await expect(graph.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
-    expect(await measure()).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
+    expect(await measure()).toEqual({ width: 240 * rootSize / 16, height: (kind === 'Goal' ? 124 : 184) * rootSize / 16, threeLines: true, readingsUnclipped: true, inside: true, overlaps: [] });
   });
 }
+
+for (const kind of ['Goal', 'chain'] as const) for (const direction of ['horizontal', 'vertical'] as const) test(`${kind} graph keeps interaction state as reading rows change in ${direction}`, async ({ page }) => {
+  await install(page);
+  let mode: 'none' | 'zero' | 'large' | 'failed' | 'denied' = 'none', calls = 0;
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+    calls++;
+    if (mode === 'failed' || mode === 'denied') return route.fulfill({ status: mode === 'failed' ? 503 : 403, json: { error: { code: mode === 'failed' ? 'unavailable' : 'forbidden', requestId: 'failure' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+    const known = mode === 'none' ? null : mode === 'zero' ? '0' : '9007199254740993';
+    const summary = {
+      metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: key === 'totalTokens' ? known : null, contributingRecords: known !== null && key === 'totalTokens' ? '1' : '0', unknownRecords: '0' }])),
+      scope: 'registered_web_executions', completeness: known === null ? 'no_data' : 'partial', reasonCodes: [],
+      coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+      measurementRecords: known === null ? '0' : '1', lastMeasuredAt: null, observedAt: time, etag: 'row-usage',
+    };
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list' }).click(); await page.getByRole('tab', { name: /^Goal/ }).click();
+  if (kind === 'Goal') await page.locator(`#project-goal-graph-${goalId}`).click();
+  else { await page.locator(`#project-goal-detail-${goalId}`).click(); await restoreGoalGraph(page, page.locator('.goal-detail-surface')); }
+  const graph = kind === 'Goal' ? page.locator(`#task-graph-${goalId}`) : page.locator('.task-chain-dialog').last();
+  if (direction === 'vertical') await graph.locator('[data-direction="vertical"]').click();
+  const card = graph.locator(`.react-flow__node[data-id="${firstId}"] .task-node`), body = card.locator('.task-node-body');
+  const viewport = graph.locator('.react-flow__viewport'), hint = graph.locator('.graph-reading-hint:popover-open');
+  await expect.poll(() => calls).toBeGreaterThan(0); await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetHeight)).toBe(102);
+  await page.keyboard.press('Tab'); await body.focus(); await page.keyboard.press('Enter');
+  await expect(body).toHaveAttribute('aria-pressed', 'true'); const transform = await viewport.getAttribute('style');
+  const layoutTime = () => page.evaluate(() => performance.getEntriesByName('daynight:task-layout').at(-1)?.startTime);
+  const update = async (next: typeof mode) => { const before = calls; mode = next; await page.clock.fastForward(16_000); await expect.poll(() => calls).toBeGreaterThan(before); };
+  await update('zero'); await expect(card.locator('.task-node-usage')).toHaveText('Token 0'); await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetHeight)).toBe(124);
+  await expect(hint).toContainText('0'); await expect(body).toBeFocused(); await expect(body).toHaveAttribute('aria-pressed', 'true'); await expect(viewport).toHaveAttribute('style', transform!);
+  const readingLayout = await layoutTime();
+  await update('large'); await expect(hint).toContainText('9,007,199,254,740,993'); expect(await layoutTime()).toBe(readingLayout);
+  await update('failed'); await expect(card.locator('.task-node-usage')).toHaveText('Token ≥1,000T'); expect(await layoutTime()).toBe(readingLayout);
+  await update('denied'); await expect(hint).toHaveCount(0); await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetHeight)).toBe(102);
+  await expect(body).toBeFocused(); await expect(body).toHaveAttribute('aria-pressed', 'true'); await expect(viewport).toHaveAttribute('style', transform!);
+});
+
+for (const kind of ['Goal', 'chain'] as const) test(`${kind} graph repositions a focused hint when another card changes height in vertical`, async ({ page }) => {
+  await install(page);
+  let firstVisible = false, calls = 0;
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+    calls++;
+    const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+    const summary = {
+      metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: key === 'totalTokens' ? '0' : null, contributingRecords: key === 'totalTokens' ? '1' : '0', unknownRecords: '0' }])),
+      scope: 'registered_web_executions', completeness: 'complete', reasonCodes: [],
+      coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '1', partialExecutions: '0', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+      measurementRecords: '1', lastMeasuredAt: null, observedAt: time, etag: 'row-usage',
+    };
+    const empty = { ...summary, metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: null, contributingRecords: '0', unknownRecords: '0' }])), completeness: 'no_data', measurementRecords: '0' };
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: id === secondId || (id === firstId && firstVisible) ? summary : empty })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list' }).click(); await page.getByRole('tab', { name: /^Goal/ }).click();
+  if (kind === 'Goal') await page.locator(`#project-goal-graph-${goalId}`).click();
+  else { await page.locator(`#project-goal-detail-${goalId}`).click(); await restoreGoalGraph(page, page.locator('.goal-detail-surface')); }
+  const graph = kind === 'Goal' ? page.locator(`#task-graph-${goalId}`) : page.locator('.task-chain-dialog').last();
+  await graph.locator('[data-direction="vertical"]').click();
+  const changed = graph.locator(`.react-flow__node[data-id="${firstId}"] .task-node`);
+  const focused = graph.locator(`.react-flow__node[data-id="${secondId}"] .task-node-body`), hint = graph.locator('.graph-reading-hint:popover-open');
+  await expect.poll(() => changed.evaluate(element => (element as HTMLElement).offsetHeight)).toBe(102);
+  await expect(focused.locator('.task-node-usage')).toHaveText('Token 0');
+  await page.keyboard.press('Tab'); await focused.focus(); await expect(hint).toBeVisible();
+  const before = await focused.boundingBox(); const previousCalls = calls;
+  firstVisible = true; await page.clock.fastForward(16_000); await expect.poll(() => calls).toBeGreaterThan(previousCalls);
+  await expect.poll(() => changed.evaluate(element => (element as HTMLElement).offsetHeight)).toBe(124);
+  await expect.poll(async () => { const after = await focused.boundingBox(); return after !== null && before !== null && (Math.abs(after.x - before.x) > 1 || Math.abs(after.y - before.y) > 1); }).toBe(true);
+  await expect(focused).toBeFocused(); await expect(hint).toContainText('0');
+  await expect.poll(() => hint.evaluate(element => {
+    const bubble = element.getBoundingClientRect();
+    const button = document.activeElement!.getBoundingClientRect();
+    const owner = element.closest('[role="dialog"]')!.getBoundingClientRect();
+    const bottom = Math.min(owner.bottom, innerHeight), top = Math.max(owner.top, 0);
+    const expected = button.bottom + bubble.height + 8 <= bottom ? button.bottom + 6 : Math.max(top + 8, button.top - bubble.height - 6);
+    return Math.abs(bubble.top - expected);
+  })).toBeLessThan(2);
+});
 
 for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const rootSize of [16, 32]) test(`Goal compact graph frames independent tasks at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
@@ -3462,17 +3549,18 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(nodes).toHaveCount(30);
   expect(await nodes.evaluateAll((elements, scale) => elements.every(element => {
     const card = element.querySelector<HTMLElement>('.task-node')!;
-    return card.offsetWidth === 300 * scale && card.offsetHeight === 124 * scale;
+    return card.offsetWidth === 240 * scale && card.offsetHeight === 102 * scale;
   }), rootSize / 16)).toBe(true);
-  expect(await nodes.first().evaluate(element => {
+  const compactLayout = () => nodes.first().evaluate(element => {
     const node = element.querySelector('.task-node')!.getBoundingClientRect();
     const details = element.querySelector('.task-node-details')!.getBoundingClientRect();
     const statuses = [...element.querySelectorAll('.task-node-bottom > *')].map(item => item.getBoundingClientRect());
     const title = element.querySelector('.task-node-title')!.getBoundingClientRect();
     const inside = (box: DOMRect) => box.left >= node.left - 1 && box.right <= node.right + 1 && box.top >= node.top - 1 && box.bottom <= node.bottom + 1;
     const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
-    return [details, ...statuses, title].every(inside) && statuses.every(status => separate(details, status)) && separate(details, title);
-  })).toBe(true);
+    return [details, ...statuses, title].every(inside) && statuses.every(status => separate(details, status) && separate(title, status)) && separate(details, title);
+  });
+  expect(await compactLayout()).toBe(true);
 
   const grid = async () => nodes.evaluateAll(elements => elements.map(element => {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
@@ -3492,7 +3580,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     expect(new Set(positions.map(point => point.y)).size).toBeGreaterThan(1);
   };
   await expectGrid();
-  const minimumZoom = await dialog.locator('.react-flow').evaluate((element, scale) => Math.max(0.2, Math.min(0.8, (element.clientWidth - 40) / (300 * scale))), rootSize / 16);
+  const minimumZoom = await dialog.locator('.react-flow').evaluate((element, scale) => Math.max(0.2, Math.min(0.8, (element.clientWidth - 40) / (240 * scale))), rootSize / 16);
   await expect.poll(zoom).toBeGreaterThanOrEqual(minimumZoom - 0.001);
   expect(await zoom()).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -3502,6 +3590,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect.poll(allInView).toBe(true);
   await dialog.locator('[data-direction="vertical"]').click();
   await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+  expect(await compactLayout()).toBe(true);
   await expectGrid();
   await expect.poll(zoom).toBeGreaterThanOrEqual(minimumZoom - 0.001);
   const bottomFit = dialog.getByRole('button', { name: locale === 'en' ? 'Fit to canvas' : '适应画布', exact: true });
