@@ -24,7 +24,7 @@
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
 | Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql`、`007-resource-cleanup-intent.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql`、`003-orchestration-blockers.sql` |
-| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql`、`012-direct-capture.sql`、`013-native-index-lease.sql`、`014-usage.sql`、`015-online-content.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql`、`012-direct-capture.sql`、`013-native-index-lease.sql`、`014-usage.sql`、`015-online-content.sql`、`016-worker-lifecycle.sql`、`017-stopped-generations.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
@@ -43,6 +43,10 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 
 Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。领域 callback 捕获原已提交指针，在同一迁移事务执行包含旧索引删除的完整 DDL，并从对应文件导入可映射的正文；totals 根据实际写入行计算。DDL 只执行一次；失败回滚恢复原索引。文件映射、局部坏值和纯升级由 [SQL 正文设计](session-sqlite-content.md)拥有。011 在同一许可和迁移事务中建立 `outbox_totals`，对旧 outbox 编码文本逐行计算 UTF-8 字节并一次初始化；版本和总量一起提交或回滚。正常重开不重复初始化。容量与 ACK 计量由 [Controller 协议](task-session-protocol.md)拥有。012 的领域 callback 只转换原生图片、Markdown 和 publication slot 中改变表示的 state 字段；无法操作的局部 state 保持原值，其他 slot 继续，未变化的 JSON 不重写。receipt、图片关联和不涉及映射的字段保持原样，不进行完整业务验证或恢复。字段和版本一起提交或回滚；[图片来源设计](session-image-sources.md)拥有运行期 submit 与恢复语义。`014-usage.sql` 独立保存用量来源、队列和元数据；`015-online-content.sql` 增加 `execution.history_content_policy`，默认 legacy，并创建空的 `online_entries` 和 `online_totals`。015 不转换旧条目或改写其身份、确认水位和冻结意图。新建 claim execution 的 task_body 策略在后续业务初始化事务选择，恢复不覆盖已存策略；在线合并读取、正文同步及独立逻辑预算由 [SQL 正文设计](session-sqlite-content.md)拥有。
 
+退役 claim 的本机库存可在只读事务中通过 `inspectSqlite` 验证紧邻旧格式 v16，再使用同一原票据与快照校验读取当前边界。该入口不修改仍存活 writer 的库，也不改变普通当前格式 snapshot reader；v16 的历史回执观察为空。确认原生停止后，停止维护才持原 permit 执行 v16→17 并保存真实停证。
+
+`016-worker-lifecycle.sql` 创建 `worker_lifecycle_bindings(execution_generation TEXT PRIMARY KEY,ticket_hash TEXT NOT NULL,binding_json TEXT NOT NULL)`，保存原 generation 的 Worker 生命周期绑定。`017-stopped-generations.sql` 创建 `stopped_generations(ticket_hash TEXT PRIMARY KEY,snapshot TEXT NOT NULL)`；编号迁移只建立空表，不从当前单例或缺失历史生成停止回执。运行期的 `recordStoppedWithPermit` 在同一 immediate 事务更新 `execution.snapshot` 并保存原 ticket 的完整停止快照；重复确认不得改写已存回执。下一 writer 覆盖 `execution` 单例前，在自己的启动事务内验证原已停止快照、恢复与 native 身份以及 Windows 停止标记，再保存原 ticket_hash 对应的不可变快照。因此升级后仍在单例中的有效旧停止证据可以保留，已经被覆盖且没有完整回执的历史不能重建。[Controller 协议](task-session-protocol.md#controller-与原生会话)拥有回执读取、原进程证明及 Windows Job 核验；这些业务动作不属于编号迁移。
+
 ## 独立版本与起点
 
 | 库 | 基线及迁移 |
@@ -50,7 +54,7 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 | Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
 | Web 执行状态 | 基线 1；版本 2 移除 cleanup 的重复操作回执及资源完成标记，保留意图、期限和操作身份；版本 3 新增独立编排阻塞表 |
-| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休；版本 11 建立 outbox UTF-8 字节累计值；版本 12 转换 direct submit 的持久采集状态并保留原身份和未结责任；版本 13 移除有效 native index lease 对象中的 maximumBytes 并保留其余字段；版本 14 增加独立用量来源、队列及元数据；当前版本 15 保存历史策略并新增在线详情及统计，旧 execution 默认 legacy |
+| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休；版本 11 建立 outbox UTF-8 字节累计值；版本 12 转换 direct submit 的持久采集状态并保留原身份和未结责任；版本 13 移除有效 native index lease 对象中的 maximumBytes 并保留其余字段；版本 14 增加独立用量来源、队列及元数据；版本 15 保存历史策略并新增在线详情及统计，旧 execution 默认 legacy；版本 16 新增 worker_lifecycle_bindings；当前版本 17 新增 stopped_generations，按原 ticket_hash 保留完整停止快照 |
 | Native resume lease | 基线及当前版本 1；任何保留 lease 阻止重置或迁移 |
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。

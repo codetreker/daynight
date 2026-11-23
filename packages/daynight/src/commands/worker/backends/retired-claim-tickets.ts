@@ -13,6 +13,10 @@ export type LocatedClaimNative = { target: CleanupTarget; controllers: LocatedCl
 export type ClaimNativeLocation = { target: CleanupTarget; located: LocatedClaimNative } | { target: CleanupTarget; error: unknown };
 export const retiredClaimKey = (target: CleanupTarget): string => `${target.projectId}/${target.taskId}/${target.claimId}`;
 const matches = (target: CleanupTarget, ticket: ControllerLaunchTicket): boolean => ticket.projectId === target.projectId && ticket.taskId === target.taskId && ticket.claimId === target.claimId;
+const attemptIntent = (ticket: ControllerLaunchTicket): string => {
+  const { schemaVersion: _version, lifecycleBinding: _binding, launchId: _launch, ipcEndpoint: _endpoint, ipcSecret: _secret, ...intent } = ticket;
+  return controllerPayloadHash(intent);
+};
 
 /** Batch discovery stays inside the Worker's inventory; lifecycle records bind their own original roots. */
 export const locateRetiredClaimControllers = async (options: {
@@ -28,10 +32,13 @@ export const locateRetiredClaimControllers = async (options: {
     if (ticket.serverOrigin !== options.identity.serverOrigin || ticket.workerId !== options.identity.workerId || ticket.userId !== options.identity.userId)
       throw new Error("Original retired claim Controller belongs to another Worker identity.");
     if (target.worktreeId !== undefined && ticket.worktreeId !== target.worktreeId) throw new Error("Original retired claim Controller worktree conflicts with its cleanup target.");
-    const previous = result.located.controllers.find(item => item.ticket.executionId === ticket.executionId && item.ticket.executionGeneration === ticket.executionGeneration);
+    const generation = result.located.controllers.filter(item => item.ticket.executionId === ticket.executionId && item.ticket.executionGeneration === ticket.executionGeneration);
+    if (generation.some(item => item.storageStateDirectory !== root || attemptIntent(item.ticket) !== attemptIntent(ticket)))
+      throw new Error("Original retired claim has conflicting Controller generation intents.");
+    const previous = result.located.controllers.find(item => item.ticket.launchId === ticket.launchId);
     if (previous !== undefined) {
-      if (previous.ticket.launchId !== ticket.launchId || previous.storageStateDirectory !== root || controllerPayloadHash(previous.ticket) !== controllerPayloadHash(ticket))
-        throw new Error("Original retired claim has conflicting Controller generation tickets.");
+      if (previous.storageStateDirectory !== root || controllerPayloadHash(previous.ticket) !== controllerPayloadHash(ticket))
+        throw new Error("Original retired claim has conflicting Controller launch tickets.");
       if (resource !== undefined && !previous.resources.some(item => item.resourceId === resource.resourceId)) previous.resources.push(resource);
       return;
     }

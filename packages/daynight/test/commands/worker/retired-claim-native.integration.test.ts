@@ -8,6 +8,12 @@ import { openControllerLifecycleStore } from "../../../src/commands/controller/l
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../../src/commands/controller/paths.js";
 import * as processProofs from "../../../src/commands/controller/process-proof.js";
 import { settleControllerLaunch } from "../../../src/commands/controller/worker-lifecycle.js";
+import { openControllerWorkerLifecycle } from "../../../src/commands/controller/worker-lifecycle.js";
+import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
+import { withWorkerLifecycle } from "../../../src/commands/worker/lifecycle-context.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { createRetiredClaimNativeCleanup, type LocatedClaimNative } from "../../../src/commands/worker/backends/retired-claim-native.js";
 import { retiredClaimKey } from "../../../src/commands/worker/backends/retired-claim-tickets.js";
@@ -42,10 +48,17 @@ const fixture = async () => {
       resumeNativeSessionId: null, credentialFile: path.join(controllerExecutionDirectory(home, executionId, root), "credential.json"),
       ipcEndpoint: resolveControllerIpcEndpoint(home, launchId, process.platform, root), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString(), ...overrides } as ControllerLaunchTicket;
   };
-  const lifecycle = () => {
+  const lifecycle = (active = false) => {
     const store = openLifecycleStore({ file: lifecycleFile, identity, allowCreate: true }); stores.push(store);
-    const instanceId = randomUUID(), state = store.bindInstance({ instanceId, instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
+    const instanceId = randomUUID(), state = store.bindInstance({ instanceId, instanceEpoch: "1", intentVersion: "1", desired: active ? "enabled" : "disabled" });
     const binding: LifecycleBinding = { ...identity, instanceId, instanceEpoch: "1", intentVersion: "1", localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    if (active) {
+      store.markStopped({ localEpoch: binding.localEpoch, inventoryRevision: store.readState().inventoryRevision });
+      const activation = { binding, operationId: randomUUID(), action: "bootstrap" as const };
+      store.prepareActivation(activation);
+      store.commitActivation({ ...activation, receipt: { protocolVersion: 1, action: "bootstrap", admission: "open", operationId: activation.operationId,
+        workerId: binding.workerId, instanceEpoch: binding.instanceEpoch, localEpoch: binding.localEpoch, intentVersion: binding.intentVersion, scopeGeneration: binding.scopeGeneration } });
+    }
     return { store, binding };
   };
   return { home, identity, target, ticket, jobLeases, lifecycle, adapter: () => createRetiredClaimNativeCleanup({ homeDirectory: home, identity, jobLeases }) };
@@ -73,6 +86,38 @@ it("retains every original generation and preserves ticket-only inventory as res
   expect(inventory.controllers.map(item => item.ticket.executionGeneration).sort()).toEqual(["1", "2"]);
   expect(await adapter.stop(inventory, request())).toMatchObject({ owners: [f.target], stoppedExecutions: [], resourcesCleared: true });
   for (const ticket of [first, second]) expect(JSON.parse(await readFile(controllerTicketPath(f.home, ticket.launchId), "utf8"))).toEqual(ticket);
+});
+
+it("clears the immutable attempts produced by an actual same-generation Web launch replacement", async () => {
+  const f = await fixture(), { store, binding } = f.lifecycle(true), web = openWebExecutionStore(createMemoryDatabase());
+  try {
+    const configuration = { agent: "claude" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+    const project = { projectId: f.target.projectId, repoUrl: "https://example.test/repo.git", localPath: f.home };
+    let task = web.register({ ...f.identity, ...f.target, project, configuration }, 1);
+    task = web.bindWorktree(task, { repositoryPath: f.home, commonDirectory: path.join(f.home, ".git"), worktreePath: f.home, branch: "daynight/task" }, 2);
+    task = web.initializeWebExecution(task, 3);
+    const sessionId = randomUUID(), sessionApi = {
+      register: vi.fn(async () => ({ sessionId })),
+      grant: vi.fn<WorkerSessionApi["grant"]>(async (_task, execution) => ({ claimId: task.claimId, sessionId, executionGeneration: execution.executionGeneration,
+        token: "fixture-grant", expiresAt: new Date(Date.now() + 60_000).toISOString(), controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId })),
+    } as unknown as WorkerSessionApi;
+    const launcher = createWebControllerLauncher({ homeDirectory: f.home, packageDirectory: f.home, store: web, sessionApi, now: Date.now });
+    const context = { store, binding, failed: (error: unknown) => { throw error; } }, signal = new AbortController().signal;
+    const original = await withWorkerLifecycle(context, () => launcher.prepare(task, "managed", signal));
+    const lifecycle = openControllerWorkerLifecycle(f.home, original)!;
+    try { lifecycle.reserveLaunch(); lifecycle.settleLaunch({ kind: "not_dispatched" }); } finally { lifecycle.close(); }
+    const replacement = await withWorkerLifecycle(context, () => launcher.prepare(web.getTask(task)!, "managed", signal));
+    expect(replacement.launchId).not.toBe(original.launchId);
+    expect(replacement.executionGeneration).toBe(original.executionGeneration);
+    const journalFile = path.join(controllerExecutionDirectory(f.home, replacement.executionId), "journal.sqlite");
+    const journal = openControllerLifecycleStore(journalFile, replacement); journal.close();
+    const adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, lifecycle: store, jobLeases: f.jobLeases });
+    const inventory = await located(adapter, f.target);
+    expect(inventory.controllers.map(item => item.ticket.launchId).sort()).toEqual([original.launchId, replacement.launchId].sort());
+    expect(await adapter.stop(inventory, request())).toMatchObject({ resourcesCleared: true, stoppedExecutions: [] });
+    expect(store.getResource(original.launchId)?.stage).toBe("not_dispatched");
+    for (const ticket of [original, replacement]) expect(JSON.parse(await readFile(controllerTicketPath(f.home, ticket.launchId), "utf8"))).toEqual(ticket);
+  } finally { web.close(); }
 });
 
 it("accepts historical and unlaunched tickets around the actual current journal generation without rewriting it", async () => {
@@ -127,22 +172,37 @@ it("uses an authenticated lifecycle location and preserves terminal evidence whi
   const journalFile = path.join(controllerExecutionDirectory(f.home, ticket.executionId, privateRoot), "journal.sqlite");
   const identity = { ...f.target, kind: "launch", executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
     controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, launchId: ticket.launchId, storageStateDirectory: resolveControllerStateDirectory(f.home, privateRoot), ticketHash: controllerPayloadHash(ticket), journalFile };
-  store.importResource({ binding, resourceId: ticket.launchId, ownerKind: "controller", identity, operationId: ticket.launchId, stage: "reserved" });
+  const proof = { pid: 987650, parentPid: 1, processGroupId: null, startedAt: "original-controller", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` };
+  store.importResource({ binding, resourceId: ticket.launchId, ownerKind: "controller", identity, operationId: ticket.launchId, stage: "running", processProof: proof });
   const inputId = randomUUID(), originalStopProof = { kind: "input_receipt", accepted: true };
   store.importResource({ binding, resourceId: inputId, ownerKind: "controller", identity: { ...identity, kind: "input" }, operationId: inputId, stage: "confirmed", stopProof: originalStopProof });
   const failure = new Error("durable receipt write failed"), recordResource = vi.fn(store.recordResource);
   recordResource.mockImplementationOnce(() => { throw failure; });
-  const adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, jobLeases: f.jobLeases, lifecycle: { listResources: store.listResources, recordResource } });
+  vi.spyOn(processProofs, "stopControllerProcesses").mockResolvedValue();
+  vi.spyOn(processProofs, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, jobLeases: createControllerJobLeases("linux"), lifecycle: { listResources: store.listResources, recordResource } });
   const inventory = await located(adapter, f.target);
   expect(inventory.controllers).toHaveLength(1);
   await expect(adapter.stop(inventory, request())).rejects.toBe(failure);
-  expect(store.getResource(ticket.launchId)?.stage).toBe("reserved");
-  expect(await adapter.stop(inventory, request())).toMatchObject({ resourcesCleared: true, owners: [f.target], stoppedExecutions: [] });
+  expect(store.getResource(ticket.launchId)?.stage).toBe("running");
+  expect(await adapter.stop(inventory, request())).toMatchObject({ resourcesCleared: true, owners: [f.target], stoppedExecutions: [{ launchId: ticket.launchId }] });
   const stopped = store.getResource(ticket.launchId)!;
-  expect(stopped).toMatchObject({ stage: "stopped", saveState: "durable", stopProof: { boundaryEmpty: true, controllerProcess: null } });
+  expect(stopped).toMatchObject({ stage: "stopped", saveState: "durable", stopProof: { boundaryEmpty: true, controllerProcess: proof } });
   expect(store.getResource(inputId)?.stopProof).toEqual(originalStopProof);
   await adapter.stop(inventory, request());
   expect(store.getResource(ticket.launchId)).toEqual(stopped);
+});
+
+it.each(["reserved", "unknown"] as const)("retains an ambiguous %s launch whose process birth was never saved", async stage => {
+  const f = await fixture(), { store, binding } = f.lifecycle(), ticket = f.ticket({ schemaVersion: 2, lifecycleBinding: binding });
+  await writeLaunchTicket(f.home, ticket);
+  store.importResource({ binding, resourceId: ticket.launchId, ownerKind: "controller", operationId: ticket.launchId, stage,
+    identity: { ...f.target, kind: "launch", executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
+      controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, launchId: ticket.launchId,
+      storageStateDirectory: resolveControllerStateDirectory(f.home), ticketHash: controllerPayloadHash(ticket), journalFile: path.join(controllerExecutionDirectory(f.home, ticket.executionId), "journal.sqlite") } });
+  const original = store.getResource(ticket.launchId), adapter = createRetiredClaimNativeCleanup({ homeDirectory: f.home, identity: f.identity, lifecycle: store, jobLeases: f.jobLeases });
+  await expect(adapter.stop(await located(adapter, f.target), request())).rejects.toThrow("no Controller boundary proof");
+  expect(store.getResource(ticket.launchId)).toEqual(original);
 });
 
 it("propagates unreadable canonical inventory and honors cancellation before issuing clearance", async () => {

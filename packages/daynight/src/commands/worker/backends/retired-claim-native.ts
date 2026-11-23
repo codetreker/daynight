@@ -2,7 +2,7 @@ import { lstat, unlink } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readCurrentControllerInventorySnapshot, readHistoricalWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, validateWindowsControllerStopProof, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import { resolveControllerIpcEndpoint, resolveControllerStateDirectory } from "../../controller/paths.js";
 import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectBootstrapProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
@@ -40,15 +40,13 @@ const processProof = (value: LifecycleJson): ProcessProof => {
 const currentSnapshot = async (located: LocatedClaimController, controllers: readonly LocatedClaimController[], deadline: number): Promise<ControllerSnapshot | null> => {
   try { const stat = await lstat(located.journalFile); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Original Controller journal must be an ordinary file."); }
   catch (error) { if (missing(error)) return null; throw error; }
-  const snapshot = readControllerSnapshot(located.journalFile);
-  if (snapshot === null) return null;
+  const current = readCurrentControllerInventorySnapshot(located.journalFile, controllers.filter(controller => controller.journalFile === located.journalFile).map(controller => controller.ticket), deadline);
+  if (current === null) return null;
+  const { snapshot } = current;
   const ticket = located.ticket;
   if (snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.claimId !== ticket.claimId || snapshot.testExecutionId !== undefined)
     throw new Error("Original retired claim journal has conflicting execution ownership.");
-  if (snapshot.executionGeneration === ticket.executionGeneration) return readCurrentControllerSnapshot(located.journalFile, ticket, deadline);
-  const current = controllers.find(controller => controller.journalFile === located.journalFile && controller.ticket.executionGeneration === snapshot.executionGeneration);
-  if (current === undefined) throw new Error("Original Controller journal generation has no matching inventory ticket.");
-  readCurrentControllerSnapshot(located.journalFile, current.ticket, deadline);
+  if (current.ticket.launchId === ticket.launchId) return snapshot;
   // Generations share one journal. An older ticket never rewrites another generation's receipt.
   return null;
 };
@@ -100,10 +98,11 @@ export const createRetiredClaimNativeCleanup = (options: {
       }
     }
     const snapshot = await currentSnapshot(located, controllers, request.deadline);
+    const historical = process.platform === "win32" && snapshot === null ? readHistoricalWindowsStoppedControllerGeneration(located.journalFile, located.ticket, request.deadline) : null;
     const launches = located.resources.filter(resource => resource.identity.kind === "launch" && resource.processProof !== null).map(resource => processProof(resource.processProof));
-    const proof = snapshot?.controllerProcess ?? launches[0] ?? null;
+    const proof = snapshot?.controllerProcess ?? historical?.controllerProcess ?? launches[0] ?? null;
     if (launches.some(launch => !isDeepStrictEqual(launch, proof))) throw new Error("Original Controller has conflicting lifecycle and journal process proofs.");
-    const native = [...(snapshot?.nativeProcesses ?? [])];
+    const native = [...(snapshot?.nativeProcesses ?? historical?.nativeProcesses ?? [])];
     for (const resource of located.resources) {
       if (resource.identity.kind !== "provider" || resource.processProof === null) continue;
       const provider = processProof(resource.processProof);
@@ -112,11 +111,14 @@ export const createRetiredClaimNativeCleanup = (options: {
     if (proof !== null) {
       if (process.platform === "win32" && proof.jobObjectName !== `Local\\Daynight-${located.ticket.launchId}`) throw new Error("Original Controller Windows Job conflicts with its launch identity.");
       let lease = await options.jobLeases.get(located.ticket.launchId);
-      if (lease === undefined && snapshot === null && native.length === 0 && located.resources.some(resource => hasLifecycleUnreleasedControllerGateProof(located.ticket, resource, proof))) {
+      if (lease === undefined && historical !== null) {
+        await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
+      } else if (lease === undefined && snapshot === null && native.length === 0 && located.resources.some(resource => hasLifecycleUnreleasedControllerGateProof(located.ticket, resource, proof))) {
         await confirmDurableBoundaryProcesses([proof], request.deadline);
       } else if (options.jobLeases.enabled && lease === undefined && snapshot?.lifecycle === "stopped" && snapshot.nativeStopped) {
-        readProvenWindowsStoppedControllerGeneration(located.journalFile, located.ticket, request.deadline);
+        validateWindowsControllerStopProof(snapshot, located.ticket, controllerPayloadHash(located.ticket));
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
+        await recordStoppedControllerGeneration(located.journalFile, located.ticket, { deadline: request.deadline, signal: request.signal });
       } else if (options.jobLeases.enabled && lease === undefined && durableBoundary(located, proof)) {
         await confirmDurableBoundaryProcesses([proof, ...native], request.deadline);
       } else {
@@ -126,7 +128,8 @@ export const createRetiredClaimNativeCleanup = (options: {
         if (!await confirmControllerProcessesStopped(proof, native, request.deadline, lease)) throw new Error("Original retired claim Controller boundary remains running.");
         if (snapshot !== null && snapshot.controllerProcess !== null) await recordStoppedControllerGeneration(located.journalFile, located.ticket, { deadline: request.deadline, signal: request.signal, ...(lease === undefined ? {} : { jobLease: lease }) });
       }
-    } else if (native.length > 0 || await options.jobLeases.get(located.ticket.launchId) !== undefined) {
+    } else if (native.length > 0 || await options.jobLeases.get(located.ticket.launchId) !== undefined
+      || located.resources.some(resource => !["stopped", "not_dispatched", "confirmed"].includes(resource.stage) || resource.saveState !== "durable")) {
       throw new Error("Original retired claim native resources have no Controller boundary proof.");
     }
     check();

@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readHistoricalWindowsStoppedControllerGeneration, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
@@ -130,6 +130,33 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   proof.stopped.mockClear();
   expect(await recordStoppedControllerGeneration(f.file, f.ticket, {  })).toEqual(stopped);
   expect(proof.stopped).not.toHaveBeenCalled();
+});
+
+test.each([false, true])("preserves exact historical Windows stop evidence across recovery (upgrade v16: %s)", async upgrade => {
+  const f = await windowsStopFixture(), nativeSessionId = randomUUID();
+  const journal = new Database(f.file), row = journal.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+  journal.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...JSON.parse(row.snapshot), nativeSessionId })); journal.close();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  if (upgrade) {
+    const old = new Database(f.file);
+    old.exec("DROP TABLE stopped_generations"); old.pragma("user_version=16"); old.close();
+  }
+  const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
+  const current = openControllerLifecycleStore(f.file, next, { onMigration: () => {} }); current.close();
+  expect(readControllerSnapshot(f.file)?.executionGeneration).toBe("2");
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toEqual(stopped);
+  expect(readHistoricalWindowsStoppedControllerGeneration(f.file, { ...f.ticket, launchId: randomUUID() }, Date.now() + 5000)).toBeNull();
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/conflicts/);
+});
+
+test("refuses changed historical stop evidence and never replaces an immutable receipt", async () => {
+  const f = await windowsStopFixture();
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { deadline: Date.now() + 5000, jobLease });
+  const changed = { ...stopped, nativeProcesses: [{ pid: 456, parentPid: 123, processGroupId: null, startedAt: "another", commandHash: "b".repeat(64) }] };
+  const db = new Database(f.file); db.prepare("UPDATE stopped_generations SET snapshot=? WHERE ticket_hash=?").run(JSON.stringify(changed), controllerPayloadHash(f.ticket)); db.close();
+  expect(() => readHistoricalWindowsStoppedControllerGeneration(f.file, f.ticket, Date.now() + 5000)).toThrow(/conflicts/);
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, {})).rejects.toThrow(/receipt conflicts/);
 });
 
 test("blocks legacy Windows stopped records without a lease proof", async () => {

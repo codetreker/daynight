@@ -94,10 +94,24 @@ not a fabricated Web record, Session receipt or never-started observation.
 Clearance is fenced to the current cleanup attempt before releasing capacity.
 Windows stopping retains its original Job lease until its durable generation
 receipt is saved; a newer journal generation cannot receive an older receipt.
-Generations share one current journal snapshot. The matching validated ticket
-identifies that actual boundary; other historical or unsubmitted tickets without
-independent process evidence do not invent additional running resources or stop
-receipts. Retained lifecycle proof still requires its own boundary check.
+Generations share one current journal snapshot. Separate launch attempts within
+a generation remain distinct, and the snapshot ticket_hash selects its exact
+validated immutable ticket. Legitimate replacement changes only launch-local
+fields while preserving the original execution intent. A reserved or unknown
+launch without process proof remains unresolved unless its original producer
+confirms non-dispatch or closes its launch gate. Missing process proof alone
+cannot exclude a child created before its birth identity was saved.
+
+Controller journal schema 17 stores immutable full stopped snapshots keyed by
+ticket hash. The stop CAS saves its receipt in the same transaction, and a new
+writer preserves the validated preceding stopped snapshot before replacing the
+singleton. Original-ticket validation and all known process proofs remain
+required when consuming a historical Windows receipt. Existing current-format
+16 snapshots can be observed through a narrowly validated read-only inventory
+path; actual stopped maintenance performs the numbered migration under the
+original permit. Already overwritten history without a full stop receipt remains
+unrecoverable from the retained data. Retained lifecycle proof still requires
+its own boundary check.
 
 This replaces the retired-Web portion of the archived
 [direct shutdown decision](../../archived/bug-fix/2026-10-28-worker-direct-shutdown.md).
@@ -120,6 +134,14 @@ retains resources whose current ownership has definitively ended. Applying the
 same terminal executor to retired claims closes that responsibility during exit
 without changing current or unknown execution's preservation rules.
 
+**Treat a missing Windows Job name as complete stopping.** Windows temporary
+objects can lose their names when the last handle closes while process references
+keep the object alive. A replacement object may also reuse the old name. Neither
+an absent name nor an empty object opened under that name proves that the original
+boundary is empty. The [temporary object lifecycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject)
+and [Job Object lifecycle](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+require retaining original-object stopping evidence.
+
 ## Consequences
 
 Retired Web execution stops without a model-dependent cleanup turn, including
@@ -134,6 +156,8 @@ Ownership reads add bounded shutdown work where no complete inventory is known.
 Unavailable ownership and actual local lookup, stopping or deletion failures
 still retain responsibility. Raw ticket discovery does not claim archive upload
 or synthesize original execution history.
-The existing native stop and deletion mechanisms, original deadlines and local
-formats remain unchanged; no reconstructed execution or compatibility state is
-introduced.
+Original native stop and deletion deadlines remain unchanged. The numbered
+journal migration adds an empty historical receipt table without synthesizing
+missing evidence. Persisted complete stops survive future generation replacement;
+previously overwritten unreceipted boundaries retain an explicit failure. No
+reconstructed execution or fabricated stop state is introduced.

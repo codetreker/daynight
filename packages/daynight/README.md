@@ -2959,7 +2959,12 @@ verifies the Worker account. Candidates include original pending claim
 reservations; each Task awaits its own reconciliation before classifying ownership
 or stopping, without making independent Tasks await that request. Matching
 Controller lifecycle checks follow the Task stop attempt and retain unresolved
-Task records. After original native stopping, management-only terminal file cleanup
+Task records. Local lookup preserves separate launch attempts within one generation
+and selects the actual journal ticket by its exact hash. An unresolved launch
+reservation without process proof retains responsibility. Historical Windows
+boundaries require their original full stop receipt or independently verifiable
+original native boundary; a newer generation or missing Job name cannot replace
+lost evidence. After original native stopping, management-only terminal file cleanup
 checks that the retained repository directory exists, validates its repository and
 worktree format, and prepares the current Git manager before inspecting or removing
 the original worktree. A pending claim with complete empty native inventory, no
