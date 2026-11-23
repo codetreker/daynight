@@ -8,23 +8,25 @@ import { parseTaskTags } from './task-tags';
 export type TaskSearchFilters = {
   readonly status: TaskStatus | ''; readonly assignedTo: string; readonly type: TaskType;
   /** null means all parents; a UUID restricts the search to direct children. */
-  readonly parentId: string | null; readonly tagIds: readonly string[];
+  readonly parentId: string | null; readonly parentTaskId?: string; readonly tagIds: readonly string[];
   readonly tagMatch: 'all' | 'any'; readonly untagged: boolean;
 };
 export const normalizeTaskSearchFilters = (filters: TaskSearchFilters): TaskSearchFilters => {
   if ((filters.type !== 'task' && filters.type !== 'goal') ||
       (filters.tagMatch !== 'all' && filters.tagMatch !== 'any') || typeof filters.untagged !== 'boolean') throw new ApiError('protocol');
   const parentId = filters.parentId === null ? null : requestId(filters.parentId);
+  const parentTaskId = filters.parentTaskId === undefined ? undefined : requestId(filters.parentTaskId);
   const tagIds = [...new Set(filters.tagIds.map(requestId))].sort();
-  if (filters.untagged && tagIds.length > 0 || filters.type === 'goal' && parentId !== null) throw new ApiError('protocol');
-  return { ...filters, parentId, tagIds };
+  if (filters.untagged && tagIds.length > 0 || filters.type === 'goal' && (parentId !== null || parentTaskId !== undefined) || parentId !== null && parentTaskId !== undefined) throw new ApiError('protocol');
+  return { ...filters, parentId, ...(parentTaskId === undefined ? {} : { parentTaskId }), tagIds };
 };
 export type TaskSearchField = 'id' | 'title' | 'description';
 export type TaskSearchItem = {
-  readonly id: string; readonly type: TaskType; readonly parentId: string | null; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
+  readonly id: string; readonly type: TaskType; readonly parentId: string | null; readonly parentTaskId?: string | null; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
   readonly assignedTo: string | null; readonly updatedAt: string; readonly cancelledAt: string | null;
   readonly tags: readonly TaskTag[];
   readonly context: { readonly taskId: string; readonly title: string } | null;
+  readonly parentTaskContext?: { readonly taskId: string; readonly title: string };
   readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
@@ -55,16 +57,19 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
   if (id(data.projectId) !== projectId) return malformed();
   const total = count(data.total);
   const items = array(data.items, (value): TaskSearchItem => {
-    const item = record(value), itemProject = id(item.projectId), itemTiming = taskStatusFields(item), itemStatus = itemTiming.status, assignedTo = nullableId(item.assignedTo), { type, parentId } = taskTypeFields(item);
-    if (itemProject !== projectId || type !== filters.type || filters.parentId !== null && parentId !== filters.parentId || filters.status !== '' && itemStatus !== filters.status) return malformed();
+    const item = record(value), itemProject = id(item.projectId), itemTiming = taskStatusFields(item), itemStatus = itemTiming.status, assignedTo = nullableId(item.assignedTo), { type, parentId, parentTaskId } = taskTypeFields(item);
+    if (itemProject !== projectId || type !== filters.type || filters.parentId !== null && parentId !== filters.parentId || filters.parentTaskId !== undefined && parentTaskId !== filters.parentTaskId || filters.status !== '' && itemStatus !== filters.status) return malformed();
     const assignment = filters.assignedTo === 'me' ? userId : filters.assignedTo === 'unassigned' ? null : filters.assignedTo === '' ? undefined : filters.assignedTo;
     if (assignment !== undefined && assignedTo !== assignment) return malformed();
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
     if (parentId === null ? context !== null : context?.taskId !== parentId) return malformed();
+    const rawParentTaskContext = item.parentTaskContext === undefined ? undefined : record(item.parentTaskContext);
+    const parentTaskContext = rawParentTaskContext === undefined ? undefined : { taskId: id(rawParentTaskContext.taskId), title: text(rawParentTaskContext.title, true) };
+    if (parentTaskId == null ? parentTaskContext !== undefined : parentTaskContext?.taskId !== parentTaskId) return malformed();
     const tags = parseTaskTags(item.tags), ids = new Set(tags.map(tag => tag.id));
     if (filters.untagged && tags.length !== 0 || filters.tagIds.length > 0 && !(filters.tagMatch === 'all' ? filters.tagIds.every(tag => ids.has(tag)) : filters.tagIds.some(tag => ids.has(tag)))) return malformed();
-    return { id: id(item.id), type, parentId, projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, tags, context, match: parseTaskSearchMatch(item.match) };
+    return { id: id(item.id), type, parentId, ...(parentTaskId === undefined ? {} : { parentTaskId }), ...(parentTaskContext === undefined ? {} : { parentTaskContext }), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, tags, context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > limit || items.length > total || new Set(items.map(item => item.id)).size !== items.length) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -97,7 +102,7 @@ export const searchTasks = async (projectId: string, query: string, filters: Tas
   if (query.trim() === '' || !query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'proposed' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
   const assignedTo = filters.assignedTo === '' ? undefined : filters.assignedTo === 'me' || filters.assignedTo === 'unassigned' ? filters.assignedTo : requestId(filters.assignedTo);
   if (cursor !== null && (cursor.trim() === '' || !cursor.isWellFormed() || cursor.includes('\0'))) throw new ApiError('protocol');
-  const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, type: filters.type, ...(filters.parentId === null ? {} : { parentId: filters.parentId }), tagIds: filters.tagIds, tagMatch: filters.tagMatch, untagged: filters.untagged, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });
+  const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, type: filters.type, ...(filters.parentId === null ? {} : { parentId: filters.parentId }), ...(filters.parentTaskId === undefined ? {} : { parentTaskId: filters.parentTaskId }), tagIds: filters.tagIds, tagMatch: filters.tagMatch, untagged: filters.untagged, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });
   const responseId = response.headers.get('X-Request-ID');
   if (responseId !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(responseId)) correlation?.onResponseId(responseId);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);

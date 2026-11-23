@@ -15,12 +15,13 @@ import '../../styles/task-status-rows.css';
 export const assigneeValue = (filter: AssigneeFilter): string => filter.kind === 'all' ? '' : filter.kind === 'user' ? filter.userId : filter.kind;
 const assigneeFilter = (value: string): AssigneeFilter => value === '' ? { kind: 'all' } : value === 'me' || value === 'unassigned' ? { kind: value } : { kind: 'user', userId: value };
 
-export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, tagFilter }: {
+export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, tagFilter, showOrdinaryParentContext = false }: {
   readonly projectId: string; readonly search: TaskSearchController; readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly tagFilter?: ReactNode;
+  readonly showOrdinaryParentContext?: boolean;
 }) => {
-  const { messages: { workspace: { search: m, project, pagination, projects }, common }, format } = useI18n();
+  const { locale, messages: { workspace: { search: m, project, pagination, projects }, common }, format } = useI18n();
   const matchLabels: Readonly<Record<TaskSearchField, string>> = { id: m.idMatch, title: m.titleMatch, description: m.descriptionMatch };
   const [helpOpen, setHelpOpen] = useState(false);
   const pendingSubmission = useRef<string | null>(null);
@@ -66,9 +67,10 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, t
         {search.busy && search.items.length === 0 && <p role="status">{m.loading}</p>}
         {!search.busy && error === null && search.items.length === 0 && <section className="state-box"><h3>{m.empty}</h3></section>}
         {search.items.length > 0 && <ul className="task-search-list">{search.items.map((item) => <li key={item.id}>
-          <button type="button" className="task-search-result task-status-surface" data-task-status={item.status} aria-label={m.open({ title: item.title })} onClick={(event) => onOpenTask(item.id, event.currentTarget)}>
+          <button type="button" className="task-search-result task-status-surface" data-task-status={item.status} aria-label={`${m.open({ title: item.title })}${showOrdinaryParentContext && item.context !== null ? `, Goal: ${item.context.title}` : showOrdinaryParentContext && item.parentTaskContext !== undefined ? `, ${locale === 'zh-CN' ? '父 Task' : 'Parent Task'}: ${item.parentTaskContext.title}` : ''}`} onClick={(event) => onOpenTask(item.id, event.currentTarget)}>
             <span className="task-search-result-body"><span className="task-search-title">{item.title}</span>
-              {item.context !== null && <span className="task-search-context">◇ {item.context.title}</span>}
+              {item.context !== null && <span className="task-search-context">◇ {showOrdinaryParentContext ? `Goal: ${item.context.title}` : item.context.title}</span>}
+              {showOrdinaryParentContext && item.parentTaskContext !== undefined && <span className="task-search-context">{locale === 'zh-CN' ? '父 Task' : 'Parent Task'}: {item.parentTaskContext.title}</span>}
               <TaskTagList projectId={projectId} tags={item.tags} feedback={false} />
               <span className="task-search-match">{item.match.fields.length === 0 ? m.negativeMatch : item.match.fields.map(field => matchLabels[field]).join(' · ')}{item.match.descriptionSnippet === null ? '' : ` · ${item.match.descriptionSnippet}`}</span>
               <span className="task-search-meta"><span>{item.id}</span><TaskAssigneeIdentity projectId={projectId} assignedTo={item.assignedTo} /><time dateTime={item.updatedAt}>{m.updated({ date: format.dateTime(item.updatedAt) })}</time></span>

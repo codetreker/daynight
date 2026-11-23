@@ -95,7 +95,7 @@ export const canUnpause = (state: DetailState): boolean => canMutate(state) && r
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
 export const canSetAssignedTo = (state: DetailState): boolean => canMutate(state) && (state.detail!.type === "goal" || state.detail!.status !== "in_progress");
-export const canSetParent = (state: DetailState): boolean => canMutate(state) && state.detail!.type === "task";
+export const canSetParent = (state: DetailState): boolean => canMutate(state) && state.detail!.type === "task" && state.detail!.parentTaskId == null;
 export const canEditGoal = (state: DetailState): boolean => canMutate(state) && state.detail!.type === "goal";
 export const canWithdrawClaim = (state: DetailState): boolean => {
   if (!canMutate(state) || state.detail!.status === "cancelled") return false;
@@ -1308,7 +1308,7 @@ export class TaskDetailSessions {
           const expectedMaterials = operation.action === "unpause" ? { ...previous, properties: { ...previous.properties, paused: false } }
             : operation.action === "editGoal" ? { ...previous, title: operation.title, description: operation.description } : previous;
           const expectedParent = operation.action === "parent" ? operation.parentId : previous.parentId;
-          if (detail.projectId !== projectId || detail.id !== taskId || detail.type !== previous.type || detail.parentId !== expectedParent || !validResult ||
+          if (detail.projectId !== projectId || detail.id !== taskId || detail.type !== previous.type || detail.parentId !== expectedParent || previous.parentTaskId !== undefined && detail.parentTaskId !== previous.parentTaskId || !validResult ||
             operation.action === "tags" && !sameIds(detail.tags.map(tag => tag.id), operation.tagIds) ||
             !preservesMaterials(expectedMaterials, detail, operation.action !== "withdraw", operation.action !== "assignedTo", operation.action !== "tags") || detail.version !== committedVersion) throw new ApiError("protocol");
         };
@@ -1348,7 +1348,7 @@ export class TaskDetailSessions {
           if (epoch === undefined || this.hasNewerObservation(entry, epoch, detail.version)) return;
           const current = entry.receipt;
           if (current !== null && current.epoch === epoch && this.ticketCurrent(entry, current.fence) && current.detail.version === detail.version &&
-            (current.detail.parentId !== detail.parentId || current.detail.type !== detail.type || current.detail.status !== detail.status ||
+            (current.detail.parentId !== detail.parentId || current.detail.parentTaskId !== undefined && detail.parentTaskId !== undefined && current.detail.parentTaskId !== detail.parentTaskId || current.detail.type !== detail.type || current.detail.status !== detail.status ||
               current.detail.allowAgents !== detail.allowAgents || current.detail.requiredPlatform !== detail.requiredPlatform ||
               current.detail.updatedAt !== detail.updatedAt || current.detail.startedAt !== detail.startedAt || current.detail.completedAt !== detail.completedAt ||
               current.detail.cancelledAt !== detail.cancelledAt || !preservesMaterials(detail, current.detail))) {

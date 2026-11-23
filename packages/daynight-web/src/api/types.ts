@@ -29,6 +29,7 @@ export type GraphTask = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
   readonly status: TaskStatus;
@@ -100,6 +101,7 @@ export type TaskDetail = {
   readonly id: string;
   readonly type: TaskType;
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
