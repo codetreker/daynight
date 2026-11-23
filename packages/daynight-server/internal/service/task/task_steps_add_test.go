@@ -637,3 +637,11 @@ func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDA
 func (s *strictStepWrite) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	panic("unexpected Project Goal dependency capability")
 }
+
+func (d *strictStepWrite) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *strictStepWrite) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

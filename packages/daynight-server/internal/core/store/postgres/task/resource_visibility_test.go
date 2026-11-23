@@ -26,7 +26,7 @@ func testWorkSyncAndAssigneesExcludeHiddenChildren(t *testing.T, db *postgres.St
 	visible := readerTask(t, db, project.ID, 12, model.TaskInProgress, hidden.ID)
 	readerExec(t, db, `UPDATE tasks SET type='goal',deleted_at=now() WHERE id=$1`, goal.ID)
 	readerExec(t, db, `UPDATE tasks SET type='goal',assigned_to=$2,started_at=now() WHERE id=$1`, liveGoal.ID, actor)
-	readerExec(t, db, `UPDATE tasks SET parent_id=$2,assigned_to=$3,started_at=now() WHERE id=$1`, hidden.ID, goal.ID, former)
+	readerExec(t, db, `UPDATE tasks SET parent_id=$2,ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$2),assigned_to=$3,started_at=now() WHERE id=$1`, hidden.ID, goal.ID, former)
 	readerExec(t, db, `UPDATE tasks SET assigned_to=$2,started_at=now() WHERE id=$1`, visible.ID, actor)
 	readerExec(t, db, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former)
 	if err := db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
@@ -85,7 +85,7 @@ func testRetainedDependenciesUsePhysicalOrdinaryRows(t *testing.T, db *postgres.
 	mustOK(t, err)
 	_, err = f.tx.Exec(ctx, `UPDATE tasks SET type='goal',deleted_at=statement_timestamp() WHERE id=$1`, goal.ID)
 	mustOK(t, err)
-	_, err = f.tx.Exec(ctx, `UPDATE tasks SET parent_id=$1 WHERE id=ANY($2::uuid[])`, goal.ID, []string{prerequisite.ID, middle.ID})
+	_, err = f.tx.Exec(ctx, `UPDATE tasks SET parent_id=$1,ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$1) WHERE id=ANY($2::uuid[])`, goal.ID, []string{prerequisite.ID, middle.ID})
 	mustOK(t, err)
 	visible, err := writer.VisibleTaskIDs(ctx, []string{liveGoal.ID, prerequisite.ID, middle.ID, last.ID})
 	mustOK(t, err)

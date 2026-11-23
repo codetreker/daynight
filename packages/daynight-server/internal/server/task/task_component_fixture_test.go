@@ -1208,3 +1208,11 @@ func (m taskHTTPClaimAdmission) CheckWorkerExecution(_ context.Context, user, wo
 func (m taskHTTPClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
 	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }
+
+func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (d *taskHTTPWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

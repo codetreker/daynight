@@ -65,9 +65,9 @@ func TestWorkerReadsHideChildrenOfDeletedGoal(t *testing.T) {
 		}
 	}
 	check(2)
-	execute(t, tx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, goal)
+	execute(t, tx, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal)
 	check(1)
-	execute(t, tx, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, goal)
+	execute(t, tx, `UPDATE tasks SET deleted_at=NULL,ancestor_deleted_at=NULL WHERE id=$1 OR parent_id=$1`, goal)
 	check(2)
 	saved, err := reader.Worker(ctx, user, workerID, stamp)
 	if err != nil || !reflect.DeepEqual(saved.TaskSnapshot, observed.TaskSnapshot) {

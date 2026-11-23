@@ -22,7 +22,7 @@ func (s *Tasks) Delete(ctx context.Context, principal model.Principal, projectID
 	}
 	defer cancel()
 	ctx = withTaskWriteTarget(ctx, id, goal)
-	_, err = s.versionedWriteTaggedWithGoalLock(ctx, principal, projectID, id, input.Version, nil, goal, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+	_, err = s.versionedWriteTaggedWithLocks(ctx, principal, projectID, id, input.Version, nil, goal, &input.RemoveDepends, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
 		if (current.Type == model.TaskTypeGoal) != goal {
 			return taskcore.Mutation{}, fmt.Errorf("lifecycle target type changed")
 		}

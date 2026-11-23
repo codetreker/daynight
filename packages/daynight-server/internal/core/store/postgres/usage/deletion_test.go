@@ -39,7 +39,7 @@ func TestUsageDeletedGoalHidesRetainedChildAndResetsChainMembership(t *testing.T
 	if err != nil || group.Members.Total != "1" {
 		t.Fatal(group, err)
 	}
-	testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, goal)
+	testutil.MustExec(t, f.db.Pool, `WITH deleted AS (UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal)
 	var retained, hidden bool
 	if err = f.db.Pool.QueryRow(ctx, `SELECT deleted_at IS NULL,effective_deleted_at IS NOT NULL FROM task_resource_rows WHERE id=$1`, f.task).Scan(&retained, &hidden); err != nil || !retained || !hidden {
 		t.Fatal(retained, hidden, err)

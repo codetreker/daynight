@@ -61,7 +61,7 @@ store/postgres/internal/project_access.go 拥有单主体准入和批量查询�
 
 ### 完整目录
 
-从 ProjectAccessRelation 的原始 user_id 与当前项目有效可见任务的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，仅被自身或父 Goal 已删除的任务引用时不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
+从 ProjectAccessRelation 的原始 user_id 与当前项目有效可见任务的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，仅被自身或祖先已删除的任务引用时不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
 
 ### 限定解析
 

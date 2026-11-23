@@ -11,6 +11,10 @@ func (tx *Writer) TaskHeader(ctx context.Context, taskID string) (model.TaskHead
 	return pg.ReadTaskHeader(ctx, tx.tx, tx.projectID, taskID, " FOR UPDATE")
 }
 
+func (tx *Writer) TaskVisibilityHeader(ctx context.Context, taskID string) (model.TaskHeader, error) {
+	return pg.ReadTaskHeader(ctx, tx.tx, tx.projectID, taskID, "")
+}
+
 func (tx *Writer) TaskSteps(ctx context.Context, taskID string) ([]model.TaskStep, error) {
 	return pg.ReadTaskSteps(ctx, tx.tx, taskID)
 }
