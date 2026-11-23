@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,6 +155,8 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 			history := sp.ArchiveHistoryContent{ContentPolicy: "task_body", HistoryEpoch: prepared.HistoryEpoch, SourceThrough: prepared.SourceThrough, Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}}
 			var original []byte
 			var resource sp.Resource
+			var captureID string
+			var captureBefore sp.ImageCaptureReceipt
 			var readGate io.Closer
 			t.Cleanup(func() {
 				if readGate != nil {
@@ -224,7 +227,8 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 						}
 					}
 				}
-				captureID, attempt := uuid.NewString(), uuid.NewString()
+				captureID = uuid.NewString()
+				attempt := uuid.NewString()
 				capture := sp.ImageCaptureRequest{CaptureID: captureID, AttemptID: attempt, Occurrence: position, Locator: sp.ImageLocator{Kind: "external", URL: "https://example.test/image"}}
 				_, err = db.WriteSession(ctx, func(scope store.SessionScope) error {
 					return scope.SessionDAO().(store.SessionResourceDAO).SaveSessionCapture(ctx, store.SessionCaptureRecord{SessionID: snapshot.SessionID, Request: capture, Receipt: sp.ImageCaptureReceipt{CaptureID: captureID, AttemptID: attempt, Revision: "1", Occurrence: position, State: "committed", ResourceID: &resourceID, Resource: &resource}})
@@ -285,13 +289,23 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 					t.Fatal(err)
 				}
 				put(base+"/archive/prepare/history/"+fileID, frozen, http.StatusOK)
+				status = http.StatusOK
 			}
 			if scenario == "matching-read-lease" || scenario == "other-read-lease" {
 				var messagePin, operationPin bool
-				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='message' AND reference_id=$3), EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='operation')`, snapshot.SessionID, resourceID, imageID).Scan(&messagePin, &operationPin); err != nil || messagePin || !operationPin {
-					t.Fatalf("reference retirement: message=%v operation=%v error=%v", messagePin, operationPin, err)
+				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='message' AND reference_id=$3), EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='operation')`, snapshot.SessionID, resourceID, imageID).Scan(&messagePin, &operationPin); err != nil || !messagePin || !operationPin {
+					t.Fatalf("history must retain references: message=%v operation=%v error=%v", messagePin, operationPin, err)
 				}
-				return
+				if got := request(http.MethodGet, base+"/resources/"+resourceID+"/content", "", nil, nil, http.StatusOK); !bytes.Equal(got, original) {
+					t.Fatalf("history changed online original: %q", got)
+				}
+				var receiptData []byte
+				if err = db.Pool.QueryRow(ctx, `SELECT receipt FROM session_image_captures WHERE session_id=$1 AND capture_id=$2`, snapshot.SessionID, captureID).Scan(&receiptData); err != nil {
+					t.Fatal(err)
+				}
+				if err = json.Unmarshal(receiptData, &captureBefore); err != nil || captureBefore.State != "committed" || captureBefore.ResourceID == nil || *captureBefore.ResourceID != resourceID || !reflect.DeepEqual(captureBefore.Resource, &resource) {
+					t.Fatalf("history changed capture receipt: %+v %v", captureBefore, err)
+				}
 			}
 			if status != http.StatusOK {
 				code := "archive_conflict"
@@ -311,8 +325,11 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 				return
 			}
 			var sealed sp.ArchivePrepareReceipt
-			if err = json.Unmarshal(request(http.MethodPost, base+"/archive/seal", "", nil, nil, http.StatusOK), &sealed); err != nil || sealed.Phase != "sealed" || len(sealed.Resources) != 1 || sealed.Resources[0].Resource.ResourceID != resourceID {
+			if err = json.Unmarshal(request(http.MethodPost, base+"/archive/seal", "", nil, nil, http.StatusOK), &sealed); err != nil || sealed.Phase != "sealed" {
 				t.Fatalf("seal: %+v %v", sealed, err)
+			}
+			if scenario == "shared-tool-image" && (len(sealed.Resources) != 1 || sealed.Resources[0].Resource.ResourceID != resourceID) || scenario != "shared-tool-image" && len(sealed.Resources) != 0 {
+				t.Fatalf("sealed resource closure: %+v", sealed.Resources)
 			}
 			var pin bool
 			if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='message' AND reference_id=$3)`, snapshot.SessionID, resourceID, imageID).Scan(&pin); err != nil || !pin {
@@ -322,9 +339,58 @@ func TestStoppedTaskBodyArchiveHTTP(t *testing.T) {
 			timelineID := uuid.NewString()
 			put(base+"/archive/files/"+timelineID, timeline, http.StatusOK)
 			manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentPolicy: "task_body", ContentKind: "native_timeline", RecordID: snapshot.SessionID, Fence: snapshot.Fence, Provider: reg.Provider, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, Timeline: sp.ArchiveFileReference{FileID: timelineID, SHA256: digest(timeline), ByteLength: strconv.Itoa(len(timeline))}, Resources: sealed.Resources, Completeness: "complete"}
+			if scenario == "matching-read-lease" {
+				// Acquire a reader after history completion: ready must recheck it.
+				leaseID := uuid.NewString()
+				readGate, err = files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+leaseID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = db.Pool.Exec(ctx, `INSERT INTO session_resource_leases(session_id,lease_id,owner_id,kind,resource_id,delete_epoch) VALUES($1,$2,$3,'read',$4,0)`, snapshot.SessionID, leaseID, owner.UserID, resourceID); err != nil {
+					t.Fatal(err)
+				}
+				result = request(http.MethodPut, base+"/archive/content", "application/json", wire(manifest), nil, http.StatusTooManyRequests)
+				if !bytes.Contains(result, []byte(`"resource_busy"`)) {
+					t.Fatalf("late matching reader: %s", result)
+				}
+				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='message' AND reference_id=$3)`, snapshot.SessionID, resourceID, imageID).Scan(&pin); err != nil || !pin {
+					t.Fatalf("busy publication lost message reference: %v %v", pin, err)
+				}
+				var ready bool
+				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_archives WHERE session_id=$1 AND state='ready')`, snapshot.SessionID).Scan(&ready); err != nil || ready {
+					t.Fatalf("busy publication became ready: %v %v", ready, err)
+				}
+				if got := request(http.MethodGet, base+"/resources/"+resourceID+"/content", "", nil, nil, http.StatusOK); !bytes.Equal(got, original) {
+					t.Fatalf("busy publication changed original: %q", got)
+				}
+				if err = readGate.Close(); err != nil {
+					t.Fatal(err)
+				}
+				readGate = nil
+				if _, err = db.Pool.Exec(ctx, `DELETE FROM session_resource_leases WHERE session_id=$1 AND lease_id=$2`, snapshot.SessionID, leaseID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			request(http.MethodPut, base+"/archive/content", "application/json", wire(manifest), nil, http.StatusOK)
-			if got := request(http.MethodGet, base+"/resources/"+resourceID+"/content", "", nil, nil, http.StatusOK); !bytes.Equal(got, original) {
-				t.Fatalf("shared original changed: %q", got)
+			if scenario == "matching-read-lease" || scenario == "other-read-lease" {
+				var messagePin, operationPin bool
+				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='message' AND reference_id=$3), EXISTS(SELECT 1 FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind='operation')`, snapshot.SessionID, resourceID, imageID).Scan(&messagePin, &operationPin); err != nil || messagePin || !operationPin {
+					t.Fatalf("ready reference retirement: message=%v operation=%v error=%v", messagePin, operationPin, err)
+				}
+				var receiptData []byte
+				if err = db.Pool.QueryRow(ctx, `SELECT receipt FROM session_image_captures WHERE session_id=$1 AND capture_id=$2`, snapshot.SessionID, captureID).Scan(&receiptData); err != nil {
+					t.Fatal(err)
+				}
+				var receipt sp.ImageCaptureReceipt
+				if err = json.Unmarshal(receiptData, &receipt); err != nil || !reflect.DeepEqual(receipt, captureBefore) {
+					t.Fatalf("capture receipt changed: %+v %v", receipt, err)
+				}
+				request(http.MethodPut, base+"/archive/content", "application/json", wire(manifest), nil, http.StatusOK)
+			}
+			if scenario == "shared-tool-image" {
+				if got := request(http.MethodGet, base+"/resources/"+resourceID+"/content", "", nil, nil, http.StatusOK); !bytes.Equal(got, original) {
+					t.Fatalf("shared original changed: %q", got)
+				}
 			}
 		})
 	}
