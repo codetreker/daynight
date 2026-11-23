@@ -26,6 +26,23 @@ describe("typed Task reads", () => {
     expect(() => parseTask({ ...goal, ...changes }, projectId)).toThrow("invalid response");
   });
 
+  it("retains absent, null and ordinary parents and rejects conflicting relations", () => {
+    expect(parseTask(task, projectId)).not.toHaveProperty("parentTaskId");
+    expect(parseTask({ ...task, parentTaskId: null }, projectId)).toHaveProperty("parentTaskId", null);
+    expect(parseTask({ ...task, parentTaskId: otherId }, projectId)).toHaveProperty("parentTaskId", otherId);
+    expect(() => parseTask({ ...ordinary, parentTaskId: otherId }, projectId)).toThrow("invalid response");
+    expect(() => parseTask({ ...goal, parentTaskId: otherId }, projectId)).toThrow("invalid response");
+  });
+
+  it("validates ordinary parent search context against its parent ID", () => {
+    const item = { id: taskId, type: "task", parentId: null, parentTaskId: otherId, parentTaskContext: { taskId: otherId, title: "Parent" }, projectId, title: "Child", status: "todo", cancelledAt: null, tags: [], assignedTo: null, updatedAt: time, context: null, match: { fields: ["title"], descriptionSnippet: null } };
+    const page = { projectId, total: 1, items: [item], nextCursor: null };
+    expect(parseTaskSearchPage(page, projectId).items[0]).toMatchObject({ parentTaskId: otherId, parentTaskContext: item.parentTaskContext });
+    expect(() => parseTaskSearchPage({ ...page, items: [{ ...item, parentTaskContext: { ...item.parentTaskContext, taskId } }] }, projectId)).toThrow("invalid response");
+    const { parentTaskContext: _context, ...missingContext } = item;
+    expect(() => parseTaskSearchPage({ ...page, items: [missingContext] }, projectId)).toThrow("invalid response");
+  });
+
   it("keeps ordinary readiness rules and refuses ordinary progress", () => {
     expect(() => parseTask({ ...ordinary, status: "todo", ready: false }, projectId)).toThrow("invalid response");
     expect(() => parseTask({ ...ordinary, progress: goal.progress }, projectId)).toThrow("invalid response");

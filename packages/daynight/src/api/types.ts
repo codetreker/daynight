@@ -292,6 +292,7 @@ export type Task = {
   readonly id: string;
   readonly type: "task" | "goal";
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
@@ -347,6 +348,7 @@ export type CreateTaskInput = {
   readonly title: string;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly status?: TaskStatus;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
@@ -370,7 +372,7 @@ export type UpdateTaskInput = {
   readonly tagIds?: readonly string[];
 };
 export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
-export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
+export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus; readonly cancelDescendants?: boolean };
 export type WorkerClaimDescriptor = {
   readonly claimId: string;
   readonly workerId: string;
@@ -397,6 +399,7 @@ export type TaskFilters = {
   readonly untagged?: boolean;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
+  readonly parentTaskId?: string;
   readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
@@ -413,17 +416,19 @@ export type TaskSearchItem = {
   readonly id: string;
   readonly type: "task" | "goal";
   readonly parentId: string | null;
+  readonly parentTaskId?: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
+  readonly parentTaskContext?: { readonly taskId: string; readonly title: string };
   readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "parentTaskId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;
