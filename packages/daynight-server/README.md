@@ -594,9 +594,10 @@ that understands that same ledger. Mixed or mismatched state requires
 investigation. Do not delete ledger rows or assume rollback. Repair a committed
 index through a subsequent migration.
 
-This build keeps the original inventory reader and can restart against the new
-ledger. Retain its exact SHA as the query-switch rollback build; a pre-migration
-binary cannot restart after commit. The
+Commit `9ea24e240f9a6ec65135b2b73ca0071ba8781581` retains the original
+inventory reader and understands the same migration ledger as the query switch.
+Retain a matching artifact for query rollback; a pre-migration binary cannot
+restart after commit. The
 [index design](../../docs/design/worker-active-claim-index.md) owns the expressions,
 validation and recovery contract.
 

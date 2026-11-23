@@ -6,7 +6,7 @@
 
 `task_properties_worker_active_claim_idx` 是非唯一部分 B-tree，键为 `userId`、`workerId` 的文本提取表达式及 `task_id`。两个文本键使用 `COLLATE "C"`，保留原 Go 读取器的大小写精确比较；不把属性内 UUID 转为 PostgreSQL UUID。谓词固定为 `name='worker'` 且 `state='active'`。每个 JSON 提取表达式都通过 `CASE WHEN name='worker' THEN value::jsonb END` 隔离其他属性，普通属性中的转义 NUL 不进入 JSONB 转换。
 
-当前 Worker 清单继续运行已有 Go 筛选路径。包含索引迁移且保留该路径的构建可以在同账本数据库上重启，作为查询切换后的回退构建。未来查询切换须复用完全一致的键表达式及静态谓词，并独立验证权限、分页和查询收益。
+Worker 清单使用相同表达式和静态谓词按账号与 Worker 定位活跃认领，在窄候选集中完成项目可见性、组合筛选、就绪条件及 `(created_at,id)` 游标分页。选出最多 limit+1 行后才展开任务正文和依赖，并按相同顺序返回；已选认领仍经 Go 解码，保留解码错误。非 Worker 查询沿用原读取路径。包含索引迁移且保留旧读取路径的构建可以在同账本数据库上重启，作为查询切换后的回退构建。
 
 ## 冻结迁移
 

@@ -14,8 +14,9 @@ opaque non-Worker properties and a restartable recovery build.
 Keep the Worker property as the only claim authority. Migration 115 installs a
 nonunique partial B-tree over exact C-collated account and Worker text plus Task
 ID, limited to active Worker rows. CASE guards prevent other property values from
-entering JSONB conversion. The existing inventory reader remains available in
-this schema-compatible build.
+entering JSONB conversion. Inventory uses the same expressions to filter and
+page narrow candidates before expanding task details and dependencies. The
+index-only build retains the old reader as a schema-compatible rollback.
 
 A SHARE table lock covers frozen stored-claim validation, comparison with actual
 PostgreSQL extraction, index creation and migration-ledger insertion. Frozen
@@ -58,4 +59,5 @@ Task versions, timestamps, Sync epochs and raw properties survive unchanged.
 Bootstrap and upgrade share the same final index and ledger checksums. After
 commit, older binaries reject the unknown ledger; recovery uses the same-ledger
 build or a forward migration. This delivery supplies the index and recovery
-build; query performance benefits require the separate inventory query change.
+build. Inventory query cost depends on the selected plan and claim distribution;
+selected claims retain Go decoding errors while unrelated claims are not decoded.
