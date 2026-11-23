@@ -57,7 +57,9 @@ code and data removal to retain their separate review and validation boundaries.
 There is no production Steps application entry point. Its business-rule,
 coordination and exact collection-encoding matrices leave with their owners.
 Application assembly tests preserve ordinary Task, Capturer, identity and
-observation wiring. Task, Thread and synchronization tests retain their behavior;
+observation wiring. Scoped construction tests also preserve catalog failure
+propagation and prevent partial publication through the existing assembly test
+boundary. Task, Thread and synchronization tests retain their behavior;
 Store tests retain real SQL, locks, snapshots, commit and rollback proof.
 
 Remaining store methods and models are not a supported Steps product interface.

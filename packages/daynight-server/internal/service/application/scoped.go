@@ -31,12 +31,16 @@ type Scoped struct {
 
 func NewScoped(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, origin string, unavailable []scopepolicy.ScopeID, limits *sessioncore.ArchiveLimits, capture ...task.Capturer) (*Application, error) {
 	a := newWithArchiveLimits(database, files, client, callbackURL, preview, overlap, limits, capture...)
+	return assembleScoped(a, database, files, client, callbackURL, preview, origin, unavailable, availableCatalog)
+}
+
+func assembleScoped(a *Application, database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, origin string, unavailable []scopepolicy.ScopeID, catalog func(scopepolicy.CredentialType, []scopepolicy.ScopeID) (scopepolicy.CatalogSnapshot, error)) (*Application, error) {
 	source := &credentialpolicy.Source{Database: database, Origin: origin}
-	pat, err := availableCatalog(scopepolicy.PAT, unavailable)
+	pat, err := catalog(scopepolicy.PAT, unavailable)
 	if err != nil {
 		return nil, err
 	}
-	mcp, err := availableCatalog(scopepolicy.MCP, unavailable)
+	mcp, err := catalog(scopepolicy.MCP, unavailable)
 	if err != nil {
 		return nil, err
 	}

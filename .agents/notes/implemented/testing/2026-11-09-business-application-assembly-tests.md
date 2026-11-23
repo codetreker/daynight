@@ -49,6 +49,12 @@ Session observer, one call and the exact returned object. Production constructio
 retains a non-nil concrete Observations instance. Observations borrows the reader
 and observer, and neither starts nor owns their lifetime; its business rules
 remain with their Service, Core and Store owners.
+Scoped assembly binds its PAT and MCP catalog construction through one private
+catalog builder. Controlled catalog failures verify that construction preserves
+the original error and publishes no partially configured application; a PAT
+failure prevents MCP catalog construction. Public construction retains the real
+catalog builder and its default behavior.
+
 Store and files remain borrowed from their external owners.
 
 The existing normal API attachment flow retains Project and Task creation,

@@ -1,6 +1,8 @@
 package application
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -100,6 +102,44 @@ func TestScopedApplicationRejectsMissingWorkerPromptReader(t *testing.T) {
 	app, err := NewScoped(nil, nil, nil, "https://daynight.test/callback", nil, time.Second, "https://daynight.test", nil, nil)
 	if app != nil || err == nil || !strings.Contains(err.Error(), "worker prompt snapshot reader is required") {
 		t.Fatalf("missing transaction dependency published a partial application: app=%v error=%v", app, err)
+	}
+}
+
+func TestScopedApplicationCatalogFailureDoesNotPublishPartialPolicies(t *testing.T) {
+	for _, kind := range []scopepolicy.CredentialType{scopepolicy.PAT, scopepolicy.MCP} {
+		t.Run(string(kind), func(t *testing.T) {
+			database, files := borrowedDependencies(t)
+			app := New(database, files, nil, "", nil, time.Second)
+			verifySharedEngine(t, app)
+			identity, observations, workers := app.Identity, app.TaskObservations, app.Workers
+			cause := errors.New("catalog unavailable")
+			failure := fmt.Errorf("%s catalog: %w", kind, cause)
+			unavailable := []scopepolicy.ScopeID{"webhook:deliver"}
+			var calls []scopepolicy.CredentialType
+			result, err := assembleScoped(app, database, files, nil, "", nil, "https://daynight.test", unavailable, func(actual scopepolicy.CredentialType, excluded []scopepolicy.ScopeID) (scopepolicy.CatalogSnapshot, error) {
+				calls = append(calls, actual)
+				if !slices.Equal(excluded, unavailable) {
+					t.Errorf("catalog received unavailable scopes %v, want %v", excluded, unavailable)
+				}
+				if actual == kind {
+					return scopepolicy.CatalogSnapshot{}, failure
+				}
+				return availableCatalog(actual, excluded)
+			})
+			if result != nil || err != failure || !errors.Is(err, cause) {
+				t.Fatalf("catalog failure published an application or changed its cause: app=%v error=%v", result, err)
+			}
+			wantCalls := []scopepolicy.CredentialType{scopepolicy.PAT}
+			if kind == scopepolicy.MCP {
+				wantCalls = append(wantCalls, scopepolicy.MCP)
+			}
+			if !slices.Equal(calls, wantCalls) {
+				t.Fatalf("catalog construction continued after failure: %v", calls)
+			}
+			if app.Scoped != nil || app.Identity != identity || app.TaskObservations != observations || app.Workers != workers {
+				t.Fatal("catalog failure installed partial credential policies")
+			}
+		})
 	}
 }
 
