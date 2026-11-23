@@ -2354,7 +2354,7 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		base := newTaskHTTPMockBase(t, "Task deletion")
 		want := map[string]int{"write": 1, "access": 1, "header": 1, "task": 1}
 		if success {
-			for _, name := range []string{"dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
+			for _, name := range []string{"children", "dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
 				want[name] = 1
 			}
 		}
@@ -2382,6 +2382,13 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 				unexpectedHTTPCall(t, "delete Task identity")
 			}
 			return copyTaskHTTPTask(current), readError
+		}
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			if id != current.ID || ctx.Err() != nil {
+				unexpectedHTTPCall(t, "child Task identity")
+			}
+			return []string{}, nil
 		}
 		writer.DependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
 			plan.Called("dependents")

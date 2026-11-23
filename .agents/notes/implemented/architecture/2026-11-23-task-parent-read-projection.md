@@ -45,5 +45,6 @@ New relation views are opt-in and their encoded bytes participate in write
 admission. Recursive queries add candidate and claim work proportional to the
 shallow parent chains; no closure table or new index is required. Existing claim
 inventory, dependency readiness, Goal direct progress and minimal receipts keep
-their meanings. Public ordinary-parent creation remains a separate write
-capability, so read and claim tests construct internal relations explicitly.
+their meanings. Public ordinary-parent creation remains separate protocol work;
+the [parent lifecycle decision](2026-11-23-task-parent-lifecycle.md) governs
+internal writes and lifecycle admission.

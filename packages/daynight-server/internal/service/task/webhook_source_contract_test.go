@@ -137,6 +137,14 @@ func (d *sourceTaskDAO) ActiveDependentIDs(_ context.Context, id string) ([]stri
 	return []string{}, nil
 }
 
+func (d *sourceTaskDAO) UnfinishedChildIDs(_ context.Context, id string) ([]string, error) {
+	d.t.Helper()
+	if id != sourceTaskID {
+		d.t.Fatalf("unexpected child lookup: %s", id)
+	}
+	return nil, nil
+}
+
 func (d *sourceTaskDAO) TasksByID(_ context.Context, ids []string) ([]model.Task, error) {
 	d.t.Helper()
 	if !d.allowLookup || d.lookups != 0 || len(ids) != 0 {

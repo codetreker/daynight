@@ -64,6 +64,7 @@ type workerHTTPWritePlan struct {
 	access, reads, observed int
 	writes, updates, drains int
 	receipts, captures      int
+	children, wantChildren  int
 	wantUpdate, wantCapture bool
 	active                  bool
 	ctx                     context.Context
@@ -128,6 +129,17 @@ func expectWorkerHTTPWrite(t *testing.T, database *httpTestStore, current model.
 				t.Fatal("Worker claim sampled the clock more than once")
 			}
 			return *observedAt, nil
+		}
+	}
+	if expected != nil && current.Status != returned.Status && returned.Status.IsTerminal() {
+		plan.wantChildren = 1
+		tasks.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			checkContext(ctx)
+			plan.children++
+			if id != current.ID || plan.children != 1 {
+				t.Fatal("Worker completion changed child lookup")
+			}
+			return []string{}, nil
 		}
 	}
 	if expected != nil {
@@ -199,6 +211,9 @@ func (plan *workerHTTPWritePlan) check() {
 	}
 	if plan.wantCapture {
 		wantCapture = 1
+	}
+	if plan.children != plan.wantChildren {
+		plan.t.Fatalf("Worker child lookups = %d, want %d", plan.children, plan.wantChildren)
 	}
 	if plan.writes != 1 || plan.access != plan.AccessCalls || plan.reads != plan.TaskReads || plan.observed != plan.ObservedCalls || plan.updates != wantWrites || plan.drains != wantWrites || plan.receipts != wantWrites || plan.captures != wantCapture {
 		plan.t.Fatalf("Worker calls: scope/access/read/clock/update/drain/receipt/capture=%d/%d/%d/%d/%d/%d/%d/%d; want 1/%d/%d/%d/%d/%d/%d/%d", plan.writes, plan.access, plan.reads, plan.observed, plan.updates, plan.drains, plan.receipts, plan.captures, plan.AccessCalls, plan.TaskReads, plan.ObservedCalls, wantWrites, wantWrites, wantWrites, wantCapture)

@@ -59,5 +59,5 @@ The migration requires draining old writers and background delivery before
 upgrade. A migrated ledger requires its matching artifact. Restoring an older
 artifact requires a paired database and attachment snapshot, reconciliation of
 external effects, and cache-epoch rotation before reopening traffic. Public Parent
-writes retain their existing Goal-only admission; ordinary Parent creation and
-lifecycle rules belong to their separate delivery units.
+writes retain their existing Goal-only admission; internal ordinary Parent and
+lifecycle rules are defined by the [parent lifecycle decision](2026-11-23-task-parent-lifecycle.md).

@@ -279,6 +279,12 @@ func TestScopedStatusAndClaimCompletionUseDifferentPermissions(t *testing.T) {
 			}}
 			writes := 0
 			writer := &taskWriterMock{taskMockBase: base,
+				UnfinishedChildIDsFn: func(_ context.Context, id string) ([]string, error) {
+					if id != current.ID {
+						t.Fatalf("unexpected child lookup: %s", id)
+					}
+					return nil, nil
+				},
 				TaskHeaderFn: func(_ context.Context, id string) (model.TaskHeader, error) {
 					return model.TaskHeader{ID: id, ProjectID: project.ID, Type: model.TaskTypeTask}, nil
 				},

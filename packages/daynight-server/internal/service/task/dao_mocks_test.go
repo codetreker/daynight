@@ -372,6 +372,7 @@ type taskWriterMock struct {
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDsFn     func(context.Context, []string) ([]string, error)
 	ActiveDependentIDsFn func(context.Context, string) ([]string, error)
+	UnfinishedChildIDsFn func(context.Context, string) ([]string, error)
 	ReachableFn          func(context.Context, string, string, store.DependencyReplacement) (bool, error)
 	CreateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
 	UpdateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
@@ -410,6 +411,11 @@ func (mock *taskWriterMock) VisibleTaskIDs(ctx context.Context, ids []string) ([
 func (mock *taskWriterMock) ActiveDependentIDs(p0 context.Context, p1 string) ([]string, error) {
 	mock.need("ActiveDependentIDs", mock.ActiveDependentIDsFn != nil)
 	return mock.ActiveDependentIDsFn(p0, p1)
+}
+
+func (mock *taskWriterMock) UnfinishedChildIDs(ctx context.Context, id string) ([]string, error) {
+	mock.need("UnfinishedChildIDs", mock.UnfinishedChildIDsFn != nil)
+	return mock.UnfinishedChildIDsFn(ctx, id)
 }
 
 func (mock *taskWriterMock) Reachable(p0 context.Context, p1 string, p2 string, p3 store.DependencyReplacement) (bool, error) {

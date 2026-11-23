@@ -289,6 +289,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		return nil, errors.Join(app.ScopeError, files.Close())
 	}
 	app.Projects.SetRepositoryLogger(logger)
+	app.Tasks.SetLifecycleLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)

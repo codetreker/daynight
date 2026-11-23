@@ -85,6 +85,12 @@ func newAssignmentFixture(t *testing.T, current model.Task, prerequisites []mode
 	base := newTaskMockBase(t, "assignment")
 	f := &assignmentFixture{t: t, ctx: t.Context(), project: project, principal: principal, current: current, capture: &assignmentCapture{t: t}}
 	f.writer = &taskWriterMock{taskMockBase: base.withLabel("task")}
+	f.writer.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != current.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	f.projectDAO = &projectWriterMock{taskMockBase: base.withLabel("project")}
 	f.sessions = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	f.projectDAO.ProjectAccessFn = func(ctx context.Context, p model.Principal) (model.ProjectAccess, error) {

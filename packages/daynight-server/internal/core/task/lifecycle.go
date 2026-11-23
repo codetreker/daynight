@@ -11,9 +11,10 @@ import (
 )
 
 type SetTaskStatus struct {
-	Version int64
-	Status  model.TaskStatus
-	ClaimID *string
+	Version           int64
+	Status            model.TaskStatus
+	ClaimID           *string
+	CancelDescendants bool
 }
 
 type DeleteTask struct {
@@ -54,6 +55,9 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 	}
 	if !input.Status.Valid() {
 		return input, invalidInput("Task status is invalid.")
+	}
+	if input.CancelDescendants && input.Status != model.TaskCancelled {
+		return input, invalidInput("Descendant cancellation requires cancelled status.")
 	}
 	if input.ClaimID != nil {
 		if input.Status != model.TaskDone {
@@ -108,6 +112,15 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 		return store.TaskWrite{}, false, &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: current.BlockedBy}
 	}
 	if current.Status == model.TaskDone && !input.Status.IsTerminal() {
+		if current.ParentID != nil && current.ParentType == model.TaskTypeTask {
+			parent, err := dao.ParentTask(ctx, *current.ParentID)
+			if err != nil {
+				return store.TaskWrite{}, false, err
+			}
+			if parent.Status.IsTerminal() {
+				return store.TaskWrite{}, false, &model.Fault{Code: "task_parent_terminal", Message: "The parent task has ended.", TaskIDs: []string{parent.ID}}
+			}
+		}
 		dependents, err := dao.ActiveDependentIDs(ctx, current.ID)
 		if err != nil {
 			return store.TaskWrite{}, false, err
@@ -139,8 +152,24 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 			return store.TaskWrite{}, false, ClaimConflict()
 		}
 	}
+	if (input.Status == model.TaskDone || input.Status == model.TaskCancelled) && !input.CancelDescendants {
+		if err := requireFinishedChildren(ctx, dao, current.ID); err != nil {
+			return store.TaskWrite{}, false, err
+		}
+	}
 	values.Status = input.Status
 	return values, true, nil
+}
+
+func requireFinishedChildren(ctx context.Context, dao store.TaskWriteDAO, id string) error {
+	ids, err := dao.UnfinishedChildIDs(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(ids) != 0 {
+		return &model.Fault{Code: "task_unfinished_children", Message: "Finish or cancel direct child tasks first.", TaskIDs: ids}
+	}
+	return nil
 }
 
 func cancelledTransition() error {
@@ -164,6 +193,9 @@ func ValidateDelete(ctx context.Context, dao store.TaskWriteDAO, current model.T
 	}
 	if worker != nil && worker.State == model.WorkerActive {
 		return &model.Fault{Code: "invalid_transition", Message: "Release the active worker execution before deleting the task."}
+	}
+	if err := requireFinishedChildren(ctx, dao, current.ID); err != nil {
+		return err
 	}
 	if !removeDepends {
 		dependents, err := dao.DependentIDs(ctx, current.ID)
