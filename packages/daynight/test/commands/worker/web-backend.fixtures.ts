@@ -68,8 +68,8 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     return { task, ticket, snapshot, saved, stopped, request };
   };
 
-  const orchestrationFixture = async () => {
-    const f = await fixture("codex", 3);
+  const orchestrationFixture = async (recoveryLimit = 3) => {
+    const f = await fixture("codex", recoveryLimit);
     let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
     task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
     const source = await cleanupSource(f, task);

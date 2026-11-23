@@ -521,7 +521,7 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   if (bound) task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
   const source = await cleanupSource(f, task);
-  vi.spyOn(lifecycle, "readControllerOperation").mockReturnValue(null);
+  vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValue(null);
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "b".repeat(64) };
   let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "starting", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "starting", reasonCode: "initializing" }, nativeProcesses: [] };
   source.saved.mockImplementation(() => snapshot);
@@ -679,7 +679,7 @@ it.each(["worker", "claim", "native", "short", "time", "reason", "revision"] as 
 });
 
 it.each([false,true])("submits once and reobserves unknown first input, including a lazy native identity (lazy=%s)",async(lazyIdentity)=>{
- const f=await fixture();vi.spyOn(lifecycle, "readControllerOperation").mockReturnValue(null);let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
+ const f=await fixture();vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValue(null);let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(()=>snapshot);
  const launcher={
   prepare:vi.fn(async(task:LocalTask,input:string | (()=>string)):Promise<ControllerLaunchTicket>=>{
@@ -978,7 +978,7 @@ it("retains PID replacement and missing committed proof together", async () => {
     .mockResolvedValueOnce({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: { ...source.snapshot, controllerProcess: null } });
   source.saved.mockReturnValue({ ...source.snapshot, controllerProcess: null });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
-  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).rejects.toMatchObject({ cause: { errors: [replacement, expect.objectContaining({ message: expect.stringContaining("process identity is missing") })] } });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).rejects.toMatchObject({ cause: { errors: [replacement, expect.objectContaining({ constructor: launchObservation.ControllerLaunchJournalConflictError, message: "The original controller generation or process evidence is unavailable." })] } });
   expect(source.stopped).not.toHaveBeenCalled();
 });
 
@@ -1872,7 +1872,7 @@ it.each(["stopped", "unknown"] as const)("Task retains a cleanup IPC identity co
   if (state === "stopped") inspect.mockResolvedValue("stopped"); else inspect.mockRejectedValue(observationFailure);
   source.stopped.mockResolvedValue(false);
   source.request.mockImplementation(async (_ticket, action) => { if (action.kind === "cleanup") throw conflict; return { requestId: randomUUID(), ok: true, snapshot: source.snapshot }; });
-  const operation = vi.spyOn(lifecycle, "readControllerOperation").mockReturnValueOnce(null).mockReturnValueOnce({ kind: "cleanup", executionGeneration: source.ticket.executionGeneration, state: "confirmed" } as never);
+  const operation = vi.spyOn(lifecycle, "readCompatibleControllerOperation").mockReturnValueOnce(null).mockReturnValueOnce({ kind: "cleanup", executionGeneration: source.ticket.executionGeneration, state: "confirmed" } as never);
   const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
   const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });

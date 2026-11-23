@@ -766,3 +766,26 @@ export const readControllerOperation = (file: SqliteDatabaseSource, operationId:
   const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined;
   return row === undefined ? null : json<ControllerOperation>(row.value);
 });
+
+/** Live observations must not acquire migration ownership from the original Controller. */
+export const readCompatibleControllerOperation = (file: string, ticket: ControllerLaunchTicket, operationId: string, deadline?: number): ControllerOperation | null => {
+  const remaining = () => {
+    const time = deadline === undefined ? 5000 : deadline - Date.now();
+    if (time <= 0) throw new Error("Controller operation observation exceeded its deadline.");
+    return Math.max(1, Math.min(5000, time));
+  };
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
+  let result: ControllerOperation | null = null;
+  closeJournal(db, file, () => {
+    result = db.transaction(() => {
+      inspectReadCompatibleControllerJournal(db);
+      const owner = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+      if (owner === undefined) throw new Error("Original controller journal evidence is unavailable.");
+      validateControllerSnapshot(checkedSnapshot(json<ControllerSnapshot>(owner.snapshot)), ticket, owner.ticket_hash);
+      const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined;
+      remaining();
+      return row === undefined ? null : json<ControllerOperation>(row.value);
+    }).deferred();
+  }, "not-started");
+  return result;
+};

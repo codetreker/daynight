@@ -125,9 +125,18 @@ live v16 writer, preserves the Controller and known native process proofs, then
 rechecks original execution identity and deadline before stopping. It neither
 settles cleanup state nor releases the lease while a Task writer remains unjoined;
 later mutation retains its original permit and migration requirements. Web
-orchestration recovery and healthy exhausted-budget or explicit-retry snapshots
-use the same exact-ticket read path, preserving their process-proof and eligibility
-checks without admitting business writes. Read-compatible format checks also
+orchestration recovery, ordinary shutdown restart eligibility and healthy
+exhausted-budget or explicit-retry snapshots use the same exact-ticket read path,
+preserving their process-proof and eligibility checks. Full cleanup retains its
+graceful stop window. Healthy orderly shutdown at a zero or exhausted recovery
+budget leaves ordinary restart eligible without a manual retry, artificial pause
+or budget consumption. Operation receipt reads validate format, ticket and snapshot
+in the same read-only transaction before retaining the original operation kind,
+generation and payload checks. Test Session resume inventory also observes v16
+and current journals against their exact tickets without migrating an unrelated
+live writer. Earlier supported sources retain migration admission, and the selected
+execution still requires complete stop evidence, server authorization and its
+native resume lease. These observations do not admit business writes. Read-compatible format checks also
 preserve the immutable v16 Bot migration copies described by
 the [migration decision](../architecture/2026-11-19-bot-storage-migration.md);
 raising the active writer format cannot invalidate a checksum-protected original
