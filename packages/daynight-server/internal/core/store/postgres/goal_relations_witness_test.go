@@ -85,8 +85,12 @@ func TestGoalRelationsDisjointEditsCannotCloseCycle(t *testing.T) {
 	assertGoalRelationState(t, f.db, f.down, 1, 2)
 	assertGoalRelationState(t, f.db, f.up, 0, 1)
 	for projectID, id := range map[string]string{f.downProject.ID: f.down, f.upProject.ID: f.up} {
-		if got := snapshotTask(t, f.db, projectID, id); got.Version != 1 || got.Status != model.TaskTodo {
-			t.Fatalf("relation edit changed Goal metadata: %+v", got)
+		want := int64(1)
+		if id == f.down {
+			want = 2
+		}
+		if got := snapshotTask(t, f.db, projectID, id); got.Version != want || got.Status != model.TaskTodo {
+			t.Fatalf("unexpected Goal metadata: %+v", got)
 		}
 	}
 	testutil.AssertPoolReusable(t, f.db.Pool)
@@ -139,11 +143,18 @@ func TestGoalRelationsCompletionAndNewPrerequisiteSerialize(t *testing.T) {
 			if err := testutil.ReceiveQueryResult(t, ctx, first); err != nil {
 				t.Fatal(err)
 			}
-			assertGoalFault(t, testutil.ReceiveQueryResult(t, ctx, second), "goal_dependency_unsatisfied")
+			secondErr := testutil.ReceiveQueryResult(t, ctx, second)
+			if editFirst {
+				assertGoalFault(t, secondErr, "version_conflict")
+				_, err := taskservice.NewTasks(f.db).SetStatus(ctx, f.principal, f.downProject.ID, f.down, taskcore.SetTaskStatus{Version: 2, Status: model.TaskDone})
+				assertGoalFault(t, err, "goal_dependency_unsatisfied")
+			} else {
+				assertGoalFault(t, secondErr, "goal_dependency_unsatisfied")
+			}
 			got := snapshotTask(t, f.db, f.downProject.ID, f.down)
 			if editFirst {
 				assertGoalRelationState(t, f.db, f.down, 1, 2)
-				if got.Status != model.TaskTodo || got.Version != 1 {
+				if got.Status != model.TaskTodo || got.Version != 2 {
 					t.Fatalf("edit-first metadata: %+v", got)
 				}
 			} else {
@@ -178,6 +189,7 @@ func TestGoalRelationsRevisionSurvivesEmptySetAndProjectRoundTrip(t *testing.T) 
 	f := emptyGoalRelationFixture(t)
 	tasks := taskservice.NewTasks(f.db)
 	ctx := t.Context()
+	mustQueryExec(t, f.db, `UPDATE tasks SET updated_at='2000-01-01' WHERE id=$1`, f.down)
 	before := snapshotTask(t, f.db, f.downProject.ID, f.down)
 	initial := readGoalRelations(t, f.db, f.principal, f.downProject.ID, f.down, model.PageRequest{})
 	if initial.Revision == nil || *initial.Revision != 1 || len(initial.Prerequisites) != 0 {
@@ -188,12 +200,19 @@ func TestGoalRelationsRevisionSurvivesEmptySetAndProjectRoundTrip(t *testing.T) 
 	if err != nil || !receipt.Changed || receipt.Revision != 2 {
 		t.Fatalf("add: %+v %v", receipt, err)
 	}
+	afterAdd := snapshotTask(t, f.db, f.downProject.ID, f.down)
+	if afterAdd.Version != before.Version+1 || !afterAdd.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("add did not advance task: before=%+v after=%+v", before, afterAdd)
+	}
 	added := readGoalRelations(t, f.db, f.principal, f.downProject.ID, f.down, model.PageRequest{})
 	edgeID := *added.Prerequisites[0].EdgeID
 	add.IfRevision = 2
 	receipt, err = tasks.EditGoalDependencies(ctx, f.principal, f.downProject.ID, f.down, add)
 	if err != nil || receipt.Changed || receipt.Revision != 2 {
 		t.Fatalf("same-set add: %+v %v", receipt, err)
+	}
+	if got := snapshotTask(t, f.db, f.downProject.ID, f.down); !reflect.DeepEqual(got, afterAdd) {
+		t.Fatalf("noop changed task: %+v", got)
 	}
 	retained := readGoalRelations(t, f.db, f.principal, f.downProject.ID, f.down, model.PageRequest{})
 	if *retained.Prerequisites[0].EdgeID != edgeID {
@@ -205,8 +224,15 @@ func TestGoalRelationsRevisionSurvivesEmptySetAndProjectRoundTrip(t *testing.T) 
 		t.Fatalf("clear: %+v %v", receipt, err)
 	}
 	assertGoalRelationState(t, f.db, f.down, 0, 3)
+	afterClear := snapshotTask(t, f.db, f.downProject.ID, f.down)
+	if afterClear.Version != afterAdd.Version+1 || afterClear.UpdatedAt.Before(afterAdd.UpdatedAt) {
+		t.Fatalf("clear did not advance task: %+v", afterClear)
+	}
 	_, err = tasks.EditGoalDependencies(ctx, f.principal, f.downProject.ID, f.down, goalRelationAdd(f.upProject.ID, f.up, 1))
 	assertGoalFault(t, err, "goal_dependency_revision_conflict")
+	if got := snapshotTask(t, f.db, f.downProject.ID, f.down); !reflect.DeepEqual(got, afterClear) {
+		t.Fatalf("stale edit changed task: %+v", got)
+	}
 	add.IfRevision = 3
 	if _, err = tasks.EditGoalDependencies(ctx, f.principal, f.downProject.ID, f.down, add); err != nil {
 		t.Fatal(err)
@@ -234,8 +260,8 @@ func TestGoalRelationsRevisionSurvivesEmptySetAndProjectRoundTrip(t *testing.T) 
 	add.IfRevision = 4
 	_, err = tasks.EditGoalDependencies(ctx, f.principal, f.downProject.ID, f.down, add)
 	assertGoalFault(t, err, "goal_dependency_revision_conflict")
-	if after := snapshotTask(t, f.db, f.downProject.ID, f.down); !reflect.DeepEqual(before, after) {
-		t.Fatalf("relations changed Task metadata: before=%+v after=%+v", before, after)
+	if after := snapshotTask(t, f.db, f.downProject.ID, f.down); after.Version != before.Version+3 {
+		t.Fatalf("unexpected Task version: before=%+v after=%+v", before, after)
 	}
 }
 
@@ -317,6 +343,33 @@ func TestGoalRelationsFailedSaveRollsBackEdgesAndRevision(t *testing.T) {
 				assertGoalFault(t, err, "version_exhausted")
 			}
 			assertGoalRelationState(t, f.db, f.down, 0, revision)
+		})
+	}
+}
+
+func TestGoalRelationsTaskTouchFailureRollsBack(t *testing.T) {
+	for _, failure := range []string{"version exhaustion", "touch failure"} {
+		t.Run(failure, func(t *testing.T) {
+			f := emptyGoalRelationFixture(t)
+			if failure == "version exhaustion" {
+				mustQueryExec(t, f.db, `UPDATE tasks SET version=$1 WHERE id=$2`, int64(math.MaxInt64), f.down)
+			} else {
+				mustQueryExec(t, f.db, `CREATE FUNCTION refuse_goal_touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'task touch refused'; END $$;
+      CREATE TRIGGER refuse_goal_touch BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_goal_touch()`)
+				defer mustQueryExec(t, f.db, `DROP TRIGGER refuse_goal_touch ON tasks; DROP FUNCTION refuse_goal_touch()`)
+			}
+			before := snapshotTask(t, f.db, f.downProject.ID, f.down)
+			receipt, err := taskservice.NewTasks(f.db).EditGoalDependencies(t.Context(), f.principal, f.downProject.ID, f.down, goalRelationAdd(f.upProject.ID, f.up, 1))
+			if err == nil || receipt.GoalID != "" {
+				t.Fatalf("failed touch returned receipt: %+v %v", receipt, err)
+			}
+			if failure == "version exhaustion" {
+				assertGoalFault(t, err, "version_exhausted")
+			}
+			assertGoalRelationState(t, f.db, f.down, 0, 1)
+			if after := snapshotTask(t, f.db, f.downProject.ID, f.down); !reflect.DeepEqual(before, after) {
+				t.Fatalf("failed edit changed task: before=%+v after=%+v", before, after)
+			}
 		})
 	}
 }
