@@ -92,9 +92,10 @@ func (s *Reader) workMembership(ctx context.Context, project string, q store.Tas
 }
 
 const workComponents = `WITH members AS MATERIALIZED (SELECT group_id::text,id FROM unnest($7::uuid[],$8::uuid[]) AS m(id,group_id)),
+ non_roots AS MATERIALIZED (SELECT DISTINCT d.task_id FROM members p JOIN task_dependencies d ON d.depends_on_task_id=p.id
+ WHERE d.project_id=$1 AND d.dependency_type='task' AND NOT d.external),
  roots AS MATERIALIZED (SELECT m.group_id,t.id,t.created_at FROM members m JOIN tasks t ON t.id=m.id AND t.project_id=$1
- WHERE NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN members p ON p.group_id=m.group_id AND p.id=d.depends_on_task_id
- WHERE d.project_id=$1 AND d.task_id=m.id AND d.dependency_type='task' AND NOT d.external)),
+ LEFT JOIN non_roots n ON n.task_id=m.id WHERE n.task_id IS NULL),
  groups AS (SELECT m.group_id,count(*) AS member_count,
  count(*) FILTER(WHERE t.status='in_progress' AND t.assigned_to=$2::uuid) AS matched_count,
  count(*) FILTER(WHERE t.status='in_progress') AS in_progress_count,
