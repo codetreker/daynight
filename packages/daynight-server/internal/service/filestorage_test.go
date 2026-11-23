@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type startupCredential struct {
@@ -80,12 +83,23 @@ func TestAzureStartupRedactsFailure(t *testing.T) {
 			if files != nil || err == nil || !strings.Contains(err.Error(), tc.category) || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "account") {
 				t.Fatalf("unredacted or wrong result: files=%v error=%v", files, err)
 			}
+			var logs bytes.Buffer
+			httpx.LogFailure(slog.New(slog.NewJSONHandler(&logs, nil)), t.Context(), "server", "startup", err)
+			if !strings.Contains(logs.String(), "azure-blob container check: "+tc.category) || strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "account") {
+				t.Fatalf("startup log classification or redaction: %s", logs.String())
+			}
 		})
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := azureStartupError("container check", ctx.Err()); !strings.Contains(err.Error(), "canceled") {
 		t.Fatal(err)
+	}
+	err := azureStartupError("container check", context.DeadlineExceeded)
+	var logs bytes.Buffer
+	httpx.LogFailure(slog.New(slog.NewJSONHandler(&logs, nil)), t.Context(), "server", "startup", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(logs.String(), "azure-blob container check: timed out") || !strings.Contains(logs.String(), `"cause":"deadline"`) {
+		t.Fatalf("startup deadline classification: %v %s", err, logs.String())
 	}
 }
 
