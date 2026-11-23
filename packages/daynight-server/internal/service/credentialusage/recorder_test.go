@@ -23,6 +23,26 @@ func (f writerFunc) WriteCredentialUsage(ctx context.Context, events []model.Cre
 	return f(ctx, events)
 }
 
+type testWrites struct {
+	mu     sync.Mutex
+	calls  int
+	events []model.CredentialUsageEvent
+}
+
+func (w *testWrites) record(events []model.CredentialUsageEvent) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	w.events = append(w.events, events...)
+	return w.calls
+}
+
+func (w *testWrites) snapshot() (int, []model.CredentialUsageEvent) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls, append([]model.CredentialUsageEvent(nil), w.events...)
+}
+
 type testClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -141,9 +161,9 @@ func TestStopTimeoutJoinsOriginalWork(t *testing.T) {
 
 func TestUnknownIsNotReplayed(t *testing.T) {
 	cause := errors.New("commit outcome unavailable")
-	calls := 0
-	writer := writerFunc(func(_ context.Context, _ []model.CredentialUsageEvent) (store.Completion, error) {
-		calls++
+	writes := &testWrites{}
+	writer := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+		writes.record(events)
 		return store.Completion{Outcome: store.TransactionUnknown}, cause
 	})
 	r, err := New(writer, logger(), nil)
@@ -159,6 +179,7 @@ func TestUnknownIsNotReplayed(t *testing.T) {
 	ctx, cancel := bounded(t)
 	defer cancel()
 	err = r.Drain(ctx)
+	calls, _ := writes.snapshot()
 	var de *DrainError
 	if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, cause) || calls != 1 {
 		t.Fatalf("drain: %v, calls: %d", err, calls)
@@ -583,14 +604,12 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				cause := &store.Error{DatabaseFailure: true, SQLState: "55P03", Cause: errors.New("lock unavailable")}
-				calls := 0
-				var written []model.CredentialUsageEvent
+				writes := &testWrites{}
+				clock := &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 				w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
-					calls++
+					calls := writes.record(events)
 					if len(events) != 1 {
 						t.Errorf("batch: %+v", events)
-					} else {
-						written = append(written, events[0])
 					}
 					if calls <= tc.failures {
 						return store.Completion{Outcome: store.TransactionNotCommitted}, cause
@@ -598,23 +617,41 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 					return store.Completion{Outcome: store.TransactionCommitted}, nil
 				})
 				h := &captureHandler{records: make(chan slog.Record, 8)}
-				r, err := New(w, slog.New(h), nil)
+				r, err := New(w, slog.New(h), clock.read)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if err := r.Start(context.Background()); err != nil {
 					t.Fatal(err)
 				}
-				want := event(1, time.Now())
+				t.Cleanup(func() {
+					r.CancelWork()
+					r.sampler.Seal()
+					for range usage.MaxAttempts + 1 {
+						clock.advance(usage.RetryInterval)
+						notify(r.wake)
+						synctest.Wait()
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					err := r.Drain(ctx)
+					var de *DrainError
+					if err != nil && (!errors.As(err, &de) || !de.Drained()) {
+						t.Errorf("cleanup drain: %v", err)
+					}
+				})
+				want := event(1, clock.read())
 				if _, err := r.Record(request(context.Background(), "req"), want); err != nil {
 					t.Fatal(err)
 				}
 				synctest.Wait()
 				for i := 1; i < tc.failures+1 && i < usage.MaxAttempts; i++ {
+					calls, _ := writes.snapshot()
 					if calls != i {
 						t.Fatalf("calls before retry %d: %d", i, calls)
 					}
-					time.Sleep(usage.RetryInterval)
+					clock.advance(usage.RetryInterval)
+					notify(r.wake)
 					synctest.Wait()
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -632,6 +669,7 @@ func TestLockConflictRetryAndDrain(t *testing.T) {
 				if wantCalls > usage.MaxAttempts {
 					wantCalls = usage.MaxAttempts
 				}
+				calls, written := writes.snapshot()
 				if calls != wantCalls {
 					t.Fatalf("calls: %d, want %d", calls, wantCalls)
 				}
@@ -677,9 +715,9 @@ func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				calls := 0
-				w := writerFunc(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
-					calls++
+				writes := &testWrites{}
+				w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+					calls := writes.record(events)
 					if calls == 1 {
 						return store.Completion{Outcome: store.TransactionNotCommitted}, tc.cause
 					}
@@ -699,6 +737,7 @@ func TestLockConflictDoesNotHideCancellationOrCleanup(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				err = r.Drain(ctx)
+				calls, _ := writes.snapshot()
 				if !errors.Is(err, tc.cause) || calls != 2 {
 					t.Fatalf("drain: %v, calls: %d", err, calls)
 				}
@@ -714,10 +753,10 @@ func (lockSQLState) SQLState() string { return "55P03" }
 
 func TestRepeatedDriverLockConflictCanRecover(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		calls := 0
+		writes := &testWrites{}
 		lock := lockSQLState{}
-		w := writerFunc(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
-			calls++
+		w := writerFunc(func(_ context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+			calls := writes.record(events)
 			if calls == 1 {
 				return store.Completion{Outcome: store.TransactionNotCommitted}, &store.Error{DatabaseFailure: true, SQLState: "55P03", Cause: &store.TransactionError{Outcome: store.TransactionNotCommitted, Cause: errors.Join(lock, lock)}}
 			}
@@ -736,7 +775,9 @@ func TestRepeatedDriverLockConflictCanRecover(t *testing.T) {
 		synctest.Wait()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := r.Drain(ctx); err != nil || calls != 2 {
+		err = r.Drain(ctx)
+		calls, _ := writes.snapshot()
+		if err != nil || calls != 2 {
 			t.Fatalf("drain: %v, calls: %d", err, calls)
 		}
 	})
