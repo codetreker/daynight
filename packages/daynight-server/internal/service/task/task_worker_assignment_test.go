@@ -55,6 +55,12 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 	fixture := &workerWriteMock{t: t, Context: t.Context(), Current: current, ExpectedAccessCalls: 1, ExpectedTaskReads: 1}
 	fixture.Store = &taskStoreMock{taskMockBase: base.withLabel("store")}
 	fixture.Task = &taskWriterMock{taskMockBase: base.withLabel("task")}
+	fixture.Task.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != current.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	fixture.Project = &projectWriterMock{taskMockBase: base.withLabel("project")}
 	fixture.Session = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	fixture.Capture = &workerCapturerMock{taskMockBase: base.withLabel("capture")}

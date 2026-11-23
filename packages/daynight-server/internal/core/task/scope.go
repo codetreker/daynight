@@ -18,7 +18,7 @@ func CreateOperations(input CreateTask, actor model.Principal) []scopepolicy.Ope
 	if input.AssignedToPresent && (assignedErr != nil || defaultErr != nil || !model.EqualOptional(assigned, defaultID)) || input.RequiredPlatform != nil {
 		ops = append(ops, scopepolicy.TaskAssign)
 	}
-	if input.ParentID != nil || len(input.DependsOn) != 0 || len(input.ExternalDependsOn) != 0 {
+	if input.ParentID != nil || input.ParentTaskID != nil || len(input.DependsOn) != 0 || len(input.ExternalDependsOn) != 0 {
 		ops = append(ops, scopepolicy.TaskDependencies)
 	}
 	defaultStatus := model.TaskProposed

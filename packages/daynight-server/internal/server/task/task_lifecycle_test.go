@@ -414,6 +414,11 @@ func (f *taskCredentialFixture) expectLifecycleMutation(before, after model.Task
 		}
 		return false, nil
 	}
+	writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+		f.plan.Called("children")
+		f.requireAddress(ctx, f.project.ID, id)
+		return []string{}, nil
+	}
 	writer.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 		f.plan.Called("update")
 		f.requireAddress(ctx, f.project.ID, id)
@@ -576,7 +581,11 @@ func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
 			if status == model.TaskDone {
 				actor, headers = memberSession, map[string]string{"Cookie": session["Cookie"], "Origin": f.origin, "X-Request-ID": "lifecycle-member-done"}
 			}
-			response = f.request(actor, http.MethodPut, path+"/status", body, headers, 200, "", lifecycleMutationCalls(false))
+			calls := lifecycleMutationCalls(false)
+			if status == model.TaskDone {
+				calls["children"] = 1
+			}
+			response = f.request(actor, http.MethodPut, path+"/status", body, headers, 200, "", calls)
 			assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
 			current = next
 		})

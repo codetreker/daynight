@@ -48,6 +48,12 @@ func newTaskFailureFixture(t *testing.T, ctx context.Context, outcome store.Tran
 		projects: &projectWriterMock{taskMockBase: base.withLabel("projects")},
 		tasks:    &taskWriterMock{taskMockBase: base.withLabel("tasks")},
 		sessions: &projectSessionMock{taskMockBase: base.withLabel("sessions")}}
+	f.tasks.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != target.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	f.scope.ProjectDAOFn = func() store.ProjectWriteDAO { return f.projects }
 	f.scope.TaskDAOFn = func() store.TaskWriteDAO { return f.tasks }
 	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(actual context.Context, projectID, id string) (model.TaskHeader, error) {

@@ -115,6 +115,8 @@ type TaskWriteDAO interface {
 	TasksByID(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDs(context.Context, []string) ([]string, error)
 	ActiveDependentIDs(context.Context, string) ([]string, error)
+	// UnfinishedChildIDs reads visible, direct ordinary children under the Project lock.
+	UnfinishedChildIDs(context.Context, string) ([]string, error)
 	Reachable(context.Context, string, string, DependencyReplacement) (bool, error)
 	CreateTask(context.Context, string, TaskWrite) (model.Task, error)
 	UpdateTask(context.Context, string, TaskWrite) (model.Task, error)

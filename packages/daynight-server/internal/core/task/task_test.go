@@ -16,6 +16,7 @@ type taskDAO struct {
 	cycles     map[string]bool
 	active     []string
 	dependents []string
+	children   []string
 }
 
 func (d taskDAO) TasksByID(context.Context, []string) ([]model.Task, error) { return d.tasks, nil }
@@ -28,6 +29,9 @@ func (d taskDAO) Reachable(_ context.Context, from, _ string, _ store.Dependency
 }
 func (d taskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) { return d.active, nil }
 func (d taskDAO) DependentIDs(context.Context, string) ([]string, error)       { return d.dependents, nil }
+func (d taskDAO) UnfinishedChildIDs(context.Context, string) ([]string, error) {
+	return d.children, nil
+}
 
 func faultCode(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
@@ -87,7 +91,7 @@ func TestCancellationSeparatesEndingFromPrerequisiteDelivery(t *testing.T) {
 			current := model.Task{ID: "task", Title: "Preserved", Description: "Original", Status: status, AllowAgents: true,
 				DependsOn: []string{"missing-output"}, ExternalDependsOn: []string{"missing-output"}, BlockedBy: []string{"missing-output"},
 				Properties: model.TaskProperties{"custom": []byte(`{"kept":true}`)}}
-			values, changed, err := StatusCandidate(t.Context(), nil, model.Principal{}, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
+			values, changed, err := StatusCandidate(t.Context(), taskDAO{}, model.Principal{}, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
 			want := CurrentWrite(current)
 			want.Status = model.TaskCancelled
 			if err != nil || !changed || !reflect.DeepEqual(values, want) {

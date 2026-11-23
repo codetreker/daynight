@@ -261,6 +261,8 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusBadRequest
 		case "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch":
 			status = http.StatusConflict
+		case "task_unfinished_children", "task_parent_terminal", "task_parent_immutable":
+			status = http.StatusConflict
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
 		case "payload_too_large", "limit_exceeded":

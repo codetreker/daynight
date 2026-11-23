@@ -289,6 +289,9 @@ func (d *writeWitnessTaskDAO) VisibleTaskIDs(context.Context, []string) ([]strin
 func (d *writeWitnessTaskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ActiveDependentIDs"))
 }
+func (d *writeWitnessTaskDAO) UnfinishedChildIDs(context.Context, string) ([]string, error) {
+	panic(d.f.unexpected("TaskWriteDAO.UnfinishedChildIDs"))
+}
 func (d *writeWitnessTaskDAO) Reachable(context.Context, string, string, store.DependencyReplacement) (bool, error) {
 	panic(d.f.unexpected("TaskWriteDAO.Reachable"))
 }

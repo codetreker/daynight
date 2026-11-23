@@ -6,8 +6,10 @@ import (
 )
 
 type TaskWrite struct {
-	Type              model.TaskType
-	ParentID          *string
+	Type     model.TaskType
+	ParentID *string
+	// OrdinaryParent is creation intent; it is not persisted as a separate field.
+	OrdinaryParent    bool
 	AssignedTo        *string
 	RequiredPlatform  *model.TaskPlatform
 	AllowAgents       bool

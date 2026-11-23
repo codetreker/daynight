@@ -42,6 +42,26 @@ func TestTaskWriteRedactionPreservesTransactionFacts(t *testing.T) {
 	}
 }
 
+func TestOrdinaryParentFaultRedactsChildIDsWithoutTaskRead(t *testing.T) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
+	for _, canRead := range []bool{false, true} {
+		scopes := []scopepolicy.ScopeID{"task:status"}
+		if canRead {
+			scopes = []scopepolicy.ScopeID{"task:read", "task:status"}
+		}
+		policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, scopes, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, false)
+		original := &model.Fault{Code: "task_unfinished_children", Message: "Children are unfinished.", TaskIDs: []string{"private-child"}}
+		var got *model.Fault
+		if !errors.As(redactTaskWriteError(ctx, original), &got) || got.Code != original.Code || (len(got.TaskIDs) == 1) != canRead {
+			t.Fatalf("read=%v, fault=%+v", canRead, got)
+		}
+	}
+}
+
 type scopeAdmissionTestGoalDAO struct {
 	store.GoalDependencyDAO
 	lock func(context.Context) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -35,6 +36,7 @@ type taskWriteOperations struct {
 }
 
 type Tasks struct {
+	lifecycleLogger *slog.Logger
 	authorization   *model.CredentialAuthorization
 	store           taskStore
 	capturer        Capturer
