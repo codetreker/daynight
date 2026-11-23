@@ -25,7 +25,10 @@ Method-qualified registrations declare business methods directly. Internal
 dispatchers declare their supported business methods, including supported HEAD,
 through a private request role before authentication. Their existing method
 tables own this declaration; unsupported methods cannot inherit an outer
-dispatcher's admission. Assistant Task, Bot detail, Webhook and OAuth consent
+dispatcher's admission. Undeclared methods carry the refusal role even when a
+qualified GET registration would otherwise imply HEAD. The Session history
+collection therefore preserves its protocol refusals without renewing authority.
+Assistant Task, Bot detail, Webhook and OAuth consent
 therefore share the same activity contract as directly registered handlers.
 Registered method refusals carry a separate request role and remain read-only,
 including qualified refusals that shadow wildcard business routes.

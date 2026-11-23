@@ -77,26 +77,29 @@ func registerRoutes[A any](mux httpx.RouteRegistrar, ops operations[A], authenti
 			httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, principal(a))
 		}
 	}
+	rejectMethod := func(allowed string) http.HandlerFunc {
+		return httpx.MethodRejection(authenticate(methodNotAllowed(allowed)))
+	}
 
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags", authenticate(h.list))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags", authenticate(h.create))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags", authenticate(methodNotAllowed("GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags", rejectMethod("GET, HEAD, POST"))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/resolve", authenticate(h.resolve))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/colors/resolve", authenticate(h.resolveColors))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags/colors/resolve", authenticate(methodNotAllowed("POST")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags/colors/resolve", rejectMethod("POST"))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tags/resolve", authenticate(methodNotAllowed("POST")))
+		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tags/resolve", rejectMethod("POST"))
 	}
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.get))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.rename))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tags/{tagId}", authenticate(h.delete))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tags/{tagId}", authenticate(func(w http.ResponseWriter, r *http.Request, principal A) {
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags/{tagId}", httpx.MethodRejection(authenticate(func(w http.ResponseWriter, r *http.Request, principal A) {
 		allowed := "GET, HEAD, PATCH, DELETE"
 		if r.PathValue("tagId") == "resolve" {
 			allowed = "POST"
 		}
 		methodNotAllowed(allowed)(w, r, principal)
-	}))
+	})))
 }
 
 func tagResponse(item tagservice.Item) api.Tag {

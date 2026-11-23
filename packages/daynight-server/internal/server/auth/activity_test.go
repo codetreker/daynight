@@ -76,6 +76,8 @@ func TestBrowserActivityEntryAdmission(t *testing.T) {
 		{name: "unknown_mode", method: "GET", pattern: "GET /api/v1/me", site: "same-origin", mode: "unexpected", dest: "empty"},
 		{name: "origin_only", method: "GET", pattern: "GET /api/v1/me", origin: "https://daynight.test", active: true},
 		{name: "implied_head", method: "HEAD", pattern: "GET /api/v1/me", origin: "https://daynight.test", active: true},
+		{name: "qualified_dispatch_get", method: "GET", pattern: "GET /api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET"}, active: true},
+		{name: "qualified_dispatch_refuses_implied_head", method: "HEAD", pattern: "GET /api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET"}},
 		{name: "explicit_head_refusal", method: "HEAD", pattern: "HEAD /api/v1/me", origin: "https://daynight.test"},
 		{name: "method_fallback", method: "DELETE", pattern: "/api/v1/me", origin: "https://daynight.test"},
 		{name: "dispatched_get", method: "GET", pattern: "/api/v1/me", origin: "https://daynight.test", dispatch: []string{"GET", "HEAD", "POST"}, active: true},

@@ -18,7 +18,7 @@ func TestMethodDispatchMarksOnlyDeclaredMethodAndPreservesCancellation(t *testin
 		MethodDispatch(func(_ http.ResponseWriter, r *http.Request) {
 			called = true
 			want := method == http.MethodGet || method == http.MethodHead || method == http.MethodPost
-			if IsDispatchedMethod(r) != want || r.Context().Err() != context.Canceled || r.Context().Value(requestValue{}) != "original" || r.Pattern != request.Pattern || r.URL != request.URL {
+			if IsDispatchedMethod(r) != want || IsMethodRejection(r) == want || r.Context().Err() != context.Canceled || r.Context().Value(requestValue{}) != "original" || r.Pattern != request.Pattern || r.URL != request.URL {
 				t.Fatal("dispatch changed request identity, context or declared method")
 			}
 			copy := r.Clone(r.Context())

@@ -19,9 +19,15 @@ func MethodDispatch(next http.HandlerFunc, methods ...string) http.HandlerFunc {
 	for _, method := range methods {
 		declared[method] = true
 	}
+	rejected := MethodRejection(next)
 	return func(w http.ResponseWriter, r *http.Request) {
 		role := dispatchedMethod{method: r.Method, business: declared[r.Method]}
-		next(w, r.WithContext(context.WithValue(r.Context(), dispatchedMethodKey{}, role)))
+		r = r.WithContext(context.WithValue(r.Context(), dispatchedMethodKey{}, role))
+		if !role.business {
+			rejected(w, r)
+			return
+		}
+		next(w, r)
 	}
 }
 
