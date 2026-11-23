@@ -1313,8 +1313,9 @@ func TestArchiveStreamPrevalidationPreservesOnlinePinsUntilPublication(t *testin
 				}
 				return
 			}
-			if err != nil || len(d.removed) != 1 || d.removed[0].ResourceID != resource || d.row.State != "complete" {
-				t.Fatalf("commit did not retire pin: err=%v removed=%+v row=%+v", err, d.removed, d.row)
+			var ledger archiveLedger
+			if err != nil || len(d.removed) != 0 || d.row.State != "complete" || json.Unmarshal(d.bundle.Ledger, &ledger) != nil || len(ledger.PendingImageRetirement) != 1 || ledger.PendingImageRetirement[0].ImageID != position.ImageID {
+				t.Fatalf("history did not retain pin for archive publication: err=%v removed=%+v row=%+v ledger=%+v", err, d.removed, d.row, ledger)
 			}
 		})
 	}

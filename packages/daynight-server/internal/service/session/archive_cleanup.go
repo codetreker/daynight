@@ -16,14 +16,20 @@ import (
 // permits. It borrows both dependencies; its caller must drain it before closing
 // either. Each call processes one bounded page and returns the next scan cursor.
 type ArchiveCleanup struct {
-	db     store.ArchiveCleanupStore
-	files  filestorage.Storage
-	now    func() time.Time
-	expire func(context.Context, store.ArchiveCleanupScope, time.Time) (bool, error)
+	db             store.ArchiveCleanupStore
+	files          filestorage.Storage
+	now            func() time.Time
+	expire         func(context.Context, store.ArchiveCleanupScope, time.Time) (bool, error)
+	settleReleased func(context.Context, store.ArchiveCleanupTarget) error
 }
 
 func NewArchiveCleanup(db store.ArchiveCleanupStore, files filestorage.Storage) *ArchiveCleanup {
 	return &ArchiveCleanup{db: db, files: files, now: time.Now, expire: core.ExpireArchive}
+}
+
+// SetReleasedUploadRecovery installs the independent ready-archive recovery pass.
+func (s *ArchiveCleanup) SetReleasedUploadRecovery(recover func(context.Context, store.ArchiveCleanupTarget) error) {
+	s.settleReleased = recover
 }
 
 func (s *ArchiveCleanup) Sweep(ctx context.Context, after string) (string, error) {
@@ -77,6 +83,9 @@ func (s *ArchiveCleanup) clean(ctx context.Context, target store.ArchiveCleanupT
 		return err
 	}
 	if !expired {
+		if s.settleReleased != nil {
+			return s.settleReleased(ctx, target)
+		}
 		return nil
 	}
 	// Admission is now closed. A still-open response or upload retains this

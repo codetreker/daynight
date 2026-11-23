@@ -426,15 +426,59 @@ func TestTaskBodyFinalHistoryReclaimsOriginalOwnerOfReusedOnlineResource(t *test
 			if err = put(); err != nil {
 				t.Fatal(err)
 			}
+			var final archiveLedger
+			if json.Unmarshal(base.bundle.Ledger, &final) != nil || len(final.OnlineImageOccurrences) != 0 || len(final.PendingImageRetirement) != len(positions) || final.HistoryID != id || len(d.removed) != 0 || len(d.saved) != 0 {
+				t.Fatal(final, d.removed, d.saved)
+			}
+			if err = put(); err != nil || len(d.saved) != 0 || d.ownerReads != 0 {
+				t.Fatal("final history retry released ownership", err, d.saved)
+			}
+			if _, err = op.SealArchive(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			timeline := encode(sp.ArchiveTimeline{Entries: h.Entries})
+			fileID := uuid.NewString()
+			ref := sp.ArchiveFileReference{FileID: fileID, SHA256: archiveDigest(timeline), ByteLength: decimal(int64(len(timeline)))}
+			if _, err = op.PutArchiveFile(t.Context(), "timeline", fileID, 0, int64(len(timeline)), ref.SHA256, ref.SHA256, timeline); err != nil {
+				t.Fatal(err)
+			}
+			manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentPolicy: "task_body", ContentKind: "native_timeline", RecordID: op.id, Fence: r.Snapshot.Fence, Provider: r.Snapshot.Identity.Provider, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, Timeline: ref, Resources: []sp.ArchiveResourceReference{}, Completeness: "complete"}
+			body = encode(manifest)
+			// Use a controlled ledger size to exercise the final capacity boundary
+			// without running a large stress workload in the unit suite.
+			originalLedger := append([]byte(nil), base.bundle.Ledger...)
+			var nearLimit archiveLedger
+			if err = json.Unmarshal(originalLedger, &nearLimit); err != nil {
+				t.Fatal(err)
+			}
+			nearLimit.Entries[0].ByteLength = int(MaxSessionContentBytes - 4096)
+			cost, err := measureContent(contentState{ledger: &nearLimit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nearLimit.Entries[0].ByteLength += int(MaxSessionContentBytes - cost.TimelineBytes - cost.IndexBytes - int64(len(body))/2)
+			base.bundle.Ledger = encode(nearLimit)
+			if _, err = checkContentReplacement(contentState{ledger: &nearLimit}, historyContentChange{nearLimit}); err != nil {
+				t.Fatal("history must fit", err)
+			}
+			var refusal *model.Fault
+			if _, err = op.PutArchiveManifest(t.Context(), body); !errors.As(err, &refusal) || refusal.Code != "quota_exceeded" || len(d.removed) != 0 || len(d.saved) != 0 || base.status.State == "ready" {
+				t.Fatal("capacity failure changed online ownership", err, d.removed, d.saved, base.status)
+			}
+			base.bundle.Ledger = originalLedger
+			base.leaseRows["reader"] = store.SessionResourceLease{ID: "reader", Kind: "read", ResourceID: resource}
+			if _, err = op.PutArchiveManifest(t.Context(), body); err == nil || len(d.removed) != 0 || len(d.saved) != 0 {
+				t.Fatal("reader lost its pin", err, d.removed, d.saved)
+			}
+			delete(base.leaseRows, "reader")
+			if status, err := op.PutArchiveManifest(t.Context(), body); err != nil || status.State != "ready" {
+				t.Fatal(status, err)
+			}
 			if len(d.removed) != len(positions) || len(d.counts) != 0 || d.ownerReads != 1 || len(d.saved) != 1 || d.saved[0].Spec.UploadID != originalAttempt || d.saved[0].Receipt.State != "released" || d.saved[0].Receipt.Resource != nil {
 				t.Fatal(d.removed, d.counts, d.ownerReads, d.saved)
 			}
-			var final archiveLedger
-			if json.Unmarshal(base.bundle.Ledger, &final) != nil || len(final.OnlineImageOccurrences) != 0 || final.HistoryID != id {
-				t.Fatal(final)
-			}
-			if err = put(); err != nil || len(d.saved) != 1 || d.ownerReads != 1 {
-				t.Fatal("final history retry repeated ownership release", err, d.saved)
+			if status, err := op.PutArchiveManifest(t.Context(), body); err != nil || status.State != "ready" || len(d.saved) != 1 || d.ownerReads != 1 {
+				t.Fatal("manifest retry repeated ownership release", status, err, d.saved)
 			}
 		})
 	}
@@ -465,6 +509,90 @@ func TestTaskBodyReusedResourceRetainsBodyAndOtherPinsAndReleasedOwner(t *testin
 			}
 			if len(d.removed) != wantRemoved || d.ownerReads != wantReads || len(d.saved) != 0 || len(d.counts) != 0 {
 				t.Fatal(d.removed, d.ownerReads, d.saved, d.counts)
+			}
+		})
+	}
+}
+
+func TestPendingImageRetirementsDeduplicatesAndRejectsChangedIdentity(t *testing.T) {
+	first := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "image"}
+	second := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "another"}
+	pending, err := pendingImageRetirements([]sp.ImageOccurrence{first}, []sp.ImageOccurrence{first, second})
+	if err != nil || len(pending) != 2 || !jsonEqual(encode(pending), encode([]sp.ImageOccurrence{first, second})) {
+		t.Fatalf("deduplicated positions: %+v %v", pending, err)
+	}
+	changed := first
+	changed.SourceKey = "different"
+	pending, err = pendingImageRetirements([]sp.ImageOccurrence{first}, []sp.ImageOccurrence{changed})
+	var refusal *model.Fault
+	if len(pending) != 0 || !errors.As(err, &refusal) || refusal.Code != "archive_conflict" {
+		t.Fatalf("conflicting identity was accepted: %+v %v", pending, err)
+	}
+}
+
+func TestPendingImageRetirementChecksCaptureAndReadersBeforeMutation(t *testing.T) {
+	for _, scenario := range []string{"missing-capture", "capture-error", "changed-occurrence", "reserved", "copying", "missing-resource", "failed-capture", "lease-error", "matching-reader", "all-resource-reader", "other-reader", "body-reader"} {
+		t.Run(scenario, func(t *testing.T) {
+			id, resource := uuid.NewString(), uuid.NewString()
+			position := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "image"}
+			capture := store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: position}, Receipt: sp.ImageCaptureReceipt{State: "committed", ResourceID: &resource}}
+			d := &stoppedCaptureBoundaryDAO{onlineImageRetirementDAO: &onlineImageRetirementDAO{capture: capture, count: 1}}
+			failure := errors.New("controlled storage failure")
+			var body []sp.Resource
+			wantCode := ""
+			switch scenario {
+			case "missing-capture":
+				d.failure = model.ErrNotFound
+			case "capture-error":
+				d.failure = failure
+			case "changed-occurrence":
+				d.capture.Request.Occurrence.SourceKey = "changed"
+				wantCode = "archive_conflict"
+			case "reserved", "copying":
+				d.capture.Receipt.State = scenario
+				wantCode = "archive_incomplete"
+			case "missing-resource":
+				d.capture.Receipt.ResourceID = nil
+				wantCode = "archive_conflict"
+			case "failed-capture":
+				d.capture.Receipt.State = "failed"
+			case "lease-error":
+				d.leaseErr = failure
+			case "matching-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: resource}}
+				wantCode = "resource_busy"
+			case "all-resource-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read"}}
+				wantCode = "resource_busy"
+			case "other-reader":
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: uuid.NewString()}}
+			case "body-reader":
+				body = []sp.Resource{{ResourceID: resource}}
+				d.leases = []store.SessionResourceLease{{Kind: "read", ResourceID: resource}}
+			}
+			r := &record{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}}}
+			err := (&Execution{}).retirePendingImages(t.Context(), &operationTx{dao: d}, r, []sp.ImageOccurrence{position}, body)
+			switch {
+			case wantCode != "":
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != wantCode {
+					t.Fatalf("expected %s: %v", wantCode, err)
+				}
+			case scenario == "capture-error" || scenario == "lease-error":
+				if !errors.Is(err, failure) {
+					t.Fatalf("storage error lost: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantRemoved := 0
+			if scenario == "other-reader" {
+				wantRemoved = 1
+			}
+			if len(d.removed) != wantRemoved || len(d.saved) != 0 {
+				t.Fatalf("unexpected ownership mutation: %+v %+v", d.removed, d.saved)
 			}
 		})
 	}

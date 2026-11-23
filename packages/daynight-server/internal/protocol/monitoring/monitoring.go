@@ -272,6 +272,7 @@ func scope(raw json.RawMessage) (any, error) {
 
 // Diagnostic text is a fixed protocol vocabulary, not an exception message.
 var diagnosticCauses = map[string]string{
+	"archive-quota-exceeded":     "Session archive capacity was exceeded (quota_exceeded).",
 	"cancelled":                  "The operation was cancelled.",
 	"timeout":                    "The operation timed out.",
 	"authentication-required":    "Authentication is required.",

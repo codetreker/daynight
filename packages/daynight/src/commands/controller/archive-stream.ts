@@ -1,5 +1,5 @@
 import { parseSessionArchiveFileReceipt, type SessionArchiveFileReceipt } from "../../session/archive.js";
-import { ArchiveProtocolError, ArchiveRequestError } from "./archive-error.js";
+import { ArchiveFileFailedError, ArchiveProtocolError, ArchiveRequestError } from "./archive-error.js";
 import { ARCHIVE_MAX_RETRIES, archiveRetryDelay, type ArchiveRetryRuntime } from "./archive-retry.js";
 import { type createArchiveRequest } from "./archive-request.js";
 
@@ -92,7 +92,7 @@ export const transferArchiveStream = async (options: {
       const receipt = current.receipt;
       if (receipt?.state === "complete") return id;
       if (receipt?.state === "failed") {
-        if (receipt.error?.code !== "staging_corrupt") throw new Error("Archive file failed before completion.");
+        if (receipt.error!.code !== "staging_corrupt") throw new ArchiveFileFailedError(receipt.error!.code, receipt.error!.message);
         if (receipt.successorFileId && !options.replacements[id]) throw new Error("Archive successor has no original local intent.");
         const replacement = options.replacements[id] ?? options.reserveReplacement(id);
         if (receipt.successorFileId && receipt.successorFileId !== replacement) throw new Error("Archive successor differs from its original intent.");
@@ -111,7 +111,7 @@ export const transferArchiveStream = async (options: {
       if (current.corrupt || receipt && receipt.acceptedOffset === file.byteLength) {
         let response: unknown;
         try { response = await versioned("POST", `${base(id)}/complete`, false, undefined, { [VERSION]: "2" }); }
-        catch (error) { if (signal.aborted || !reconcileable(error)) throw error; current = await status(id); if (!current.receipt) throw error; await wait(); continue; }
+        catch (error) { if (signal.aborted || !reconcileable(error)) throw error; current = await status(id); if (!current.receipt) throw error; if (current.receipt.state === "receiving") await wait(); continue; }
         const completed = check(parse(response), id); current = { receipt: completed, corrupt: false }; if (completed.state === "receiving" && completed.acceptedOffset === file.byteLength) await wait();
         continue;
       }
@@ -123,7 +123,7 @@ export const transferArchiveStream = async (options: {
       catch (error) {
         if (signal.aborted || !reconcileable(error)) throw error;
         current = await status(id);
-        await wait();
+        if (!current.receipt || current.receipt.state === "receiving") await wait();
         continue;
       }
       const received = check(parse(response), id);

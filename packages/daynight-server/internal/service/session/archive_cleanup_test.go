@@ -664,3 +664,42 @@ func TestArchiveCleanupInlineResourceAndCancelledPage(t *testing.T) {
 		t.Fatalf("cancelled page advanced: %q %v", next, err)
 	}
 }
+
+func TestArchiveCleanupRetriesReleasedUploadWithoutExpiringArchive(t *testing.T) {
+	target := cleanupTarget()
+	target.ExpiredAt = nil
+	failure := errors.New("upload cleanup unavailable")
+	calls := 0
+	db := cleanupStoreStub{
+		list: func(_ context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
+			if cursor != "" || limit != 32 {
+				t.Fatal("unexpected scan", cursor, limit)
+			}
+			return []store.ArchiveCleanupTarget{target}, nil
+		},
+		write: func(ctx context.Context, got store.ArchiveCleanupTarget, work func(store.ArchiveCleanupScope) error) (store.Completion, error) {
+			if got != target {
+				t.Fatal("wrong archive identity", got)
+			}
+			return store.Completion{Outcome: store.TransactionCommitted}, work(cleanupScopeStub{target: got})
+		},
+	}
+	cleanup := NewArchiveCleanup(db, nil)
+	cleanup.expire = func(context.Context, store.ArchiveCleanupScope, time.Time) (bool, error) { return false, nil }
+	cleanup.SetReleasedUploadRecovery(func(_ context.Context, got store.ArchiveCleanupTarget) error {
+		if got != target {
+			t.Fatal("wrong recovery identity", got)
+		}
+		calls++
+		if calls == 1 {
+			return failure
+		}
+		return nil
+	})
+	if next, err := cleanup.Sweep(t.Context(), ""); next != "" || !errors.Is(err, failure) {
+		t.Fatal(next, err)
+	}
+	if next, err := cleanup.Sweep(t.Context(), ""); next != "" || err != nil || calls != 2 {
+		t.Fatal(next, err, calls)
+	}
+}
