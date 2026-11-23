@@ -95,11 +95,13 @@ test('explicit stop is idempotent and resolves the observed process exit', async
 
 test('output retention is bounded while complete output is streamed', async () => {
   let streamedBytes = 0;
-  const result = await runCommand(process.execPath, ['-e', "process.stdout.write('x'.repeat(2*1024*1024));"], {
+  const command = startCommand(process.execPath, ['-e', "process.stdout.write('x'.repeat(2*1024*1024));"], {
     ...options(), onOutput: (_channel, chunk) => { streamedBytes += Buffer.byteLength(chunk); },
   });
+  const result = await command.finished;
   assert.equal(streamedBytes, 2 * 1024 * 1024);
   assert.equal(Buffer.byteLength(result.stdout), 1024 * 1024);
+  assert.deepEqual(command.diagnostics().truncated, { stdout: true, stderr: false });
 });
 
 test('an already aborted signal fails before starting a process', () => {

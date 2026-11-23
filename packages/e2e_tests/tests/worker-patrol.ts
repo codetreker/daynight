@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { inspect } from "node:util";
+import { aggregateFailures } from "../src/failures.ts";
 import { chmod, copyFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ManagedCommand } from "../src/command.ts";
 import { markFixtureStopped, prepareFixtureOwnership, registerFixtureBot, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
 import { completeFixtureTask, type WorkerCompletionTask } from "../src/worker-completion.ts";
-import { stopFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
+import { stopAndRecordFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
 import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtures.ts";
 import { verifyAssistantInbox, type PeerEvent } from "./assistant-inbox.ts";
 
@@ -20,14 +22,14 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
   const root = await prepareFixtureOwnership(checkout, runDirectory);
   const repository = path.join(root, "repository"), bare = path.join(root, "remote.git"), peer = path.join(root, "codex.mjs"), log = path.join(root, "peer.jsonl"), launcher = path.join(root, "daynight");
   const git = async (cwd: string, args: string[]) => runOwnedCommand("git", args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
-  let worker: ManagedCommand | undefined, exited = false, output = "";
+  let worker: ManagedCommand | undefined, exited = false, launchNumber = 0;
   let scenarioFailure: unknown;
   let workerConfigDirectory: string | undefined, identity: FixtureExecutionIdentity | undefined;
   const workerId = randomUUID();
   const stop = async (): Promise<void> => {
     if (!worker) return;
     const original = worker; worker = undefined;
-    await stopFixtureWorker(original, exited);
+    await stopAndRecordFixtureWorker({ worker: original, exited, runDirectory, workerId, launchNumber });
     await markFixtureStopped(checkout, runDirectory);
   };
   try {
@@ -64,13 +66,20 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
     };
     const start = async () => {
-      exited = false;
+      exited = false; launchNumber++;
       worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [topology.cliEntry, "worker", "run"], options: { cwd: root,
         env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 420_000,
-        onOutput: (_channel, chunk) => { output += chunk; } } });
+        onOutput: () => {} } });
       void worker.finished.then(() => { exited = true; }, () => { exited = true; });
     };
-    const events = async () => { if (exited) throw new Error(`Worker exited unexpectedly:\n${output}`); return entries(); };
+    const events = async () => {
+      if (exited) {
+        let failure: unknown;
+        try { await worker!.finished; } catch (error) { failure = error; }
+        throw new Error(`Worker exited unexpectedly: ${inspect({ diagnostics: worker!.diagnostics(), failure }, { depth: 8, maxStringLength: 1024 * 1024 })}`, { cause: failure });
+      }
+      return entries();
+    };
     await start();
     await expect.poll(async () => (await events()).filter(event => event.method === "turn/start").length, { timeout: 90_000, intervals: [1_000] }).toBeGreaterThanOrEqual(2);
     const firstTurns = (await entries()).filter(event => event.method === "turn/start");
@@ -123,6 +132,6 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     try { await stop(); } catch (error) { failures.push(error); }
     if (scenarioFailure !== undefined) failures.unshift(scenarioFailure);
     if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, "Fixture execution or cleanup failed.");
+    if (failures.length > 1) throw aggregateFailures("Fixture execution or cleanup failed.", failures);
   }
 };
