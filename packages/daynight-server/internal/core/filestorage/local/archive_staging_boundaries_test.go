@@ -63,6 +63,9 @@ func TestArchiveStagingRejectsInvalidAndCanceledOperations(t *testing.T) {
 	if err := h.Create(t.Context(), "../bad"); !errors.Is(err, filestorage.ErrInvalidAddress) {
 		t.Fatalf("invalid create: %v", err)
 	}
+	if _, err := h.Observe(t.Context(), "../bad", 4); !errors.Is(err, filestorage.ErrInvalidAddress) {
+		t.Fatalf("invalid observation: %v", err)
+	}
 	if err := h.Delete(t.Context(), id); err != nil {
 		t.Fatalf("missing staging directory cleanup: %v", err)
 	}
@@ -700,5 +703,143 @@ func TestArchiveAdoptionCannotConfirmClosedFile(t *testing.T) {
 	s.fileSync = (*os.File).Sync
 	if err = h.AdoptEmpty(t.Context(), id); err != nil {
 		t.Fatalf("adoption retry: %v", err)
+	}
+}
+
+func TestArchiveObservationDoesNotTreatInaccessibleStagingAsMissing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	_, guard, namespace, id, root := stagingBoundaryFixture(t)
+	if err := guard.Create(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guard.Append(t.Context(), id, 4, 0, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, sessionarchive.Bucket, namespace.Directory(), ".staging")
+	if err := os.Chmod(directory, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
+	if _, err := guard.Observe(t.Context(), id, 4); !errors.Is(err, fs.ErrPermission) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("inaccessible staging reported as missing: %v", err)
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := guard.Observe(t.Context(), id, 4); err != nil || offset != 4 {
+		t.Fatalf("staging changed after access was restored: offset=%d err=%v", offset, err)
+	}
+	file := filepath.Join(directory, id)
+	if err := os.Chmod(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(file, 0o600) })
+	if _, err := guard.Observe(t.Context(), id, 4); !errors.Is(err, fs.ErrPermission) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("unreadable staging file reported as missing: %v", err)
+	}
+	if err := os.Chmod(file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := guard.Observe(t.Context(), id, 4); err != nil || offset != 4 {
+		t.Fatalf("staging changed after file access was restored: offset=%d err=%v", offset, err)
+	}
+}
+
+type stagingExpiringPermit struct {
+	checks int
+	err    error
+}
+
+func (*stagingExpiringPermit) Close() error { return nil }
+
+func (*stagingExpiringPermit) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return ctx, func() {}
+}
+
+func (p *stagingExpiringPermit) CheckGate() error {
+	p.checks++
+	if p.checks > 1 {
+		return p.err
+	}
+	return nil
+}
+
+func TestArchiveObservationReportsLostAdmissionInsteadOfMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		createDir     bool
+		fileAvailable bool
+	}{
+		{name: "missing staging directory"},
+		{name: "missing staging file", createDir: true},
+		{name: "present staging file", createDir: true, fileAvailable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, guard, _, id, _ := stagingBoundaryFixture(t)
+			if tc.createDir {
+				if err := guard.Create(t.Context(), id); err != nil {
+					t.Fatal(err)
+				}
+				if tc.fileAvailable {
+					if _, err := guard.Append(t.Context(), id, 4, 0, []byte("data")); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := guard.Delete(t.Context(), id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lost := errors.New("archive admission lost")
+			permit := &stagingExpiringPermit{err: lost}
+			ctx, cancel := filestorage.GateContext(t.Context(), permit)
+			defer cancel()
+			if _, err := guard.Observe(ctx, id, 4); !errors.Is(err, lost) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+				t.Fatalf("lost admission was hidden: %v", err)
+			}
+			if tc.fileAvailable {
+				if offset, err := guard.Observe(t.Context(), id, 4); err != nil || offset != 4 {
+					t.Fatalf("failed observation changed staging: offset=%d err=%v", offset, err)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveOpenRejectsUnverifiedVolumeOnExistingHandle(t *testing.T) {
+	s, guard, _, id, root := stagingBoundaryFixture(t)
+	if err := guard.Create(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guard.Append(t.Context(), id, 4, 0, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	moved := root + "-moved"
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	movedBack := false
+	t.Cleanup(func() {
+		if !movedBack {
+			if err := os.Rename(moved, root); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if err := s.EnableArchiveStaging(t.Context(), true); !errors.Is(err, ErrArchiveVolumeUnverified) {
+		t.Fatalf("reverification accepted missing volume: %v", err)
+	}
+	if _, err := guard.Observe(t.Context(), id, 4); !errors.Is(err, ErrArchiveVolumeUnverified) || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("existing handle treated unavailable volume as missing: %v", err)
+	}
+	if err := os.Rename(moved, root); err != nil {
+		t.Fatal(err)
+	}
+	movedBack = true
+	if err := s.EnableArchiveStaging(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if offset, err := guard.Observe(t.Context(), id, 4); err != nil || offset != 4 {
+		t.Fatalf("reverified volume did not retain bytes: offset=%d err=%v", offset, err)
 	}
 }

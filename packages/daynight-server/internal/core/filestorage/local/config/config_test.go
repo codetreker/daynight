@@ -59,3 +59,18 @@ func TestArchiveStagingConfiguration(t *testing.T) {
 		t.Fatal("invalid boolean accepted")
 	}
 }
+
+func TestArchiveStagingPatchPreservesExplicitFalse(t *testing.T) {
+	c := DefaultConfig()
+	root, enabled := "/data", true
+	if err := (Patch{Root: &root, ArchiveStagingTopologyVerified: &enabled, ArchiveUploadV2Enabled: &enabled}).ApplyTo(&c); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if err := (Patch{ArchiveUploadV2Enabled: &disabled}).ApplyTo(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Root != root || !c.ArchiveStagingTopologyVerified || c.ArchiveUploadV2Enabled || c.Validate() != nil {
+		t.Fatalf("patch did not preserve topology while disabling registration: %+v", c)
+	}
+}

@@ -88,19 +88,12 @@ func (op *ArchiveOperation) validateArchiveStreamContent(ctx context.Context, fi
 					return invalidArchiveFile(archiveConflict())
 				}
 			}
-			through := r.SourceSeq
-			if op.historyWriter != nil {
-				through = number(history.SourceThrough)
-				if through > r.SourceSeq {
-					return invalidArchiveFile(archiveConflict())
-				}
-			}
 			ledger := candidate
-			if ledger.ContentPolicy != "" && r.Snapshot.ClaimID == "" || op.historyWriter == nil && len(ledger.OnlineImageOccurrences) != 0 {
+			if ledger.ContentPolicy != "" && r.Snapshot.ClaimID == "" || len(ledger.OnlineImageOccurrences) != 0 {
 				return invalidArchiveFile(archiveConflict())
 			}
 			ledger.SourceEpoch = sourceEpoch(r)
-			if history.HistoryEpoch != r.Snapshot.HistoryEpoch || history.SourceThrough != decimal(through) {
+			if history.HistoryEpoch != r.Snapshot.HistoryEpoch || history.SourceThrough != decimal(r.SourceSeq) {
 				return invalidArchiveFile(archiveConflict())
 			}
 			var previous archiveLedger
@@ -128,7 +121,7 @@ func (op *ArchiveOperation) validateArchiveStreamContent(ctx context.Context, fi
 				if r.HistoryContentPolicy == nil || *r.HistoryContentPolicy != previous.StoppedContentPolicy {
 					return invalidArchiveFile(archiveConflict())
 				}
-				if e = op.execution.verifyStoppedCaptures(ctx, tx, r, ledger, capturedImages); e != nil {
+				if e = op.execution.reconcileStoppedCaptures(ctx, tx, r, ledger, capturedImages, !validateOnly); e != nil {
 					return e
 				}
 			}
@@ -136,32 +129,16 @@ func (op *ArchiveOperation) validateArchiveStreamContent(ctx context.Context, fi
 				if previous.ContentPolicy != ledger.ContentPolicy {
 					return invalidArchiveFile(archiveConflict())
 				}
-				if op.historyWriter != nil {
-					for _, old := range previous.OnlineImageOccurrences {
-						found := false
-						for _, current := range ledger.OnlineImageOccurrences {
-							if current.ImageID == old.ImageID {
-								found = jsonEqual(encode(old), encode(current))
-								break
-							}
-						}
-						if !found {
-							return invalidArchiveFile(archiveConflict())
-						}
-					}
-				}
-				if op.historyWriter != nil {
+				if previous.FinalSourceThrough != "" {
 					e = verifySourceHistoryAdvance(previous, ledger)
-				} else if op.historyWriter == nil && previous.FinalSourceThrough != "" {
-					e = verifySourceHistoryAdvance(previous, ledger)
-				} else if op.historyWriter == nil && file.TimelineRevision > 1 {
+				} else if file.TimelineRevision > 1 {
 					e = verifyArchiveHistoryAdvance(previous, ledger)
 				}
 				if e != nil {
 					return invalidArchiveFile(e)
 				}
 			}
-			if !validateOnly && op.historyWriter == nil && previous.ContentPolicy == "task_body" {
+			if !validateOnly && previous.ContentPolicy == "task_body" {
 				if e = op.execution.retireOnlineImageReferences(ctx, tx, r, previous.OnlineImageOccurrences, ledger.Resources); e != nil {
 					return e
 				}
