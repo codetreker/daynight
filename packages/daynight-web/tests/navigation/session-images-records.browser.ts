@@ -22,7 +22,7 @@ async function openRecords(page: Page, completed: boolean, busy?: { target: 'con
   const detail = detailFixture(projectId, taskId, { title: 'Saved image records', status: completed ? 'done' : 'todo', ready: !completed, completedAt: completed ? time : null, properties: completed ? { worker } : {} });
   const graph = graphFixture([detail]);
   const records = [
-    { sessionId: source.sessionId, claimId: source.claimId, name: 'Completed saved record', time },
+    { sessionId: source.sessionId, claimId: source.claimId, name: 'Completed saved record 中文 😀', time },
     { sessionId: uuid(2), claimId: uuid(3), name: 'Attachment saved record', time: '2026-11-07T00:00:00Z' },
   ].map((record, index) => {
     const savedEntries = [...entries, { entryId: uuid(100 + index), entrySeq: '7', revision: '1', kind: 'assistant_message' as const, content: [{ type: 'text' as const, text: record.name }] }];
@@ -107,6 +107,17 @@ async function assertDecoded(image: Locator) {
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate(node => ({ width: (node as HTMLImageElement).naturalWidth, height: (node as HTMLImageElement).naturalHeight, loaded: (node as HTMLImageElement).complete }))).toEqual({ width: 3, height: 2, loaded: true });
 }
+
+test('reads an archived timeline after reload without a Node Buffer global', async ({ page }) => {
+  const fixture = await openRecords(page, true);
+  expect(await page.evaluate(() => typeof globalThis.Buffer)).toBe('undefined');
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toBeVisible();
+  const before = fixture.observations.timelineReads;
+  await page.reload();
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toBeVisible();
+  expect(fixture.observations.timelineReads).toBeGreaterThan(before);
+  expect(fixture.observations.pageErrors).toEqual([]);
+});
 async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof openRecords>>, fullscreen: boolean) {
   const host = page.locator('.task-agent-session:visible');
   await expect(host.locator('textarea')).toHaveCount(0);

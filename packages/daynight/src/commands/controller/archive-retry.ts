@@ -1,7 +1,9 @@
 import { ArchiveRequestError } from "./archive-error.js";
 
 export const ARCHIVE_ROUND_TIMEOUT_MS = 60_000;
+export const ARCHIVE_STREAM_ROUND_TIMEOUT_MS = 35 * 60_000;
 export const ARCHIVE_REQUEST_TIMEOUT_MS = 15_000;
+export const ARCHIVE_STREAM_TIMEOUT_MS = 30 * 60_000;
 export const ARCHIVE_MAX_RETRIES = 8;
 export const ARCHIVE_ERROR_MAX_BYTES = 65_536;
 
@@ -93,5 +95,5 @@ export const readArchiveRequestError = async (response: Response, signal: AbortS
   }
   const detail = payload !== null && typeof payload === "object" && !Array.isArray(payload) && "error" in payload ? payload.error : undefined;
   const code = detail !== null && typeof detail === "object" && !Array.isArray(detail) && "code" in detail && typeof detail.code === "string" ? detail.code : undefined;
-  return new ArchiveRequestError(response.status, code);
+  return new ArchiveRequestError(response.status, code, payload, response.headers.get("Daynight-Archive-Upload-Version"));
 };
