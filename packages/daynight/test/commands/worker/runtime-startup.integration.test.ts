@@ -6,7 +6,7 @@ import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
-import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -205,6 +205,7 @@ afterEach(async () => {
 describe("worker cloud-first startup", () => {
   it.each(["initial", "retry"] as const)("joins a retained claim before reading pending inventory and settles Task and Controller receipts on %s cleanup", async attempt => {
     const f = await fixture(true, false);
+    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
     const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const taskIdentity = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71) };
     f.store!.registerProject({ projectId: taskIdentity.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
