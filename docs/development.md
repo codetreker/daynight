@@ -549,6 +549,29 @@ to the full discovery. Missing evidence, failed or incomplete results, or a
 mismatch fails the gate. Existing intentional skips and todos remain represented;
 JSON success never replaces the native command and job results.
 
+The opt-in `CLI focused evidence` workflow compares full and focused executions
+on the same PR head. Add the `cli-focused-evidence` PR label, or dispatch the
+workflow with a PR number after it exists on the default branch. The workflow
+records the PR head and ref, clean checkout revision and tree, platform,
+architecture, Node and Vitest versions, actual test outcome, complete Vitest
+discovery and JSON results. It rechecks the PR head and ref after verification.
+The ordinary required matrix and its selection remain unchanged.
+
+The sample classification in `.github/scripts/cli-portable-files.json` contains
+exact CLI package-relative paths, reasons, Git blobs and conservative Git object
+guards for the CLI source, tests, scripts, build configuration, dependencies and
+shared test configuration. Any guarded change requires reexamining the
+classification and updating its object identities. The verifier rejects empty,
+missing, duplicate or stale plans and mismatched execution identities. Linux must
+actually pass tests in every portable file; Windows's two focused shards must be
+disjoint and cover the full discovery less the portable paths, and macOS must
+execute that same retained set. The full and focused native reports must agree
+on the structured identity and passed/skipped/todo state of every retained case,
+and the designated Windows and macOS native sentinels must pass. These reports
+are evidence for a candidate, not authorization to change the required matrix.
+The artifacts expire after 30 days; preserve conclusions with their source and
+run references when longer retention is needed.
+
 The reporter records only the framework's file, full test or suite name, and
 error name, message and stack. Field limits include JSON escaping: file 2 KiB,
 test name 4 KiB, error name 256 bytes, message 8 KiB and stack 16 KiB. Each event

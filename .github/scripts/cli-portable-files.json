@@ -1,0 +1,35 @@
+{
+  "files": [
+    {
+      "path": "test/api/worker-parse.test.ts",
+      "blob": "b65fc838388a84da92fa5147cfa73902192d36d2",
+      "reason": "Worker and task response DTO parsing with synthetic values."
+    },
+    {
+      "path": "test/api/task-tag-filter.test.ts",
+      "blob": "0b0ef6834ef074778e75fa2b1f2e55da1bf0d100",
+      "reason": "Tag filter normalization and deterministic key encoding."
+    },
+    {
+      "path": "test/api/worker-runtime-configuration.test.ts",
+      "blob": "ace902284d52bbc0ab6e59b515d64d988f287c2b",
+      "reason": "Worker runtime configuration response parsing with synthetic values."
+    }
+  ],
+  "guards": {
+    "packages/daynight/src": "cd0e90002e51fc3d9a552be9b41d746e616cd272",
+    "packages/daynight/test": "96d613f408ac2134374b0982959a8f2957b2f158",
+    "packages/daynight/scripts": "76e34299c661b4cbe2455799719a3f01e04df60b",
+    "packages/daynight/package.json": "ad0a07414dabba690d6d75a6fe00bf3cc759379b",
+    "packages/daynight/vitest.config.ts": "5545db2be9ae0f2a0616fe90e17dcbf3d5bc7ac2",
+    "package.json": "8f6caa23579e771a9883352d282060a0b08bf70b",
+    "pnpm-workspace.yaml": "0b78b9934980fa3c4168abb1338c57e56b40ba98",
+    "pnpm-lock.yaml": "acf4b227cd21213fe54b1c685f7626df1c230e36",
+    "packages/daynight/tsconfig.json": "0a9bbaeab4043135302c6f6f8f0d46e47f6add4e",
+    "packages/daynight/tsconfig.build.json": "7c22a6133aca83c320b07cee2c4f42d0d3f89ce7",
+    "packages/daynight/vitest.focused-evidence.config.ts": "bd717106d14ae5de62f520739e9f4b406f869289",
+    "patches": "b5fb0d8cebb6780edefafb810bd99af53822bec3",
+    ".npmrc": null,
+    ".github/workflows/cli-focused-evidence.yml": "86fc98f88cf61d40a40732ff97e892624ff0058a"
+  }
+}
