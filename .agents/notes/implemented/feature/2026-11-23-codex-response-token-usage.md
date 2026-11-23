@@ -16,6 +16,8 @@ and counts immutable per-response metrics from opted-in notifications and the
 original thread's validated rollout. Persisted turn attribution retains the
 originating state when recovery reads an old response. Unbound history remains
 unattributed. Journal format 019 protects the new metadata from older readers.
+Read-only observations retain shipped formats 016–018 without upgrading an active
+owner; exited journals still require their original storage permit to migrate.
 
 This replaces the Codex unsupported-only choice described by the
 [single-table decision](../architecture/2026-11-18-single-table-token-usage.md),

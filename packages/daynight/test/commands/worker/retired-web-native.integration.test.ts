@@ -1,5 +1,3 @@
-import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
-import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -267,7 +265,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (process.platform === "win32") expect(readControllerSnapshot(journalPath)?.windowsJobStopProof).toBeDefined();
     if (state === "missing" && mode === "patrol" && !recovered) {
       const upgraded = new Database(journalPath, { readonly: true });
-      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
+      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(19); }
       finally { upgraded.close(); }
     }
     await expect(access(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });

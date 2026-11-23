@@ -17,7 +17,7 @@ import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner }
 
 afterEach(cleanupMigrations);
 
-const previousJournalFixture = async (version: 16 | 17 = 16) => {
+const previousJournalFixture = async (version: 16 | 17 | 18 = 16) => {
   const fixture = await migrationFixture();
   const journal = fixture.openRaw(fixture.record.intent!.journalPath, false);
   restoreControllerJournalVersion(journal, version);
@@ -27,7 +27,7 @@ const previousJournalFixture = async (version: 16 | 17 = 16) => {
 };
 
 describe("legacy Bot storage migration", () => {
-  it.each([16, 17] as const)("preserves checksummed v%i history and recovery copies across the v18 journal upgrade", async version => {
+  it.each([16, 17, 18] as const)("preserves checksummed v%i history and recovery copies with the v19 reader", async version => {
     const f = await previousJournalFixture(version), original = readFileSync(f.record.intent!.journalPath);
     expect(() => readCurrentControllerSnapshot(f.record.intent!.journalPath, f.ticket)).toThrow(/current journal format/);
     const manifest = await migrateLegacyBot(f.input), paths = resolveBotPaths(f.stateDirectory, f.botId);

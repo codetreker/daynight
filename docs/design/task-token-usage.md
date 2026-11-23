@@ -275,7 +275,7 @@ turn/started 先将原 turn→state 写入 journal，再接收响应；恢复保
 
 Controller journal 格式 019 保留原 018 表结构，版本屏障保护新增 profileId 与
 turn 归属元数据。升级不补写旧 state 的 profile，不重建历史 turn 归属；旧 CLI 明确
-拒绝 019，回退需使用认识该格式且关闭新 profile 的构建。服务端保持单表及旧 profile。
+拒绝 019，回退需使用认识该格式且关闭新 profile 的构建。新 CLI 保留对原 016、017、018 的只读兼容，活跃 owner 的旧 journal 不因观察或停止请求而迁移；退出后的升级仍须原 storage permit。服务端保持单表及旧 profile。
 
 ## Claude Controller 输入计量
 
@@ -352,13 +352,13 @@ backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒�
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的
-Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只报告不支持。
+Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，Codex 只有精确匹配资格配置的 0.169.0 response profile 提供部分覆盖，其余版本与旧 snapshot profile 报告不支持。
 关闭新能力不停止原生执行、不修改旧累计 ACK，也不删除账本。
 
 迁移与 schema snapshot 同步维护，既有历史迁移不可改写。
 回退构建必须仍认识新迁移；`appliedMigrations` 的已知前缀检查会拒绝任意旧二进制。
 不得删迁移账本、checksum 或数据来伪造可回退状态。
-Controller journal 同样保留格式 014；回退 CLI 必须认识该格式，即使关闭用量功能。
+Controller journal 使用格式 019；回退 CLI 必须认识该格式，即使关闭用量功能。
 
 ## 验证职责
 
