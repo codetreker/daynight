@@ -48,6 +48,8 @@ Relay operation requires both sides to understand the fixed mode and occurrence
 proof; older clients remain on their existing mode and cannot silently attach to
 a relay execution. Server media capacity is independent of online text capacity;
 the combined final archive can still fail while retaining the original source.
+The [publication boundary](../bug-fix/2026-11-23-archive-capacity-online-receipts.md)
+also retains online image references and receipts until ready commits.
 The Controller persists the negotiated mode before using it. Existing journals
 retain legacy mode, while reconnects and new generations check the original
 decision. A peer that cannot support an already-bound mode cannot silently

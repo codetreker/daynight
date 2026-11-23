@@ -426,15 +426,59 @@ func TestTaskBodyFinalHistoryReclaimsOriginalOwnerOfReusedOnlineResource(t *test
 			if err = put(); err != nil {
 				t.Fatal(err)
 			}
+			var final archiveLedger
+			if json.Unmarshal(base.bundle.Ledger, &final) != nil || len(final.OnlineImageOccurrences) != 0 || len(final.PendingImageRetirement) != len(positions) || final.HistoryID != id || len(d.removed) != 0 || len(d.saved) != 0 {
+				t.Fatal(final, d.removed, d.saved)
+			}
+			if err = put(); err != nil || len(d.saved) != 0 || d.ownerReads != 0 {
+				t.Fatal("final history retry released ownership", err, d.saved)
+			}
+			if _, err = op.SealArchive(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			timeline := encode(sp.ArchiveTimeline{Entries: h.Entries})
+			fileID := uuid.NewString()
+			ref := sp.ArchiveFileReference{FileID: fileID, SHA256: archiveDigest(timeline), ByteLength: decimal(int64(len(timeline)))}
+			if _, err = op.PutArchiveFile(t.Context(), "timeline", fileID, 0, int64(len(timeline)), ref.SHA256, ref.SHA256, timeline); err != nil {
+				t.Fatal(err)
+			}
+			manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentPolicy: "task_body", ContentKind: "native_timeline", RecordID: op.id, Fence: r.Snapshot.Fence, Provider: r.Snapshot.Identity.Provider, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, Timeline: ref, Resources: []sp.ArchiveResourceReference{}, Completeness: "complete"}
+			body = encode(manifest)
+			// Use a controlled ledger size to exercise the final capacity boundary
+			// without running a large stress workload in the unit suite.
+			originalLedger := append([]byte(nil), base.bundle.Ledger...)
+			var nearLimit archiveLedger
+			if err = json.Unmarshal(originalLedger, &nearLimit); err != nil {
+				t.Fatal(err)
+			}
+			nearLimit.Entries[0].ByteLength = int(MaxSessionContentBytes - 4096)
+			cost, err := measureContent(contentState{ledger: &nearLimit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nearLimit.Entries[0].ByteLength += int(MaxSessionContentBytes - cost.TimelineBytes - cost.IndexBytes - int64(len(body))/2)
+			base.bundle.Ledger = encode(nearLimit)
+			if _, err = checkContentReplacement(contentState{ledger: &nearLimit}, historyContentChange{nearLimit}); err != nil {
+				t.Fatal("history must fit", err)
+			}
+			var refusal *model.Fault
+			if _, err = op.PutArchiveManifest(t.Context(), body); !errors.As(err, &refusal) || refusal.Code != "quota_exceeded" || len(d.removed) != 0 || len(d.saved) != 0 || base.status.State == "ready" {
+				t.Fatal("capacity failure changed online ownership", err, d.removed, d.saved, base.status)
+			}
+			base.bundle.Ledger = originalLedger
+			base.leaseRows["reader"] = store.SessionResourceLease{ID: "reader", Kind: "read", ResourceID: resource}
+			if _, err = op.PutArchiveManifest(t.Context(), body); err == nil || len(d.removed) != 0 || len(d.saved) != 0 {
+				t.Fatal("reader lost its pin", err, d.removed, d.saved)
+			}
+			delete(base.leaseRows, "reader")
+			if status, err := op.PutArchiveManifest(t.Context(), body); err != nil || status.State != "ready" {
+				t.Fatal(status, err)
+			}
 			if len(d.removed) != len(positions) || len(d.counts) != 0 || d.ownerReads != 1 || len(d.saved) != 1 || d.saved[0].Spec.UploadID != originalAttempt || d.saved[0].Receipt.State != "released" || d.saved[0].Receipt.Resource != nil {
 				t.Fatal(d.removed, d.counts, d.ownerReads, d.saved)
 			}
-			var final archiveLedger
-			if json.Unmarshal(base.bundle.Ledger, &final) != nil || len(final.OnlineImageOccurrences) != 0 || final.HistoryID != id {
-				t.Fatal(final)
-			}
-			if err = put(); err != nil || len(d.saved) != 1 || d.ownerReads != 1 {
-				t.Fatal("final history retry repeated ownership release", err, d.saved)
+			if status, err := op.PutArchiveManifest(t.Context(), body); err != nil || status.State != "ready" || len(d.saved) != 1 || d.ownerReads != 1 {
+				t.Fatal("manifest retry repeated ownership release", status, err, d.saved)
 			}
 		})
 	}

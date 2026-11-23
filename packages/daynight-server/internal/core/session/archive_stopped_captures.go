@@ -50,12 +50,12 @@ func stoppedCaptureImages(entries []sp.TimelineEntry) (map[string]string, error)
 // verifyStoppedCaptures compares the frozen inventory with the final projection
 // while holding the Session lock. It never starts a new source read.
 func (s *Execution) verifyStoppedCaptures(ctx context.Context, tx *operationTx, r *record, ledger archiveLedger, images map[string]string) error {
-	return s.reconcileStoppedCaptures(ctx, tx, r, ledger, images, true)
+	return s.reconcileStoppedCaptures(ctx, tx, r, ledger, images, nil)
 }
 
 // reconcileStoppedCaptures keeps pre-publication validation read-only. The
-// publication transaction repeats the checks and then retires eligible pins.
-func (s *Execution) reconcileStoppedCaptures(ctx context.Context, tx *operationTx, r *record, ledger archiveLedger, images map[string]string, retire bool) error {
+// completion transaction repeats the checks and records eligible pins for final publication.
+func (s *Execution) reconcileStoppedCaptures(ctx context.Context, tx *operationTx, r *record, ledger archiveLedger, images map[string]string, pending *[]sp.ImageOccurrence) error {
 	inventory, ok := tx.dao.(store.SessionCaptureInventoryDAO)
 	if !ok {
 		return fault("component_unsupported", "Stopped capture inventory requires a server upgrade.")
@@ -123,8 +123,8 @@ func (s *Execution) reconcileStoppedCaptures(ctx context.Context, tx *operationT
 			}
 		}
 	}
-	if retire {
-		return s.retireOnlineImageReferences(ctx, tx, r, online, ledger.Resources)
+	if pending != nil {
+		*pending = online
 	}
 	return nil
 }

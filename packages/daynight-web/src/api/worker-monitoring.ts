@@ -12,6 +12,7 @@ const waits = ['native-input', 'retry-backoff', 'task-paused', 'resource-stop', 
 const components = ['runtime', 'scheduler', 'configuration', 'inventory', 'project', 'resources', 'execution', 'cleanup', 'archive', 'monitoring'] as const;
 const roles = ['active-task', 'resource-owner', 'unresolved', 'cleanup', 'pending-stop'] as const;
 const causes = {
+  'archive-quota-exceeded': 'Session archive capacity was exceeded (quota_exceeded).',
   cancelled: 'The operation was cancelled.', timeout: 'The operation timed out.', 'authentication-required': 'Authentication is required.',
   'limit-exceeded': 'An operation limit was exceeded.', 'rate-limited': 'The operation was rate limited.', 'permission-denied': 'Permission was denied.',
   'not-found-or-inaccessible': 'A required resource was not found or is inaccessible.', 'not-found': 'A required resource was not found.', conflict: 'The operation encountered a conflict.',

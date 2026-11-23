@@ -32,6 +32,8 @@ Existing file status identifies its version; the prepare capability selects a
 version only for a file that has not been registered. A confirmed corrupt file
 uses a durably reserved successor with the same source, and the final manifest
 names the timeline file that actually completed.
+Confirmed terminal capacity failures preserve their reason as described by the
+[online receipt decision](../bug-fix/2026-11-23-archive-capacity-online-receipts.md).
 
 ## Alternatives
 

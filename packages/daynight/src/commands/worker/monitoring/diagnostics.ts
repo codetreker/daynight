@@ -1,4 +1,4 @@
-import { ArchiveRepairRequiredError } from "../../controller/archive-error.js";
+import { ArchiveFileFailedError, ArchiveRepairRequiredError } from "../../controller/archive-error.js";
 import { ApiError } from "../../../api/client.js";
 import { OperationError } from "../../../api/operation.js";
 import { ProtocolError } from "../../../api/parse.js";
@@ -14,6 +14,7 @@ import type { DiagnosticCode, StructuredCause } from "./types.js";
 const messages: Record<DiagnosticCode, string> = {
   cancelled: "The operation was cancelled.", timeout: "The operation timed out.",
   "authentication-required": "Authentication is required.", "limit-exceeded": "An operation limit was exceeded.",
+  "archive-quota-exceeded": "Session archive capacity was exceeded (quota_exceeded).",
   "rate-limited": "The operation was rate limited.", "permission-denied": "Permission was denied.",
   "not-found-or-inaccessible": "A required resource was not found or is inaccessible.", "not-found": "A required resource was not found.",
   conflict: "The operation encountered a conflict.", unavailable: "A required service or resource is unavailable.",
@@ -77,6 +78,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
     return diagnostic("unknown");
   }
   if (error instanceof ArchiveRepairRequiredError) return diagnostic(error.code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked");
+  if (error instanceof ArchiveFileFailedError && error.code === "quota_exceeded") return diagnostic("archive-quota-exceeded");
   if (error instanceof MonitoringArchiveBusyEvidence) return diagnostic("rate-limited");
   if (error instanceof MonitoringOwnershipUnconfirmedEvidence) return diagnostic("ownership-unconfirmed");
   if (error instanceof MonitoringRecoveryEvidence) {

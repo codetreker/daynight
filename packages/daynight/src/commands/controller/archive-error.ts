@@ -3,6 +3,14 @@ export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | 
 
 export class ArchiveProtocolError extends Error {}
 
+/** A terminal receipt for the original, identity-checked archive file. */
+export class ArchiveFileFailedError extends Error {
+  constructor(readonly code: string, readonly serverMessage: string) {
+    super(`Archive file failed (${code}).`);
+    this.name = "ArchiveFileFailedError";
+  }
+}
+
 export class ArchiveRequestError extends Error {
   constructor(readonly status: number, readonly code: string | undefined, readonly payload?: unknown, readonly uploadVersion?: string | null) {
     super(`Session archive request failed (${status}).`);

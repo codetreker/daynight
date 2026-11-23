@@ -2,11 +2,45 @@ import { createHash, randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
 import { createArchiveRequest } from "../../../src/commands/controller/archive-request.js";
 import { transferArchiveStream } from "../../../src/commands/controller/archive-stream.js";
+import { ArchiveFileFailedError } from "../../../src/commands/controller/archive-error.js";
 
 const block = 524288;
 const digest = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
 const version = { "Daynight-Archive-Upload-Version": "2" };
 const runtime = { now: () => 0, random: () => 0.5, wait: async (_ms: number, signal: AbortSignal) => { signal.throwIfAborted(); } };
+
+test.each(["history", "resource"] as const)("preserves the original %s terminal failure after completion reconciliation and replay", async purpose => {
+  const bytes = Buffer.from("frozen"), id = randomUUID(), hash = digest(bytes), signal = new AbortController().signal;
+  const error = { code: "quota_exceeded", message: "Archive capacity exceeded." };
+  const receipt = { ...(purpose === "history" ? { syncId: id, timelineRevision: null } : { fileId: id }), byteLength: String(bytes.length), sha256: hash, acceptedOffset: String(bytes.length), state: "failed", error };
+  const receiving = { ...receipt, state: "receiving", error: null };
+  const operations: string[] = [];
+  const request: typeof fetch = async (_input, init) => {
+    operations.push(init?.method ?? "GET");
+    if (init?.method === "POST") return Response.json({ code: "quota_exceeded", message: error.message }, { status: 409, headers: version });
+    return Response.json(receipt, { headers: version });
+  };
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => false, signal, deadline: 2100000, sessionId: randomUUID(), retryRuntime: runtime });
+  for (const raw of [receiving, receipt]) {
+    await expect(transferArchiveStream({ purpose, file: { fileId: id, byteLength: String(bytes.length), sha256: hash }, read: () => bytes, call, signal, runtime, deadline: 0, replacements: {}, initial: { raw, corrupt: false }, reserveReplacement: () => { throw new Error("must not replace"); }, onHistoryRevision: () => {} })).rejects.toMatchObject({ name: "ArchiveFileFailedError", code: error.code, serverMessage: error.message });
+  }
+  expect(operations).toEqual(["POST", "GET"]);
+  expect(new ArchiveFileFailedError(error.code, error.message).message).toContain("quota_exceeded");
+});
+
+test("reports a terminal receipt found after a failed PUT even after the retry deadline", async () => {
+  const bytes = Buffer.from("frozen"), id = randomUUID(), hash = digest(bytes), signal = new AbortController().signal;
+  const request: typeof fetch = async (_input, init) => init?.method === "PUT" ? Response.json({ code: "quota_exceeded" }, { status: 409 }) : Response.json({ fileId: id, byteLength: String(bytes.length), sha256: hash, acceptedOffset: "0", state: "failed", error: { code: "quota_exceeded", message: "Archive capacity exceeded." } }, { headers: version });
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => false, signal, deadline: 0, sessionId: randomUUID(), retryRuntime: runtime });
+  await expect(transferArchiveStream({ purpose: "resource", file: { fileId: id, byteLength: String(bytes.length), sha256: hash }, read: () => bytes, call, signal, runtime, deadline: 0, replacements: {}, initial: null, reserveReplacement: () => { throw new Error("must not replace"); }, onHistoryRevision: () => {} })).rejects.toMatchObject({ code: "quota_exceeded" });
+});
+
+test("preserves a non-capacity terminal error without replacing the file", async () => {
+  const bytes = Buffer.from("frozen"), id = randomUUID(), signal = new AbortController().signal;
+  const request: typeof fetch = async () => { throw new Error("must not write"); };
+  const call = createArchiveRequest({ request, url: "https://example.test/archive", serverToken: "fixture", bodyOnly: () => false, signal, deadline: 2100000, sessionId: randomUUID(), retryRuntime: runtime });
+  await expect(transferArchiveStream({ purpose: "timeline", file: { fileId: id, byteLength: String(bytes.length), sha256: digest(bytes) }, read: () => bytes, call, signal, runtime, deadline: 2100000, replacements: {}, initial: { raw: { fileId: id, byteLength: String(bytes.length), sha256: digest(bytes), acceptedOffset: "0", state: "failed", error: { code: "invalid_archive", message: "Invalid archive." } }, corrupt: false }, reserveReplacement: () => { throw new Error("must not replace"); }, onHistoryRevision: () => {} })).rejects.toMatchObject({ code: "invalid_archive", serverMessage: "Invalid archive." });
+});
 
 test("streams remaining bytes from the recovered lower offset and reconciles a lost completion", async () => {
   const bytes = Buffer.alloc(block * 2 + 19, 42), id = randomUUID(), hash = digest(bytes), puts: number[] = [];
