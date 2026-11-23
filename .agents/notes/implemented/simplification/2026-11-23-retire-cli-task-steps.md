@@ -20,7 +20,7 @@ Task and Thread operations. Historical events retain the common decoder.
 The existing update path refreshes installed User and current-worktree Project
 skills; first installations and other Project copies use skill installation.
 Ordinary changes preserve the package version and use the existing release
-workflow for publication. REST Steps remains available. The
+workflow for publication. The [REST retirement](2026-11-23-retire-rest-task-steps.md) removes its HTTP entry points. The
 [Web retirement](2026-11-23-retire-web-task-steps.md) removes its Steps workspace,
 and [MCP retirement](2026-11-23-retire-mcp-task-steps.md) removes its tools and
 dedicated manual.
@@ -46,6 +46,6 @@ processing of stored records.
 CLI users receive an explicit failure for retired commands. Updating a CLI also
 refreshes its existing installed guidance through the established mechanism.
 Steps-specific tests disappear with the behavior they own; shared validations
-must remain covered through ordinary callers. The CLI decision leaves REST
-routes and persisted Steps data with their respective owners; Web and MCP entry
-points retire under their separate decisions.
+must remain covered through ordinary callers. Persisted Steps data remains
+with its storage owner; REST, Web and MCP entry points retire under their
+separate decisions.

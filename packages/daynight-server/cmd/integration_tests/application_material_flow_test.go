@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"mime"
 	"net/http"
-	"reflect"
 	"strconv"
 	"testing"
 
@@ -28,16 +27,6 @@ func serverAPIApplicationMaterialNormalFlow(t *testing.T, f *fixture) {
 	goalRead := requestJSON[api.Task](t, application, http.MethodGet, taskPath(goal), nil, http.StatusOK)
 	if goalRead.ID != goal.ID || goalRead.ProjectID != project.ID || goalRead.Progress == nil || goalRead.Progress.Total != 1 || goalRead.Progress.Unfinished != 1 || goalRead.Progress.Done != 0 {
 		t.Fatalf("application Goal progress differs: %+v", goalRead)
-	}
-
-	stepsPath := taskPath(child) + "/steps"
-	created := requestJSON[api.StepsResource](t, application, http.MethodPost, stepsPath, map[string]any{
-		"version": child.Version, "id": "a11ce001", "title": "Publish material", "description": "Prepare shared content",
-	}, http.StatusCreated)
-	completed := requestJSON[api.StepsResource](t, application, http.MethodPut, stepsPath+"/a11ce001/status", map[string]any{"version": created.Version, "status": "done"}, http.StatusOK)
-	steps := requestJSON[api.StepsResource](t, application, http.MethodGet, stepsPath, nil, http.StatusOK)
-	if created.Version != child.Version+1 || completed.Version != created.Version+1 || steps.ProjectID != project.ID || steps.TaskID != child.ID || steps.Version != completed.Version || len(steps.Steps) != 1 || steps.Steps[0].ID != "a11ce001" || steps.Steps[0].Title != "Publish material" || steps.Steps[0].Description != "Prepare shared content" || steps.Steps[0].Status != "done" || !reflect.DeepEqual(steps.Steps, completed.Steps) {
-		t.Fatalf("application Step identity, version or content differs: %+v", steps)
 	}
 
 	threadPath := taskPath(child) + "/thread/messages"
@@ -76,7 +65,7 @@ func serverAPIApplicationMaterialNormalFlow(t *testing.T, f *fixture) {
 	}
 
 	current := requestJSON[api.Task](t, application, http.MethodGet, taskPath(child), nil, http.StatusOK)
-	if current.Version != completed.Version {
+	if current.Version != child.Version {
 		t.Fatal("application material reads or independent records changed the Task version")
 	}
 	done := setStatus(t, application, current, "done", nil)

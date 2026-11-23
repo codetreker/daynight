@@ -435,32 +435,6 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatal("deleted property remained in Sync readback")
 		}
 	})
-	t.Run("step reads and writes", func(t *testing.T) {
-		project := createProject(t, f, "API Steps")
-		task := createTask(t, f, project, "Step parent", nil)
-		path := taskPath(task) + "/steps"
-		first := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": task.Version, "id": "abcdef01", "title": "First Step", "description": "Initial content"}, http.StatusCreated)
-		second := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": first.Version, "id": "12345678", "title": "Second Step"}, http.StatusCreated)
-		read := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if read.ProjectID != project.ID || read.TaskID != task.ID || read.Version != second.Version || !reflect.DeepEqual(read.Steps, second.Steps) {
-			t.Fatalf("Step list differs: %+v", read)
-		}
-		single := requestJSON[api.StepResource](t, f, http.MethodGet, path+"/abcdef01", nil, http.StatusOK)
-		if single.TaskID != task.ID || single.Step.ID != "abcdef01" || single.Step.Description != "Initial content" {
-			t.Fatalf("Step get differs: %+v", single)
-		}
-		changed := requestJSON[api.StepsResource](t, f, http.MethodPatch, path+"/abcdef01", map[string]any{"version": second.Version, "title": "Edited Step", "description": "Updated content"}, http.StatusOK)
-		active := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/abcdef01/status", map[string]any{"version": changed.Version, "status": "in_progress"}, http.StatusOK)
-		moved := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/12345678/position", map[string]any{"version": active.Version, "position": "first"}, http.StatusOK)
-		if len(moved.Steps) != 2 || moved.Steps[0].ID != "12345678" || moved.Steps[1].ID != "abcdef01" || moved.Steps[1].Title != "Edited Step" || moved.Steps[1].Description != "Updated content" || moved.Steps[1].Status != "in_progress" {
-			t.Fatalf("Step move/content differs: %+v", moved)
-		}
-		removed := requestJSON[api.StepsResource](t, f, http.MethodDelete, path+"/12345678", map[string]any{"version": moved.Version}, http.StatusOK)
-		current := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
-		if current.ProjectID != project.ID || current.TaskID != task.ID || current.Version != removed.Version || len(current.Steps) != 1 || current.Steps[0].ID != "abcdef01" || !reflect.DeepEqual(current.Steps, removed.Steps) {
-			t.Fatalf("Step deletion readback differs: %+v", current)
-		}
-	})
 	t.Run("thread messages and replies", func(t *testing.T) {
 		project := createProject(t, f, "API Thread")
 		task := createTask(t, f, project, "Thread parent", nil)

@@ -769,8 +769,8 @@ tag-only update uses the dedicated association operation; mixed changes commit
 with metadata in one transaction. Unknown outcomes require a read before deciding
 what to do next.
 Task Steps tools and their dedicated manual are absent from discovery. Calls to
-retired `task_step_*` names use the existing unknown-tool error; the REST Steps
-service remains available. Existing mixed scoped grants keep their other
+retired `task_step_*` names use the existing unknown-tool error. REST also
+registers no Steps routes. Existing mixed scoped grants keep their other
 authorizations, and this entry removal does not change the credential catalog or
 stored grants. Discussion reads return complete messages in oldest-first order; an explicit claim ID supplies agent attribution.
 A lost post response does not establish a receipt: read the thread before
@@ -2040,9 +2040,9 @@ The regular `internal/server/task` suite exercises production routing, HTTP
 parsing, credential middleware, DTO conversion, error mapping and the server-owned
 encoder or response writer. Task reads, writes, observations and sync also run
 with real Task components over narrowly controlled snapshot and project-write
-capabilities. Step and Thread HTTP scenarios also use real services and narrowly
+capabilities. Thread HTTP scenarios also use real services and narrowly
 controlled DAO facts, with local files for attachment effects. Other scenarios
-use direct Task, Step, Thread, Search or Sync operation mocks where precise
+use direct Task, Thread, Search or Sync operation mocks where precise
 results are needed. Configured calls are required;
 extra or unconfigured calls fail. Project/Task facts and principals are synthetic
 inputs, without an in-memory business state machine or full-application startup.
@@ -2065,13 +2065,10 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 A mock committed or unknown result describes the supplied service outcome;
 actual SQL, locks, snapshot consistency, commit acknowledgement and persistence
-belong to store tests with isolated PostgreSQL. The regular HTTP suite retains
-the real Step socket read-timeout proof. It checks the constructed 15-second
-production default, then selects 200 milliseconds for that handler instance
-through the same JSON decoder and body reader. The test verifies the timeout
-response, request ID, connection closure, handler completion, zero Step calls
-and `not_committed` log outcome. Capacity workloads retain their full fixture
-only behind the separate `stress` build tag.
+belong to store tests with isolated PostgreSQL. Retired Steps HTTP routes have
+no CRUD, socket-timeout or capacity suite; their runtime tests prove refusal
+without calling Steps operations. Surviving capacity workloads retain their
+full fixture only behind the separate `stress` build tag.
 
 Project settings and encoded-budget validation, Attachment input validation and
 invalid login scopes use input-only fixtures. Existing fixture-based domain
@@ -2569,7 +2566,8 @@ unauthenticated refusals, including protected method fallbacks. A source binding
 check supplements the live identity and Session lifecycle witnesses for the
 shared Authentication instance. MCP retirement checks use real HTTP sessions
 against production registration to verify discovery and unknown-tool errors;
-REST Steps retains its Service, Core, Capturer and Store proofs. DAO/scope
+REST retirement checks verify old methods, preflight and SPA isolation without
+Steps calls. Internal Steps Service, Core and Store retain their own proofs. DAO/scope
 fixtures supply fixed domain records, query results, proposed writes, call counts
 and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
@@ -3927,224 +3925,46 @@ addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 
 ## Task Steps API
 
-Task-owned Steps persist independently from Sessions and expose dedicated reads,
-atomic collection additions, content updates, independent status settings,
-position moves and current-record deletions. The
-[resource contract](../../docs/spec/daynight-task-steps.md) owns field,
-identity, permission, version, encoding and refusal semantics. Migration 030
-stores normalized rows without changing existing Task fields or migration
-checksums. Steps remain outside ordinary Task, list, graph and synchronization
-projections.
+REST registers no Task Steps collection, item, status or position route. For
+`T = /api/v1/projects/{projectId}/tasks/{taskId}`, requests to `T/steps`,
+`T/steps/{stepId}`, `T/steps/{stepId}/status` and
+`T/steps/{stepId}/position` follow the existing unknown API path. Old GET, HEAD,
+POST, PATCH, DELETE and PUT calls are unsuccessful, cannot fall through to the
+SPA or ordinary Task handler, and do not read Steps, write storage, touch the
+parent Task or capture events. CORS preflight does not advertise retired methods.
+Ordinary Task, Thread and attachment routes retain their authentication, scope,
+Project authorization and refusal rules.
 
-For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
+The [resource requirements](../../docs/spec/daynight-task-steps.md) and
+[design](../../docs/design/daynight-task-steps.md) own this retirement and the
+remaining internal boundary. Shared Steps Application, Service, Core, codec and
+Store code, saved credential scopes and migration 030 remain; removing the HTTP
+consumer does not delete persisted rows or change credentials. MCP, CLI and Web
+also expose no Steps entry point. The
+[retirement decision](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)
+records the protocol and cleanup boundaries.
 
-| Method | Path | Result |
-|---|---|---|
-| `GET` / `HEAD` | `T/steps` | Complete ordered projectId/taskId/version/steps resource; empty is `[]`. |
-| `GET` / `HEAD` | `T/steps/{stepId}` | Parent identity/version and complete `step`; the eight-hex input is case-insensitive. |
-| `POST` | `T/steps` | `201`, canonical item `Location` and complete ordered collection after append or before/after insertion. |
-| `PATCH` | `T/steps/{stepId}` | `200`, complete ordered collection after an atomic title/description update or no-op. |
-| `PUT` | `T/steps/{stepId}/status` | `200`, complete ordered collection after an independent status setting or no-op. |
-| `PUT` | `T/steps/{stepId}/position` | `200`, complete ordered collection after a before/after/first/last move or no-op. |
-| `DELETE` | `T/steps/{stepId}` | `200`, complete remaining collection after deleting the specified current record; the last deletion returns `steps: []`. |
+Runtime route tests cover retired methods, HEAD, CORS and SPA isolation with
+strict zero-call observations. Candidate-service acceptance binds public-path
+status codes and unchanged parent versions to the actual build. Ordinary Task,
+Thread and attachment success and denial cases retain their own fixtures; Task
+soft-deletion proofs do not depend on Steps setup.
 
-Requests accept no query, including a trailing empty `?`. Unsupported collection
-methods return an authenticated `405` with `Allow: GET, HEAD, POST`; item methods
-return `Allow: GET, HEAD, PATCH, DELETE`; status and position methods, including HEAD, return
-`Allow: PUT`. Both project roles can read and modify Steps. Normal Task
-nonmembership/missing scope is `404`, parent soft deletion is `410`, and a missing
-child or anchor is `404`. Responses retain `no-store` and principal/request
-receipts; Cookie writes require the configured Origin.
-
-Writes accept one JSON object within 1 MiB and require a positive exact int64
-`version`. POST also requires a caller-chosen eight-hex `id` and `title`. Omitted
-`description` is empty and omitted `status` is `todo`; the four statuses are
-`todo`, `in_progress`, `done` and `skipped`. Optional `before` and `after` are
-mutually exclusive and refer only to the same Task. IDs normalize to lowercase;
-title and Markdown retain their originals. Duplicate titles create independent
-records; an existing ID always conflicts.
-
-Content PATCH accepts only `version` and at least one of `title`/`description`.
-Omitted fields preserve their values; an empty description clears it. A paired
-update saves both fields atomically. Status PUT accepts only `version` and a
-required four-state value; all transitions are allowed, including multiple
-in-progress Steps and updates while the parent Task is done. Both update the
-same existing record and return a full collection without a new Location.
-
-Position PUT accepts only `version` and exactly one of `before`, `after` or
-`position`. Relative anchors are another Step in the same Task; `position` is
-the string `first` or `last`, never a boolean field. Target and anchor IDs
-normalize before placement checks. After parent/version admission and target
-resolution, a self-anchor is `400 invalid_input`;
-a missing target or anchor is `404` without a fallback position or cross-Task
-lookup. The target moves within the complete collection, preserving every
-Step's ID, title, description, status and created/updated timestamps. It returns
-a full collection without a new Location.
-
-DELETE accepts only a JSON `version` and removes the Task-local current record
-in any Step state. It returns the complete remaining collection, including an
-explicit empty array when the last record is removed, with no new Location.
-A missing target is a child `404`, never a successful no-op. Stale versions
-conflict before target lookup; a current missing target is checked before version
-exhaustion. Deleting an existing target always changes the collection and refuses
-at MaxInt64. The deleted ID becomes available for a later explicit POST, which
-creates a new record with its own creation time and submitted content/defaults;
-it does not restore the former record. No history, recovery or bulk deletion
-resource is provided.
-
-Unknown/duplicate/read-only fields, explicit null, wrong types, NUL, invalid
-UTF-8 and lone escaped UTF-16 surrogates are refused. Valid surrogate pairs,
-literal U+FFFD and escaped backslashes are preserved.
-
-Reads use one repeatable-read snapshot and a narrow Task header, independent from
-properties and execution policy. Writes use the existing project transaction and
-lock order: project, member admission, narrow parent lock, tombstone and exact
-version, then current rows. Add checks duplicate ID before anchor and constructs
-an immutable insertion candidate. Content/status changes share one actual
-existing-target change path, resolve that Task's target and compare merged
-semantic values before assigning time. Move resolves the target and any anchor
-and copies the final order without changing content or times. Current same-value
-updates and already-occupied positions are no-ops: the old complete resource, version and all times are returned without a clock
-sample, target/position UPDATE or parent touch. Adjacent relative moves, first/last
-boundaries and valid singleton moves follow the same rule, including MaxInt64.
-Stale same-value requests still conflict; a missing target is a child 404 before
-version exhaustion; a missing anchor remains a distinct child absence. Delete
-resolves its current target and builds a copied remaining collection with dense
-positions; its empty result is a non-null array and has no no-op branch.
-
-Real changes check exhaustion, sample database UTC microsecond time, encode the
-complete candidate, persist only the intended rows and touch the parent once.
-Add shifts affected positions and inserts one row. Content/status changes update
-only the target's title/description/status/updated_at; its ID, position and
-created_at remain fixed. Move writes only the affected interval's final dense
-positions with one CASE UPDATE and leaves all Step timestamps unchanged; the
-deferred unique constraint checks the final order without sentinel positions.
-Delete physically removes one current row and compacts only its trailing
-positions. Every survivor retains its identity, content, status, timestamps and
-relative order. The remaining candidate passes complete codec preflight before
-target deletion, compaction or parent touch.
-For content/status changes, the one clock sample equals the target's new
-updatedAt and the parent's updated_at; for Move and Delete it belongs to the
-parent alone.
-No-op versus real-change competition can produce two successful responses when the
-no-op finishes first, but only one actual change advances the shared version.
-Concurrent same-version actual Task and Steps writes permit at most one change.
-
-Steps preserve Task business fields, properties, dependencies, execution timing
-and Worker/Session ownership. Deleting a Step also preserves referenced
-attachments, PRs and Sessions. Task state, disabled automatic execution, absent
-Sessions and active Worker ownership do not restrict Steps. No Steps write
-freezes a Session or calls the full Task updater.
-
-`internal/core/task/codec` is the sole public DTO/codec owner;
-`internal/core/task/steps` owns ordered candidates. Exact Encoder output
-includes default escaping and terminal LF, with 19 version digits reserved
-within 67,108,864 bytes. A frozen successfully encoded collection is the response
-body. An over-limit real-change candidate returns `409 steps_limit_exceeded`
-with `encodedBytes` and `maxEncodedBytes` details before any data mutation; a
-status string-length increase uses the same check. Shrinking a description
-follows the same full-resource/version rules. Other write refusals are
-`409 version_conflict`, `409 step_id_conflict` for Add and `409 version_exhausted`
-for actual changes. Reads use pure `ProjectCollection`/`ProjectItem` projection
-and ordinary JSON encoding without stored-field or collection-capacity checks.
-MCP exposes no Steps tools; the shared Steps service still supplies these REST
-operations. Invalid write candidates, natural decoding or encoding errors, database failures and failed transaction cleanup retain
-their causes; the service never substitutes a partial or empty result.
-
-The shared transaction owner preserves operation, commit and cleanup failures
-and their original causes. Confirmed Commit remains `committed` after response
-loss; confirmed rollback is `not_committed`; unconfirmed Commit is `unknown`.
-The driver's closed-transaction cleanup after failed Commit cannot prove rollback.
-Cleanup failure outranks a nested business refusal. The handler logs fixed safe
-diagnostics under `component=task_step`, `operation=add|update|set_status|move|delete`, business
-`changed`/`unchanged` and prepare/persist/commit/response phases. No-op skips the
-persist phase; its business `unchanged` is independent from a `committed`
-transaction. Logs omit input values and arbitrary Fault/driver messages.
-Transaction outcome is independent from `response_outcome=written|failed|canceled_before_body`
-and `written_bytes`. A completed network write does not prove client receipt.
-Recovery GET request IDs may append `.r1`, `.r2` and so on to the original ID;
-`read_kind=reconcile`, version and found/absent/current-state observations describe
-current facts without attributing them to an unknown write. Clients retain the
-original identity and do not replay writes automatically. Current absence after
-an unknown deletion does not attribute that state to the operation, and a current
-same-ID record does not establish that it is the original record.
-
-Routine tests cover migration preservation, scoped reads, snapshot interleaving,
-raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage,
-append/anchors/defaults, atomic content and four-state changes, dense moves,
-self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
-concurrency, parent and Session preservation, rollback and completion facts, and
-safe response diagnostics. Step read service tests control Project authorization
-and snapshot completion independently while exercising the actual parent gate,
-DAO queries, paging and encoding; PostgreSQL tests own physical snapshot proof.
-Step Add and content/status change service tests control Project write
-authorization and collection admission while exercising the locked parent gate,
-DAO writes, real encoding, capture and transaction completion. Core tests own
-the corresponding collection decisions; controlled completion does not prove a
-physical commit.
-Core Step tests encode the fitting 170-description collection and the
-overflowing 171-description Change candidate through the real codec. Service
-tests forward the complete collection to controlled admission and exercise a
-real encoding failure before writes; they do not measure capacity at that layer.
-The focused change cases are `TestTaskStepsChange*`
-and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
-`TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. Service Step cases run without a database:
+Remaining internal Steps tests still own their Service coordination, Core
+admission and physical PostgreSQL readback and rollback. From this module:
 
 ```bash
 source scripts/env.sh
-env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task -run '^TestTaskSteps'
+env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/core/task/steps ./internal/service/task -run 'Test(TaskSteps|WriteReceiverRootTextSequence)' -count=1 -timeout=5m
+
+go test ./internal/core/store/postgres/... -run 'TestTaskSteps|TestTaskStepStore' -count=1 -timeout=5m
 ```
 
-After preparing the normal auth fixture and an isolated PostgreSQL database,
-run the physical store and HTTP witnesses from this module:
-
-```bash
-source scripts/env.sh
-export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
-export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
-```
-
-Step text boundaries are checked at their respective server owners. The former
-CLI ten-process text sequence is recorded in the [historical proof](../../.agents/notes/implemented/testing/2026-11-10-step-cli-text-process-proof.md);
-the [CLI retirement decision](../../.agents/notes/implemented/simplification/2026-11-23-retire-cli-task-steps.md)
-removes that test with its commands. From this module, the following commands
-exercise Core admission, Service coordination, HTTP parsing and physical Store
-readback and rollback. The Store commands require the isolated PostgreSQL
-database above; the other cases do not.
-
-```bash
-source scripts/env.sh
-env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/core/task/steps ./internal/service/task ./internal/server/task -run '^(TestWriteReceiverRootTextSequence|TestTaskStepsTextLimitsOnAddAndChange|TestStepsHTTPTextAdmission)$' -count=1 -timeout=5m
-go test ./internal/core/store/postgres -run '^TestTaskSteps(ConfirmedRollbackAfterEachActualSQLWrite|PartialWritesAndSuppressedRowsRollBack)$' -count=1 -timeout=5m
-go test ./internal/core/store/postgres/task -run '^TestTaskStepStore$' -count=1 -timeout=5m
-```
-
-Controlled Service completion does not establish physical persistence; the Store
-tests use actual SQL and read back the persisted state.
-
-Maximum-resource HTTP tests use the `stress` build tag and run separately from
-routine CI:
-
-```bash
-go test -tags=stress ./internal/server/task -run '^TestStressStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
-```
-
-The read case seeds legitimate bounded individual records, observes complete
-64 MiB HTTP bytes at the maximum int64 version and checks the same content at a
-one-digit version. Reading does not repeat write-candidate capacity admission.
-The add case checks an exact successful candidate and subsequent complete GET,
-then a one-byte over-limit candidate with no data writes. The change case checks
-an exact PATCH and GET, one-byte over-limit refusal before target UPDATE/touch,
-shrinking, status length increases and legal maximum no-op. The move case checks
-an exact-capacity move and subsequent GET, preserved Step times and a maximum
-version no-op without clock, position UPDATE or parent touch. Routine PostgreSQL
-cases verify interval-write and parent-touch rollback and same-version competition.
-The delete case checks removal from a maximum legal resource through actual HTTP
-bytes and the complete remaining GET; routine cases verify target/tail/parent-touch
-rollback, terminal empty collection, current target absence and new-record ID reuse.
-Run-specific results and source identity belong to the corresponding PR evidence.
+Store commands require an isolated `DAYNIGHT_TEST_DATABASE_URL`; controlled
+Service completion does not establish physical persistence. Removed REST
+handler and maximum-resource stress suites have no supported HTTP behavior to
+exercise. Run-specific source, build, status, version and environment evidence
+belongs with the corresponding PR and task acceptance materials.
 
 ## Task Thread API
 

@@ -30,16 +30,6 @@ type TaskService interface {
 	WithdrawWorker(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error)
 }
 
-type StepService interface {
-	Get(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
-	List(context.Context, model.Principal, string, string) (taskservice.StepsDocument, error)
-	Add(context.Context, model.Principal, string, string, taskservice.AddTaskStep) (taskservice.StepsWriteResult, error)
-	Update(context.Context, model.Principal, string, string, string, taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error)
-	SetStatus(context.Context, model.Principal, string, string, string, taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error)
-	Delete(context.Context, model.Principal, string, string, string, taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error)
-	Move(context.Context, model.Principal, string, string, string, taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error)
-}
-
 type ThreadService interface {
 	Post(context.Context, model.Principal, string, string, taskservice.CreateThreadMessage) (taskservice.ThreadMessageDocument, error)
 	List(context.Context, model.Principal, string, string, taskservice.ThreadListRequest) (taskservice.ThreadPageDocument, error)
