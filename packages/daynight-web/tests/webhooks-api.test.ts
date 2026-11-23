@@ -59,10 +59,20 @@ describe("Webhook wire contracts", () => {
     const invalid = catalog(); Object.assign(invalid.limits, { endpointQuota: 10 });
     expect(() => parseWebhookCatalog(invalid)).toThrow();
   });
+  it.each([false, true])("accepts the five continuing events with optional Steps (%s)", includeSteps => {
+    const value = catalog();
+    value.items = value.items.filter(item => includeSteps || item.key !== "task.step_updated").reverse();
+    expect(parseWebhookCatalog(value).items).toEqual(value.items);
+    expect(parseWebhookEndpoint({ ...endpoint(), subscriptions: [{ ...endpoint().subscriptions[0], eventTypes: ["task.step_updated"] }] }, owner).lifecycle).toBe("active");
+    expect(parseWebhookDelivery({ ...delivery(), eventType: "task.step_updated" }, owner, endpointId).eventType).toBe("task.step_updated");
+  });
   it.each([
-    () => ({ ...catalog(), items: catalog().items.slice(0, 5) }),
-    () => ({ ...catalog(), items: [...catalog().items.slice(0, 5), catalog().items[0]] }),
+    ...catalog().items.filter(item => item.key !== "task.step_updated").map(missing => () => ({ ...catalog(), items: catalog().items.filter(item => item.key !== missing.key) })),
+    () => ({ ...catalog(), items: [...catalog().items, catalog().items[0]] }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, key: "task.unknown" })) }),
     () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, wireType: "cc.other.task.paused.v1" })) }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, schemaVersion: 2 })) }),
+    () => ({ ...catalog(), items: catalog().items.map(item => ({ ...item, resourceKind: "task" })) }),
     () => ({ ...catalog(), service: { dispatchEnabled: false } }),
   ])("rejects incomplete and mismatched catalog metadata %#", value => expect(() => parseWebhookCatalog(value())).toThrow());
   it("preserves revoked disclosure and minimum tombstones without fallback", () => {
