@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -203,7 +204,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (state === "missing" && mode === "patrol" && !recovered) {
       const retained = new Database(journalPath);
       try {
-        retained.exec("DROP TABLE stopped_generations; PRAGMA user_version=16");
+        restoreControllerJournalVersion(retained, 16);
         retained.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(original.leader.pid);
         expect(retained.pragma("user_version", { simple: true })).toBe(16);
       } finally { retained.close(); }
@@ -222,7 +223,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     const retiredNativeCleanup = createRetiredClaimNativeCleanup({ homeDirectory: home, identity: { serverOrigin: origin, workerId, userId }, jobLeases: leases, ...(lifecycle === undefined ? {} : { lifecycle }) });
     const events: WorkerEvent[] = [], verifyWebUnregistered = vi.fn(async () => { throw new Error("Session registration must not gate retired cleanup."); });
     coordinator = createWorkerCoordinator({ store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId, platform, machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }],
-      globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false, verifyWebUnregistered, emit: event => events.push(event) });
+      globalConfiguration: configuration, maxConcurrent: 2, platformTaskMode: "all" as const, verifyWebUnregistered, emit: event => events.push(event) });
     if (mode === "shutdown") expect(await coordinator.shutdown({ deadline: Date.now() + 30_000 })).toBe(true);
     else { await coordinator.tick(); await expect.poll(() => store.getTask(owner)?.status, { timeout: 30_000 }).toBe("done"); }
     expect(await inspectProcessProof(original.leader)).toBe("stopped"); expect(await inspectProcessProof(original.provider)).toBe("stopped"); await original.closed;
@@ -231,7 +232,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (process.platform === "win32") expect(readControllerSnapshot(journalPath)?.windowsJobStopProof).toBeDefined();
     if (state === "missing" && mode === "patrol" && !recovered) {
       const upgraded = new Database(journalPath, { readonly: true });
-      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(17); }
+      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(18); }
       finally { upgraded.close(); }
     }
     await expect(access(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });

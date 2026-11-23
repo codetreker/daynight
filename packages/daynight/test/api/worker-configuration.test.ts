@@ -257,6 +257,38 @@ describe("Worker cloud configuration protocol", () => {
 });
 
 describe("Worker cloud configuration client", () => {
+  it("negotiates platform modes while retaining the legacy bootstrap and actual report", async () => {
+    const operation = createOperation(); operations.push(operation);
+    const capability = { supported: false }, sent: RequestInit[] = [];
+    const { preferPlatformSpecificTasks: _old, ...base } = networkValue;
+    const modern = { ...networkDesired, value: { ...base, platformTaskMode: "only" as const } };
+    const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Platform-Task-Mode": "1", "Daynight-Worker-Tool-Paths": "2" };
+    const fetch = vi.fn(async (_url, init) => {
+      sent.push(init!);
+      return sent.length === 1
+        ? new Response(JSON.stringify({ desired: modern, observationRevision: "0", observation: null }), { headers })
+        : new Response(JSON.stringify({ ...receipt, configuration: { desired: modern, observationRevision: "1", observationAccepted: true } }), { headers });
+    }) as typeof globalThis.fetch;
+    const client = () => createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch, workerPlatformTaskMode: capability });
+    expect((await client().getWorkerConfiguration(workerId)).desired?.known).toEqual(modern);
+    const applied = { ...item, key: { kind: "platformTaskMode" } as const, appliedValue: "only" };
+    await client().reportWorkerConfiguration(workerId, report, { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } });
+    expect(new Headers(sent[0]!.headers).get("Daynight-Worker-Platform-Task-Mode")).toBe("1");
+    expect(new Headers(sent[1]!.headers).get("Daynight-Worker-Platform-Task-Mode")).toBe("1");
+    expect(JSON.parse(sent[1]!.body as string).configuration.observation.items).toEqual([applied]);
+    expect(() => client().reportWorkerConfiguration(workerId, report, { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [{ ...item, key: { kind: "preferPlatformSpecificTasks" }, appliedValue: true }] } })).toThrow("refresh configuration");
+    expect(sent).toHaveLength(2);
+  });
+
+  it("does not report enum facts to an old service", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(resource));
+    const client = api(fetch);
+    await client.getWorkerConfiguration(workerId);
+    const applied = { ...item, key: { kind: "platformTaskMode" } as const, appliedValue: "only" };
+    expect(() => client.reportWorkerConfiguration(workerId, report, { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } })).toThrow("refresh configuration");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("negotiates the archive field and observation across client instances", async () => {
     const operation = createOperation(); operations.push(operation);
     const capability = { supported: false }, sent: RequestInit[] = [];

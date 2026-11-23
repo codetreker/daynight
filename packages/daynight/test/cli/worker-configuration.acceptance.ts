@@ -33,7 +33,7 @@ try {
   await manager.stop();
   manager = undefined;
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.schemaVersion, 12);
+  assert.equal(persisted.schemaVersion, 13);
   const native = persisted.currentItems.find(item => item.value.key.kind === "native");
   assert.equal(native.value.state, "applied");
   assert.deepEqual(native.value.appliedValue, { agent: "codex", model: null, args: [] });

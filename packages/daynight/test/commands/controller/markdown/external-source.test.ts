@@ -6,6 +6,7 @@ import { createServer as createRawServer, connect, type Server, type Socket } fr
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertExternalImageSocketPeer, copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, resolveExternalImageAddresses, type ExternalImageDnsResolver, type ExternalImagePolicy, type ExternalImageTarget } from "../../../../src/commands/controller/markdown/external-source.js";
+import { ImageCaptureNotDispatchedError } from "../../../../src/commands/controller/media/capture-error.js";
 
 const roots: string[] = [], servers: Server[] = [], sockets = new Set<Socket>();
 afterEach(async () => {
@@ -31,6 +32,76 @@ async function fixture(handler: RequestListener, extra: { tls?: boolean; assertE
   return { url: `${extra.tls ? "https" : "http"}://fixture.example:${port}/original?token=source#fragment`, policy, charges };
 }
 const start = async (url: string, policy: ExternalImagePolicy, signal?: AbortSignal) => copyExternalImage({ url, outputPath: await output(), policy, ...(signal ? { signal } : {}) });
+
+test("the final capture check waits before opening an external connection", async () => {
+  let requests = 0, checks = 0, resume!: () => void, blocked!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; }), waiting = new Promise<void>(resolve => { blocked = resolve; });
+  const server = createServer((_req, res) => { requests++; res.end("bytes"); }), port = await listen(server);
+  const policy = createExternalImagePolicy({ assertEgressPolicy() {}, beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
+    waitCapture: async () => { if (checks) { blocked(); await gate; } },
+    assertCapture() { if (checks++ === 0) throw new ImageCaptureNotDispatchedError("Waiting for current ACK."); },
+  });
+  const work = start(`http://fixture.example:${port}/original`, policy);
+  await waiting; expect(requests).toBe(0); expect(sockets.size).toBe(0);
+  resume(); const result = await work;
+  expect(requests).toBe(1); expect(await readFile(result.inputPath, "utf8")).toBe("bytes");
+});
+
+test.each(["timeout", "abort", "peer close"] as const)("a connected socket interrupts pending authorization on %s", async action => {
+  let release!: () => void, entered!: () => void, requests = 0, checks = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; }), blocked = new Promise<void>(resolve => { entered = resolve; });
+  const server = createServer((_req, res) => { requests++; res.end("bytes"); });
+  const accepted = new Promise<Socket>(resolve => server.once("connection", resolve));
+  const port = await listen(server);
+  const policy = createExternalImagePolicy({ assertEgressPolicy() {}, beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
+    async assertTarget({ address }) { if (address && ++checks === 2) { await accepted; entered(); await gate; } },
+  });
+  const controller = new AbortController(), work = start(`http://fixture.example:${port}/original`, policy, controller.signal);
+  try {
+    await Promise.race([blocked, work.then(() => { throw new Error("Capture completed before the connected authorization checkpoint."); })]);
+    if (action === "abort") controller.abort();
+    if (action === "peer close") (await accepted).destroy();
+    await expect(work).rejects.toMatchObject({ code: action === "timeout" ? "source_timeout" : action === "abort" ? "source_cancelled" : "source_unavailable" });
+    expect(requests).toBe(0);
+    await vi.waitFor(() => expect(sockets.size).toBe(0));
+  } finally { release(); controller.abort(); }
+}, 10_000);
+
+test("a peer closing while authorization waits after connect never reaches the HTTP request", async () => {
+  let release!: () => void, entered!: () => void, requests = 0, addressChecks = 0, peerChecked = false, egressChecks = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; }), blocked = new Promise<void>(resolve => { entered = resolve; });
+  const server = createServer((_req, res) => { requests++; res.end("bytes"); });
+  const accepted = new Promise<Socket>(resolve => server.once("connection", resolve));
+  const port = await listen(server);
+  const policy = createExternalImagePolicy({ beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
+    assertTarget({ address }) { if (address && ++addressChecks === 2) peerChecked = true; },
+    async assertEgressPolicy() { if (peerChecked && ++egressChecks === 2) { await accepted; entered(); await gate; } },
+  });
+  const work = start(`http://fixture.example:${port}/original`, policy);
+  try {
+    await Promise.race([blocked, work.then(() => { throw new Error("Capture completed before the post-connect authorization checkpoint."); })]);
+    (await accepted).destroy(); await expect(work).rejects.toMatchObject({ code: "source_unavailable" });
+    expect(requests).toBe(0);
+  } finally { release(); }
+}, 10_000);
+
+test("unsolicited bytes during post-connect authorization are not accepted as an HTTP response", async () => {
+  let release!: () => void, entered!: () => void, requests = 0, checks = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; }), blocked = new Promise<void>(resolve => { entered = resolve; });
+  const server = createServer((_req, res) => { requests++; res.end("bytes"); });
+  const accepted = new Promise<Socket>(resolve => server.once("connection", resolve));
+  const port = await listen(server);
+  const policy = createExternalImagePolicy({ assertEgressPolicy() {}, beforeRequest() {}, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port },
+    async assertTarget({ address }) { if (address && ++checks === 2) { await accepted; entered(); await gate; } },
+  });
+  const work = start(`http://fixture.example:${port}/original`, policy);
+  try {
+    await Promise.race([blocked, work.then(() => { throw new Error("Capture completed before the connected authorization checkpoint."); })]);
+    (await accepted).write("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nbytes");
+    await expect(work).rejects.toMatchObject({ code: "source_unavailable" });
+    expect(requests).toBe(0);
+  } finally { release(); }
+});
 
 test("dedicated transport preserves origin path and Host while omitting environment credentials and cookies across a fresh redirect socket", async () => {
   const requests: { method: string | undefined; url: string | undefined; headers: Record<string, unknown>; port: number | undefined }[] = [];

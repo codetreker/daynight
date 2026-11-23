@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -132,17 +133,17 @@ test("resume binds the original stopped native identity and holds an exclusive l
   await lease.release(); await lease.release(); const next = await acquireResume(input, f.context, config); await next.release();
 });
 
-test.each([16, journalVersion])("resume reads a stopped v%i target without migrating an unrelated live v16 writer", async version => {
+test.each([[16, 16], [17, 17], [journalVersion, 16], [journalVersion, 17]] as const)("resume reads a stopped v%i target without migrating an unrelated live v%i writer", async (version, unrelatedVersion) => {
   const f = await fixture(), executionId = randomUUID();
   const unrelated = { ...f.ticket, launchId: randomUUID(), executionId, testExecutionId: executionId, controllerInstanceId: randomUUID(), sessionId: randomUUID() };
   await f.save(unrelated, randomUUID(), false);
   const file = path.join(controllerExecutionDirectory(f.home, executionId), "journal.sqlite"), db = new Database(file);
-  try { db.exec("DROP TABLE stopped_generations; PRAGMA user_version=16"); db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid); }
+  try { restoreControllerJournalVersion(db, unrelatedVersion); db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid); }
   finally { db.close(); }
   const selectedFile = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite");
-  if (version === 16) {
+  if (version === 16 || version === 17) {
     const selected = new Database(selectedFile);
-    try { selected.exec("DROP TABLE stopped_generations; PRAGMA user_version=16"); } finally { selected.close(); }
+    try { restoreControllerJournalVersion(selected, version); } finally { selected.close(); }
   }
   const before = await readFile(file), selectedBefore = await readFile(selectedFile);
   const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
@@ -151,10 +152,10 @@ test.each([16, journalVersion])("resume reads a stopped v%i target without migra
   expect(await readFile(selectedFile)).toEqual(selectedBefore);
 });
 
-test.each([16, journalVersion])("resume refuses a v%i journal whose ticket hash conflicts with its inventory ticket", async version => {
+test.each([16, 17, journalVersion])("resume refuses a v%i journal whose ticket hash conflicts with its inventory ticket", async version => {
   const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
   try {
-    if (version === 16) db.exec("DROP TABLE stopped_generations; PRAGMA user_version=16");
+    if (version === 16 || version === 17) restoreControllerJournalVersion(db, version);
     db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
   } finally { db.close(); }
   const before = await readFile(file);
@@ -165,7 +166,7 @@ test.each([16, journalVersion])("resume refuses a v%i journal whose ticket hash 
 
 test("resume retains permit-owned migration for a stopped v15 target", async () => {
   const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
-  try { db.exec("DROP TABLE stopped_generations; DROP TABLE worker_lifecycle_bindings; PRAGMA user_version=15"); } finally { db.close(); }
+  try { restoreControllerJournalVersion(db, 15); } finally { db.close(); }
   const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
   try {
     expect(lease.nativeSessionId).toBe(f.nativeSessionId);

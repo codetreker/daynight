@@ -8,7 +8,8 @@ import { array, bool, fields, id, malformed, record, timestamp } from "./validat
 
 export type WorkerCloudNative = { readonly agent: "codex" | "copilot" | "claude"; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerCloudProject = { readonly projectId: string; readonly nativeOverrides: Readonly<Partial<WorkerCloudNative>> };
-export type WorkerCloudValue = { readonly taskTagFilter?: WorkerTaskTagFilter; readonly enableSudoCleanup?: boolean; readonly enableWindowsProcessCleanup?: boolean; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
+export type PlatformTaskMode = "all" | "prefer" | "only";
+export type WorkerCloudValue = { readonly taskTagFilter?: WorkerTaskTagFilter; readonly enableSudoCleanup?: boolean; readonly enableWindowsProcessCleanup?: boolean; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks?: boolean; readonly platformTaskMode?: PlatformTaskMode; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
 export type WorkerCloudDesired = { readonly revision: string; readonly updatedAt: string; readonly value: WorkerCloudValue };
 export type WorkerCloudFailure = {
   readonly code: "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "invalid_configuration" | "io_error" | "unavailable";
@@ -16,7 +17,7 @@ export type WorkerCloudFailure = {
   readonly phase: "validate" | "prepare" | "apply" | "stop" | "persist";
   readonly occurredAt: string;
 };
-export type WorkerCloudItemKey = { readonly kind: "taskTagFilter" | "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "enableSudoCleanup" | "enableWindowsProcessCleanup" | "archiveSessions" | "agentControlMode" | "native" }
+export type WorkerCloudItemKey = { readonly kind: "taskTagFilter" | "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "platformTaskMode" | "enableSudoCleanup" | "enableWindowsProcessCleanup" | "archiveSessions" | "agentControlMode" | "native" }
   | { readonly kind: "projectPreparation" | "projectRemoval" | "projectNative"; readonly projectId: string };
 export type WorkerCloudItem = {
   readonly key: WorkerCloudItemKey;
@@ -32,6 +33,8 @@ export type WorkerCloudResource = { readonly desired: WorkerCloudDesired | null;
 export type WorkerCloudReport = { readonly toolPathsBootstrap?: WorkerToolPathsBootstrap | null; readonly controlModeBootstrap?: AgentControlMode | null; readonly bootstrap: WorkerCloudValue | null; readonly observation: WorkerCloudObservation | null };
 export type WorkerCloudReceipt = { readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly observationAccepted: boolean };
 export type WorkerCloudReportReceipt = WorkerReportReceipt & { readonly configuration: WorkerCloudReceipt };
+
+export const parsePlatformTaskMode = (value: unknown): PlatformTaskMode => value === "all" || value === "prefer" || value === "only" ? value : malformed();
 
 export const parseWorkerControlMode = (value: unknown): AgentControlMode => value === "herdr" || value === "web" ? value : malformed();
 
@@ -78,7 +81,7 @@ export const parseWorkerCloudNative = (value: unknown, limits = true): WorkerClo
 };
 export const parseWorkerCloudValue = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudValue => {
   const { controlMode, toolPaths, archiveSessions } = workerConfigurationCapabilities(options);
-  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(typeof value === "object" && value !== null && Object.hasOwn(value, "taskTagFilter") ? ["taskTagFilter"] : []), ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableSudoCleanup") ? ["enableSudoCleanup"] : []), ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableWindowsProcessCleanup") ? ["enableWindowsProcessCleanup"] : []), ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : []), ...(archiveSessions ? ["archiveSessions"] : [])]);
+  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", ...(typeof value === "object" && value !== null && Object.hasOwn(value, "platformTaskMode") ? ["platformTaskMode"] : ["preferPlatformSpecificTasks"]), "native", "projects", ...(typeof value === "object" && value !== null && Object.hasOwn(value, "taskTagFilter") ? ["taskTagFilter"] : []), ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableSudoCleanup") ? ["enableSudoCleanup"] : []), ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableWindowsProcessCleanup") ? ["enableWindowsProcessCleanup"] : []), ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : []), ...(archiveSessions ? ["archiveSessions"] : [])]);
   const seen = new Set<string>();
   const projects = boundedArray(data.projects, limits ? 128 : Infinity, value => {
     const project = exact(value, ["projectId", "nativeOverrides"]), projectId = id(project.projectId);
@@ -91,7 +94,7 @@ export const parseWorkerCloudValue = (value: unknown, limits = true, options: Wo
       ...(Object.hasOwn(overrides, "args") ? { args: nativeArgs(overrides.args, limits) } : {}),
     } };
   });
-  return { ...(Object.hasOwn(data, "taskTagFilter") ? { taskTagFilter: parseTaskTagFilter(data.taskTagFilter) } : {}), ...(Object.hasOwn(data, "enableSudoCleanup") ? { enableSudoCleanup: bool(data.enableSudoCleanup) } : {}), ...(Object.hasOwn(data, "enableWindowsProcessCleanup") ? { enableWindowsProcessCleanup: bool(data.enableWindowsProcessCleanup) } : {}), ...(archiveSessions ? { archiveSessions: bool(data.archiveSessions) } : {}), ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks), native: parseWorkerCloudNative(data.native, limits), projects };
+  return { ...(Object.hasOwn(data, "taskTagFilter") ? { taskTagFilter: parseTaskTagFilter(data.taskTagFilter) } : {}), ...(Object.hasOwn(data, "enableSudoCleanup") ? { enableSudoCleanup: bool(data.enableSudoCleanup) } : {}), ...(Object.hasOwn(data, "enableWindowsProcessCleanup") ? { enableWindowsProcessCleanup: bool(data.enableWindowsProcessCleanup) } : {}), ...(archiveSessions ? { archiveSessions: bool(data.archiveSessions) } : {}), ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), ...(Object.hasOwn(data, "platformTaskMode") ? { platformTaskMode: parsePlatformTaskMode(data.platformTaskMode) } : { preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks) }), native: parseWorkerCloudNative(data.native, limits), projects };
 };
 export const parseWorkerCloudDesired = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudDesired => {
   const data = exact(value, ["revision", "updatedAt", "value"]);
@@ -115,7 +118,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
     key = { kind, projectId: id(keyData.projectId) };
   } else {
     exact(keyData, ["kind"]);
-    if (kind !== "taskTagFilter" && kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "enableSudoCleanup" && kind !== "enableWindowsProcessCleanup" && kind !== "native" && !(controlMode && kind === "agentControlMode") && !(archiveSessions && kind === "archiveSessions")) return malformed();
+    if (kind !== "taskTagFilter" && kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "platformTaskMode" && kind !== "enableSudoCleanup" && kind !== "enableWindowsProcessCleanup" && kind !== "native" && !(controlMode && kind === "agentControlMode") && !(archiveSessions && kind === "archiveSessions")) return malformed();
     key = { kind };
   }
   const state = data.state;
@@ -124,6 +127,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
   let appliedValue: WorkerCloudItem["appliedValue"] = null;
   if (data.appliedValue !== null) {
     switch (kind) {
+      case "platformTaskMode": appliedValue = parsePlatformTaskMode(data.appliedValue); break;
       case "taskTagFilter": appliedValue = parseTaskTagFilterKey(data.appliedValue); break;
       case "agentControlMode": appliedValue = parseWorkerControlMode(data.appliedValue); break;
       case "native": case "projectNative": appliedValue = parseWorkerCloudNative(data.appliedValue, limits); break;

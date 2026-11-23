@@ -57,7 +57,7 @@ export type WorkerCoordinatorOptions = {
   serverOrigin: string; workerId: string; userId?: string; platform: TaskPlatform; machine: WorkerMachine;
   readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
-  preferPlatformSpecificTasks: boolean;
+  platformTaskMode: "all" | "prefer" | "only";
   recoveryLimit?: number;
   taskTagFilterKey?: string | null;
   onConfigurationStale?: () => void;
@@ -69,13 +69,13 @@ export type WorkerCoordinatorOptions = {
   requestReconcile?: () => void;
   monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit" | "taskTagFilterKey">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "platformTaskMode" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit" | "taskTagFilterKey">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
   ...(value.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: value.taskTagFilterKey }),
   ...(value.recoveryLimit === undefined ? {} : { recoveryLimit: value.recoveryLimit }),
-  preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
+  platformTaskMode: value.platformTaskMode,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
   ...(value.targetProjectIds === undefined ? {} : { targetProjectIds: Object.freeze([...value.targetProjectIds]) }),
   globalConfiguration: value.globalConfiguration === null ? null : Object.freeze({ ...value.globalConfiguration, args: Object.freeze([...value.globalConfiguration.args]) }),
@@ -1621,7 +1621,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     reconciliationPhase = "claim-search";
     observe(m => { m.setPhase("claim-search"); if (cycleCoverage === "complete") m.setAdmission("unknown", []); });
     const acquisitionConfiguration = configuration;
-    const tiers = acquisitionConfiguration.preferPlatformSpecificTasks ? [true, false] : [undefined];
+    const tiers = acquisitionConfiguration.platformTaskMode === "all" ? [undefined] : acquisitionConfiguration.platformTaskMode === "prefer" ? [true, false] : [true];
     let sawCandidate = false;
     let searchIncomplete = false;
     const retainedConflicts = new Set<string>();
