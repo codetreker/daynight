@@ -564,7 +564,7 @@ driver 错误或完整请求体。成功日志提供方法、路由模板、状�
 安全的 `logging_failed` 诊断直接写 stderr。生产者停止后关闭文件并释放锁；锁文件
 保留供下次启动使用。stderr 管道断开时，普通服务将 SIGPIPE 转为写入错误，仍尝试
 文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
-完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
+完成记录。`verify-storage` 与 `migrate-storage` 只写 stderr，不创建日志或获取服务日志锁。
 
 凭据使用记录器由 App 显式构造和启动，HTTP grace 期间继续接受已准入请求的事件。
 HTTP/relay 退出后 App 等待其他 producer，再 seal 并 join 记录器及其日志 consumer。
@@ -579,7 +579,7 @@ request-local 故障的前置发布、版本确认和异常兜底见[认证设�
 
 ## 启动、迁移与关闭
 
-启动配置通过模块默认值、root 下两层 YAML 和显式环境变量依次覆盖。root 由 `--root`、`DAYNIGHT_ROOT` 或 `/var/lib/daynight` 选择，相对文件路径以 root 为基准，默认存储目录为 `storage`。配置加载不创建业务资源；`verify-storage` 只对数据库和存储执行语义验证。PostgreSQL 连接信息及六个鉴权字段必须由 YAML 或环境变量提供；鉴权字段对应的环境变量为：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_PREVIEW_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
+启动配置通过模块默认值、root 下两层 YAML 和显式环境变量依次覆盖。root 由 `--root`、`DAYNIGHT_ROOT` 或 `/var/lib/daynight` 选择，相对文件路径以 root 为基准，默认存储目录为 `storage`。配置加载不创建业务资源；`verify-storage` 只对数据库和存储执行语义验证。`migrate-storage` 使用同一配置加载器，只打开 schema 匹配的离线目标数据库、只读源卷和显式 Azure 目标，按[离线迁移设计](offline-storage-migration.md)复制与核验后结算目标在途状态，不启动普通服务或自动迁移 schema。PostgreSQL 连接信息及六个鉴权字段必须由 YAML 或环境变量提供；鉴权字段对应的环境变量为：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_PREVIEW_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
 `DAYNIGHT_UNIAUTH_APP_SECRET`、`DAYNIGHT_UNIAUTH_CALLBACK_URL`。公开 origin 与
 callback 必须同 origin；callback 无 query/fragment，使用规范的非根路径，并在
 创建登录事务前拒绝路由冲突和返回循环。仅该配置路径接收 callback，不保留旧路径

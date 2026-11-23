@@ -53,17 +53,24 @@ func (r *rootFlag) Set(value string) error {
 	return nil
 }
 
-func parseCommand(args []string, lookup func(string) (string, bool)) (string, string, error) {
+type commandOptions struct {
+	command, root, sourceStorageRoot string
+}
+
+func parseCommand(args []string, lookup func(string) (string, bool)) (commandOptions, error) {
 	command := "server"
-	if len(args) > 0 && args[0] == "verify-storage" {
-		command, args = "verify-storage", args[1:]
+	if len(args) > 0 && (args[0] == "verify-storage" || args[0] == "migrate-storage") {
+		command, args = args[0], args[1:]
 	}
-	var root rootFlag
+	var root, source rootFlag
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var(&root, "root", "")
+	if command == "migrate-storage" {
+		flags.Var(&source, "source-storage-root", "")
+	}
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		return command, "", &configvalue.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"}
+		return commandOptions{}, &configvalue.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"}
 	}
 	if !root.set {
 		root.value, root.set = lookup("DAYNIGHT_ROOT")
@@ -72,9 +79,12 @@ func parseCommand(args []string, lookup func(string) (string, bool)) (string, st
 		}
 	}
 	if strings.TrimSpace(root.value) == "" || !filepath.IsAbs(root.value) || strings.IndexFunc(root.value, unicode.IsControl) >= 0 {
-		return command, "", &configvalue.ConfigurationError{Field: "root", Rule: "must be a nonempty absolute path without control characters"}
+		return commandOptions{}, &configvalue.ConfigurationError{Field: "root", Rule: "must be a nonempty absolute path without control characters"}
 	}
-	return command, root.value, nil
+	if command == "migrate-storage" && (!source.set || strings.TrimSpace(source.value) == "" || !filepath.IsAbs(source.value) || strings.IndexFunc(source.value, unicode.IsControl) >= 0) {
+		return commandOptions{}, &configvalue.ConfigurationError{Field: "source-storage-root", Rule: "must be an explicit nonempty absolute path without control characters"}
+	}
+	return commandOptions{command: command, root: root.value, sourceStorageRoot: source.value}, nil
 }
 
 func run(ctx context.Context, args []string, lookup func(string) (string, bool), stderr io.Writer) (code int) {
@@ -84,18 +94,22 @@ func run(ctx context.Context, args []string, lookup func(string) (string, bool),
 		return 1
 	}
 	command := "server"
-	if len(args) > 0 && args[0] == "verify-storage" {
-		command = "verify-storage"
+	if len(args) > 0 && (args[0] == "verify-storage" || args[0] == "migrate-storage") {
+		command = args[0]
 	}
 	bootstrap := slog.New(slog.NewJSONHandler(stderr, nil)).With("run_id", hex.EncodeToString(id[:]), "pid", os.Getpid(), "command", command)
-	command, root, err := parseCommand(args, lookup)
+	options, err := parseCommand(args, lookup)
 	if err != nil {
 		httpx.LogFailure(bootstrap, ctx, "configuration", "arguments", err)
 		return 1
 	}
-	if command == "verify-storage" {
-		return verifyStorageCommand(ctx, root, lookup, stderr, bootstrap)
+	if options.command == "verify-storage" {
+		return verifyStorageCommand(ctx, options.root, lookup, stderr, bootstrap)
 	}
+	if options.command == "migrate-storage" {
+		return migrateStorageCommand(ctx, options.root, options.sourceStorageRoot, lookup, stderr, bootstrap)
+	}
+	root := options.root
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancelCause(ctx)

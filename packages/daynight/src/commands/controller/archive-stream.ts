@@ -102,10 +102,11 @@ export const transferArchiveStream = async (options: {
           catch (error) { if (signal.aborted || !reconcileable(error)) throw error; }
           if (restarted !== undefined) { const result = check(parse(restarted), id); if (result.state !== "failed" || result.error?.code !== "staging_corrupt" || result.successorFileId !== replacement) throw new Error("Archive restart receipt differs from its original intent."); }
         }
-        const old = await status(id), next = await status(replacement);
+        const old = await status(id);
         if (old.corrupt || old.receipt?.state !== "failed" || old.receipt.error?.code !== "staging_corrupt") throw new Error("Original archive failure receipt could not be confirmed.");
         if (old.receipt.successorFileId && old.receipt.successorFileId !== replacement) throw new Error("Archive successor differs from its original intent.");
-        if (old.receipt.successorFileId !== replacement || !next.receipt) { await wait(); current = old; continue; }
+        if (old.receipt.successorFileId !== replacement) { await wait(); current = old; continue; }
+        // An offline storage cut can revoke staging while retaining the confirmed successor identity.
         id = replacement; retries = 0; break;
       }
       if (current.corrupt || receipt && receipt.acceptedOffset === file.byteLength) {

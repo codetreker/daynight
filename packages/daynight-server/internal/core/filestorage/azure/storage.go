@@ -15,6 +15,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
@@ -23,6 +25,8 @@ import (
 )
 
 const transferBucket = "mcp-transfers"
+
+var ErrTargetExists = errors.New("Azure migration target already exists")
 
 // Storage leaves gate and client lifetimes with the assembler. Scratch is a
 // private, request-scoped local directory on a volume with sufficient space.
@@ -114,6 +118,17 @@ func (b gateBody) Close() error               { return errors.Join(filestorage.G
 // Put stages all input before the single atomic blob publication. A failing
 // input or full scratch filesystem cannot overwrite the previous object.
 func (s *Storage) Put(ctx context.Context, bucket, path string, content io.Reader) (info filestorage.FileInfo, result error) {
+	return s.put(ctx, bucket, path, content, nil)
+}
+
+// PutIfAbsent preserves an existing object even when publication races with an
+// earlier absence observation. Conflicts retain a definite nonpublication fact.
+func (s *Storage) PutIfAbsent(ctx context.Context, bucket, path string, content io.Reader) (filestorage.FileInfo, error) {
+	star := azcore.ETag("*")
+	return s.put(ctx, bucket, path, content, &blockblob.UploadOptions{AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfNoneMatch: &star}}})
+}
+
+func (s *Storage) put(ctx context.Context, bucket, path string, content io.Reader, options *blockblob.UploadOptions) (info filestorage.FileInfo, result error) {
 	outcome := filestorage.NotPublished
 	defer func() {
 		if result != nil {
@@ -149,10 +164,13 @@ func (s *Storage) Put(ctx context.Context, bucket, path string, content io.Reade
 	// A single attempt permits a definite service refusal to remain distinct
 	// from a lost response after a possible publication.
 	uploadCtx := runtime.WithRetryOptions(ctx, policy.RetryOptions{MaxRetries: -1})
-	_, err = s.client.NewBlockBlobClient(name).Upload(uploadCtx, noCloseFile{f}, nil)
+	_, err = s.client.NewBlockBlobClient(name).Upload(uploadCtx, noCloseFile{f}, options)
 	if err != nil {
 		var response *azcore.ResponseError
 		if errors.As(err, &response) {
+			if options != nil && (response.StatusCode == 412 || response.ErrorCode == "BlobAlreadyExists") {
+				err = errors.Join(ErrTargetExists, err)
+			}
 			switch response.StatusCode {
 			case 400, 401, 403, 404, 409, 412, 413:
 				outcome = filestorage.NotPublished

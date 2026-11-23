@@ -993,7 +993,7 @@ Loading configuration does not create directories or open business resources.
 Modules own their fields, defaults and validation; `internal/config` coordinates
 loading and cross-module checks.
 
-The executable accepts `--root` for normal startup or after `verify-storage`.
+The executable accepts `--root` for normal startup and its offline commands.
 Unknown, repeated and extra arguments fail before business resources open, without
 echoing argument values. `verify-storage` validates only database and storage
 semantics and opens the backup storage read-only. It reports each receiving v2
@@ -1001,6 +1001,20 @@ file’s Session ID, file ID, and recovery offset from the paired volume. Treat
 these observations as usable only when the entire command exits successfully
 (status 0); a later failure invalidates earlier output. It requires the local
 backend and refuses Azure configuration. Logs remain on stderr.
+
+`migrate-storage --root <target-config-root> --source-storage-root <absolute-local-volume>`
+reads the stopped paired local volume and an isolated restored destination
+PostgreSQL database selected by `database.url`. Configure `storage.backend:
+azure-blob` and the ordinary Azure settings; `storage.root` must be separate
+scratch. The command validates the current schema without applying migrations,
+copies retained attachments and Session objects, verifies length, SHA-256 and
+closure, then settles destination-only unfinished uploads. It preserves completed
+receipts, bundle revision and ledger. Existing equal target objects are reusable;
+conflicting objects are never overwritten. JSON events report the run, objects,
+state transitions and differences on stderr. Only exit status 0 permits Azure
+activation. Keep every writer stopped and preserve the untouched original
+PostgreSQL/local pair. See the [offline migration design](../../docs/design/offline-storage-migration.md)
+and [paired restore procedure](../../deployment/localhost/README.md#persistence-and-backup).
 
 Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
 selected root, then appends the same JSON records to stderr and
