@@ -2,11 +2,51 @@ package worker
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
+
+func TestLegacyPlatformConfigurationRejectsInvalidProtocolValues(t *testing.T) {
+	for _, value := range []any{nil, "false", 1, []any{}, map[string]any{}} {
+		t.Run("preference "+string(configurationInputJSON(t, value)), func(t *testing.T) {
+			document := legacyConfigurationInputDocument()
+			document["preferPlatformSpecificTasks"] = value
+			_, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{})
+			requireFault(t, err, "invalid_input")
+		})
+	}
+	for name, modelJSON := range map[string]string{
+		"invalid UTF-8":      "\"" + string([]byte{0xff}) + "\"",
+		"unpaired surrogate": `"\ud800"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := configurationInputJSON(t, legacyConfigurationInputDocument())
+			raw = json.RawMessage(strings.Replace(string(raw), `"model":null`, `"model":`+modelJSON, 1))
+			_, err := ParseWorkerConfigurationProtocol(raw, workerprotocol.Capabilities{})
+			requireFault(t, err, "invalid_input")
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Message != "Worker configuration must contain valid Unicode." {
+				t.Fatalf("legacy conversion changed malformed Unicode before rejecting it: %v", err)
+			}
+		})
+	}
+	document := legacyConfigurationInputDocument()
+	document["native"].(map[string]any)["model"] = "\ufffd"
+	parsed, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{})
+	if err != nil || parsed.Native.Model == nil || *parsed.Native.Model != "\ufffd" {
+		t.Fatalf("valid replacement character was changed or rejected: %+v %v", parsed, err)
+	}
+	document["maxConcurrent"] = 0
+	_, err = ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "invalid_input" || fault.Message != "Worker configuration integer is outside its allowed range." {
+		t.Fatalf("legacy conversion did not retain the configuration validation error: %v", err)
+	}
+}
 
 func TestPlatformTaskModeProtocolAndBootstrap(t *testing.T) {
 	for _, mode := range []string{"all", "prefer", "only"} {
