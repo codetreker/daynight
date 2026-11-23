@@ -305,6 +305,7 @@ jobs:
       GOTOOLCHAIN: go1.27.2
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
       DAYNIGHT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
     services:
       azurite:
         image: mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
@@ -363,8 +364,6 @@ jobs:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
         run: bash scripts/check.sh --coverage
       - name: Validate Azure storage and startup
-        env:
-          DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
         run: |
           go test -count=1 -timeout=5m -run '^TestAzurite(ArchiveStaging)?$' ./internal/core/filestorage/azure
           GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
@@ -401,7 +400,14 @@ jobs:
       GOTOOLCHAIN: go1.27.2
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
       DAYNIGHT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
     services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.35.0@sha256:647c63a91102a9d8e8000aab803436e1fc85fbb285e7ce830a82ee5d6661cf37
+        env:
+          AZURITE_ACCOUNTS: daynight:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        ports:
+          - 10000:10000
       redis:
         image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
         ports:

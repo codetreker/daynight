@@ -656,6 +656,14 @@ const selectedServerCommand = selectedServerStep.match(/^        run: (.+)$/m)![
 const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go API integration to succeed\n"))!;
 const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
 
+test("Go coverage partitions provide isolated Azure migration storage", () => {
+  for (const stage of [server, startupShutdown]) {
+    assert.match(stage, /^      DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=[^;]+;BlobEndpoint=http:\/\/127\.0\.0\.1:10000\/daynight;'$/m);
+    assert.match(stage, /^      azurite:\n        image: mcr\.microsoft\.com\/azure-storage\/azurite:3\.35\.0@sha256:/m);
+    assert.match(stage, /^          AZURITE_ACCOUNTS: daynight:/m);
+  }
+});
+
 test("Go module coverage and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);

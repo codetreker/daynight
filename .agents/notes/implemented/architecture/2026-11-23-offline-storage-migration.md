@@ -28,7 +28,9 @@ state from a broken chain. The Controller adopts that confirmed successor using
 its saved replacement intent and accepts an ordinary 404 as first-upload state.
 Only matching current bundle pointers are cleared; revision, ledger and terminal
 receipts remain intact. Image and MCP cleanup settle only destination private
-namespaces after confirmed cleanup. The original pair remains a restore point.
+namespaces after confirmed cleanup. The original pair remains a restore point. Both Go coverage partitions provide
+isolated Azurite so the migration mechanism and command success paths execute
+with their real storage dependency.
 The [migration design](../../../../docs/design/offline-storage-migration.md)
 owns the command, ordering, failure outcomes and recovery procedure.
 

@@ -1394,8 +1394,9 @@ on the separate listener are excluded.
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
-Both checks require `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL`
-for isolated PostgreSQL and Redis instances. The module check owns SQL,
+Both checks require `DAYNIGHT_TEST_DATABASE_URL`, `DAYNIGHT_TEST_REDIS_URL` and
+`DAYNIGHT_TEST_AZURITE_CONNECTION_STRING` for isolated PostgreSQL, Redis and
+Azurite instances. The module check owns SQL,
 Redis and other module mechanisms. The startup/shutdown check owns the
 command lifecycle, including Redis lease expiry after a writer process exits.
 Database-independent suites have focused commands below.
@@ -1417,11 +1418,14 @@ docker port daynight-server-redis-tests 6379
 docker exec daynight-server-redis-tests redis-cli ping
 ```
 
-Set the reported loopback ports in the test URLs, then run:
+Set the reported loopback ports in the test URLs and start the isolated Azurite
+instance described below. Both coverage partitions execute offline migration
+against that instance. Export its connection string, then run:
 
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
 export DAYNIGHT_TEST_REDIS_URL='redis://127.0.0.1:PORT/0'
+export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING='<isolated Azurite connection string>'
 bash scripts/check.sh
 bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests

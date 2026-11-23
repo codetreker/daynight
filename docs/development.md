@@ -844,7 +844,8 @@ Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
 `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
-PostgreSQL and Redis instances, then run:
+PostgreSQL and Redis instances, and `DAYNIGHT_TEST_AZURITE_CONNECTION_STRING` to
+an isolated Azurite instance as described in the [server validation guide](../packages/daynight-server/README.md#validate). Then run:
 
 ```bash
 bash scripts/check.sh
@@ -1385,7 +1386,8 @@ in the ordinary CLI suite. The Go module job runs its PostgreSQL-backed module
 gate and uploads coverage. The independent
 `verify-server-startup-shutdown` job uses the same server selection, waits only
 for detection, and owns its PostgreSQL-backed command lifecycle tests and
-command-package coverage. Selected Go module and startup/shutdown jobs must both
+command-package coverage. Both coverage jobs provide isolated Azurite to execute
+offline migration mechanisms and command paths. Selected Go module and startup/shutdown jobs must both
 actually succeed. The independent Linux `verify-api-integration` job waits only
 for detection, prepares its own Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
 unit tests before production Web preparation and the explicit normal API suite. Its always-run
