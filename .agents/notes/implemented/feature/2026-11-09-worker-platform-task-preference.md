@@ -15,10 +15,11 @@ unrestricted tasks in one Project.
 ## Decision
 
 The original two-state clients expose a cloud-managed
-`preferPlatformSpecificTasks` boolean, initially false. The setting is editable
-in My Workers and hot-applied to subsequent acquisition. The
+`preferPlatformSpecificTasks` boolean, initially false. The
 [client mode decision](2026-11-23-worker-platform-task-mode-client.md) adds a
-strict mode while preserving these rotations.
+strict mode while preserving these rotations. The
+[Web mode decision](2026-11-23-worker-platform-task-mode-web.md) exposes the
+negotiated three-mode setting for subsequent acquisition.
 The control names the viewed Worker’s platform using the shared display names;
 when its platform is unavailable, the control retains a generic label.
 Local YAML supplies the initial import only; later cloud values retain authority.
