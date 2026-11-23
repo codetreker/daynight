@@ -62,6 +62,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
       return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };
     });
     const stopped = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
     vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
     const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
     return { task, ticket, snapshot, saved, stopped, request };

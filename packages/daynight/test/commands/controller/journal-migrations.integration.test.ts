@@ -287,7 +287,7 @@ const legacyCandidateSource = async (f: Awaited<ReturnType<typeof fixture>>) => 
 
 test("Windows stop-proof reads do not migrate an older journal", async () => {
   const f = await fixture(); historical(f.file, 1, f.ticket);
-  expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/current journal format/);
+  expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/supported read-only format/);
   const db = new Database(f.file, { readonly: true });
   expect(db.pragma("user_version", { simple: true })).toBe(1); db.close();
 });
