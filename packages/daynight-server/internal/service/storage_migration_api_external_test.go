@@ -262,7 +262,11 @@ func migrationRegisterPartial(t *testing.T, s *sessionservice.Service, owner mod
 func migrationImageController(t *testing.T, s *sessionservice.Service, snapshot sp.Snapshot, spec sp.ImageUploadSpec, original []byte) {
 	t.Helper()
 	fence := snapshot.ControllerFence
-	provider := sp.ProviderImageCapabilities{Revision: "1", Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png"}, MaxImageBytes: "1000000", MaxMessageImageBytes: "1000000", MaxImagesPerMessage: 1, Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 10, MaxHeight: 10, MaxPixels: 100, MaxFrames: 1}}
+	modelID := "controlled-image-model"
+	provider := sp.ProviderImageCapabilities{Revision: "1", ModelID: &modelID, ExpectedNativeSessionID: snapshot.Identity.NativeSessionID, Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png"}, MaxImageBytes: "1000000", MaxMessageImageBytes: "1000000", MaxImagesPerMessage: 1, Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 10, MaxHeight: 10, MaxPixels: 100, MaxFrames: 1}}
+	if _, err := sp.DecodeProviderImageCapabilities(migrationWire(t, provider)); err != nil {
+		t.Fatal(err)
+	}
 	state := sp.State{NativeSessionID: snapshot.Identity.NativeSessionID, InitialInputState: snapshot.InitialInputState, Synchronized: true, Activity: "initializing", ProviderImages: &provider}
 	if _, err := s.Handle(t.Context(), sp.ControllerMessage{Type: "sync_state", ControllerFence: fence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
