@@ -4,30 +4,34 @@ Status: implemented
 
 ## Problem
 
-The complete ordinary CLI suite on macOS ARM64 can approach the 10-minute job
-limit after runner setup, leaving insufficient time for validation and diagnostic
-uploads. A cancelled job cannot establish the required platform result.
+The ordinary macOS ARM64 CLI suite needs time for runner setup, tests,
+diagnostic uploads and final cleanup. The uniform 10-minute budget left
+little margin for the suite. After the ordinary macOS job moved to 15 minutes,
+[a later job](https://github.com/codetreker/daynight/actions/runs/45125632008/job/137530205706)
+completed its test suite and uploads before the execution limit cancelled it
+during job finalization. A cancelled job cannot establish the required result.
 
 ## Decision
 
-The ordinary macOS matrix entry has a 15-minute job limit. The other ordinary
-entries and all installed entries retain 10 minutes. The complete test selection,
-failure gate and individual test deadlines remain unchanged. This supersedes
-the uniform job limit in the [independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md)
-for the ordinary macOS entry.
+The ordinary macOS matrix entry uses a 20-minute job limit. The other ordinary
+entries and all installed entries use 10 minutes. The complete test selection,
+failure gate and individual test deadlines carry the same requirements. The
+ordinary macOS limit supersedes the uniform limit in the
+[independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md).
 
 ## Alternatives
 
-**Keep the uniform 10-minute limit.** A successful macOS run used nearly all
-of that budget, and subsequent runs reached the limit while tests were still
-progressing. A narrow margin makes the required result sensitive to runtime
-variation.
+**Keep the 15-minute limit.** The observed job consumed this budget despite
+passing all 13,200 executed tests. A successful
+[rerun of the same checkout](https://github.com/codetreker/daynight/actions/runs/45125632008/job/137537943828)
+finished in 11 minutes and 5 seconds, showing how much headroom can vary between
+runs of the same workload.
 
-**Reduce or skip tests.** This would sacrifice required native evidence rather
-than allow the existing workload to complete.
+**Reduce test selection.** The ordinary matrix supplies native evidence for the
+whole CLI suite. Reducing the selection would remove part of that evidence.
 
 ## Consequences
 
-The job remains bounded and can spend longer before reporting a hung workload.
-Runner acquisition is separate from the execution limit and is not guaranteed
-by this change. The full native suite and its diagnostic uploads remain required.
+A hung macOS job can take up to 20 minutes to report failure. The job limit
+covers execution once the runner starts, while runner allocation has its own
+queue. Test failures and cancellations continue to block the required checks.

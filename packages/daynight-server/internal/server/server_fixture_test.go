@@ -1199,7 +1199,7 @@ func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 		want["steps"] = 1
 	}
 	if !expected.Refused && !expected.Stale {
-		want["header"], want["observed"], want["touch"], want["capture"] = 2, 1, 1, 1
+		want["observed"], want["touch"] = 1, 1
 		want[expected.Operation] = 1
 	}
 	plan := newHTTPCallPlan(f.t, want)
@@ -1216,18 +1216,13 @@ func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 		return access, nil
 	}
 	writer := &taskHTTPWriterMock{taskHTTPMockBase: base.withLabel("steps")}
-	headers := 0
 	writer.TaskHeaderFn = func(ctx context.Context, task string) (model.TaskHeader, error) {
 		f.require(ctx, expected.Header.ProjectID)
 		plan.Called("header")
 		if task != expected.Header.ID {
 			unexpectedHTTPCall(f.t, "Step write parent")
 		}
-		headers++
 		header := expected.Header
-		if headers == 2 {
-			header.Version++
-		}
 		header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
 		return header, nil
 	}
@@ -1289,16 +1284,7 @@ func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 			return nil
 		}
 	}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-	capture.FreezeAudienceFn = func(ctx context.Context, project string, types []string) ([]store.WebhookAudience, error) {
-		f.require(ctx, project)
-		plan.Called("capture")
-		if !reflect.DeepEqual(types, []string{protocol.StepUpdated}) {
-			unexpectedHTTPCall(f.t, "Step capture event")
-		}
-		return []store.WebhookAudience{}, nil
-	}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
+	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }}
 	f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 		plan.Called("write")
 		if project != expected.Header.ProjectID || f.active || run == nil {

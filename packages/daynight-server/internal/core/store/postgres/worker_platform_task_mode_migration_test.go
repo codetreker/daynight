@@ -2,16 +2,26 @@ package postgres
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func platformTaskModeMigrationIndex(t *testing.T) int {
+	t.Helper()
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 120 })
+	if index < 1 || schemaMigrations[index-1].version != 119 {
+		t.Fatal("platform task mode migration must follow step webhook retirement")
+	}
+	return index
+}
+
 func TestWorkerPlatformTaskModeMigration(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:platformTaskModeMigrationIndex(t)]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -34,6 +44,10 @@ func TestWorkerPlatformTaskModeMigration(t *testing.T) {
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
+	}
+	var ledgerMatches bool
+	if err := pool.QueryRow(ctx, `SELECT array_agg(version ORDER BY version)=ARRAY[119,120]::bigint[] FROM schema_migrations WHERE version IN (119,120)`).Scan(&ledgerMatches); err != nil || !ledgerMatches {
+		t.Fatalf("ordered migration ledger differs: matches=%v err=%v", ledgerMatches, err)
 	}
 	for i, mode := range []string{"all", "prefer"} {
 		var matches bool
@@ -60,7 +74,7 @@ func TestWorkerPlatformTaskModeMigration(t *testing.T) {
 func TestWorkerPlatformTaskModeMigrationOverflowRollsBack(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:platformTaskModeMigrationIndex(t)]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -84,7 +98,7 @@ func TestWorkerPlatformTaskModeMigrationOverflowRollsBack(t *testing.T) {
 	if err := pool.QueryRow(ctx, all).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&ledger); err != nil || ledger != 0 || before != after {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=120`).Scan(&ledger); err != nil || ledger != 0 || before != after {
 		t.Fatalf("overflow changed rows or ledger: ledger=%d err=%v", ledger, err)
 	}
 }

@@ -47,7 +47,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
-		actor, err := sourceActor(ctx, tx, principal)
+		_, err := sourceActor(ctx, tx, principal)
 		if err != nil {
 			return err
 		}
@@ -82,7 +82,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
 			return err
 		}
-		return s.captureStep(ctx, tx, actor, projectID, taskID, stepID, "updated", observed, nil, nil, &current[mutation.To], &mutation.Candidate[mutation.To])
+		return nil
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

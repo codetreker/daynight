@@ -11,7 +11,9 @@ attention, including in narrow and enlarged-text layouts.
 ## Decision
 
 The shared Task row uses `--text-xs` for the ready badge, matching the primary
-status. Dependency-blocked and tag feedback text retain `--text-sm`; graph,
+status. This decision originally retained dependency-blocked and tag feedback
+text at `--text-sm`; the later [not-ready badge decision](2026-11-23-task-row-not-ready-size.md)
+also assigns dependency-blocked row indicators to `--text-xs`. Tag feedback, graph,
 detail and summary presentations remain independently owned. This partially
 revises the [row metadata decision](2026-11-20-task-row-metadata-size.md), which
 originally retained both indicator sizes. The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
@@ -26,4 +28,5 @@ it larger than the adjacent primary status.
 
 All consumers of the shared row use the same ready badge size and respect the
 browser root font size. The badge retains its conditions, text and other
-styling; blocked indicators keep their existing emphasis.
+styling. The original scope left blocked indicators at their existing emphasis;
+the later not-ready badge decision aligns their row typography with readiness.

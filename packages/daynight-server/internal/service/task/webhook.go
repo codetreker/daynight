@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -97,26 +96,4 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 		facts = append(facts, f)
 	}
 	return facts, nil
-}
-
-func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope, actor wm.Actor, projectID, taskID, stepID, action string, observed time.Time, from, to *int64, before, after *model.TaskStep) error {
-	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	f := protocol.Fact{Type: protocol.StepUpdated, ProjectID: projectID, TaskID: taskID, TaskVersion: header.Version, OccurredAt: observed, StepID: stepID, Action: action, FromPosition: from, ToPosition: to}
-	if before != nil && after != nil {
-		if before.Description != after.Description {
-			f.ChangedFields = append(f.ChangedFields, "description")
-		}
-		if before.Title != after.Title {
-			f.ChangedFields = append(f.ChangedFields, "title")
-		}
-		if before.Status != after.Status {
-			f.Action = "status_changed"
-			f.PreviousStatus = string(before.Status)
-			f.Status = string(after.Status)
-		}
-	}
-	return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 }
