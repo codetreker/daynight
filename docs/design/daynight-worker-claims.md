@@ -91,7 +91,7 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 全部写入复用现有 Tasks 服务和项目行锁，并在读取/修改属性前锁定父任务 FOR UPDATE，同一事务核验成员、版本、依赖、归属并写入属性、状态、计时和版本。Session relay 先取父任务 FOR SHARE，再读取 worker 和 Session；属性缺失时仍由父任务锁维持 fence。锁序保持项目（如有）→父任务→属性→Session，不引入反向锁序。失败、取消或数据库错误完整回滚。许可或平台编辑与认领同版本竞争只能提交一个有效结果，不增加独立 claim 权威表。
 
-真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。snapshot/delta 都包含完整当前 properties，包括存在的 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task，不以只读缓存替代实时认领核对。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
+真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。snapshot/delta 都包含完整当前 properties，包括存在的 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task，不以只读缓存替代实时认领核对。现有同步窗口和更新时间索引继续由摘要能力拥有，Worker 清单索引见[索引设计](worker-active-claim-index.md)。
 
 沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。写入入口的属性结构与容量检查继续拒绝非法候选；已保存 Worker 属性仅普通解码后核对当前归属，不重复 Normalize/Validate/Admit。自然解码、数据库及其他内部故障保留原错误链。错误不转换为空候选、局部资源或成功。
 
@@ -105,7 +105,7 @@ Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；assignedTo=me、许可、ready 和实际平台在服务端排序和分页前组合，后续每页保留同一筛选。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 按服务端顺序消费候选，active 候选明确拒绝；同 task 的本机旧资源责任在领取前形成屏障。
 
-`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/platformSpecific/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。新候选显式使用 assignedTo=me，完整既有库存调用省略该条件，不新增 claim 表或归属权威。
+`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/platformSpecific/assignedTo 才是该项目完整归属查询。SQL 在分页前组合 assignedTo 与精确的 worker 匹配，选中记录再经 Go 解码；带负责人条件的结果只是清单子集，不能据其缺席清理。新候选显式使用 assignedTo=me，完整既有库存调用省略该条件，不新增 claim 表或归属权威。
 
 Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和可选 platformSpecific；最后一项只用于列表，响应必须满足指定的平台类别，不能本地丢弃错类结果。listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者按成功完整覆盖的项目和原 claimId 对账，不读取 task 状态分类缺席原因；不可用项目不能以缺席推断结束归属。
 

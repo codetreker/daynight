@@ -44,3 +44,7 @@ exchange replaces the preview hash, so concurrent exchanges or account switching
 can leave a browser with an invalid cookie; a new SSO can recover. A lost commit
 acknowledgment is not proof of rollback and the exchange is not replayed. Browser
 navigation and Cookie behavior are owned by the separate HTTP integration.
+The [browser activity decision](2026-11-23-browser-session-activity.md) keeps
+that shared row and adds a single rolling idle deadline; preview renewal rechecks
+the original hash after protected content admission, so a rotated hash cannot
+renew the replacement credential.

@@ -10,7 +10,7 @@ const projection = (ids: readonly string[], edges: readonly (readonly [string, s
   mainIds: new Set(ids), externalIds: new Set(external), edges: edges.map(([source, target, isExternal]) => ({ source, target, external: isExternal ?? false })),
 });
 
-const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDirection) => {
+const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDirection, heights: ReadonlyMap<string, number> = new Map()) => {
   const ids = [...input.mainIds, ...input.externalIds].sort();
   expect(layout.nodes.map((node) => node.id)).toEqual(ids);
   expect(layout.edges.map(({ source, target, external }) => ({ source, target, external }))).toEqual([...input.edges].sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target)));
@@ -18,7 +18,7 @@ const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDi
   const nodes = new Map(layout.nodes.map((node) => [node.id, node]));
   for (const [index, node] of layout.nodes.entries()) {
     expect(node.kind).toBe(input.mainIds.has(node.id) ? 'main' : 'external');
-    expect([node.width, node.height]).toEqual([300, 124]);
+    expect([node.width, node.height]).toEqual([240, heights.get(node.id) ?? 102]);
     expect(node.position.x).toBeGreaterThanOrEqual(0); expect(node.position.y).toBeGreaterThanOrEqual(0);
     expect(node.position.x + node.width).toBeLessThanOrEqual(layout.width); expect(node.position.y + node.height).toBeLessThanOrEqual(layout.height);
     for (const other of layout.nodes.slice(index + 1)) expect(node.position.x + node.width <= other.position.x || other.position.x + other.width <= node.position.x ||
@@ -77,6 +77,15 @@ describe('Goal graph compact layout', () => {
     expect(new Set(wrapped.map((node) => direction === 'horizontal' ? node.position.y : node.position.x)).size).toBeGreaterThan(1);
     const reordered: GraphProjection = { mainIds: new Set([...input.mainIds].reverse()), externalIds: new Set([...input.externalIds].reverse()), edges: [...input.edges].reverse() };
     expect(layoutGoalGraph(reordered, size, direction)).toEqual(result);
+  });
+
+  it.each(['horizontal', 'vertical'] as const)('packs and routes mixed reading heights in %s', (direction) => {
+    const input = projection(['a', 'b', 'c', 'd', 'single'], [['outside', 'a', true], ['a', 'b'], ['a', 'c'], ['b', 'd'], ['c', 'd']], ['outside']);
+    const heights = new Map([['outside', 124], ['a', 102], ['b', 124], ['c', 102], ['d', 124], ['single', 102]]);
+    const result = layoutGoalGraph(input, size, direction, heights);
+    verify(result, input, direction, heights);
+    const reordered: GraphProjection = { mainIds: new Set([...input.mainIds].reverse()), externalIds: new Set([...input.externalIds].reverse()), edges: [...input.edges].reverse() };
+    expect(layoutGoalGraph(reordered, size, direction, heights)).toEqual(result);
   });
 
   it('returns an empty layout and rejects invalid identities, edges, cycles and dimensions', () => {

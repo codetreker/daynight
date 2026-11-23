@@ -362,7 +362,10 @@ var archiveUploadVersionSQL string
 //go:embed schema/migrations/117_session_online_mode.sql
 var sessionOnlineModeSQL string
 
-//go:embed schema/migrations/118_retire_step_webhook_bindings.sql
+//go:embed schema/migrations/118_browser_session_activity.sql
+var browserSessionActivitySQL string
+
+//go:embed schema/migrations/119_retire_step_webhook_bindings.sql
 var retireStepWebhookBindingsSQL string
 
 type migration struct {
@@ -488,7 +491,8 @@ var schemaMigrations = []migration{
 	{version: 115, sql: migration115.SQL(), transform: migration115.Apply, transformSource: migration115.TransformSource()},
 	{version: 116, sql: archiveUploadVersionSQL},
 	{version: 117, sql: sessionOnlineModeSQL},
-	{version: 118, sql: retireStepWebhookBindingsSQL},
+	{version: 118, sql: browserSessionActivitySQL},
+	{version: 119, sql: retireStepWebhookBindingsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -679,8 +679,8 @@ describe('typed Goal routes', () => {
     const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
     const fixture = installed(goal);
     fixture.tasks.set(otherId, child);
-    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.includes('/steps')
-      ? resourceResponse({ projectId, taskId: otherId, version: 1n, steps: [] }, TEST_VIEWER_ID) : fixture.handler(url, options)));
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.includes('/thread/messages?')
+      ? resourceResponse({ items: [], hasMoreBefore: false, hasMoreAfter: false }, TEST_VIEWER_ID) : fixture.handler(url, options)));
     const graph = graphFixture([goal, child]);
     const original = taskSyncFromGraph(graph, { versionForTask: () => 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
     const { [taskId]: _goalState, ...dependencyStates } = original.dependencyStates;
@@ -711,25 +711,14 @@ describe('typed Goal routes', () => {
       await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
       act(selectChild);
       const current = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
-      fireEvent.click(within(current).getByRole('tab', { name: '步骤' }));
-      const addStep = await within(current).findByRole('button', { name: '添加步骤' }, { timeout: 10000 });
-      await waitFor(() => expect(addStep).toBeEnabled(), { timeout: 10000 });
-      fireEvent.click(addStep);
-      const draft = within(current).getByRole('textbox', { name: '标题' });
+      fireEvent.click(within(current).getByRole('tab', { name: '讨论' }));
+      const draft = await within(current).findByRole('textbox', { name: '讨论消息' });
+      await waitFor(() => expect(draft).toBeEnabled());
       fireEvent.change(draft, { target: { value: 'new draft after recovery' } });
-      fireEvent.click(within(current).getByRole('tab', { name: '附件' }));
+      fireEvent.click(within(current).getByRole('tab', { name: '概览' }));
       await moveHistory('back');
       expect(draft).toHaveValue('new draft after recovery');
-      const currentEntry = window.history.state.__daynightNavigation.entryId;
-      const jumpToOld = () => act(async () => { await new Promise<void>((resolve) => { window.addEventListener('popstate', () => resolve(), { once: true }); window.history.go(-3); }); });
-      await jumpToOld();
-      let confirmation = await screen.findByRole('alertdialog', { name: '放弃未保存的修改？' });
-      fireEvent.click(within(confirmation).getByRole('button', { name: '继续编辑' }));
-      await waitFor(() => expect(window.history.state.__daynightNavigation.entryId).toBe(currentEntry));
-      expect(draft).toHaveValue('new draft after recovery');
-      await jumpToOld();
-      confirmation = await screen.findByRole('alertdialog', { name: '放弃未保存的修改？' });
-      fireEvent.click(within(confirmation).getByRole('button', { name: '放弃并离开' }));
+      await act(async () => { await new Promise<void>((resolve) => { window.addEventListener('popstate', () => resolve(), { once: true }); window.history.go(-3); }); });
       await waitFor(() => expect(screen.queryByRole('dialog', { name: child.title })).toBeNull());
     } finally { view.unmount(); scope.dispose(); }
   }, 20000);

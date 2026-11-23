@@ -14,6 +14,7 @@ type identityOperations interface {
 	StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error)
 	CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
 	Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error)
+	AuthenticateBrowserActivity(context.Context, string, string) (model.Principal, error)
 	User(context.Context, model.Principal) (model.User, error)
 	PatchUser(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
 	Logout(context.Context, model.Principal) error

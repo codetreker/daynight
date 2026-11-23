@@ -61,7 +61,12 @@ func (s *scope) LockProfileCredential(ctx context.Context, principal model.Princ
 		return nil
 	}
 	var valid bool
-	if err := s.tx.QueryRow(ctx, `SELECT $1::timestamptz>GREATEST($2::timestamptz,clock_timestamp())`, credential.ExpiresAt, now).Scan(&valid); err != nil {
+	query := `SELECT $1::timestamptz>GREATEST($2::timestamptz,clock_timestamp())`
+	args := []any{credential.ExpiresAt, now}
+	if principal.Kind == model.SessionCredential {
+		query, args = `SELECT $1::timestamptz>clock_timestamp()`, []any{credential.ExpiresAt}
+	}
+	if err := s.tx.QueryRow(ctx, query, args...).Scan(&valid); err != nil {
 		return pg.AuthQueryError("recheck profile credential expiry", err)
 	}
 	if !valid {

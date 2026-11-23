@@ -44,7 +44,7 @@ flowchart TB
 
 作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。repository owner 先等待同一个 Task 停止结果，再 join 报告并关闭 Git manager；Task 有界停止未确认时 repository 同样保持 unknown，原终态 writer 仍可核对和删除自己的 Git 资源。后续 reconcile 继续等待原停止，只有确认 Task 完整闭合后才关闭 Git manager。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
 
-工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。库存先核对已知边界，再 join 同一个 Task 停止结果，随后重新核对期间准入的终态命令，并将匹配原代际及证明的已停止回执同步到生命周期账本；各阶段错误聚合保留。
+工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。运行中的受管命令报告 unknown 时，journal 和适用的 lifecycle 账本保留原资源责任，失败由所属操作报告，其他任务继续执行。探测在原边界确认前阻止替代进程，Git 命令使用原句柄主动核对一次关闭结果，变更仍等待原资源结清。持久写入失败继续按原准入保护处理，显式停止与重建继续核对完整库存。库存先核对已知边界，再 join 同一个 Task 停止结果，随后重新核对期间准入的终态命令，并将匹配原代际及证明的已停止回执同步到生命周期账本；各阶段错误聚合保留。
 
 reporter 的 `stop()` 已结束只证明其上报循环已 join，不替代它报告的原生命令清理证明。缓存的清理错误随原资源的确认结果重新核对；有原确认凭据且全部清理责任已闭合时，该错误作为历史诊断保留。缺少凭据、混合未确认原因或仍未 join 的写入继续阻止释放管理存储和锁。
 
@@ -375,7 +375,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 coordinator 接受可选 `taskTagFilterKey`：缺失表示旧服务，null 表示应用证明不可用，只暂停新领取；有效摘要参与配置身份。有效摘要下每页候选查询附带 `candidateWorkerId`，claim 附带捕获的摘要。配置身份改变时停止发送旧轮次尚未发出的 claim，已经发送的 claim 由服务端原子准入和既有对账处理。筛选上下文中的游标失效或确定性 claim 冲突通过可选回调提示重新读取配置；这只是重新核对提示，不证明冲突原因。runWorker 从有效配置快照提供该摘要，并将失效提示接到 exchange.markNeedsRead() 与 reporter.trigger()，由原交换路径重新核对权威配置。runWorkerControl 同样投影有效值，只管理已有执行并保留原显式读取或单次同步，不新增报告循环或候选查询。
 
-远端 phase 和 nativeSessionId 是当前观察的展示投影；旧 Herdr 属性只保留历史读取。每次基于新读到的 task/claim 与精确版本更新，未知响应记录日志后重新读取；投影不决定本机资源动作，也不保存待提交摘要回执。
+远端 phase 和 nativeSessionId 是当前观察的展示投影；旧 Herdr 属性只保留历史读取。Web 摘要先与库存中的 Task 比较，稳定时不增加读取或写入。候选摘要完成本机观察和启动报告能力检查后，在发布边界读取当前 Task，核对 Project、Task、`in_progress`、原 active Web claim、Worker、用户、worktree、Agent 和兼容的已绑定 native session，再用本轮观察重新比较 phase、nativeSessionId 和可上报的 startupReport。归属、状态或会话绑定失效时结束本轮发布；三者一致时无需 PATCH，否则使用新读到的精确版本和原 claim 提交。读取后仍可能发生竞争，服务端 CAS 保留最终裁决。明确的 `409 version_conflict` 与其他拒绝、结果未知分别诊断，保留请求 ID 和错误链；读取或写入失败均由下一轮正常观察重新对账，不立即重发。投影不决定本机资源动作，也不保存待提交摘要回执。
 
 ## Git 工作区与资源身份
 
@@ -432,7 +432,7 @@ Backend 在 worktree 准备、initialize、launcher.prepare/launch 和原生输�
 
 Shutdown 在停止进程前识别已停止或失败的耗尽执行并保存暂停，避免把故障停机写成正常关停来源；尚未完成的显式 retry 也保留为暂停，不能通过 orderly restart 获得第二次尝试。兼容既有数据时，restartAfterShutdown=true 且 journal 没有 error 仍被视为旧正常关停来源；该标记不提供写入前进程状态的完整历史，不能据此重建所有旧故障。
 
-执行放行与远端摘要对账分离。原生恢复暂停或编排阻塞阻止执行时，Coordinator 仍以最新读取的 task 版本发布 `phase=waiting`与原 `nativeSessionId`，保留 active claim。发布失败只记录摘要错误，后续完整库存重新读取版本并对账，不增加原生恢复计数或清除暂停。支持启动观察的服务还接收与当前代际绑定的 startupReport；编排等待不能写成原生 recovery blocked，健康原执行仍报告 ready/none。既有阶段字段与报告都一致时不再写入。具体来源、兼容和读写校验由[启动观察协议](task-session-protocol.md#启动观察的独立上报)拥有。暂停继续承担名额及资源责任，不触发终止清理或业务完成。
+执行放行与远端摘要对账分离。原生恢复暂停或编排阻塞阻止执行时，Coordinator 仍可发布 `phase=waiting` 与原 `nativeSessionId`，保留 active claim；发布边界的归属校验不把暂停当作 claim 失效。发布失败只记录摘要错误，后续正常轮询重新对账，不增加原生恢复计数或清除暂停。支持启动观察的服务还接收与当前代际绑定的 startupReport；编排等待不能写成原生 recovery blocked，健康原执行仍报告 ready/none。具体来源、兼容和读写校验由[启动观察协议](task-session-protocol.md#启动观察的独立上报)拥有。暂停继续承担名额及资源责任，不触发终止清理或业务完成。
 
 显式 retry 仍受 runner 实例锁和原 active claim 校验保护。authorizeRecoveryRetry 保证 pauseReason 非空并设置 retryAuthorized=true，表示一次尚未消费的原身份恢复授权。完整停止验证通过后，beginWebGeneration 在同一 SQLite 事务中递增 count、建立新 generation、清除 pauseReason 并保留 retryAuthorized=true；换代与消费授权不能留下可重复尝试的中断窗口。普通 beginRecovery 不消费显式授权。
 
@@ -522,7 +522,7 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 真实 SQLite 验证身份、旧记录隔离、冲突及唯一 active。Git 测试验证 dirty state、归属、重开与安全删除；Worker 测试覆盖 Web claim、恢复、停止、容量、清理、项目改绑及取消。平台验证仍需各自来源明确的运行证据。
 
-Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证覆盖首发失败、下一轮读取新版本重试和稳定后无重复写；retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原首次操作不重放、claim 与容量责任保留。恢复后按当前输入流程构造本次 assignment。健康 orderly restart 保持独立；这些受控证据不替代真实 provider 和完整集成验收。
+Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证使用受控远端与屏障，让库存读取后同一 claim 提交新版本，再验证摘要一致时无冗余写入、仍有差异时使用新版本提交；还覆盖 claim 或任务状态失效、读取后的 CAS 竞争、失败分类、下一轮对账及稳定时无重复读写。retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原首次操作不重放、claim 与容量责任保留。恢复后按当前输入流程构造本次 assignment。健康 orderly restart 保持独立；这些受控证据不替代真实 provider 和完整集成验收。
 
 迁移验证覆盖清单发布、解锁、sidecar 和格式提交各阶段的故障与重入、持久读回及原 cwd 保留，不用成功退出码替代持久状态观察。
 

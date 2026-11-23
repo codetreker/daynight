@@ -46,7 +46,7 @@ func NewAuthentication(identity identityOperations, settings authconfig.AuthSett
 		return nil, err
 	}
 	h := &Authentication{
-		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
+		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, browserActivity: identity.AuthenticateBrowserActivity, authority: origin.Host, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
 		identity:              identity, callbackPath: callbackPath,
 	}
 	if len(observers) == 1 {
@@ -142,6 +142,12 @@ func (h *Authentication) registerRoutes(mux httpx.RouteRegistrar, observe func(S
 	}
 	routes.handle("PATCH /api/v1/me", scopedPatch, accountWrite, false)
 	routes.handle("POST /api/v1/auth/logout", h.Require(h.logout), accountBrowser, false)
+	routes.handle("POST /api/v1/auth/session/activity", h.sessionActivity, accountBrowser, false)
+	routes.handle("/api/v1/auth/session/activity", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		httpx.CloseUnreadBody(w, r)
+		httpx.MethodNotAllowed(h.logger, "POST")(w, r)
+	}, accountBrowserFallback, false)
 	routes.handle("GET /api/v1/me/tokens", h.Require(h.listTokens), accountBrowser, true)
 	routes.handle("POST /api/v1/me/tokens", h.Require(h.createToken), accountBrowser, false)
 	routes.handle("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken), accountBrowser, false)
@@ -224,7 +230,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		}
 		return
 	}
-	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.ExpiresAt, int(identity.SessionLifetime.Seconds())))
+	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.CreatedAt.Add(BrowserCookieLifetime), int(BrowserCookieLifetime.Seconds())))
 	logger.InfoContext(request.Context(), "login completed", "component", "auth", "phase", "callback", "user_id", result.User.ID, "credential_id", result.Session.ID, "request_id", httpx.RequestID(request.Context()))
 	destination := url.Values{"returnPath": {result.ReturnPath}, "callbackPath": {request.URL.EscapedPath()}}
 	complete := "/auth/complete?" + destination.Encode()

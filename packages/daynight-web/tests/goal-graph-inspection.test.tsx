@@ -172,7 +172,7 @@ describe('Goal graph prerequisite inspection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
     expect(body(view.container, 'join')).toHaveAttribute('aria-pressed', 'true');
     view.rerender(<GoalTaskGraph {...baseProps} index={buildGraphIndex(updated)} direction="vertical" onOpenTask={open} />);
-    await waitFor(() => expect(measure).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'vertical'));
+    await waitFor(() => expect(measure).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'vertical', expect.any(Map)));
     expect(body(view.container, 'join')).toHaveAttribute('aria-pressed', 'true');
     measure.mockRestore(); compile.mockRestore();
   });

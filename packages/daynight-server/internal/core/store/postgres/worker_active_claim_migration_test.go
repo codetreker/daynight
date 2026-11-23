@@ -134,7 +134,7 @@ func TestWorkerActiveClaimMigrationPreservesFactsAndReopens(t *testing.T) {
 	}
 	defer reopened.Close()
 	if got := reader(reopened); !reflect.DeepEqual(got, want) {
-		t.Fatal("same-ledger startup changed claims")
+		t.Fatal("current-ledger startup changed claims")
 	}
 	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
 		t.Fatal(err)

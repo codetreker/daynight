@@ -15,7 +15,6 @@ type TaskDetailReadingProps = {
   readonly description: string;
   readonly available?: boolean;
   readonly retainDraftsWhileUnavailable?: boolean;
-  readonly steps?: (active: boolean, renderMarkdown: (text: string) => ReactNode) => ReactNode;
   readonly discussion?: ReactNode | ((active: boolean) => ReactNode);
   readonly sessionRecords?: (active: boolean, render: (records: AttachmentRecordSlots) => ReactNode, resetSelection: object) => ReactNode;
   readonly session?: ReactNode | ((active: boolean) => ReactNode);
@@ -28,7 +27,7 @@ type TaskDetailReadingProps = {
   readonly urls?: AttachmentUrls;
 };
 
-export const TaskDetailReading = ({ projectId, taskId, description, overview, steps, discussion, session, usage, sessionRecords, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false, available = true, retainDraftsWhileUnavailable = false }: TaskDetailReadingProps) => {
+export const TaskDetailReading = ({ projectId, taskId, description, overview, discussion, session, usage, sessionRecords, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false, available = true, retainDraftsWhileUnavailable = false }: TaskDetailReadingProps) => {
   const { messages } = useI18n();
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory, enabled: available });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
@@ -67,7 +66,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, st
       setReference({ invalid: resolved.kind !== 'relative', selection: next });
     }} />;
 
-  return <TaskDetailPanels {...(usage === undefined ? {} : { usage: typeof usage === 'function' ? (active: boolean) => usage(available && active) : usage })} suspended={!available} {...(steps === undefined ? {} : { steps: (active: boolean) => steps(available && active, renderMarkdown) })} {...(discussion === undefined ? {} : { discussion: typeof discussion === 'function' ? (active: boolean) => available || retainDraftsWhileUnavailable ? discussion(available && active) : null : available || retainDraftsWhileUnavailable ? discussion : null })} {...(session === undefined ? {} : { session: typeof session === 'function' ? (active: boolean) => available || retainDraftsWhileUnavailable ? session(available && active) : null : available || retainDraftsWhileUnavailable ? session : null })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
+  return <TaskDetailPanels {...(usage === undefined ? {} : { usage: typeof usage === 'function' ? (active: boolean) => usage(available && active) : usage })} suspended={!available} {...(discussion === undefined ? {} : { discussion: typeof discussion === 'function' ? (active: boolean) => available || retainDraftsWhileUnavailable ? discussion(available && active) : null : available || retainDraftsWhileUnavailable ? discussion : null })} {...(session === undefined ? {} : { session: typeof session === 'function' ? (active: boolean) => available || retainDraftsWhileUnavailable ? session(available && active) : null : available || retainDraftsWhileUnavailable ? session : null })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
     ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
     : <div className="description-card">{renderMarkdown(description)}</div>)} attachments={(active) => {
       if (!available && !retainDraftsWhileUnavailable) return null;

@@ -424,6 +424,10 @@ type httpAuthenticationDAO struct {
 	calls     int
 }
 
+func (d *httpAuthenticationDAO) SessionTime(context.Context) (time.Time, error) {
+	return time.Now().UTC().Truncate(time.Microsecond), nil
+}
+
 func (d *httpAuthenticationDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
 	d.calls++
 	if d.calls != 1 || kind != d.principal.Kind || !bytes.Equal(hash, d.hash) || now.IsZero() || now.Location() != time.UTC {

@@ -13,7 +13,7 @@ func stepWebhookMigrationFixture(t *testing.T) (*pgxpool.Pool, int) {
 	t.Helper()
 	ctx := t.Context()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 118 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 119 })
 	if index < 1 {
 		t.Fatal("step webhook retirement migration is missing")
 	}
@@ -79,7 +79,7 @@ func TestRetireStepWebhookBindingsMigration(t *testing.T) {
  AND (SELECT deleted_at IS NULL AND authorization_epoch=14 AND updated_at='2026-01-01'::timestamptz FROM webhook_subscriptions WHERE id=$8)
  AND (SELECT config_version=8 AND destination_revision=3 AND client_key='client-mixed' AND updated_at>'2026-01-01' FROM webhook_endpoints WHERE id=$9)
  AND (SELECT config_version=9 AND updated_at='2026-01-01'::timestamptz FROM webhook_endpoints WHERE id=$10)
- AND (SELECT count(*)=1 FROM schema_migrations WHERE version=118)`, queryID(20), queryID(22), queryID(23), queryID(25), queryID(10), queryID(11), queryID(12), queryID(13), queryID(1), queryID(2)).Scan(&ok); err != nil || !ok {
+ AND (SELECT count(*)=1 FROM schema_migrations WHERE version=119)`, queryID(20), queryID(22), queryID(23), queryID(25), queryID(10), queryID(11), queryID(12), queryID(13), queryID(1), queryID(2)).Scan(&ok); err != nil || !ok {
 		t.Fatalf("retired bindings, subscriptions, endpoints or ledger: ok=%v err=%v", ok, err)
 	}
 	var after string
@@ -108,7 +108,7 @@ func TestRetireStepWebhookBindingsMigrationRollback(t *testing.T) {
 		t.Fatal("migration succeeded despite injected failure")
 	}
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=118`).Scan(&count); err != nil || count != 0 || stepWebhookRows(t, pool) != before {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=119`).Scan(&count); err != nil || count != 0 || stepWebhookRows(t, pool) != before {
 		t.Fatalf("failed migration left partial data or ledger: count=%d err=%v", count, err)
 	}
 	if _, err := pool.Exec(ctx, `DROP TRIGGER reject_step_retirement ON webhook_endpoints; DROP FUNCTION reject_step_retirement()`); err != nil {

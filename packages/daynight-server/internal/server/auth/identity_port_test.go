@@ -17,25 +17,26 @@ import (
 )
 
 type strictIdentity struct {
-	t                 *testing.T
-	callback          func() string
-	validateLogin     func(string, string) error
-	startLogin        func(context.Context, string, string, string) (identitycore.LoginStart, error)
-	completeLogin     func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
-	authenticate      func(context.Context, model.CredentialKind, string) (model.Principal, error)
-	user              func(context.Context, model.Principal) (model.User, error)
-	patchUser         func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
-	createPAT         func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
-	listPATs          func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
-	listPATsV2        func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
-	createPATV2       func(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error)
-	updateDescription func(context.Context, model.Principal, string, string, *string, *string) (string, *string, error)
-	revokePAT         func(context.Context, model.Principal, string) error
-	updatePAT         func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
-	startDevice       func(context.Context, string, string) (identitycore.DeviceStart, error)
-	inspectDevice     func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
-	decideDevice      func(context.Context, model.Principal, string, string, string) error
-	redeemDevice      func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
+	t                    *testing.T
+	callback             func() string
+	validateLogin        func(string, string) error
+	startLogin           func(context.Context, string, string, string) (identitycore.LoginStart, error)
+	completeLogin        func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	authenticate         func(context.Context, model.CredentialKind, string) (model.Principal, error)
+	authenticateActivity func(context.Context, string, string) (model.Principal, error)
+	user                 func(context.Context, model.Principal) (model.User, error)
+	patchUser            func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
+	createPAT            func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
+	listPATs             func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	listPATsV2           func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	createPATV2          func(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error)
+	updateDescription    func(context.Context, model.Principal, string, string, *string, *string) (string, *string, error)
+	revokePAT            func(context.Context, model.Principal, string) error
+	updatePAT            func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
+	startDevice          func(context.Context, string, string) (identitycore.DeviceStart, error)
+	inspectDevice        func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
+	decideDevice         func(context.Context, model.Principal, string, string, string) error
+	redeemDevice         func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -58,6 +59,12 @@ func (m *strictIdentity) Authenticate(ctx context.Context, kind model.Credential
 		return model.Principal{}, m.unexpected("Authenticate")
 	}
 	return m.authenticate(ctx, kind, credential)
+}
+func (m *strictIdentity) AuthenticateBrowserActivity(ctx context.Context, credential, expected string) (model.Principal, error) {
+	if m.authenticateActivity == nil {
+		return model.Principal{}, m.unexpected("AuthenticateBrowserActivity")
+	}
+	return m.authenticateActivity(ctx, credential, expected)
 }
 func (m *strictIdentity) ValidateLogin(provider, returnPath string) error {
 	if m.validateLogin == nil {

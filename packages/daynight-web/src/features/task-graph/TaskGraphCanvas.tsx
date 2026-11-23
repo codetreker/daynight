@@ -84,6 +84,7 @@ const TaskGraphCanvasContent = ({ canvasId, nodes, geometry, inspection, onClear
 }) => {
   const { messages: { graph: m } } = useI18n();
   const hint = useGraphReadingHint();
+  useLayoutEffect(() => { hint.reposition(); }, [geometry, hint]);
   const canvas = useMemo(() => (
     <ReactFlow<TaskFlowNode>
       id={canvasId}

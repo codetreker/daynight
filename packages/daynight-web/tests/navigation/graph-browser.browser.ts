@@ -16,7 +16,7 @@ for (const rootSize of [12, 16, 24]) test(`graph text and geometry remain indepe
   await expect(card.locator('.task-node-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
   await expect(page.locator('.task-chain-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
   await expect(page.locator('.task-chain-meta > .graph-status')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
-  await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(300 * Math.max(rootSize / 16, 1));
+  await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(240 * Math.max(rootSize / 16, 1));
   await body.focus();
   await body.press('Enter');
   await expect(body).toHaveAttribute('aria-pressed', 'true');
@@ -95,7 +95,7 @@ test('retains real dependency geometry and viewport through direction, zoom, pan
   }));
   for (const card of cards) {
     const external = !expected.memberIds.includes(card.id!);
-    expect(card).toEqual({ id: card.id, width: 300, height: external ? 184 : 124, hasControls: external, separate: true });
+    expect(card).toEqual({ id: card.id, width: 240, height: external ? 162 : 102, hasControls: external, separate: true });
   }
   const geometry = async (direction: 'horizontal' | 'vertical') => {
     expect(await checkDependencyGeometry(page, expected, info, undefined, direction)).toEqual({ total: 0, examples: [] });
@@ -160,7 +160,7 @@ for (const rootSize of [16, 32]) test(`320px graph keeps its first card and cont
     return { width: card.offsetWidth, height: card.offsetHeight,
       inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1) };
   });
-  expect(sizes).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, inside: true });
+  expect(sizes).toEqual({ width: 240 * rootSize / 16, height: 102 * rootSize / 16, inside: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await body.press('Enter');
   await expect(body).toHaveAttribute('aria-pressed', 'true');

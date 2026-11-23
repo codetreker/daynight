@@ -56,7 +56,7 @@ describe('scoped PAT management', () => {
   });
   it.each([409, 503])('preserves the draft, reads back and requires confirmation after %s', async status => {
     const transport = fixture();
-    const failure = status === 409 ? new ApiError('server', 409, 'version_conflict', null, undefined, undefined, undefined, 'not_committed') : new ApiError('network');
+    const failure = status === 409 ? new ApiError('server', 409, 'version_conflict', null, undefined, undefined, 'not_committed') : new ApiError('network');
     transport.scopes.mockImplementationOnce(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw failure; });
     transport.list.mockResolvedValueOnce([token]).mockResolvedValue([{ ...token, scopePolicy: { scopes: ['task:write'], scopeVersion: '2' } }]);
     render(page(transport)); await openScope(); selectWrite(); saveScope();

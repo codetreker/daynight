@@ -174,7 +174,7 @@ func TestStepWebhookRetirementUpgrade(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM webhook_bindings WHERE id=$1`, mixed.other).Scan(&deleted); err != nil || deleted {
 		t.Fatalf("mixed surviving binding deleted=%v err=%v", deleted, err)
 	}
-	if err = pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version < 118 {
+	if err = pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version < 119 {
 		t.Fatalf("candidate ledger=%d err=%v", version, err)
 	}
 	stepPath := "/api/v1/projects/" + fixture["project"] + "/tasks/" + fixture["task"] + "/steps"

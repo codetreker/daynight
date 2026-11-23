@@ -170,7 +170,15 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
 handoff, local users, browser sessions, personal access tokens and project
 membership. The identity module implements persistent users, browser-bound login
-transactions, sessions, PATs and callable HTTP handlers;
+transactions, sessions, PATs and callable HTTP handlers. Browser sessions share a
+168-hour idle deadline across the main site and authorized preview reads. Eligible
+activity locks the actual credential row, reads the primary database clock after
+locking and renews only a still-valid session; ordinary responses never reissue
+Cookies. New login and preview SSO Cookies request 400-day persistence.
+POST `/api/v1/auth/session/activity` accepts a main-site Cookie, exact Origin and
+`{expectedUserId}` and returns 204 only after the account-bound renewal commits.
+The [browser session design](../../docs/design/daynight-auth.md#主站-session-与-pat)
+owns request admission, expiration, deployment and recovery.
 NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
 [identity admission](../../docs/design/daynight-auth.md#uniauth-一次性交接) limits the
 decompressed upstream response to 2 MiB and retains the 15-second deadline. It
@@ -476,7 +484,7 @@ consumed grants cannot issue the secret again. The account token page can revoke
 `Daynight CLI (<hostname>)` credentials and edit the expiration of an active token without
 changing its secret or requiring another CLI login. `null` means never expires;
 a future UTC timestamp sets an expiration. Existing finite expirations retain
-their original values. Browser sessions keep their fixed seven-day lifetime.
+their original values. Browser sessions use their shared 168-hour idle deadline.
 There is no refresh token.
 
 The persistent polling schedule returns `authorization_pending` while waiting,
@@ -594,11 +602,25 @@ that understands that same ledger. Mixed or mismatched state requires
 investigation. Do not delete ledger rows or assume rollback. Repair a committed
 index through a subsequent migration.
 
-This build keeps the original inventory reader and can restart against the new
-ledger. Retain its exact SHA as the query-switch rollback build; a pre-migration
-binary cannot restart after commit. The
+Commit `9ea24e240f9a6ec65135b2b73ca0071ba8781581` retains the original
+inventory reader and understands the same migration ledger as the query switch.
+Retain a matching artifact for query rollback; a pre-migration binary cannot
+restart after commit. The
 [index design](../../docs/design/worker-active-claim-index.md) owns the expressions,
 validation and recovery contract.
+
+### Browser session activity upgrade
+
+Migration 118 follows the published history policy, frozen Worker index,
+archive upload and Session online mode migrations without changing their SQL, transform source or checksums. It adds
+nullable `sessions.last_used_at` without backfilling activity or changing existing
+expiry. Current authentication writers require this column. Drain older writers
+before switching the main site and previews to their shared database-clock
+renewal contract; routine responses retain the original credentials and Cookies.
+An initialized database follows the complete ordered ledger, while an empty
+namespace receives the equivalent version-118 snapshot and checksums atomically.
+The [authentication design](../../docs/design/daynight-auth.md#数据与并发) owns
+session validity, concurrent renewal and recovery requirements.
 
 ### Dependency type upgrade
 

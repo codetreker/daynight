@@ -1,4 +1,4 @@
--- Schema snapshot version: 118
+-- Schema snapshot version: 119
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1011,6 +1011,7 @@ CREATE TABLE "sessions" (
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
     "preview_token_hash" "bytea",
+    "last_used_at" timestamp with time zone,
     CONSTRAINT "sessions_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "sessions_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
 );

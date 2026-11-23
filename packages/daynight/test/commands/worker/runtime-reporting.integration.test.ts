@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { ApiError } from "../../../src/api/client.js";
-import { OperationError } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, WorkerCloudReport, WorkerCloudResource, ReceivedWorkerConfigurationReportReceipt } from "../../../src/api/worker-configuration.js";
@@ -18,7 +18,7 @@ import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/wor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
-import { retainedOwnedCommandBoundaries } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import * as atomicFiles from "../../../src/platform/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -1218,6 +1218,86 @@ describe("worker runtime configuration reporting", () => {
       await Promise.allSettled([running]);
     }
   });
+
+  it("continues task reconciliation while a telemetry command retains an unknown boundary", async () => {
+    vi.useRealTimers();
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, pollIntervalMs: 1000 } };
+    const tick = vi.fn(async () => {});
+    mocks.coordinator.mockReturnValue({ tick, archiveYield: () => false, updateConfiguration: update, shutdown });
+    const startProbe = deferred<void>(), releaseOutput = deferred<void>();
+    const savedUnknown = deferred<{ resourceId: string; error: unknown }>();
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    let testFailure: unknown;
+    const consumeOutput = vi.fn(async () => { await releaseOutput.promise; });
+    const reconcileOriginal = () => eventually(async () => {
+      // A new observation can initially join the original timed-out stop.
+      const reconciled = await control!.reconcile({ deadline: Date.now() + 3_000 });
+      expect(reconciled.filter(result => result.stop !== "confirmed")).toEqual([]);
+    });
+    collect.mockImplementationOnce(async parent => {
+      await startProbe.promise;
+      parent.check();
+      const operation = createOperation({ signal: parent.signal, limits: { totalMs: 3000, requestMs: 3000 } });
+      const originalSink = currentOwnedCommandLifecycle()!;
+      let resourceId = "";
+      try {
+        await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('probe');"], environment: process.env }, operation,
+          async event => { resourceId = event.resourceId; await originalSink(event); },
+          { cleanupWithinDeadline: true, onStdout: consumeOutput });
+        throw new Error("Expected the original telemetry output to remain unjoined.");
+      } catch (error) {
+        savedUnknown.resolve({ resourceId, error });
+        return { telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error }] };
+      } finally { operation.dispose(); }
+    });
+    const running = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await eventually(() => expect(tick).toHaveBeenCalled());
+      startProbe.resolve();
+      const { resourceId, error } = await savedUnknown.promise;
+      expect(consumeOutput).toHaveBeenCalled();
+      expect(error).toBeInstanceOf(OwnedCommandCleanupError);
+      expect(control!.snapshot()).toMatchObject({ admission: "open", stopped: false, generation: "1" });
+      const priorTicks = tick.mock.calls.length;
+      await eventually(() => expect(tick.mock.calls.length).toBeGreaterThan(priorTicks));
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      expect(shutdown).not.toHaveBeenCalled();
+      const occupied = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(occupied).toBeNull(); } finally { await occupied?.release(); }
+      const journalFile = path.join(f.paths.workerDirectory, "execution-resources", `${resourceId}.json`);
+      expect(JSON.parse(await readFile(journalFile, "utf8")))
+        .toMatchObject({ generation: "1", event: { resourceId, stage: "unknown", proof: expect.any(Object) } });
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+
+      expect(await control!.stop({ deadline: Date.now() + 1000 }))
+        .toContainEqual(expect.objectContaining({ resourceId: "native-inventory", stop: "unknown" }));
+      expect(() => control!.rebuild()).toThrow("original resources");
+      releaseOutput.resolve();
+      await reconcileOriginal();
+      expect(JSON.parse(await readFile(journalFile, "utf8"))).toMatchObject({ generation: "1", event: { resourceId, stage: "stopped" } });
+      expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(false);
+      f.signal.abort();
+      await running;
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
+    } catch (error) {
+      testFailure = error;
+      throw error;
+    } finally {
+      releaseOutput.resolve();
+      startProbe.resolve();
+      try {
+        if (control?.snapshot().admission === "closed" && !control.snapshot().stopped) await reconcileOriginal();
+      } catch (cleanupError) {
+        if (testFailure === undefined) throw cleanupError;
+        throw new AggregateError([testFailure, cleanupError], "Telemetry isolation and original scope teardown failed.");
+      } finally {
+        f.signal.abort();
+        await Promise.allSettled([running]);
+      }
+    }
+  }, 20_000);
 
   it("re-observes joined reporter failures after the original native stop receipt closes", async () => {
     // Windows observes the real guardian's exit through an interval; freezing

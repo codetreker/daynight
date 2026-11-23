@@ -20,8 +20,7 @@ Task and Thread operations. Historical events retain the common decoder.
 The existing update path refreshes installed User and current-worktree Project
 skills; first installations and other Project copies use skill installation.
 Ordinary changes preserve the package version and use the existing release
-workflow for publication. HTTP, Web and MCP Steps lifecycles remain owned by
-their respective implementations and retirement deliveries.
+workflow for publication. HTTP and MCP Steps remain available. The [Web retirement](2026-11-23-retire-web-task-steps.md) removes its Steps workspace.
 
 The CLI-specific [text process proof](../testing/2026-11-10-step-cli-text-process-proof.md),
 [layered test migration](../testing/2026-11-10-step-cli-test-layered-removal.md)

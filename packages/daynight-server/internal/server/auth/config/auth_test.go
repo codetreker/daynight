@@ -35,6 +35,7 @@ func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
 		{"different origin", "https://example.com", "https://other.example/auth/callback", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 		{"noncanonical callback", "https://example.com", "https://example.com/a/../callback", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 		{"reserved callback", "https://example.com", "https://example.com/api/v1/me/child", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
+		{"activity callback", "https://example.com", "https://example.com/api/v1/auth/session/activity", "DAYNIGHT_UNIAUTH_CALLBACK_URL", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			origin, path, err := ValidateAuthSettings(AuthSettings{PublicOrigin: tc.origin, AllowHTTPTestOrigin: tc.allowHTTP}, tc.callback)

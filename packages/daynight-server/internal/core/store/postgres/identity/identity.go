@@ -34,10 +34,10 @@ func (s *scope) CleanupCredentials(ctx context.Context, now time.Time) error {
 	if err := s.tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseNow); err != nil {
 		return pg.AuthQueryError("read login cleanup time", err)
 	}
-	return cleanupCredentials(ctx, s.tx, databaseNow, now)
+	return cleanupCredentials(ctx, s.tx, databaseNow, databaseNow, now)
 }
 func (s *scope) CleanupLoginCredentials(ctx context.Context, databaseNow, applicationNow time.Time) error {
-	return cleanupCredentials(ctx, s.tx, databaseNow, applicationNow)
+	return cleanupCredentials(ctx, s.tx, databaseNow, databaseNow, applicationNow)
 }
 
 // The lock covers both counts and the caller's subsequent cleanup and insert.
@@ -95,7 +95,7 @@ func (s *scope) UpsertUser(ctx context.Context, user model.User, now time.Time) 
 	return user, pg.AuthQueryError("upsert user", err)
 }
 func (s *scope) InsertSession(ctx context.Context, session model.Session) error {
-	_, err := s.tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session.ID, session.UserID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
+	_, err := s.tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at,last_used_at) VALUES ($1,$2,$3,$4,$5,$6)`, session.ID, session.UserID, session.TokenHash, session.CreatedAt, session.ExpiresAt, session.LastUsedAt)
 	return pg.AuthQueryError("insert session", err)
 }
 func (s *scope) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
@@ -103,12 +103,14 @@ func (s *scope) Authenticate(ctx context.Context, kind model.CredentialKind, has
 	if err != nil {
 		return model.Principal{}, err
 	}
-	predicate := "c.expires_at>$2"
+	predicate := "c.expires_at>clock_timestamp()"
+	args := []any{hash}
 	if kind == model.PATCredential {
 		predicate = "(c.expires_at IS NULL OR c.expires_at>$2)"
+		args = append(args, now)
 	}
 	p := model.Principal{Kind: kind}
-	err = s.tx.QueryRow(ctx, `SELECT c.id::text,c.user_id::text FROM `+table+` c JOIN users u ON u.id=c.user_id WHERE c.token_hash=$1 AND `+predicate, hash, now).Scan(&p.CredentialID, &p.UserID)
+	err = s.tx.QueryRow(ctx, `SELECT c.id::text,c.user_id::text FROM `+table+` c JOIN users u ON u.id=c.user_id WHERE c.token_hash=$1 AND `+predicate, args...).Scan(&p.CredentialID, &p.UserID)
 	if err != nil {
 		return p, pg.AuthQueryError("authenticate", err)
 	}
@@ -148,14 +150,21 @@ func (s *scope) DeleteSession(ctx context.Context, p model.Principal) error {
 	_, err := s.tx.Exec(ctx, `DELETE FROM sessions WHERE id=$1 AND user_id=$2`, p.CredentialID, p.UserID)
 	return pg.AuthQueryError("delete session", err)
 }
-func (s *scope) LockSession(ctx context.Context, p model.Principal, now time.Time) error {
+func (s *scope) LockSession(ctx context.Context, p model.Principal, _ time.Time) error {
 	if p.Kind != model.SessionCredential {
 		return model.ErrNotFound
 	}
 	var id string
-	err := s.tx.QueryRow(ctx, `SELECT id::text FROM sessions WHERE id=$1 AND user_id=$2 AND expires_at>$3 FOR SHARE`, p.CredentialID, p.UserID, now).Scan(&id)
+	err := s.tx.QueryRow(ctx, `SELECT id::text FROM sessions WHERE id=$1 AND user_id=$2 FOR SHARE`, p.CredentialID, p.UserID).Scan(&id)
 	if err != nil {
 		return pg.AuthQueryError("lock session", err)
+	}
+	var valid bool
+	if err := s.tx.QueryRow(ctx, `SELECT expires_at>clock_timestamp() FROM sessions WHERE id=$1 AND user_id=$2`, p.CredentialID, p.UserID).Scan(&valid); err != nil {
+		return pg.AuthQueryError("recheck browser session expiry", err)
+	}
+	if !valid {
+		return model.ErrNotFound
 	}
 	return nil
 }

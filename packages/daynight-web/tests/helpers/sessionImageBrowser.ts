@@ -90,7 +90,6 @@ export async function openSessionImages(page: Page, { entry = 'task', ...options
       return route.fulfill({ status: 200, body: bytes, headers: { 'Content-Type': resource.mediaType!, 'Content-Length': resource.byteLength!, 'Daynight-User-ID': TEST_VIEWER_ID } });
     }
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
-    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: source.sessionId } }, 404);
   });
   if (entry === 'task-dialog') {

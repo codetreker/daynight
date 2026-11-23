@@ -75,11 +75,9 @@ Webhook owner and status filters use the filter variant; subscription and
 delivery filters use the full-width form variant. Their callers retain scope
 isolation, option eligibility and explicit delivery-filter application.
 
-Task platform and PR pagination use compact controls; Task organization and Step
-forms use fill-width form controls. Their callers retain confirmation, numeric
-conversion, drafts and real element refs. Task detail and Step draft handlers
-leave native Escape cancellation intact while preventing an open picker from
-closing the enclosing view or discarding a draft.
+Task platform and PR pagination use compact controls; Task organization uses fill-width form controls. Callers retain confirmation, numeric
+conversion, drafts and real element refs. Task detail handlers leave native Escape
+cancellation intact while preventing an open picker from closing the enclosing view.
 
 The native select policy enumerates every production TS/TSX and CSS input,
 including unreferenced files. TypeScript 7 project snapshots and AST traversal
