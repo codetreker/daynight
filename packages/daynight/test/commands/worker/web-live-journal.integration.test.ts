@@ -1,3 +1,5 @@
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import path from "node:path";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -171,7 +173,7 @@ it.each(["accepted", "confirmed", "payload-conflict", "generation-conflict", "ti
     db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(snapshot));
     db.prepare("INSERT INTO operations(id,value,acknowledged) VALUES(?,?,0)").run(operation.operationId, JSON.stringify(operation));
     if (state === "ticket-conflict") db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
-    if (state === "future") db.pragma("user_version=19");
+    if (state === "future") db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
   } finally { db.close(); }
   const bytes = readFileSync(f.file);
   const task = f.store.updateWebExecution(f.task, { initialInputState: "unknown", activity: "idle" }, 8);
@@ -206,7 +208,7 @@ it.each(["ticket", "native-prefix", "future"] as const)("retains a live v16 boun
   try {
     if (conflict === "ticket") db.prepare("UPDATE execution SET ticket_hash=? WHERE id=1").run("b".repeat(64));
     else if (conflict === "native-prefix") db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...f.snapshot, nativeProcesses: [] }));
-    else db.pragma("user_version=19");
+    else db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
   } finally { db.close(); }
   const bytes = readFileSync(f.file), before = f.store.getTask(f.task);
   const stop = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
