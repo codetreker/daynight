@@ -10,6 +10,7 @@ import type { ImageError } from "../../../session/image-values.js";
 import { ImageCaptureNotDispatchedError } from "./capture-error.js";
 import { ARCHIVE_REQUEST_TIMEOUT_MS, archiveRetryDelay, archiveRetryRuntime, readArchiveRequestError, type ArchiveRetryEvent, type ArchiveRetryRuntime } from "../archive-retry.js";
 import type { ArchiveRequestError } from "../archive-error.js";
+import { describeHistorySyncError } from "./history-sync-error.js";
 
 export const createImageHistoryRetryBudget = (): { retries: number; deadline: number | null; lastError?: ArchiveRequestError } => ({ retries: 0, deadline: null });
 
@@ -71,7 +72,7 @@ export const syncControllerImageHistory = async (options: {
         signal.throwIfAborted();
         return value;
       }
-      const error = await readArchiveRequestError(response, signal);
+      const error = describeHistorySyncError(await readArchiveRequestError(response, signal), method === "GET" ? "GET status" : "PUT chunk");
       if (!error.busy && bodyOnly && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body history synchronization.");
       if (!error.busy) throw error;
       if (reconcile && budget.deadline !== null && runtime.now() >= budget.deadline) throw error;

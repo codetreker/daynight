@@ -431,3 +431,34 @@ test("a connection change while reading a receipt cannot publish an old checkpoi
     expect(f.journal.hasImageHistoryCheckpoint(f.journal.getLastSourceSequence())).toBe(false);
   } finally { release(); f.journal.close(); }
 });
+
+test.each(["GET", "PUT"] as const)("history %s failure preserves safe diagnostics and the frozen intent without another submission", async method => {
+  const f = await fixture(), calls: string[] = [];
+  try {
+    const intent = f.journal.prepareImageHistorySync()!;
+    const request: typeof fetch = async (_input, init) => {
+      calls.push(init!.method!);
+      if (init!.method === "GET" && method === "PUT") return calls.length === 1 ? new Response(null, { status: 404 }) : Response.json({ syncId: intent.syncId, state: "receiving", acceptedOffset: "0", byteLength: intent.byteLength, sha256: intent.sha256, timelineRevision: null, error: null });
+      return Response.json({ error: { code: "archive_conflict", requestId: "REQ_123-abc", message: "private-response-canary" } }, { status: 409 });
+    };
+    await expect(syncControllerImageHistory({ ...f, request })).rejects.toMatchObject({ status: 409, message: `Controller history synchronization ${method === "GET" ? "GET status" : "PUT chunk"} failed (409; code=archive_conflict; requestId=REQ_123-abc).` });
+    expect(calls).toEqual(method === "GET" ? ["GET"] : ["GET", "PUT", "GET"]);
+    expect(f.journal.prepareImageHistorySync()).toEqual(intent);
+    expect(await readFile(intent.filename)).not.toHaveLength(0);
+  } finally { f.journal.close(); }
+});
+
+test("history HTTP failure body shares caller cancellation without retrying its request", async () => {
+  const f = await fixture(), abort = new AbortController(), reading = Promise.withResolvers<void>(); let calls = 0, canceled = 0;
+  try {
+    const request: typeof fetch = async (_input, init) => {
+      calls++; expect(init!.signal).toBeInstanceOf(AbortSignal);
+      return new Response(new ReadableStream<Uint8Array>({ pull() { reading.resolve(); }, cancel() { canceled++; } }), { status: 409 });
+    };
+    const pending = syncControllerImageHistory({ ...f, signal: abort.signal, request });
+    const reason = new Error("Original caller cancelled.");
+    const rejected = expect(pending).rejects.toBe(reason);
+    await reading.promise; abort.abort(reason); await rejected;
+    expect(calls).toBe(1); expect(canceled).toBe(1); expect(f.journal.prepareImageHistorySync()).not.toBeNull();
+  } finally { f.journal.close(); }
+});

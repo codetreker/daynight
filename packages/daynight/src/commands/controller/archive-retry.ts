@@ -95,5 +95,5 @@ export const readArchiveRequestError = async (response: Response, signal: AbortS
   }
   const detail = payload !== null && typeof payload === "object" && !Array.isArray(payload) && "error" in payload ? payload.error : undefined;
   const code = detail !== null && typeof detail === "object" && !Array.isArray(detail) && "code" in detail && typeof detail.code === "string" ? detail.code : undefined;
-  return new ArchiveRequestError(response.status, code, payload, response.headers.get("Daynight-Archive-Upload-Version"));
+  return new ArchiveRequestError(response.status, code, payload, response.headers.get("Daynight-Archive-Upload-Version"), length);
 };

@@ -12,7 +12,7 @@ export class ArchiveFileFailedError extends Error {
 }
 
 export class ArchiveRequestError extends Error {
-  constructor(readonly status: number, readonly code: string | undefined, readonly payload?: unknown, readonly uploadVersion?: string | null) {
+  constructor(readonly status: number, readonly code: string | undefined, readonly payload?: unknown, readonly uploadVersion?: string | null, readonly responseByteLength?: number) {
     super(`Session archive request failed (${status}).`);
     this.name = "ArchiveRequestError";
   }
