@@ -58,6 +58,24 @@ afterEach(() => {
 });
 
 describe("persistent Worker lifecycle authority", () => {
+  it("reserves only cleanup commands under the original scope after local veto and intent changes", () => {
+    const f = enabled(), task = { projectId: id(20), taskId: id(21), claimId: id(22) };
+    f.store.closeAdmission({ operationId: id(23), local: true });
+    f.store.observeAuthority({ intentVersion: "2", desired: "disabled", admission: "closed" });
+    const current = binding(f.store);
+    expect(() => f.store.reserveCleanupCommand({ binding: f.binding, task, resourceId: id(24) })).toThrow("binding is stale");
+    expect(() => reserve(f.store, current, id(24))).toThrow(LifecycleAdmissionError);
+    const resource = f.store.reserveCleanupCommand({ binding: current, task, resourceId: id(24) });
+    expect(resource).toMatchObject({ instanceId: f.binding.instanceId, instanceEpoch: f.binding.instanceEpoch, scopeGeneration: f.binding.scopeGeneration, stage: "reserved", identity: { kind: "cleanup_command", ...task } });
+    expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, desired: "disabled" });
+    expect(f.store.snapshot().counts.pending).toBe(1);
+    f.store.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: 3 }, saveState: "durable" });
+    expect(f.store.snapshot().counts.pending).toBe(0);
+    expect(() => f.store.reserveCleanupCommand({ binding: { ...current, instanceId: id(25) }, task, resourceId: id(26) })).toThrow(LifecycleAdmissionError);
+    expect(() => f.store.reserveCleanupCommand({ binding: { ...current, scopeGeneration: "2" }, task, resourceId: id(26) })).toThrow(LifecycleAdmissionError);
+    expect(f.store.readResource(id(26))).toBeNull();
+  });
+
   it("preserves large filesystem identifiers and rejects a replacement with the same rounded Number", () => {
     const f = fixture(); close(f.store);
     fileIdentity.file = f.file; fileIdentity.inode = 9007199254740992n;
