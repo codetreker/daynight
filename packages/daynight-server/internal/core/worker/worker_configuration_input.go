@@ -148,8 +148,8 @@ func ParseTaskTagFilter(raw json.RawMessage) (model.TagNameFilter, error) {
 	return result, nil
 }
 
-// ParseWorkerConfiguration normalizes current and legacy values. Negotiated HTTP
-// writes use ParseWorkerConfigurationProtocol to require the advertised fields.
+// ParseWorkerConfiguration normalizes the current domain configuration. Negotiated
+// HTTP inputs use ParseWorkerConfigurationProtocol for their declared wire shape.
 func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
 	return parseWorkerConfiguration(raw, true)
 }

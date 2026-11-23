@@ -497,7 +497,7 @@ func (f *capacityReportOperationFixture) listRequest(result workerservice.Worker
 }
 
 func boundedUTF8(size int) string {
-	return strings.Repeat("ç•Œ", size/3) + strings.Repeat("x", size%3)
+	return strings.Repeat("界", size/3) + strings.Repeat("x", size%3)
 }
 
 func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
