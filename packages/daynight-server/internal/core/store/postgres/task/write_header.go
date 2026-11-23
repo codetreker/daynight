@@ -11,6 +11,10 @@ func (tx *Writer) TaskHeader(ctx context.Context, taskID string) (model.TaskHead
 	return pg.ReadTaskHeader(ctx, tx.tx, tx.projectID, taskID, " FOR UPDATE")
 }
 
+func (tx *Writer) TaskVisibilityHeader(ctx context.Context, taskID string) (model.TaskHeader, error) {
+	return pg.ReadTaskHeader(ctx, tx.tx, tx.projectID, taskID, "")
+}
+
 // TouchTask advances the shared revision without changing task policy or Sessions.
 func (tx *Writer) TouchTask(ctx context.Context, taskID string, observed time.Time) error {
 	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET version=version+1,updated_at=$3 WHERE project_id=$1 AND id=$2`, tx.projectID, taskID, observed)

@@ -8,7 +8,7 @@ An idle Web Agent can finish a turn while its task remains active. A Worker that
 
 ## Decision
 
-Each Worker run and Controller generation establishes the assignment before periodic inputs. Patrol uses the existing tick and the [Controller input admission](2026-11-17-controller-worker-input.md) queue, with transient per-binding state for assignment and uncertain operations. A legacy Controller is adopted only after its original input and native identity are established and its processes are proven stopped; orderly restart preserves the claim, Session and worktree. The [Worker design](../../../../docs/design/daynight-worker.md) owns the protocol and recovery rules.
+Each Worker run and Controller generation establishes the assignment before periodic inputs. Patrol uses the existing tick and the [Controller input admission](2026-11-17-controller-worker-input.md) queue, with transient per-binding state for assignment and uncertain operations. A legacy Controller is adopted only after its original input and native identity are established and its processes are proven stopped; orderly restart preserves the claim, Session and worktree. An inherited initial receipt is reconciled read-only against its original operation and the current ticket-bound journal. Until both the receipt and a fresh same-generation snapshot establish acceptance, no continuation assignment or ping is submitted; rebuilding process-local progress does not replay the initial input. The [inherited input decision](../bug-fix/2026-11-23-worker-inherited-initial-input.md) owns this recovery distinction. The [Worker design](../../../../docs/design/daynight-worker.md) owns the protocol and recovery rules.
 
 ## Alternatives
 

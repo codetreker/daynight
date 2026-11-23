@@ -11,7 +11,7 @@ func ReadTaskHeader(ctx context.Context, tx pgx.Tx, projectID, taskID, lock stri
 	var header model.TaskHeader
 	relation, deleted := "task_resource_rows t", "t.effective_deleted_at"
 	if lock != "" {
-		relation, deleted = "tasks t", "COALESCE(t.deleted_at, (SELECT p.deleted_at FROM tasks p WHERE p.project_id=t.project_id AND p.id=t.parent_id))"
+		relation, deleted = "tasks t", "COALESCE(t.deleted_at, t.ancestor_deleted_at)"
 		lock += " OF t"
 	}
 	err := tx.QueryRow(ctx, `SELECT t.project_id::text,t.id::text,t.type,t.version,`+deleted+` FROM `+relation+` WHERE t.project_id=$1 AND t.id=$2`+lock, projectID, taskID).

@@ -193,7 +193,7 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
 `061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。MCP 的既有 Task 工具将 Type 和 Parent 输入交给共享业务；原始字段存在性区分 Parent 省略、null 与 UUID，写入大小核算包括两字段。列表游标绑定规范化的类型和 Parent，围栏覆盖所有可见类型的变更。
 
-`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+`062_task_resource_rows.sql` 建立统一资源视图；迁移 `123_task_ancestor_visibility.sql` 增加内部 `ancestor_deleted_at` 并将有效删除改为 `COALESCE(deleted_at, ancestor_deleted_at)`，保留原视图列及直属 Parent 事实。历史 Goal-only 形状校验、回填和视图替换同事务完成。无需锁定的存在性和对外查询在排序、分页和聚合前过滤。资料和 Session 带锁入口锁定目标物理行并读取有效删除；Session 注册使用 UPDATE，其他资源使用 SHARE。祖先删除在项目锁内枚举仍可见后代，连同目标及显式解除引用源按 UUID 取得最终行锁，再同事务写入目标墓碑、继承标记、关联清理和一次 epoch 轮换。后代仅隐藏时保留业务版本及时间。机制与恢复由[删除设计](daynight-task-deletion.md)拥有，取舍见[子树可见性决策](../../.agents/notes/implemented/architecture/2026-11-23-task-subtree-visibility.md)。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
 `063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
@@ -355,7 +355,7 @@ Task 与 Goal 写入共享下述项目事务步骤；显式 Goal 状态与直接
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
 
-Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前 Parent；若 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除只标记 Goal 并同事务轮换 epoch，不修改子项；其有效删除使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选。统一 Task 写入链路依据普通 Task 的变化前后状态判断实际进入 `in_progress`，并在同一项目事务读取当前 Parent；若 Goal 为 `todo`，复用 core 的 Goal 状态候选与持久化机制将其推进到 `in_progress`。人工状态修改和 Worker claim 均经过此链路，项目锁使并发子 Task 的启动只推进 Goal 一次。父子写入任一失败均回滚；同状态或归属等其他编辑不触发。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值，实际写入的版本可由读取及增量同步观察。Goal 删除仅对 Goal 写物理墓碑，对仍可见后代保存继承隐藏标记，并同事务轮换 epoch；后代业务字段保留，其有效隐藏使库存缺失进入既有 cleanup。写后 Goal progress 在同一事务内聚合并参与精确响应准入，进度本身不派生状态。Goal 不发布现有可执行 Task Webhook。设计取舍见[子任务启动 Goal 决策](../../.agents/notes/implemented/feature/2026-11-13-start-goal-with-child.md)。
 
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
@@ -505,7 +505,7 @@ task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`co
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
-普通列表与 priority/ready 查询共享 `store.TagFilter`。`core/task` 将 ID 规范化、去重排序并验证 all/any/untagged 组合；service 在已授权的同一 repeatable-read scope 中通过 `TagDAO.ResolveTags` 校验全部项目内标签后再选择任务。缺失标签返回 `invalid_tag_filter`，数据库与取消错误保留。DAO 使用关联表集合条件在排序和 LIMIT 前执行 all、any 或无关联选择，与类型、Parent、状态、负责人和就绪条件 AND 组合；有效删除视图继续排除自身或父 Goal 已删除的条目。选定页仍批量加载标签引用。cursor 使用规范化标签过滤的 SHA-256 摘要绑定集合、模式和无标签状态，避免合法的大型 query 使 cursor 超过 16 KiB；摘要不承担授权或防篡改。ranked 搜索与客户端参数采用由各自查询入口拥有。取舍见[标签筛选决策](../../.agents/notes/implemented/feature/2026-11-13-task-tag-filters.md)。
+普通列表与 priority/ready 查询共享 `store.TagFilter`。`core/task` 将 ID 规范化、去重排序并验证 all/any/untagged 组合；service 在已授权的同一 repeatable-read scope 中通过 `TagDAO.ResolveTags` 校验全部项目内标签后再选择任务。缺失标签返回 `invalid_tag_filter`，数据库与取消错误保留。DAO 使用关联表集合条件在排序和 LIMIT 前执行 all、any 或无关联选择，与类型、Parent、状态、负责人和就绪条件 AND 组合；有效删除视图继续排除自身或祖先已删除的条目。选定页仍批量加载标签引用。cursor 使用规范化标签过滤的 SHA-256 摘要绑定集合、模式和无标签状态，避免合法的大型 query 使 cursor 超过 16 KiB；摘要不承担授权或防篡改。ranked 搜索与客户端参数采用由各自查询入口拥有。取舍见[标签筛选决策](../../.agents/notes/implemented/feature/2026-11-13-task-tag-filters.md)。
 
 自动候选的 `candidateWorkerId` 独立于 inventory `workerId`。service 在同一授权快照读取账号所属 Worker 的 Raw 目标，解析名称筛选后建立绑定身份和语义摘要的 cursor scope。DAO 以单个 `text[]` 参数按 `project_tags.name_key` 检查任务自身标签：any 使用 EXISTS，all 对每个配置 key 检查不存在的关联。条件与现有资格共同在排序及 LIMIT 前生效，未初始化目标视为空筛选；读取或解析错误继续传播。名称不预先解析为项目标签 ID，因此缺失名称不会从 all 集合中消失。
 

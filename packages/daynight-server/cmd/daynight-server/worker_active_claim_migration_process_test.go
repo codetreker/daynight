@@ -37,7 +37,14 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Remove later additive migrations and their ledger entries to restore schema 114.
-			if _, err := observer.Exec(ctx, `DROP INDEX task_properties_worker_active_claim_idx;
+			if _, err := observer.Exec(ctx, `CREATE OR REPLACE VIEW task_resource_rows AS
+SELECT t.id,t.project_id,t.title,t.description,t.status,t.version,t.created_at,t.updated_at,t.started_at,t.completed_at,
+ t.allow_agents,t.required_platform,t.deleted_at,t.assigned_to,t.cancelled_at,t.type,t.parent_id,
+ p.type AS parent_type,p.deleted_at AS parent_deleted_at,
+ COALESCE(t.deleted_at,CASE WHEN t.type='task' AND p.type='goal' THEN p.deleted_at END) AS effective_deleted_at
+FROM tasks t LEFT JOIN tasks p ON p.project_id=t.project_id AND p.id=t.parent_id;
+ALTER TABLE tasks DROP COLUMN ancestor_deleted_at;
+DROP INDEX task_properties_worker_active_claim_idx;
 ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 DROP INDEX sessions_user_created_id;

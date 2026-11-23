@@ -525,3 +525,11 @@ func (sourceClaimAdmission) CheckWorkerExecution(context.Context, string, string
 func (m sourceClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
 	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }
+
+func (d *sourceTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *sourceTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

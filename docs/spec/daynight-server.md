@@ -302,7 +302,7 @@ HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 chars
 Steps 集合、单项、status 和 position 子路径不注册 REST handler 或专用 CORS/scope 路由。旧 GET、HEAD、POST、PATCH、DELETE 和 PUT 进入既有未知 API 处理，不返回成功、不回落 SPA，也不调用 Steps 存储、修改父 Task 或产生领域事件。普通 Task、Thread 和附件沿用各自现有准入及错误行为。Steps 应用服务与专用领域逻辑已移除，Steps 存储合同、专用模型和 DAO 已移除，旧表仍保留；详情由 [Steps 退役要求](daynight-task-steps.md)拥有。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
-不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或父 Goal 已删除的任务的定点资源返回
+不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或祖先已删除的任务的定点资源返回
 `410 task_deleted`；非成员与不存在任务仍为 `404 not_found`。列表、ready、图、同步、统计与
 新增依赖引用排除有效删除的普通任务；未改变的依赖保留物理状态用于满足性、重开保护和环检测。DELETE 正文 removeDepends 可省略或为严格布尔：省略/false 遇未删除引用者时拒绝且零变更；true 原子清除全部传入普通/外部及已删除源历史引用，并各自增加受影响源版本一次。目标自己的前置与附件保留，active 目标 worker 仍禁止删除。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
 

@@ -1,6 +1,6 @@
 # 项目内 Task 搜索接口
 
-`POST /api/v1/projects/{projectId}/tasks/search` 在单个可读项目内搜索 Task 自身 ID、完整标题和 Markdown 描述，包括已完成资源，排除自身或父 Goal 已删除的资源。它是无副作用的读取，要求认证与项目读取权限；Cookie 请求遵守现有同源规则，响应禁止缓存。
+`POST /api/v1/projects/{projectId}/tasks/search` 在单个可读项目内搜索 Task 自身 ID、完整标题和 Markdown 描述，包括已完成资源，排除自身或祖先已删除的资源。它是无副作用的读取，要求认证与项目读取权限；Cookie 请求遵守现有同源规则，响应禁止缓存。
 
 请求使用严格 JSON：`query` 为必需的原始表达式，`status`、`assignedTo`、`ready`、`allowAgents`、`compatiblePlatform`、`tagIds`、`tagMatch` 和 `untagged` 为可选筛选，与整个表达式取交集。`tagIds` 是项目标签 UUID 数组，规范化、去重和排序；`tagMatch` 为 `all`（默认）或 `any`，`untagged` 为布尔值且不能与非空 `tagIds` 同时使用。空集合且非 `untagged` 不限制标签。无效、跨项目或已删除标签返回 `400 invalid_tag_filter`；不得截断超限输入。标签仅按条目自身关联匹配，标签名称不参与文字匹配。`limit` 默认 50，范围 1–100；`cursor` 可省略或为 null，续页重复原始表达式与筛选。缺省状态包含所有状态，包括cancelled；取消不删除搜索记录。筛选值沿用 Task 列表的含义。`type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，null 只匹配未归属资源，UUID 匹配直接孩子。Goal 不接受非空 Parent。
 

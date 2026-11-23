@@ -12,15 +12,24 @@ import (
 // ReplaySchema107ForTest prepares an empty test namespace using the registered
 // historical migrations, including their original transforms and checksums.
 func ReplaySchema107ForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	return replayHistoricalSchemaForTest(ctx, pool, 107)
+}
+
+// ReplaySchema122ForTest prepares the last schema before inherited Task deletion.
+func ReplaySchema122ForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	return replayHistoricalSchemaForTest(ctx, pool, 122)
+}
+
+func replayHistoricalSchemaForTest(ctx context.Context, pool *pgxpool.Pool, version int64) error {
 	end := 0
 	for i, migration := range schemaMigrations {
-		if migration.version == 107 {
+		if migration.version == version {
 			end = i + 1
 			break
 		}
 	}
 	if end == 0 {
-		return fmt.Errorf("historical migration 107 is not registered")
+		return fmt.Errorf("historical migration %d is not registered", version)
 	}
 	return withMigrationLock(ctx, pool, func(conn *pgxpool.Conn) error {
 		var empty bool

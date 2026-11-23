@@ -3,6 +3,7 @@ package task_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -10,6 +11,39 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
+
+type deletionPlanDAO struct {
+	store.TaskWriteDAO
+	plan func(context.Context, string, bool) (model.Task, error)
+}
+
+func (d deletionPlanDAO) TaskForDeletion(ctx context.Context, id string, remove bool) (model.Task, error) {
+	return d.plan(ctx, id, remove)
+}
+
+func TestTaskDeletionPlansLocksBeforeVersionedPreparation(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprint(remove), func(t *testing.T) {
+			f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+			target := f.target
+			f.expectTask(t, target)
+			planned := false
+			dao := deletionPlanDAO{TaskWriteDAO: f.tasks, plan: func(ctx context.Context, id string, removing bool) (model.Task, error) {
+				if planned || removing != remove {
+					t.Fatalf("wrong deletion lock plan: repeat=%v remove=%v", planned, removing)
+				}
+				planned = true
+				return f.tasks.Task(ctx, id)
+			}}
+			f.scope.TaskDAOFn = func() store.TaskWriteDAO { return dao }
+			err := taskservice.NewTasks(f.database).Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version + 1, RemoveDepends: remove})
+			requireFault(t, err, "version_conflict")
+			if !planned {
+				t.Fatal("deletion did not acquire its complete lock set")
+			}
+		})
+	}
+}
 
 func TestTaskDeletionRemoveDependsWithoutReferences(t *testing.T) {
 	f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)

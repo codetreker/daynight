@@ -947,3 +947,11 @@ func (mock *taskThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
 func (*workerReaderMock) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
 	panic("unexpected review participation read")
 }
+
+func (mock *taskWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (d *taskWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

@@ -400,7 +400,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	// Current Task DAO reads typed columns, dependencies and tag references, and
 	// capture writes event actors; supply their structural shape while keeping
 	// the webhook ledger at version 50 for the 50-to-51 proof.
-	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid`); err != nil {
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid; ALTER TABLE tasks ADD COLUMN ancestor_deleted_at timestamptz`); err != nil {
 		t.Fatal(err)
 	}
 	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL, dependencyTypesSQL, webhookEventActorSQL} {

@@ -65,7 +65,7 @@ func testTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T, database *
 		readerTask(t, database, seed.projectID, seed.number, seed.status)
 		readerExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, readerID(seed.number), seed.userID)
 	}
-	readerExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, readerID(14))
+	readerExec(t, database, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, readerID(14))
 	readerExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{former, deleted})
 	var before string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
@@ -681,7 +681,7 @@ func testAutomaticCandidatesFilterBeforePagination(t *testing.T, database *postg
 		readerExec(t, database, `UPDATE tasks SET type='goal' WHERE id=$1`, parent.ID)
 		readerExec(t, database, `UPDATE tasks SET parent_id=$2 WHERE id=$1`, children[i].ID, parent.ID)
 	}
-	readerExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, parents[4].ID)
+	readerExec(t, database, `WITH deleted AS (UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1 RETURNING deleted_at) UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, parents[4].ID)
 	owner, workerID := readerID(100), readerID(101)
 	for _, index := range []int{0, 1, 4} {
 		claim := &model.WorkerClaim{ClaimID: readerID(110 + index), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
