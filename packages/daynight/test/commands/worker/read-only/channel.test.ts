@@ -55,6 +55,23 @@ test("cancel aborts work and suppresses a late result", async () => {
   await new Promise(resolve => setImmediate(resolve));
   expect(socket.sent).toHaveLength(1);
 });
+
+test("join retains cancelled executors until their original work actually settles", async () => {
+  let finish!: (value: any) => void;
+  const execute = vi.fn(() => new Promise<any>(resolve => { finish = resolve; }));
+  const { emit, fence, socket, channel } = setup(execute);
+  const requestId = randomUUID();
+  emit({ type: "request", ...fence, requestId, operation: "directory.list", input: {}, timeoutMs: 10000 });
+  channel.close();
+  expect((execute.mock.calls[0] as any)[2].aborted).toBe(true);
+  let joined = false;
+  const joining = channel.join().then(() => { joined = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(joined).toBe(false);
+  finish({ path: "/", parentPath: null, entries: [], nextCursor: null });
+  await joining;
+  expect(joined).toBe(true); expect(socket.sent).toHaveLength(1);
+});
 test("configuration change invalidates even before periodic reconnect", () => {
   const { emit, fence, execute, change } = setup(); change();
   emit({ type: "request", ...fence, requestId: randomUUID(), operation: "directory.list", input: {}, timeoutMs: 10000 });
@@ -157,7 +174,7 @@ const modelChannel = () => {
     resolve: async input => ({ ...frozenToolLaunch(input.tool === "copilot" ? "copilot" : "codex"), source: "path" }),
     verify: async () => {}, probe: { check, cacheToken: () => token, close: async () => {} } });
   let effective: WorkerConfigurationSnapshot["effective"] = { native: { agent: "codex", model: null, args: [] }, projects: [], agentControlMode: "web",
-    maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, archiveSessions: true, taskTagFilter: undefined, taskTagFilterKey: undefined };
+    maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, platformTaskMode: "all" as const, archiveSessions: true, taskTagFilter: undefined, taskTagFilterKey: undefined };
   let toolTargets: WorkerConfigurationToolTargets = { source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" } } };
   const configuration = createWorkerReadOnlyConfiguration({ current: () => ({ effective, toolTargets }), local: {}, selection: tool => {
     const launch = tools.currentSelection(tool, "web");

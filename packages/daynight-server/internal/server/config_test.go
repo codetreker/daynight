@@ -25,6 +25,7 @@ func configuredTestConfig() configpkg.Config {
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "configuration-test", AppSecret: "configuration-test", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 	c.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
+	c.Session = configpkg.DefaultConfig().Session
 	return c
 }
 
@@ -65,7 +66,7 @@ func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("distinct callback path rejected: %v", err)
 			}
-			handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, config, testLogger())
+			handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}, Files: attachmentTestFiles(t)}, config, testLogger())
 			if err != nil || handler == nil {
 				t.Fatalf("distinct callback path failed route composition: %v", err)
 			}

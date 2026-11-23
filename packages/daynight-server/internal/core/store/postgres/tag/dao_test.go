@@ -195,6 +195,9 @@ func TestUsageCountsEffectiveVisibilityAndEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE tasks SET ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$1) WHERE parent_id=$1`, deletedGoal); err != nil {
+		t.Fatal(err)
+	}
 	_, err = db.Pool.Exec(ctx, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES ($1,$2,'name','name',now(),now())`, tagID, projectID)
 	if err != nil {
 		t.Fatal(err)

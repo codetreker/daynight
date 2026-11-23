@@ -14,7 +14,7 @@ import (
 type archivePreflightAdmission struct {
 	t                *testing.T
 	ctx              context.Context
-	owner            string
+	owner, session   string
 	active, returned bool
 	calls            []string
 }
@@ -24,13 +24,13 @@ type archivePreflightAdmissionStorage struct {
 	admission *archivePreflightAdmission
 }
 
-func (s archivePreflightAdmissionStorage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
+func (s archivePreflightAdmissionStorage) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
 	a := s.admission
 	if ctx != a.ctx || a.active || !a.returned {
 		a.t.Fatal("residency acquired before the preflight callback returned")
 	}
-	if key != "session/archive/owner/"+a.owner || len(a.calls) != 2 {
-		a.t.Fatalf("residency key %q after %v", key, a.calls)
+	if owner != a.owner || session != a.session || limit != 1 || cleanup || len(a.calls) != 2 {
+		a.t.Fatalf("archive gate owner %q session %q limit %d cleanup %t after %v", owner, session, limit, cleanup, a.calls)
 	}
 	a.calls = append(a.calls, "residency")
 	return archivePreflightAdmissionPermit{admission: a}, nil
@@ -51,7 +51,7 @@ func TestArchivePreflightReturnsBeforeResidencyAcquisition(t *testing.T) {
 	project, task, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	// Project readers can differ from the archive owner; the gate must use the
 	// trusted preflight result rather than the requesting principal.
-	admission := &archivePreflightAdmission{t: t, ctx: t.Context(), owner: uuid.NewString()}
+	admission := &archivePreflightAdmission{t: t, ctx: t.Context(), owner: uuid.NewString(), session: id}
 	engine := NewEngine(archivePreflightAdmissionStorage{admission: admission})
 	execution := &Execution{Engine: engine}
 	execution.SetArchivePreflight(func(ctx context.Context, p model.Principal, actualProject, actualTask, actualID string, mode ArchiveMode) (string, error) {

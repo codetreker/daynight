@@ -73,6 +73,27 @@ const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
 describe('Goal task lists', () => {
+  it('passes the ordinary representative or a visible scoped member to chain usage', async () => {
+    const user = userEvent.setup();
+    const onOpenChainUsage = vi.fn();
+    const index = indexOf();
+    const renderList = (scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']} {...(scopedMembers === undefined ? {} : { scopedMembers })} openGraphTarget={null} onOpenChain={noop} onOpenChainUsage={onOpenChainUsage} onCloseChain={noop} onOpenTask={noop} />;
+    const view = render(renderList());
+    await user.click(disclosure());
+    const usage = screen.getByRole('button', { name: 'Goal，Token 用量' });
+    const details = screen.getByRole('button', { name: 'Goal，查看任务详情' });
+    expect(usage.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(usage);
+    expect(onOpenChainUsage).toHaveBeenLastCalledWith('Goal', usage);
+    view.setLocale('en');
+    expect(usage).toHaveAccessibleName('Goal, Token usage');
+    view.rerender(renderList(new Map([['Goal', ['Implementation', 'Acceptance']]])));
+    await user.click(disclosure());
+    const scopedUsage = screen.getByRole('button', { name: 'Goal, Token usage' });
+    await user.click(scopedUsage);
+    expect(onOpenChainUsage).toHaveBeenLastCalledWith('Implementation', scopedUsage);
+  });
+
   it('renders the localized graph action as a decorative icon', () => {
     const view = render(list(indexOf()));
     const check = (name: string, title: string) => {
@@ -207,7 +228,8 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
     const rows = within(children()).getAllByRole('link').filter(link => link.classList.contains('task-row-title'));
     expect(rows.map((row) => row.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
-    expect(rows.map((row) => row.closest('.task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.closest('.task-row')!.querySelector('.task-row-primary-status')!.firstChild!.textContent)).toEqual(['会话尚未观测', '待处理', '已完成']);
+    expect(rows[0]!.closest('.task-row')!.querySelector('.task-row-status-lifecycle')).toHaveTextContent('进行中');
     expect(rows.map((row) => row.closest('.task-row')!.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
     expect(rows[1]!.closest('.task-row')).toHaveTextContent('未就绪');

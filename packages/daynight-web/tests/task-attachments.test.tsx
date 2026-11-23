@@ -3,6 +3,7 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
+import { browserNavigation } from '../src/app/navigation';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskAttachments, TaskAttachmentsPanel } from '../src/features/task-detail/attachments/TaskAttachments';
 import { useAttachments, type AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
@@ -260,6 +261,7 @@ describe('task attachments', () => {
     fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
     await waitFor(() => expect(screen.getByTitle('HTML 预览：site.html')).not.toBe(original));
     const replaced = screen.getByTitle('HTML 预览：site.html');
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
     await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['failed'], 'site.html', { type: 'text/html' }));
     fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
@@ -385,7 +387,7 @@ describe('task attachments', () => {
     expect(screen.getByText('spec.md')).toBeVisible();
   });
 
-  it('keeps a newly uploaded nested file selected while its new directories remain collapsed', async () => {
+  it('reveals and focuses a successfully uploaded nested file', async () => {
     const api = fixture();
     open(api);
     await screen.findByText('暂无附件，上传文件后即可在这里浏览。');
@@ -397,14 +399,15 @@ describe('task attachments', () => {
     await user.type(path, 'docs/design/new.txt');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'docs/design/new.txt' });
-    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.txt', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.txt/ })).toHaveFocus();
     expect(screen.getByText('Contents of docs/design/new.txt')).toBeVisible();
   });
 
   it('keeps embedded file selection local without writing address or browser history', async () => {
     window.history.replaceState(null, '', '/projects/embedded');
+    browserNavigation();
     const initialLength = window.history.length;
     const push = vi.spyOn(window.history, 'pushState');
     const replace = vi.spyOn(window.history, 'replaceState');

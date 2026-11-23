@@ -148,8 +148,8 @@ func ParseTaskTagFilter(raw json.RawMessage) (model.TagNameFilter, error) {
 	return result, nil
 }
 
-// ParseWorkerConfiguration normalizes current and legacy values. Negotiated HTTP
-// writes use ParseWorkerConfigurationProtocol to require the advertised fields.
+// ParseWorkerConfiguration normalizes the current domain configuration. Negotiated
+// HTTP inputs use ParseWorkerConfigurationProtocol for their declared wire shape.
 func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
 	return parseWorkerConfiguration(raw, true)
 }
@@ -161,11 +161,11 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "toolPaths", "archiveSessions", "enableSudoCleanup", "taskTagFilter")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "platformTaskMode", "native", "projects", "toolPaths", "archiveSessions", "enableSudoCleanup", "enableWindowsProcessCleanup", "taskTagFilter")
 	if err != nil {
 		return value, err
 	}
-	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"} {
+	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "platformTaskMode", "native", "projects"} {
 		if _, ok := fields[key]; !ok {
 			return value, invalidInput("configuration." + key + " is required.")
 		}
@@ -190,11 +190,19 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 		}
 		value.ArchiveSessions = &archive
 	}
-	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
+	if err := configurationDecode(fields["platformTaskMode"], &value.PlatformTaskMode); err != nil {
 		return value, err
+	}
+	if !value.PlatformTaskMode.Valid() {
+		return value, invalidInput("Worker platform task mode must be all, prefer or only.")
 	}
 	if rawSudo, ok := fields["enableSudoCleanup"]; ok {
 		if err := configurationDecode(rawSudo, &value.EnableSudoCleanup); err != nil {
+			return value, err
+		}
+	}
+	if rawWindows, ok := fields["enableWindowsProcessCleanup"]; ok {
+		if err := configurationDecode(rawWindows, &value.EnableWindowsProcessCleanup); err != nil {
 			return value, err
 		}
 	}
@@ -307,6 +315,9 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		if err != nil {
 			return nil, err
 		}
+		if value.PlatformTaskMode == model.PlatformTaskOnly {
+			return nil, invalidInput("Bootstrap cannot enable only platform tasks.")
+		}
 		if value.TaskTagFilter != nil {
 			return nil, invalidInput("Bootstrap cannot set a task tag filter.")
 		}
@@ -357,7 +368,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "native", "archiveSessions", "taskTagFilter"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "platformTaskMode", "enableSudoCleanup", "enableWindowsProcessCleanup", "native", "archiveSessions", "taskTagFilter"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -384,7 +395,13 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
-			case "preferPlatformSpecificTasks", "enableSudoCleanup", "archiveSessions":
+			case "platformTaskMode":
+				var mode model.WorkerPlatformTaskMode
+				err = configurationDecode(item.AppliedValue, &mode)
+				if err == nil && !mode.Valid() {
+					err = invalidInput("Worker platform task mode must be all, prefer or only.")
+				}
+			case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)
 			case "taskTagFilter":

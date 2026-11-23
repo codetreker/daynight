@@ -101,11 +101,11 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 			t.Error("family revocation did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", threadTx.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", threadTx.Conn().PgConn().PID())
 	if err := threadTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", botTx.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", botTx.Conn().PgConn().PID())
 	if err := botTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 	}()
 	for {
 		var count int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT LEAST(a.expires_at,g.expires_at) FROM oauth_access_tokens%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT g.id::text FROM oauth_grants%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count == 2 {

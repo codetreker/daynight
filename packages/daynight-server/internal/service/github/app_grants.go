@@ -7,27 +7,51 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
 // GrantManager coordinates App grant operations using their dedicated scopes.
 type GrantManager struct {
-	grants store.GitHubGrantStore
-	impact store.GitHubAppImpactStore
+	grants  store.GitHubGrantStore
+	impact  store.GitHubAppImpactStore
+	current AuthorizationReader
 }
 
 func NewGrantManager(grants store.GitHubGrantStore, impact store.GitHubAppImpactStore) *GrantManager {
 	return &GrantManager{grants: grants, impact: impact}
 }
 
+// NewScopedGrantManager supplies current credential authorization for operations
+// that continue after a separate read scope.
+func NewScopedGrantManager(grants store.GitHubGrantStore, impact store.GitHubAppImpactStore, current AuthorizationReader) *GrantManager {
+	return &GrantManager{grants: grants, impact: impact, current: current}
+}
+
 func (m *GrantManager) Impact(ctx context.Context, p model.Principal, in core.AppImpactInput) (core.AppImpactPage, error) {
+	return m.readImpact(ctx, p, in, nil)
+}
+
+func (m *GrantManager) ImpactAuthorized(ctx context.Context, auth model.CredentialAuthorization, in core.AppImpactInput) (core.AppImpactPage, error) {
+	if err := auth.Validate(); err != nil {
+		return core.AppImpactPage{}, err
+	}
+	return m.readImpact(ctx, auth.Principal, in, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) readImpact(ctx context.Context, p model.Principal, in core.AppImpactInput, admit func() error) (core.AppImpactPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result core.AppImpactPage
 	var refusal *model.Fault
 	err := m.impact.ReadGitHubAppImpact(ctx, func(dao store.GitHubAppImpactDAO) error {
-		return completion.Capture(func() error { var e error; result, e = core.ReadAppImpact(ctx, dao, p, in); return e }, &refusal)
+		return completion.Capture(func() error {
+			var e error
+			result, e = core.ReadAppImpactWithAdmission(ctx, dao, p, in, admit)
+			return e
+		}, &refusal)
 	})
 	if err != nil {
 		return core.AppImpactPage{}, err
@@ -37,14 +61,28 @@ func (m *GrantManager) Impact(ctx context.Context, p model.Principal, in core.Ap
 	}
 	return result, nil
 }
-
 func (m *GrantManager) ImpactProjects(ctx context.Context, p model.Principal, in core.AppImpactInput) (core.AppImpactProjectsPage, error) {
+	return m.impactProjects(ctx, p, in, nil)
+}
+
+func (m *GrantManager) ImpactProjectsAuthorized(ctx context.Context, auth model.CredentialAuthorization, in core.AppImpactInput) (core.AppImpactProjectsPage, error) {
+	if err := auth.Validate(); err != nil {
+		return core.AppImpactProjectsPage{}, err
+	}
+	return m.impactProjects(ctx, auth.Principal, in, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) impactProjects(ctx context.Context, p model.Principal, in core.AppImpactInput, admit func() error) (core.AppImpactProjectsPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result core.AppImpactProjectsPage
 	var refusal *model.Fault
 	err := m.impact.ReadGitHubAppImpact(ctx, func(dao store.GitHubAppImpactDAO) error {
-		return completion.Capture(func() error { var e error; result, e = core.ReadAppImpactProjects(ctx, dao, p, in); return e }, &refusal)
+		return completion.Capture(func() error {
+			var e error
+			result, e = core.ReadAppImpactProjectsWithAdmission(ctx, dao, p, in, admit)
+			return e
+		}, &refusal)
 	})
 	if err != nil {
 		return core.AppImpactProjectsPage{}, err
@@ -54,7 +92,6 @@ func (m *GrantManager) ImpactProjects(ctx context.Context, p model.Principal, in
 	}
 	return result, nil
 }
-
 func grantCompletion(c store.Completion, err error) error {
 	if c.Outcome == store.TransactionUnknown {
 		return &ManagementError{Code: "github_write_outcome_unknown", Message: "GitHub grant write outcome is unknown; inspect the current resource before deciding what to do.", Cause: err}
@@ -75,12 +112,27 @@ func grantCompletion(c store.Completion, err error) error {
 }
 
 func (m *GrantManager) PreviewGrant(ctx context.Context, p model.Principal, appID, teamID string) (store.GitHubGrantPreview, error) {
+	return m.previewGrant(ctx, p, appID, teamID, nil)
+}
+
+func (m *GrantManager) PreviewGrantAuthorized(ctx context.Context, auth model.CredentialAuthorization, appID, teamID string) (store.GitHubGrantPreview, error) {
+	if err := auth.Validate(); err != nil {
+		return store.GitHubGrantPreview{}, err
+	}
+	return m.previewGrant(ctx, auth.Principal, appID, teamID, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) previewGrant(ctx context.Context, p model.Principal, appID, teamID string, admit func() error) (store.GitHubGrantPreview, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result store.GitHubGrantPreview
 	var refusal *model.Fault
 	err := m.grants.ReadGitHubGrants(ctx, func(dao store.GitHubGrantReadDAO) error {
-		return completion.Capture(func() error { var e error; result, e = core.PreviewGrant(ctx, dao, p, appID, teamID); return e }, &refusal)
+		return completion.Capture(func() error {
+			var e error
+			result, e = core.PreviewGrantWithAdmission(ctx, dao, p, appID, teamID, admit)
+			return e
+		}, &refusal)
 	})
 	if err != nil {
 		return store.GitHubGrantPreview{}, err
@@ -91,12 +143,27 @@ func (m *GrantManager) PreviewGrant(ctx context.Context, p model.Principal, appI
 	return result, nil
 }
 func (m *GrantManager) GetGrant(ctx context.Context, p model.Principal, appID, grantID string) (store.GitHubTeamGrant, error) {
+	return m.getGrant(ctx, p, appID, grantID, nil)
+}
+
+func (m *GrantManager) GetGrantAuthorized(ctx context.Context, auth model.CredentialAuthorization, appID, grantID string) (store.GitHubTeamGrant, error) {
+	if err := auth.Validate(); err != nil {
+		return store.GitHubTeamGrant{}, err
+	}
+	return m.getGrant(ctx, auth.Principal, appID, grantID, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) getGrant(ctx context.Context, p model.Principal, appID, grantID string, admit func() error) (store.GitHubTeamGrant, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result store.GitHubTeamGrant
 	var refusal *model.Fault
 	err := m.grants.ReadGitHubGrants(ctx, func(dao store.GitHubGrantReadDAO) error {
-		return completion.Capture(func() error { var e error; result, e = core.GetGrant(ctx, dao, p, appID, grantID); return e }, &refusal)
+		return completion.Capture(func() error {
+			var e error
+			result, e = core.GetGrantWithAdmission(ctx, dao, p, appID, grantID, admit)
+			return e
+		}, &refusal)
 	})
 	if err != nil {
 		return store.GitHubTeamGrant{}, err
@@ -114,6 +181,17 @@ func pageRequest(limit int, cursor string) model.PageRequest {
 	return model.PageRequest{Limit: limit, Cursor: c}
 }
 func (m *GrantManager) ListGrants(ctx context.Context, p model.Principal, appID string, limit int, cursor string) (core.GrantPage, error) {
+	return m.listGrants(ctx, p, appID, limit, cursor, nil)
+}
+
+func (m *GrantManager) ListGrantsAuthorized(ctx context.Context, auth model.CredentialAuthorization, appID string, limit int, cursor string) (core.GrantPage, error) {
+	if err := auth.Validate(); err != nil {
+		return core.GrantPage{}, err
+	}
+	return m.listGrants(ctx, auth.Principal, appID, limit, cursor, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) listGrants(ctx context.Context, p model.Principal, appID string, limit int, cursor string, admit func() error) (core.GrantPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result core.GrantPage
@@ -121,7 +199,7 @@ func (m *GrantManager) ListGrants(ctx context.Context, p model.Principal, appID 
 	err := m.grants.ReadGitHubGrants(ctx, func(dao store.GitHubGrantReadDAO) error {
 		return completion.Capture(func() error {
 			var e error
-			result, e = core.ListGrants(ctx, dao, p, appID, pageRequest(limit, cursor))
+			result, e = core.ListGrantsWithAdmission(ctx, dao, p, appID, pageRequest(limit, cursor), admit)
 			return e
 		}, &refusal)
 	})
@@ -134,6 +212,17 @@ func (m *GrantManager) ListGrants(ctx context.Context, p model.Principal, appID 
 	return result, nil
 }
 func (m *GrantManager) ListTeamApps(ctx context.Context, p model.Principal, teamID string, limit int, cursor string) (core.TeamAppPage, error) {
+	return m.listTeamApps(ctx, p, teamID, limit, cursor, nil)
+}
+
+func (m *GrantManager) ListTeamAppsAuthorized(ctx context.Context, auth model.CredentialAuthorization, teamID string, limit int, cursor string) (core.TeamAppPage, error) {
+	if err := auth.Validate(); err != nil {
+		return core.TeamAppPage{}, err
+	}
+	return m.listTeamApps(ctx, auth.Principal, teamID, limit, cursor, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead) })
+}
+
+func (m *GrantManager) listTeamApps(ctx context.Context, p model.Principal, teamID string, limit int, cursor string, admit func() error) (core.TeamAppPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	var result core.TeamAppPage
@@ -141,7 +230,7 @@ func (m *GrantManager) ListTeamApps(ctx context.Context, p model.Principal, team
 	err := m.grants.ReadGitHubGrants(ctx, func(dao store.GitHubGrantReadDAO) error {
 		return completion.Capture(func() error {
 			var e error
-			result, e = core.ListTeamApps(ctx, dao, p, teamID, pageRequest(limit, cursor))
+			result, e = core.ListTeamAppsWithAdmission(ctx, dao, p, teamID, pageRequest(limit, cursor), admit)
 			return e
 		}, &refusal)
 	})
@@ -154,6 +243,17 @@ func (m *GrantManager) ListTeamApps(ctx context.Context, p model.Principal, team
 	return result, nil
 }
 func (m *GrantManager) CreateGrant(ctx context.Context, p model.Principal, appID string, in core.CreateGrantInput) (store.GitHubTeamGrant, error) {
+	return m.createGrant(ctx, p, appID, in, nil)
+}
+
+func (m *GrantManager) CreateGrantAuthorized(ctx context.Context, auth model.CredentialAuthorization, appID string, in core.CreateGrantInput) (store.GitHubTeamGrant, error) {
+	if err := auth.Validate(); err != nil {
+		return store.GitHubTeamGrant{}, err
+	}
+	return m.createGrant(ctx, auth.Principal, appID, in, func() error { return scopeadmission.Require(auth, scopepolicy.GithubRead, scopepolicy.GithubManage) })
+}
+
+func (m *GrantManager) createGrant(ctx context.Context, p model.Principal, appID string, in core.CreateGrantInput, admit func() error) (store.GitHubTeamGrant, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	if err := core.ValidateCreateGrant(p, appID, in); err != nil {
@@ -162,7 +262,7 @@ func (m *GrantManager) CreateGrant(ctx context.Context, p model.Principal, appID
 	var result store.GitHubTeamGrant
 	c, err := m.grants.WriteGitHubGrant(ctx, in.TeamID, appID, p.UserID, func(dao store.GitHubGrantWriteDAO) error {
 		var e error
-		result, e = core.CreateGrant(ctx, dao, p, in)
+		result, e = core.CreateGrantWithAdmission(ctx, dao, p, in, admit)
 		return e
 	})
 	if err = grantCompletion(c, err); err != nil {
@@ -171,6 +271,21 @@ func (m *GrantManager) CreateGrant(ctx context.Context, p model.Principal, appID
 	return result, nil
 }
 func (m *GrantManager) RevokeGrant(ctx context.Context, p model.Principal, appID, grantID string, in core.RevokeGrantInput) error {
+	return m.revokeGrant(ctx, p, appID, grantID, in, nil, nil)
+}
+
+func (m *GrantManager) RevokeGrantAuthorized(ctx context.Context, auth model.CredentialAuthorization, appID, grantID string, in core.RevokeGrantInput) error {
+	if err := auth.Validate(); err != nil {
+		return err
+	}
+	return m.revokeGrant(ctx, auth.Principal, appID, grantID, in,
+		func() error { return scopeadmission.Require(auth, scopepolicy.GithubManage) },
+		func(ctx context.Context) error {
+			return currentAdmission(ctx, m.current, auth, scopepolicy.GithubManage)
+		})
+}
+
+func (m *GrantManager) revokeGrant(ctx context.Context, p model.Principal, appID, grantID string, in core.RevokeGrantInput, admit func() error, recheck func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	if err := core.ValidateRevokeGrant(p, appID, grantID, in); err != nil {
@@ -180,7 +295,18 @@ func (m *GrantManager) RevokeGrant(ctx context.Context, p model.Principal, appID
 	if err != nil {
 		return err
 	}
-	c, err := m.grants.WriteGitHubGrant(ctx, location.TeamID, appID, p.UserID, func(dao store.GitHubGrantWriteDAO) error { return core.RevokeGrant(ctx, dao, p, grantID, in) })
+	c, err := m.grants.WriteGitHubGrant(ctx, location.TeamID, appID, p.UserID, func(dao store.GitHubGrantWriteDAO) error {
+		check := admit
+		if recheck != nil {
+			check = func() error {
+				if err := recheck(ctx); err != nil {
+					return err
+				}
+				return admit()
+			}
+		}
+		return core.RevokeGrantWithAdmission(ctx, dao, p, grantID, in, check)
+	})
 	result := grantCompletion(c, err)
 	// Team deletion can revoke the grant while the transaction waits for the
 	// Team root. Re-read after a confirmed missing-root refusal.
@@ -198,7 +324,6 @@ func (m *GrantManager) RevokeGrant(ctx context.Context, p model.Principal, appID
 	}
 	return result
 }
-
 func grantLocationConflict(location store.GitHubGrantLocation, in core.RevokeGrantInput) error {
 	if location.AppVersion != in.Version {
 		return &model.Fault{Code: "version_conflict", Message: "App version changed."}

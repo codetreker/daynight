@@ -12,6 +12,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
+	ss "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,9 +45,34 @@ func (in sessionOperationInput) refs() map[string]any {
 // SessionSendModule publishes ordinary Task sends and original-operation reads.
 // A caller owns its operation ID and recovery. No adapter retries a submission.
 func SessionSendModule(service sessionSendOperations) SessionToolModule {
+	return sessionSendModule(service, nil, nil, false, false)
+}
+
+// ScopedSessionSendModule enables scoped operation receipt reads. Sending
+// remains unclassified until its separate command admission is installed.
+func ScopedSessionSendModule(service sessionSendOperations, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) SessionToolModule {
+	return sessionSendModule(service, current, snapshot, true, false)
+}
+
+// ScopedSessionCommandSendModule enables both tools only for a Session service
+// constructed with transaction-bound command admission.
+func ScopedSessionCommandSendModule(service *ss.Service, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) SessionToolModule {
+	return func(entry *Entry) error {
+		execution := service.ScopedCommandExecution()
+		if execution == nil {
+			return errors.New("scoped Session command service is required")
+		}
+		return sessionSendModule(execution, current, snapshot, true, true)(entry)
+	}
+}
+
+func sessionSendModule(service sessionSendOperations, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization, scoped bool, scopedSend bool) SessionToolModule {
 	return func(entry *Entry) error {
 		if service == nil {
 			return fmt.Errorf("MCP Session send tools require a service")
+		}
+		if scoped && (current == nil || snapshot == nil) {
+			return fmt.Errorf("MCP Session operation read authorization is incomplete")
 		}
 		var definitions []*sdk.Tool
 		if err := json.Unmarshal(sessionSendDefinitions, &definitions); err != nil {
@@ -61,6 +87,15 @@ func SessionSendModule(service sessionSendOperations) SessionToolModule {
 				}, "text", "expectedTurnId")
 			case "task_session_operation":
 				err = registerTypedReadTool(entry, tool, BudgetControl, func(ctx context.Context, actor RequestActor, in sessionOperationInput) (ToolResult, error) {
+					if current != nil {
+						if actor.Authorization == nil || actor.Authorization.Principal != actor.Principal {
+							return ToolResult{Refs: in.refs()}, fmt.Errorf("MCP Session operation read authorization unavailable")
+						}
+						if err := actor.Authorization.Validate(); err != nil {
+							return ToolResult{Refs: in.refs()}, err
+						}
+						ctx = ss.WithScopedSessionRead(ctx, *actor.Authorization, current, snapshot)
+					}
 					result, err := service.TaskOperation(ctx, actor.Principal, in.ProjectID, in.TaskID, in.SessionID, in.OperationID)
 					var refusal *model.Fault
 					if errors.Is(err, model.ErrNotFound) || errors.As(err, &refusal) && refusal.Code == "not_found" {
@@ -73,6 +108,12 @@ func SessionSendModule(service sessionSendOperations) SessionToolModule {
 			}
 			if err != nil {
 				return err
+			}
+			if current != nil && (tool.Name == "task_session_operation" || scopedSend && tool.Name == "task_session_send") {
+				if entry.scopedTools == nil {
+					entry.scopedTools = make(map[string]bool)
+				}
+				entry.scopedTools[tool.Name] = true
 			}
 		}
 		return nil

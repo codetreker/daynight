@@ -87,7 +87,6 @@ it("waits through Darwin's exiting state without signaling incomplete identity o
 
 it.each([
   ["group", "4101 4000 9999 S Thu Nov 12 15:53:09 2026 replacement\n", '"sameParent":true,"sameGroup":false'],
-  ["parent", "4101 1 4101 S Thu Nov 12 15:53:09 2026 replacement\n", '"sameParent":false,"sameGroup":true'],
 ])("rejects a conflicting %s without signaling", async (_field, row, detail) => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
   const kill = vi.spyOn(process, "kill").mockReturnValue(true);
@@ -119,7 +118,7 @@ it.each([
 });
 
 
-it("waits for a same-birth command conflict to exit without sending a signal", async () => {
+it.each([4000, 1])("waits for a same-birth command conflict to exit without sending a signal (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   let probes = 0;
   const kill = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -127,23 +126,24 @@ it("waits for a same-birth command conflict to exit without sending a signal", a
     if (++probes === 4) throw Object.assign(new Error("Gone"), { code: "ESRCH" });
     return true;
   });
-  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, "4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 changed\n"));
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 changed\n`));
   const result = stopControllerBootstrap(proof, Date.now() + 500);
   await vi.runAllTimersAsync(); await result;
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 
-it("exposes deadline and retained identity conflict when uncertainty persists", async () => {
+it.each([4000, 1])("exposes deadline and retained identity conflict when uncertainty persists (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   const kill = vi.spyOn(process, "kill").mockReturnValue(true);
-  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, "4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 changed\n"));
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 changed\n`));
   const result = stopControllerBootstrap(proof, Date.now() + 100).catch(error => error);
   await vi.runAllTimersAsync();
   const error = await result; expect(error.message).toMatch(/deadline/); expect(error.cause.message).toMatch(/identity conflicts/);
+  expect(error.cause.message).toContain(`"sameParent":${parentPid === proof.parentPid}`);
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 
-it("sends TERM only after the full original identity is restored", async () => {
+it.each([4000, 1])("sends TERM only after the full original identity is restored (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   let rows = 0, signaled = false;
   const kill = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -151,17 +151,17 @@ it("sends TERM only after the full original identity is restored", async () => {
     if (signaled) throw Object.assign(new Error("Gone"), { code: "ESRCH" });
     return true;
   });
-  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 ${++rows === 1 ? "changed" : "node main.js"}\n`));
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 ${++rows === 1 ? "changed" : "node main.js"}\n`));
   const result = stopControllerBootstrap(proof, Date.now() + 500);
   await vi.runAllTimersAsync(); await result;
   expect(kill.mock.calls.map(([, signal]) => signal)).toEqual([0, 0, "SIGTERM", 0]);
 });
 
-it("propagates process observation failures while waiting on uncertain identity", async () => {
+it.each([4000, 1])("propagates process observation failures while waiting on uncertain identity (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   const failure = Object.assign(new Error("ps access denied"), { code: "EACCES" });
   const kill = vi.spyOn(process, "kill").mockReturnValue(true); let rows = 0;
-  f.exec.mockImplementation((_file, _args, _options, callback) => ++rows === 1 ? callback(null, "4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 changed\n") : callback(failure, ""));
+  f.exec.mockImplementation((_file, _args, _options, callback) => ++rows === 1 ? callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 changed\n`) : callback(failure, ""));
   const result = stopControllerBootstrap(proof, Date.now() + 500).catch(error => error);
   await vi.runAllTimersAsync(); const error = await result;
   expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toMatch(/identity conflicts/);
@@ -169,12 +169,12 @@ it("propagates process observation failures while waiting on uncertain identity"
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 
-it("retains both the original identity conflict and a process timeout at the deadline", async () => {
+it.each([4000, 1])("retains both the original identity conflict and a process timeout at the deadline (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   const deadline = Date.now() + 100, failure = new Error("ps timed out"); let rows = 0;
   const kill = vi.spyOn(process, "kill").mockReturnValue(true);
   f.exec.mockImplementation((_file, _args, _options, callback) => {
-    if (++rows === 1) callback(null, "4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 changed\n");
+    if (++rows === 1) callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 changed\n`);
     else { vi.setSystemTime(deadline); callback(failure, ""); }
   });
   const result = stopControllerBootstrap(proof, deadline).catch(error => error);
@@ -192,13 +192,14 @@ it("preserves a process observation error before any identity conflict", async (
 });
 
 
-it("retains the first successful identity conflict observed after the deadline", async () => {
+it.each([4000, 1])("retains the first successful identity conflict observed after the deadline (parent: %s)", async parentPid => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
   const deadline = Date.now() + 100, kill = vi.spyOn(process, "kill").mockReturnValue(true);
   f.exec.mockImplementation((_file, _args, _options, callback) => {
-    vi.setSystemTime(deadline); callback(null, "4101 4000 4101 R<s Thu Nov 12 15:53:09 2026 changed\n");
+    vi.setSystemTime(deadline); callback(null, `4101 ${parentPid} 4101 R<s Thu Nov 12 15:53:09 2026 changed\n`);
   });
   const error = await stopControllerBootstrap(proof, deadline).catch(error => error);
   expect(error.message).toMatch(/deadline/); expect(error.cause.message).toMatch(/identity conflicts/);
+  expect(error.cause.message).toContain(`"sameParent":${parentPid === proof.parentPid}`);
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });

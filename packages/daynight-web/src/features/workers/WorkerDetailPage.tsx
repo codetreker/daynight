@@ -16,17 +16,19 @@ import { useWorkerMonitoring } from './useWorkerMonitoring';
 import type { WorkerAlias } from '../../api/worker-alias';
 import { WorkerAliasEditor } from './WorkerAliasEditor';
 import './workers.css';
+import { WorkerLifecyclePanel } from './WorkerLifecyclePanel';
 
 const sections = ['overview', 'system', 'configuration', 'prompt'] as const;
 
 const agentNames: Readonly<Record<WorkerAgent, string>> = { codex: 'Codex', claude: 'Claude Code', copilot: 'Copilot' };
 
 const TaskRows = ({ tasks }: { readonly tasks: readonly WorkerTaskSnapshot[] }) => {
+  const id = useId();
   const { messages: { workers: m, common, inspection: { claim } } } = useI18n();
-  return <table className="worker-task-table"><thead><tr><th scope="col">{m.taskColumn}</th><th scope="col">{m.statusColumn}</th><th scope="col">{m.agentColumn}</th></tr></thead><tbody>
-    {tasks.map(task => <tr key={`${task.projectId}/${task.taskId}/${task.claimId}`}><td><a className="worker-task-title" href={taskDetailUrl(task.projectId, task.taskId, { tab: 'overview', path: null })} onClick={followWorkerLink}>{task.title}</a><p className="worker-task-project">{task.projectName} · <span title={task.taskId}>{task.taskId.slice(0, 8)}</span></p></td>
-      <td><span className="worker-task-status">{common.status[task.status]}</span><p className="worker-task-phase">{claim.phase[task.phase]}</p></td><td>{agentNames[task.agent]}</td></tr>)}
-  </tbody></table>;
+  return <div className="worker-task-table-container"><table className="worker-task-table" role="table"><thead role="rowgroup"><tr role="row"><th id={`${id}-task`} scope="col" role="columnheader">{m.taskColumn}</th><th id={`${id}-status`} scope="col" role="columnheader">{m.statusColumn}</th><th id={`${id}-agent`} scope="col" role="columnheader">{m.agentColumn}</th></tr></thead><tbody role="rowgroup">
+    {tasks.map(task => <tr role="row" key={`${task.projectId}/${task.taskId}/${task.claimId}`}><td className="worker-task-identity" role="cell" headers={`${id}-task`}><a className="worker-task-title" href={taskDetailUrl(task.projectId, task.taskId, { tab: 'overview', path: null })} onClick={followWorkerLink}>{task.title}</a><p className="worker-task-project">{task.projectName} · <span title={task.taskId}>{task.taskId.slice(0, 8)}</span></p></td>
+      <td className="worker-task-work" role="cell" headers={`${id}-status`}><span className="worker-task-status">{common.status[task.status]}</span><p className="worker-task-phase">{claim.phase[task.phase]}</p></td><td className="worker-task-agent" role="cell" headers={`${id}-agent`}>{agentNames[task.agent]}</td></tr>)}
+  </tbody></table></div>;
 };
 
 export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled, onRetentionChange }: { readonly workerId: string; readonly userId: string; readonly active?: boolean; readonly readEnabled: boolean; readonly onRetentionChange?: (retain: boolean) => void }) => {
@@ -91,6 +93,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
       <WorkerMonitoringTime state={monitoring} />
+      <WorkerLifecyclePanel key={`${userId}/${workerId}`} worker={worker} readEnabled={readEnabled && active && !historyError} />
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
         {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
         <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
@@ -110,7 +113,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     </>}
     </section>
     {!configurationOpened && <><section id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden inert /><section id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden inert /></>}
-    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform, ...(worker.telemetry.toolPaths === undefined ? {} : { toolPaths: worker.telemetry.toolPaths }) } : {})} section={section} {...(active && !historyError && toolPathsRequest?.workerId === workerId && toolPathsRequest.userId === userId ? { onRevealToolPaths: finishToolPathsRequest } : {})} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
+    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform, ...(worker.telemetry.toolPaths === undefined ? {} : { toolPaths: worker.telemetry.toolPaths }) } : {})} section={section} {...(active && !historyError && toolPathsRequest?.workerId === workerId && toolPathsRequest.userId === userId ? { onRevealToolPaths: finishToolPathsRequest } : {})} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} reviewEnabled={active && !historyError} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
     </div>
   </div>;
 };

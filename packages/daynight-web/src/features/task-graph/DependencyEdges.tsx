@@ -2,13 +2,13 @@ import { memo, useId, useMemo } from 'react';
 import { ViewportPortal } from '@xyflow/react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { DEPENDENCY_DASH_ARRAY, DEPENDENCY_DASH_PERIOD } from './dashes';
-import type { TaskInspection } from './inspection';
+import { getDependencyInspectionState, type DependencyInspectionState, type TaskInspection } from './inspection';
 import type { CanvasEdge, CanvasLayout } from './layout';
 import { compileDependencyRoute } from './routes';
 
-type EdgeState = 'normal' | 'highlighted' | 'unrelated';
+type EdgeState = DependencyInspectionState;
 type Route = ReturnType<typeof compileDependencyRoute>;
-const colors: Record<EdgeState, string> = { normal: '#abb2c7', highlighted: '#6762ce', unrelated: '#c7cddb' };
+const colors: Record<EdgeState, string> = { normal: '#abb2c7', highlighted: '#6762ce', successor: 'var(--graph-successor-color)', unrelated: '#c7cddb' };
 const bodyStyle = { fill: 'none', stroke: 'inherit', strokeWidth: 1.5, pointerEvents: 'none' } as const;
 const dashStyle = { ...bodyStyle, strokeDasharray: DEPENDENCY_DASH_ARRAY, strokeLinecap: 'butt', strokeLinejoin: 'miter' } as const;
 
@@ -50,10 +50,9 @@ export const DependencyEdges = memo(({ geometry, inspection }: { geometry: Canva
           strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
       </marker>)}</defs>
       {routes.map(({ edge, route }) => {
-        const state = inspection.selectedTaskId === null ? 'normal'
-          : inspection.highlightedIds.has(edge.source) && inspection.highlightedIds.has(edge.target) ? 'highlighted' : 'unrelated';
+        const state = getDependencyInspectionState(inspection, edge.source, edge.target);
         return <DependencyEdge key={edge.id} edge={edge} route={route} state={state} marker={`${markerId}-${state}`}
-          label={`${m.dependencyLabel({ source: edge.source, target: edge.target, external: edge.external })}${state === 'highlighted' ? m.dependencyHighlightedSuffix : ''}`} />;
+          label={`${m.dependencyLabel({ source: edge.source, target: edge.target, external: edge.external })}${state === 'highlighted' ? m.dependencyHighlightedSuffix : state === 'successor' ? m.dependencySuccessorSuffix : ''}`} />;
       })}
     </svg>
   </ViewportPortal>;

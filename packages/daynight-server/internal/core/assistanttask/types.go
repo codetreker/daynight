@@ -5,11 +5,15 @@ import (
 	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
 type Actor struct {
 	Principal model.Principal
 	BotID     *string
+	// Authorization is supplied by the scoped assembly; nil retains the existing profile.
+	Authorization *model.CredentialAuthorization
+	operations    []scopepolicy.Operation
 }
 type TaskResult struct {
 	Task  model.AssistantTask
@@ -48,6 +52,19 @@ type AppendixInput struct {
 	Text          string
 	SourceRecords []string
 	State         string
+	// Scope is nil when the request does not declare one; an add then stores
+	// an unrestricted scope and an update keeps the current scope.
+	Scope *model.AssistantTaskAppendixScope
+}
+
+// RelatedAppendixInput names the notification context of a related
+// experience query; an empty dimension is unknown and neutral.
+type RelatedAppendixInput struct {
+	ProjectID, EventType, ItemCategory string
+}
+type AppendixValidationInput struct {
+	Mutation
+	OutcomeRecordID string
 }
 type ProposalInput struct {
 	Mutation
@@ -79,9 +96,10 @@ type ItemInput struct {
 }
 type RecordInput struct {
 	Mutation
-	ItemID     *string
-	Kind, Text string
-	Refs       json.RawMessage
+	ItemID                  *string
+	Kind, Text              string
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
 }
 type EventInput struct {
 	Mutation

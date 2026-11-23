@@ -25,7 +25,7 @@ func TestPreviewRetryValidatesAndReplacesTarget(t *testing.T) {
 			suppliedState = state
 		}
 		calls := 0
-		d := previewDAO{retry: func(_ context.Context, gotID string, gotHash []byte, gotP model.Principal, gotNow time.Time) (model.PreviewSSOLogin, error) {
+		d := previewDAO{clock: func(context.Context) (time.Time, error) { return now, nil }, retry: func(_ context.Context, gotID string, gotHash []byte, gotP model.Principal, gotNow time.Time) (model.PreviewSSOLogin, error) {
 			calls++
 			if gotID != id || gotP != p || gotNow != now || (suppliedState != "" && !bytes.Equal(gotHash, secret.Hash(state))) || (suppliedState == "" && len(gotHash) != 0) {
 				t.Fatal("incorrect retry identity")
@@ -68,6 +68,7 @@ func TestPreviewRetryValidatesAndReplacesTarget(t *testing.T) {
 		return model.PreviewSSOLogin{ReturnURL: target}, nil
 	}
 	d.insert = func(context.Context, model.PreviewSSOLogin) error { return failure }
+	d.clock = func(context.Context) (time.Time, error) { return now, nil }
 	if id, err := s.Retry(t.Context(), d, previewLogin, "", p, now); id != "" || !errors.Is(err, failure) {
 		t.Fatal(id, err)
 	}

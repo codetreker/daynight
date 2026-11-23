@@ -11,7 +11,10 @@ membership and a recorded start.
 ## Decision
 
 When an ordinary Task actually enters `in_progress`, the shared Task write
-transaction starts its current Parent Goal if that Goal is `todo`. Core owns
+transaction starts its current direct Parent Goal if that Goal is `todo`.
+Ordinary parents and more distant Goals retain their states. Target and direct
+todo Goal locks precede Worker locks in UUID order, as owned by the
+[Task-parent read decision](../architecture/2026-11-23-task-parent-read-projection.md). Core owns
 the transition rule and reuses the Goal lifecycle candidate; the service applies
 it to both manual status changes and Worker claims under the Project write lock.
 The Task and Goal commit or roll back together. The [Goal requirements](../../../../docs/spec/daynight-goals.md)

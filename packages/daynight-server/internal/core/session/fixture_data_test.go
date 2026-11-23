@@ -256,6 +256,8 @@ func (f fixture) SelectSessionWrite(t *testing.T) {
 		t.Fatal("saved Session capture does not match the next response")
 	}
 	f.data.Session.Snapshot = fixtureCopy(in.Snapshot)
+	f.data.Session.OnlineMode = in.OnlineMode
+	f.data.Session.HistoryContentPolicy = in.HistoryContentPolicy
 	f.data.Session.SourceEpoch = in.SourceEpoch
 	f.data.Session.SourceEpochs = append([]string(nil), in.SourceEpochs...)
 	f.data.Session.SourceSeq = in.SourceSeq

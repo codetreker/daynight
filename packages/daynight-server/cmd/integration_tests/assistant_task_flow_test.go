@@ -136,6 +136,19 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if record.TaskID != id || record.ItemID == nil || *record.ItemID != item.ID || record.AuthorBotID == nil || *record.AuthorBotID != first {
 		t.Fatalf("record identity differs: %+v", record)
 	}
+	action := requestJSON[api.AssistantTaskRecord](t, firstClient, http.MethodPost, base+"/records", protected(map[string]any{
+		"id": uuid.NewString(), "itemId": item.ID, "kind": "action", "text": "Grouped the notes into one folder.",
+	}, firstToken, "1"), http.StatusOK)
+	outcome := requestJSON[api.AssistantTaskRecord](t, firstClient, http.MethodPost, base+"/records", protected(map[string]any{
+		"id": uuid.NewString(), "itemId": item.ID, "kind": "outcome", "text": "The notes stayed grouped.", "outcome": "effective", "actionRecordId": action.ID, "refs": map[string]any{"recordIds": []string{record.ID}},
+	}, firstToken, "1"), http.StatusOK)
+	if action.Outcome != nil || action.ActionRecordID != nil || outcome.Kind != "outcome" || outcome.Outcome == nil || *outcome.Outcome != "effective" || outcome.ActionRecordID == nil || *outcome.ActionRecordID != action.ID {
+		t.Fatalf("outcome record differs: action=%+v outcome=%+v", action, outcome)
+	}
+	itemRecords := requestJSON[api.AssistantTaskPage[api.AssistantTaskRecord]](t, f, http.MethodGet, base+"/records?limit=200&itemId="+item.ID, nil, http.StatusOK)
+	if value := expectID(t, itemRecords.Items, outcome.ID, func(v api.AssistantTaskRecord) string { return v.ID }); value.Outcome == nil || *value.Outcome != "effective" || value.ActionRecordID == nil || *value.ActionRecordID != action.ID || !value.CreatedAt.Equal(outcome.CreatedAt) {
+		t.Fatalf("outcome readback differs: %+v", value)
+	}
 	transfer := requestJSON[api.AssistantTaskClaimResult](t, firstClient, http.MethodPost, base+"/transfer", map[string]any{
 		"operationId": uuid.NewString(), "ifVersion": strconv.FormatInt(readTask().Version, 10), "expectedGeneration": "1", "claimToken": firstToken, "targetBotId": second,
 	}, http.StatusOK)
@@ -162,10 +175,27 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	}
 	appendix := requestJSON[api.AssistantTaskAppendix](t, secondClient, http.MethodPost, base+"/appendix", protected(map[string]any{
 		"id": uuid.NewString(), "text": "Preserve existing references when organizing notes.", "sourceRecords": []string{record.ID},
+		"scope": map[string]any{"eventTypes": []string{"report"}, "itemCategories": []string{"notes"}},
 	}, secondToken, "2"), http.StatusOK)
+	if appendix.Scope == nil || !reflect.DeepEqual(appendix.Scope.EventTypes, []string{"report"}) || !reflect.DeepEqual(appendix.Scope.ItemCategories, []string{"notes"}) || len(appendix.Scope.ProjectIDs) != 0 || appendix.Validation != nil {
+		t.Fatalf("appendix scope differs: %+v", appendix)
+	}
+	validated := requestJSON[api.AssistantTaskAppendix](t, secondClient, http.MethodPost, base+"/appendix/"+appendix.ID+"/validations", protected(map[string]any{
+		"outcomeRecordId": outcome.ID,
+	}, secondToken, "2"), http.StatusOK)
+	if validated.Validation == nil || validated.Validation.SuccessCount != 1 || validated.Validation.FailureCount != 0 || validated.Version != appendix.Version {
+		t.Fatalf("appendix validation differs: %+v", validated)
+	}
 	appendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, firstClient, http.MethodGet, base+"/appendix", nil, http.StatusOK)
-	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) {
+	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) || !reflect.DeepEqual(value.Scope, appendix.Scope) || !reflect.DeepEqual(value.Validation, validated.Validation) {
 		t.Fatalf("appendix readback differs: %+v", value)
+	}
+	related := requestJSON[api.AssistantTaskRelatedAppendices](t, firstClient, http.MethodGet, base+"/appendix/related?eventType=report&itemCategory=notes", nil, http.StatusOK)
+	if len(related.Items) != 1 || !reflect.DeepEqual(related.Items[0].Validation, validated.Validation) || related.Items[0].ID != appendix.ID {
+		t.Fatalf("related appendix differs: %+v", related)
+	}
+	if mismatched := requestJSON[api.AssistantTaskRelatedAppendices](t, firstClient, http.MethodGet, base+"/appendix/related?itemCategory=archive", nil, http.StatusOK); len(mismatched.Items) != 0 {
+		t.Fatalf("declared category mismatch was related: %+v", mismatched)
 	}
 	attentionFixture := *f
 	attentionClient := *f.client
@@ -278,16 +308,19 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 		t.Fatal("resume did not persist")
 	}
 	editedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodPatch, base+"/appendix/"+appendix.ID, map[string]any{
-		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.",
+		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.", "scope": map[string]any{"itemCategories": []string{"archive"}},
 	}, http.StatusOK)
-	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) {
+	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) || editedAppendix.Scope == nil || !reflect.DeepEqual(editedAppendix.Scope.ItemCategories, []string{"archive"}) || len(editedAppendix.Scope.EventTypes) != 0 || !reflect.DeepEqual(editedAppendix.Validation, validated.Validation) {
 		t.Fatalf("appendix edit differs: %+v", editedAppendix)
 	}
 	deletedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodDelete, base+"/appendix/"+appendix.ID, map[string]any{
 		"ifVersion": strconv.FormatInt(readTask().Version, 10),
 	}, http.StatusOK)
-	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 {
+	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 || deletedAppendix.Scope != nil || deletedAppendix.Validation != nil {
 		t.Fatalf("appendix deletion differs: %+v", deletedAppendix)
+	}
+	if afterDelete := requestJSON[api.AssistantTaskRelatedAppendices](t, f, http.MethodGet, base+"/appendix/related", nil, http.StatusOK); len(afterDelete.Items) != 0 {
+		t.Fatalf("deleted appendix was related: %+v", afterDelete)
 	}
 	deletedAppendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, f, http.MethodGet, base+"/appendix?state=deleted", nil, http.StatusOK)
 	if value := expectID(t, deletedAppendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != "" || len(value.SourceRecords) != 0 || value.Version != deletedAppendix.Version {

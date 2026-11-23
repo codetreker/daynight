@@ -176,7 +176,7 @@ func (s *Projects) DeleteWithInput(ctx context.Context, p model.Principal, id st
 		if active {
 			return &model.Fault{Code: "active_worker_claims", Message: "Project has active Worker claims."}
 		}
-		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, true); err != nil {
 			return err
 		}
 		marked, err := dao.MarkDeleted(ctx)

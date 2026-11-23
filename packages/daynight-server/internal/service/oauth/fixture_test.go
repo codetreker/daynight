@@ -570,6 +570,7 @@ func fixtureChallenge() string {
 
 // Supplied results do not share mutable storage with the expected facts.
 func cloneAuthorization(record store.OAuthAuthorization) store.OAuthAuthorization {
+	record.ApprovedScopes = slices.Clone(record.ApprovedScopes)
 	record.BindingHash = bytes.Clone(record.BindingHash)
 	record.Client = bytes.Clone(record.Client)
 	record.CodeHash = bytes.Clone(record.CodeHash)

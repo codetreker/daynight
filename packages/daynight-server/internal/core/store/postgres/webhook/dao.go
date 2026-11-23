@@ -12,6 +12,7 @@ import (
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type DAO struct{ tx pgx.Tx }
@@ -20,18 +21,27 @@ func New(tx pgx.Tx) *DAO { return &DAO{tx: tx} }
 
 var _ store.WebhookWriter = (*DAO)(nil)
 
-const endpointColumns = `id::text,owner_kind,owner_id::text,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,destination_origin,destination_configuration,active_key_id::text,created_at,updated_at`
+const endpointColumns = `id::text,owner_kind,owner_id::text,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,destination_origin,destination_configuration,active_key_id::text,created_at,updated_at,client_key`
 
 func scanEndpoint(row pgx.Row) (model.Endpoint, error) {
 	var e model.Endpoint
-	var name, kind, origin, active *string
+	var name, kind, origin, active, clientKey *string
 	var adapter *int64
-	err := row.Scan(&e.ID, &e.Owner.Kind, &e.Owner.ID, &name, &e.Enabled, &e.DeletedAt, &e.ConfigVersion, &e.DestinationRevision, &kind, &adapter, &origin, &e.DestinationConfiguration, &active, &e.CreatedAt, &e.UpdatedAt)
+	err := row.Scan(&e.ID, &e.Owner.Kind, &e.Owner.ID, &name, &e.Enabled, &e.DeletedAt, &e.ConfigVersion, &e.DestinationRevision, &kind, &adapter, &origin, &e.DestinationConfiguration, &active, &e.CreatedAt, &e.UpdatedAt, &clientKey)
 	if err != nil {
 		return model.Endpoint{}, err
 	}
 	if e.DeletedAt != nil {
+		if clientKey != nil {
+			return model.Endpoint{}, fmt.Errorf("deleted endpoint retains a client key")
+		}
 		return e, nil
+	}
+	if clientKey != nil {
+		if *clientKey == "" {
+			return model.Endpoint{}, fmt.Errorf("empty endpoint client key")
+		}
+		e.ClientKey = *clientKey
 	}
 	if name == nil || kind == nil || adapter == nil || origin == nil || len(e.DestinationConfiguration) == 0 || active == nil {
 		return model.Endpoint{}, fmt.Errorf("incomplete endpoint configuration")
@@ -71,6 +81,13 @@ func (d *DAO) Endpoints(ctx context.Context, o model.Owner) ([]model.Endpoint, e
 		return nil, pg.QueryError("list webhook endpoints", err)
 	}
 	return out, nil
+}
+func (d *DAO) LiveEndpointByClientKey(ctx context.Context, o model.Owner, key string) (model.Endpoint, error) {
+	e, err := scanEndpoint(d.tx.QueryRow(ctx, `SELECT `+endpointColumns+` FROM webhook_endpoints WHERE owner_kind=$1 AND owner_id=$2 AND client_key=$3 AND deleted_at IS NULL`, o.Kind, o.ID, key))
+	if err != nil {
+		return model.Endpoint{}, pg.QueryError("read webhook endpoint by client key", err)
+	}
+	return e, nil
 }
 func (d *DAO) SigningKeys(ctx context.Context, id string) ([]model.SigningKey, error) {
 	rows, err := d.tx.Query(ctx, `SELECT endpoint_id::text,id::text,slot,secret,created_at,overlap_started_at,overlap_until FROM webhook_signing_keys WHERE endpoint_id=$1 ORDER BY created_at,id`, id)
@@ -163,9 +180,38 @@ func (d *DAO) PutEndpoint(ctx context.Context, e model.Endpoint) error {
 		return pg.QueryError("read webhook endpoint revision", err)
 	}
 	newRevision := errors.Is(err, pgx.ErrNoRows) || previousRevision != e.DestinationRevision
-	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,deleted_at=EXCLUDED.deleted_at,config_version=EXCLUDED.config_version,destination_revision=EXCLUDED.destination_revision,destination_kind=EXCLUDED.destination_kind,adapter_version=EXCLUDED.adapter_version,configuration_schema_version=EXCLUDED.configuration_schema_version,destination_origin=EXCLUDED.destination_origin,destination_configuration=EXCLUDED.destination_configuration,active_key_id=EXCLUDED.active_key_id,updated_at=EXCLUDED.updated_at WHERE webhook_endpoints.owner_kind=EXCLUDED.owner_kind AND webhook_endpoints.owner_id=EXCLUDED.owner_id`, e.ID, e.Owner.Kind, e.Owner.ID, name, e.Enabled, e.DeletedAt, e.ConfigVersion, e.DestinationRevision, kind, adapter, schema, origin, configuration, active, e.CreatedAt, e.UpdatedAt)
+	var clientKey any
+	writer := d.tx
+	if e.ClientKey != "" {
+		clientKey = e.ClientKey
+		// Only a keyed row can collide with another live endpoint. The savepoint
+		// keeps the transaction usable after that collision so the caller can
+		// read the live holder before refusing the create.
+		savepoint, err := d.tx.Begin(ctx)
+		if err != nil {
+			return pg.QueryError("begin webhook endpoint savepoint", err)
+		}
+		writer = savepoint
+	}
+	tag, err := writer.Exec(ctx, `INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at,client_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,deleted_at=EXCLUDED.deleted_at,config_version=EXCLUDED.config_version,destination_revision=EXCLUDED.destination_revision,destination_kind=EXCLUDED.destination_kind,adapter_version=EXCLUDED.adapter_version,configuration_schema_version=EXCLUDED.configuration_schema_version,destination_origin=EXCLUDED.destination_origin,destination_configuration=EXCLUDED.destination_configuration,active_key_id=EXCLUDED.active_key_id,updated_at=EXCLUDED.updated_at,client_key=EXCLUDED.client_key WHERE webhook_endpoints.owner_kind=EXCLUDED.owner_kind AND webhook_endpoints.owner_id=EXCLUDED.owner_id`, e.ID, e.Owner.Kind, e.Owner.ID, name, e.Enabled, e.DeletedAt, e.ConfigVersion, e.DestinationRevision, kind, adapter, schema, origin, configuration, active, e.CreatedAt, e.UpdatedAt, clientKey)
 	if err != nil {
+		if writer == d.tx {
+			return pg.QueryError("save webhook endpoint", err)
+		}
+		var constraint *pgconn.PgError
+		collision := errors.As(err, &constraint) && constraint.Code == "23505" && constraint.ConstraintName == "webhook_endpoints_live_client_key_idx"
+		if rollbackErr := writer.Rollback(ctx); rollbackErr != nil {
+			return pg.QueryError("save webhook endpoint", errors.Join(err, rollbackErr))
+		}
+		if collision {
+			return store.ErrWebhookClientKeyExists
+		}
 		return pg.QueryError("save webhook endpoint", err)
+	}
+	if writer != d.tx {
+		if err = writer.Commit(ctx); err != nil {
+			return pg.QueryError("release webhook endpoint savepoint", err)
+		}
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("webhook endpoint owner mismatch")

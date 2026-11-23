@@ -21,6 +21,7 @@ type TaskChainDialogProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
   readonly rootId: string;
+  readonly usageMode: 'shown' | 'hidden';
   readonly witnessTaskId?: string | null;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
@@ -31,7 +32,7 @@ type TaskChainDialogProps = {
   readonly summaries?: ReadonlyMap<string, TaskSummary>;
 };
 
-export const TaskChainDialog = ({ projectId, index, summaries, rootId, witnessTaskId, onOpenTask, onNavigateExternalTask, onClose, onRestoreFocus, renderNested, onRootChange }: TaskChainDialogProps) => {
+export const TaskChainDialog = ({ projectId, index, summaries, rootId, witnessTaskId, usageMode, onOpenTask, onNavigateExternalTask, onClose, onRestoreFocus, renderNested, onRootChange }: TaskChainDialogProps) => {
   const { locale, messages: { graph: m, common } } = useI18n();
   const { direction, onDirectionChange, issue } = useGraphDirection(projectId, rootId);
   const task = index.nodes.get(rootId)!;
@@ -54,6 +55,6 @@ export const TaskChainDialog = ({ projectId, index, summaries, rootId, witnessTa
       </div>
       <AccountRefreshNotice />{readableWitness !== null && <TaskDetailActions key={`${projectId}/${rootId}/${readableWitness}`} menuLabel={locale === 'zh-CN' ? '更多任务链操作' : 'More task chain actions'} copyUrl={buildTaskChainUrl(projectId, readableWitness)} canDelete={false} />}<button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     </header></TaskDetailNotifications>}>
-    {(fullscreen) => <UsageProjectProvider projectId={projectId}><UsageAggregateDisclosure projectId={projectId} scope="chain" scopeId={readableWitness ?? rootId} onOpenTask={onOpenTask} /><TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreen} /></UsageProjectProvider>}
+    {(fullscreen) => <UsageProjectProvider projectId={projectId} graphUsage={usageMode === 'shown'}>{usageMode === 'shown' && <UsageAggregateDisclosure projectId={projectId} scope="chain" scopeId={readableWitness ?? rootId} onOpenTask={onOpenTask} />}<TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreen} /></UsageProjectProvider>}
   </TaskGraphDialogShell>;
 };

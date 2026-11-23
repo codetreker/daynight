@@ -71,7 +71,7 @@ it("compares intrinsic facts including versions and preserves semantically equal
 });
 
 it("uses authoritative dependency states for hidden prerequisites and excludes Goals from the graph", () => {
-  const goal = task(1, { type: "goal", allowAgents: false });
+  const goal = task(1, { type: "goal", allowAgents: false, dependsOn: [id(10)] });
   const satisfied = task(2, { parentId: goal.id, dependsOn: [id(20)] });
   const blocked = task(3, { dependsOn: [id(21)], externalDependsOn: [id(21)] });
   const states = new Map<string, TaskDependencyState>([
@@ -84,6 +84,8 @@ it("uses authoritative dependency states for hidden prerequisites and excludes G
   expect(result.index.nodes.get(satisfied.id)).toMatchObject({ parentId: goal.id, ready: true, blockedBy: [] });
   expect(result.index.nodes.get(blocked.id)).toMatchObject({ ready: false, blockedBy: [id(21)] });
   expect(result.versions.get(goal.id)).toBe(1n);
+  expect(result.index.nodes.has(id(10))).toBe(false);
+  expect(sameSummary(goal, { ...goal, dependsOn: [] })).toBe(false);
   expect(projectChain(result.index, blocked.id).edges).toEqual([]);
   expect(() => projectSummaries(project, [satisfied], new Map(), time)).toThrow(GraphDataError);
   expect(() => projectSummaries(project, [satisfied], new Map([[satisfied.id, { taskVersion: 2n, blockedBy: [], ready: true }]]), time)).toThrow(GraphDataError);
@@ -133,4 +135,12 @@ it("counts proposed separately and keeps both dependency kinds blocked until con
   expect(projection.graph.tasks[1]).toMatchObject({ status: "proposed", ready: false, blockedBy: [id(1)] });
   for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ ready: false, blockedBy: [id(1)] });
   expect(projection.index.components.get(id(1))!.progress).toMatchObject({ total: 3, done: 0, ended: 0, status: "todo" });
+});
+
+it('distinguishes known ordinary Parent facts while accepting a legacy omitted field', () => {
+  const unknown = task(1), none = task(1, { parentTaskId: null }), parent = task(1, { parentTaskId: id(2) });
+  expect(sameSummary(unknown, none)).toBe(true);
+  expect(sameSummary(unknown, parent)).toBe(true);
+  expect(sameSummary(none, parent)).toBe(false);
+  expect(sameSummary(parent, task(1, { parentTaskId: id(3) }))).toBe(false);
 });

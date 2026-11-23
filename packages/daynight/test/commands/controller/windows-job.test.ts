@@ -10,6 +10,8 @@ vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ ve
 const launchId = "11111111-1111-4111-8111-111111111111", name = `Local\\Daynight-${launchId}`;
 const job = { kind: "job" }, processHandle = { kind: "process" }, pid = 4101;
 const proof = { pid, parentPid: 4000, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
+let createLease: typeof import("../../../src/commands/controller/windows-job.js").createControllerJobLease;
+let adoptOwned: typeof import("../../../src/commands/controller/windows-job.js").adoptOwnedControllerJob;
 let create: typeof import("../../../src/commands/controller/windows-job.js").createControllerJob;
 let inspect: typeof import("../../../src/commands/controller/windows-job.js").inspectControllerJob;
 let acquire: typeof import("../../../src/commands/controller/windows-job.js").acquireControllerJobLease;
@@ -45,7 +47,7 @@ beforeEach(async () => {
   f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data, f.terminate.mock.calls.length ? [] : [4101n, 4202n]); return 1; });
   f.contains.mockImplementation((_process, _job, result: Buffer) => { result.writeInt32LE(1); return 1; });
   f.verify.mockImplementation(async (_proof, _deadline, belongs) => belongs(processHandle));
-  ({ createControllerJob: create, inspectControllerJob: inspect, acquireControllerJobLease: acquire, inspectControllerJobLease: inspectLease, releaseControllerJobLease: release, createOwnedControllerJob: createOwned, releaseOwnedControllerJob: releaseOwned } = await import("../../../src/commands/controller/windows-job.js"));
+  ({ createControllerJobLease: createLease, adoptOwnedControllerJob: adoptOwned, createControllerJob: create, inspectControllerJob: inspect, acquireControllerJobLease: acquire, inspectControllerJobLease: inspectLease, releaseControllerJobLease: release, createOwnedControllerJob: createOwned, releaseOwnedControllerJob: releaseOwned } = await import("../../../src/commands/controller/windows-job.js"));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -112,7 +114,7 @@ describe("native Controller Job Objects", () => {
     expect(await create(launchId, pid)).toBe(name);
     expect(f.setLastError).toHaveBeenCalledExactlyOnceWith(0);
     expect(f.create).toHaveBeenCalledExactlyOnceWith(null, name);
-    expect(f.openProcess).toHaveBeenCalledExactlyOnceWith(0x101, 0, pid);
+    expect(f.openProcess).toHaveBeenCalledExactlyOnceWith(0x1101, 0, pid);
     expect(f.assign).toHaveBeenCalledExactlyOnceWith(job, processHandle);
     expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
     expect(f.assign.mock.invocationCallOrder[0]).toBeLessThan(f.close.mock.invocationCallOrder[0]!);
@@ -344,6 +346,41 @@ describe("native Controller Job Objects", () => {
   it("joins both handle releases when assignment consumes the budget", async () => {
     f.assign.mockImplementation(() => { f.now = 15_000; return 1; });
     await expect(create(launchId, pid)).rejects.toThrow(/deadline/);
+    expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
+  });
+});
+
+
+describe("suspended Controller Job ownership", () => {
+  it("assigns and verifies membership with query rights before retaining the birth lease", async () => {
+    const birth = { ...proof, jobObjectName: name };
+    const lease = await createLease(launchId, birth, Date.now() + 5000);
+    expect(f.openProcess).toHaveBeenCalledExactlyOnceWith(0x1101, 0, pid);
+    expect(f.assign.mock.invocationCallOrder[0]).toBeLessThan(f.contains.mock.invocationCallOrder[0]!);
+    expect(f.close.mock.calls).toEqual([[processHandle]]);
+    expect(await inspectLease(lease, birth, true, Date.now() + 5000)).toEqual([]);
+    release(lease);
+    expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
+  });
+
+  it("refuses an existing Job identity without assigning the suspended child", async () => {
+    f.create.mockImplementation(() => { f.error = 183; return job; });
+    await expect(createLease(launchId, { ...proof, jobObjectName: name }, Date.now() + 5000)).rejects.toMatchObject({ stage: "identity-already-exists" });
+    expect(f.assign).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("adopts only the existing Job containing the current Controller", async () => {
+    expect(await adoptOwned(launchId)).toBe(name);
+    expect(f.openProcess).toHaveBeenCalledExactlyOnceWith(0x1101, 0, process.pid);
+    expect(f.create).not.toHaveBeenCalled(); expect(f.assign).not.toHaveBeenCalled();
+    expect(f.close.mock.calls).toEqual([[processHandle]]);
+    releaseOwned(name);
+    expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
+  });
+
+  it("refuses adoption when the current process is not a member", async () => {
+    f.contains.mockImplementation((_process, _job, result: Buffer) => { result.writeInt32LE(0); return 1; });
+    await expect(adoptOwned(launchId)).rejects.toThrow("not in the assigned launch Job");
     expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
   });
 });

@@ -78,11 +78,18 @@ export async function authenticate(options: {
   assert.equal(typeof app.app?.id, "string"); assert.equal(typeof app.secret, "string");
   await environment.startServer({ appId: app.app.id, appSecret: app.secret });
   await authorize(`${environment.baseURL}/api/v1/auth/login?provider=github&returnPath=%2Fprojects`);
-  const minted = await json(`${environment.baseURL}/api/v1/me/tokens`, 201, {
-    name: "External image source regression", expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-  });
   const principal = await json(`${environment.baseURL}/api/v1/me`, 200);
-  assert.equal(typeof minted.token, "string"); assert.equal(typeof minted.id, "string");
   assert.equal(typeof principal.id, "string");
+  const catalog = await json(`${environment.baseURL}/api/v1/me/credential-scope-catalog`, 200);
+  const scopes = ["session:produce", "session:read"];
+  assert(typeof catalog.pat?.catalogRevision === "string" && catalog.pat.catalogRevision.length > 0 && Array.isArray(catalog.pat.groups), "Isolated PAT scope catalog is unavailable.");
+  const available = new Set(catalog.pat.groups.flatMap((group: { scopeIds?: unknown } | null) => Array.isArray(group?.scopeIds) ? group.scopeIds : []));
+  assert(scopes.every(scope => available.has(scope)), "Isolated PAT catalog must permit Session production and reads.");
+  const minted = await json(`${environment.baseURL}/api/v2/me/tokens`, 201, {
+    name: "External image source regression", expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    expectedUserId: principal.id, catalogRevision: catalog.pat.catalogRevision, scopes,
+  });
+  assert.equal(typeof minted.token, "string"); assert.equal(typeof minted.id, "string");
+  assert(minted.scopePolicy?.scopeVersion === "1" && Array.isArray(minted.scopePolicy.scopes) && minted.scopePolicy.scopes.length === scopes.length && scopes.every(scope => minted.scopePolicy.scopes.includes(scope)), "Isolated PAT must retain exactly the requested Session scopes.");
   return { token: minted.token, tokenId: minted.id, userId: principal.id };
 }

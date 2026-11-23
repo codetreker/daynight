@@ -1,3 +1,4 @@
+import type { LifecycleBinding } from "../worker/lifecycle-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, lstat, link, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -17,7 +18,8 @@ export class LaunchTicketLimitError extends Error {
 }
 
 type LaunchCommon = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
+  readonly lifecycleBinding?: LifecycleBinding;
   readonly launchId: string; readonly executionId: string; readonly controllerId: string; readonly controllerInstanceId: string;
   readonly sessionId: string; readonly executionGeneration: string; readonly serverOrigin: string;
   readonly provider: "codex" | "claude" | "copilot"; readonly cwd: string; readonly nativeHome: string;
@@ -32,8 +34,8 @@ type LaunchCommon = {
   readonly createdAt: string;
 };
 export type ControllerLaunchTicket = LaunchCommon & SessionBinding & (
-  | { readonly claimId: string; readonly projectId: string; readonly taskId: string; readonly workerId: string; readonly worktreeId: string; readonly userId: string; readonly ownerUserId?: never; readonly initialInput?: never }
-  | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
+  | { readonly claimId: string; readonly projectId: string; readonly taskId: string; readonly workerId: string; readonly worktreeId: string; readonly userId: string; readonly ownerUserId?: never; readonly initialInput?: never; readonly usageScope?: never }
+  | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly usageScope?: "standalone_test"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
 );
 const uuid = (value: unknown): string => { if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Controller identity must be a canonical UUID."); return value; };
 export const controllerExecutionDirectory = (home: string, executionId: string, storageStateDirectory?: string): string => path.join(resolveControllerStateDirectory(home, storageStateDirectory), "controller", "executions", uuid(executionId));
@@ -44,16 +46,34 @@ const canonicalPayload = (value: unknown): unknown => {
   return value;
 };
 export const controllerPayloadHash = (value: unknown): string => createHash("sha256").update(JSON.stringify(canonicalPayload(value))).digest("hex");
+export const parseControllerLifecycleBinding = (value: unknown): LifecycleBinding => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Controller lifecycle binding is missing.");
+  const data = value as Record<string, unknown>;
+  if (Object.keys(data).sort().join() !== "instanceEpoch,instanceId,intentVersion,localEpoch,scopeGeneration,serverOrigin,userId,workerId") throw new Error("Controller lifecycle binding has invalid fields.");
+  for (const key of ["instanceId", "userId", "workerId"]) uuid(data[key]);
+  for (const key of ["instanceEpoch", "intentVersion", "localEpoch", "scopeGeneration"]) {
+    const number = data[key];
+    if (typeof number !== "string" || !/^[1-9][0-9]{0,18}$/.test(number) || BigInt(number) > 9_223_372_036_854_775_807n) throw new Error("Controller lifecycle binding has an invalid version.");
+  }
+  if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller lifecycle service is invalid.");
+  return value as LifecycleBinding;
+};
 export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Controller ticket must be an object.");
   const data = value as Record<string, unknown>;
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(Object.hasOwn(data, "lifecycleBinding") ? ["lifecycleBinding"] : []), ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "usageScope") ? ["usageScope"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
-  if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
+  if (Object.hasOwn(data, "usageScope") && (!test || data.usageScope !== "standalone_test" || ["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].some(key => Object.hasOwn(data, key)))) throw new Error("Controller usage scope is invalid.");
+  if ((data.schemaVersion !== 1 && data.schemaVersion !== 2) || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
+  if (data.schemaVersion === 2) {
+    const lifecycle = parseControllerLifecycleBinding(data.lifecycleBinding);
+    if (lifecycle.serverOrigin !== data.serverOrigin || lifecycle.userId !== (test ? data.ownerUserId : data.userId)
+      || !test && lifecycle.workerId !== data.workerId || data.usageScope === "standalone_test") throw new Error("Controller lifecycle binding conflicts with its execution owner.");
+  } else if (Object.hasOwn(data, "lifecycleBinding")) throw new Error("Legacy Controller tickets cannot claim lifecycle fencing.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
   if (Object.hasOwn(data, "copilotBotRecovery")) {

@@ -44,6 +44,19 @@ func TestVerifyStorageCommandRejectsMissingConfigurationAndRedactsFailures(t *te
 	}
 }
 
+func TestVerifyStorageRejectsAzureInsteadOfInspectingScratch(t *testing.T) {
+	values := map[string]string{
+		"DAYNIGHT_DATABASE_URL":            "postgres://localhost/unused",
+		"DAYNIGHT_STORAGE_BACKEND":         "azure-blob",
+		"DAYNIGHT_STORAGE_AZURE_ENDPOINT":  "https://example.blob.core.windows.net",
+		"DAYNIGHT_STORAGE_AZURE_CONTAINER": "test",
+	}
+	var output bytes.Buffer
+	if code := run(t.Context(), []string{"verify-storage", "--root", testStorageRoot(t)}, lookupTestEnvironment(values), &output); code != 1 || !strings.Contains(output.String(), "requires a paired local volume") {
+		t.Fatalf("code=%d output=%s", code, output.String())
+	}
+}
+
 func runBackupVerifierProcess(t *testing.T, database, root string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)

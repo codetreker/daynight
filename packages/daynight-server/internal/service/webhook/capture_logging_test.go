@@ -35,7 +35,7 @@ func TestCapturePreparedLogUsesRecordedIdentities(t *testing.T) {
 	request := strings.Repeat("r", 128)
 	ctx := requestid.With(t.Context(), request)
 	c := &Capturer{Random: &captureEntropy{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
-	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := c.CaptureBatch(ctx, dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	event, delivery := dao.writes[0].event, dao.writes[0].deliveries[0]
@@ -56,7 +56,7 @@ func TestCaptureLogsActualEventAndScheduleEntropyFailure(t *testing.T) {
 	cause := errors.New("entropy failed at https://receiver.example/hook?token=private")
 	c := &Capturer{Random: &captureFailedEntropy{cause: cause, jitterFailure: true}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
 	ctx := requestid.With(t.Context(), "capture-test-request")
-	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+	if err := c.CaptureBatch(ctx, dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
 		t.Fatalf("lost entropy cause: %v", err)
 	}
 	entry := captureLog(t, &logs)
@@ -89,7 +89,7 @@ func TestCaptureFailureLogsKeepSafePhaseAndRequest(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			c := &Capturer{Random: &captureEntropy{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
-			if err := c.CaptureBatch(requestid.With(t.Context(), "capture-failure-request"), dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+			if err := c.CaptureBatch(requestid.With(t.Context(), "capture-failure-request"), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
 				t.Fatalf("lost storage cause: %v", err)
 			}
 			entry := captureLog(t, &logs)
@@ -109,7 +109,7 @@ func TestCaptureCancelledContextKeepsRequestCorrelation(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	c := &Capturer{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
-	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, context.Canceled) {
+	if err := c.CaptureBatch(ctx, dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled cause = %v", err)
 	}
 	entry := captureLog(t, &logs)

@@ -136,10 +136,18 @@ func (h *taskHandler) observedGraph(w http.ResponseWriter, request *http.Request
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	graph := TaskGraphResponse(result.Graph)
+	graph := TaskGraphResponse(result.Graph, taskParentView(request))
 	response := observedGraphResponse{TaskGraph: graph, Tasks: make([]observedGraphNode, 0, len(graph.Tasks)), SessionSummary: result.Aggregation, Partial: result.Partial}
 	for _, task := range graph.Tasks {
 		response.Tasks = append(response.Tasks, observedGraphNode{GraphTask: task, Session: result.Sessions[task.ID], Relation: result.Relations[task.ID]})
+	}
+	if h.taskOnly {
+		w.Header().Set("Daynight-Projection", "task-only-v1")
+		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
+			observedGraphResponse
+			Project taskOnlyProject `json:"project"`
+		}{response, taskOnlyProject{ID: result.Graph.Project.ID}})
+		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }

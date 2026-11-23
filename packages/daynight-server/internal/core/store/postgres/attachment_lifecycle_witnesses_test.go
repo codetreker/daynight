@@ -91,7 +91,7 @@ func attachmentWitnessWait(t *testing.T, ctx context.Context, reached <-chan str
 func attachmentWitnessPID(t *testing.T, ctx context.Context, database *Store) int32 {
 	t.Helper()
 	var pid int32
-	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT parent_id::text,type,parent_type,effective_deleted_at FROM task_resource_rows%' LIMIT 1),0)`).Scan(&pid)
+	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT COALESCE(deleted_at, ancestor_deleted_at) FROM tasks%' LIMIT 1),0)`).Scan(&pid)
 	if err != nil || pid == 0 {
 		t.Fatalf("attachment lifecycle transaction not found: %d %v", pid, err)
 	}
@@ -265,7 +265,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 			})
 			attachmentWitnessWait(t, ctx, reached)
 			var deletingPID int32
-			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'UPDATE tasks%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
+			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'WITH RECURSIVE descendants%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
 				t.Fatal(err)
 			}
 			mutation := attachmentWitnessAsync(t, ctx, func() error {

@@ -22,7 +22,7 @@ func (s *Reader) Task(ctx context.Context, projectID, id string) (model.Task, er
 }
 
 // taskResourceFilter applies typed selection before pagination. A nil parent
-// selects all parents; none selects unassigned tasks.
+// selects all parents; none selects tasks without a direct Goal.
 func taskResourceFilter(taskType model.TaskType, parent *string, args *[]any) (string, error) {
 	if taskType == "" {
 		taskType = model.TaskTypeTask
@@ -34,29 +34,42 @@ func taskResourceFilter(taskType model.TaskType, parent *string, args *[]any) (s
 	filter := fmt.Sprintf(" AND t.type=$%d::text", len(*args))
 	if parent != nil {
 		if *parent == "none" {
-			return filter + " AND t.parent_id IS NULL", nil
+			return filter + " AND (t.parent_id IS NULL OR t.parent_type='task')", nil
 		}
 		id, err := model.CanonicalID(*parent)
 		if err != nil || id != *parent {
 			return "", fmt.Errorf("invalid parent ID")
 		}
 		*args = append(*args, id)
-		filter += fmt.Sprintf(" AND t.parent_id=$%d::uuid", len(*args))
+		filter += fmt.Sprintf(" AND t.parent_id=$%d::uuid AND t.parent_type='goal'", len(*args))
 	}
 	return filter, nil
 }
 
+func taskRelationshipFilter(taskType model.TaskType, parent, parentTask *string, args *[]any) (string, error) {
+	filter, err := taskResourceFilter(taskType, parent, args)
+	if err != nil {
+		return "", err
+	}
+	if parentTask == nil {
+		return filter, nil
+	}
+	if parent != nil || taskType == model.TaskTypeGoal {
+		return "", fmt.Errorf("invalid parent task filter")
+	}
+	id, err := model.CanonicalID(*parentTask)
+	if err != nil || id != *parentTask {
+		return "", fmt.Errorf("invalid parent task ID")
+	}
+	*args = append(*args, id)
+	return filter + fmt.Sprintf(` AND t.parent_id=$%d::uuid AND t.parent_type='task'
+ AND EXISTS(SELECT 1 FROM task_resource_rows parent WHERE parent.project_id=t.project_id
+ AND parent.id=t.parent_id AND parent.type='task' AND parent.effective_deleted_at IS NULL)`, len(*args)), nil
+}
+
 func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQuery) (store.TaskPage, error) {
 	afterTime, afterID := pg.PageValues(query.Page)
-	var limit any = query.Page.Limit + 1
-	projection := pg.TaskProjection
-	join := ""
-	if query.Worker != nil {
-		limit = nil
-		projection += ", worker_property.value"
-		join = " LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'"
-	}
-	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit, query.PlatformSpecific}
+	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, query.Page.Limit + 1, query.PlatformSpecific}
 	assignmentCondition := ""
 	switch query.AssignedTo.Mode {
 	case model.TaskAssignmentAll:
@@ -74,7 +87,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	default:
 		return store.TaskPage{}, pg.QueryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
 	}
-	resourceFilter, err := taskResourceFilter(query.Type, query.Parent, &arguments)
+	resourceFilter, err := taskRelationshipFilter(query.Type, query.Parent, query.ParentTask, &arguments)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}
@@ -88,19 +101,36 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	}
 	candidateFilter := ""
 	if query.AutomaticCandidate {
-		candidateFilter = ` AND t.type = 'task' AND (t.parent_id IS NULL OR EXISTS (
-			SELECT 1 FROM tasks parent WHERE parent.id=t.parent_id AND parent.project_id=t.project_id
-			AND parent.type='goal' AND parent.deleted_at IS NULL AND parent.status NOT IN ('done', 'cancelled')))`
+		candidateFilter = " AND t.type = 'task' AND NOT " + terminalAncestorGoalPredicate("t.project_id", "t.parent_id")
 	}
-	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM task_resource_rows t`+join+`
+	workerJoin := ""
+	if query.Worker != nil {
+		arguments = append(arguments, query.Worker.UserID, query.Worker.WorkerID)
+		workerJoin = fmt.Sprintf(` JOIN task_properties worker_property ON worker_property.task_id=t.id
+  AND worker_property.name='worker'
+  AND ((CASE WHEN worker_property.name='worker' THEN worker_property.value::jsonb END)->>'state') COLLATE "C" = 'active'
+  AND ((CASE WHEN worker_property.name='worker' THEN worker_property.value::jsonb END)->>'userId') COLLATE "C" = $%d::text COLLATE "C"
+  AND ((CASE WHEN worker_property.name='worker' THEN worker_property.value::jsonb END)->>'workerId') COLLATE "C" = $%d::text COLLATE "C"`, len(arguments)-1, len(arguments))
+	}
+	selection := ` FROM task_resource_rows t` + workerJoin + `
   WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL
   AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
   AND ($4::text IS NULL OR t.status = $4)
-  AND ($5::boolean IS NULL OR `+pg.TaskReady+` = $5)
+  AND ($5::boolean IS NULL OR ` + pg.TaskReady + ` = $5)
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
   AND ($9::boolean IS NULL OR (t.required_platform IS NOT NULL) = $9)
-  `+assignmentCondition+resourceFilter+tagFilter+candidateFilter+nameFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
+  ` + assignmentCondition + resourceFilter + tagFilter + candidateFilter + nameFilter + ` ORDER BY t.created_at, t.id LIMIT $8`
+	statement := `SELECT ` + pg.TaskProjection + selection
+	if query.Worker != nil {
+		// Materialize the narrow page before expanding dependency arrays and task bodies.
+		statement = `WITH page AS MATERIALIZED (SELECT t.id, t.created_at` + selection + `)
+ SELECT ` + pg.TaskProjection + `, worker_property.value FROM page
+ JOIN task_resource_rows t ON t.id=page.id
+ JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'
+ ORDER BY page.created_at, page.id`
+	}
+	rows, err := s.tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}
@@ -117,15 +147,9 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 			return store.TaskPage{}, pg.QueryError("list tasks", err)
 		}
 		if query.Worker != nil {
-			if workerValue == nil {
-				continue
-			}
 			var worker model.WorkerClaim
 			if err := json.Unmarshal([]byte(*workerValue), &worker); err != nil {
 				return store.TaskPage{}, pg.QueryError("decode worker inventory", err)
-			}
-			if worker.State != model.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
-				continue
 			}
 		}
 		items = append(items, task)

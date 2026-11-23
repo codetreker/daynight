@@ -12,11 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const recordColumns = `id::text,owner_user_id::text,task_id::text,author,kind,text,request_fingerprint,item_id::text,author_bot_id::text,refs,created_at`
+const recordColumns = `id::text,owner_user_id::text,task_id::text,author,kind,text,request_fingerprint,item_id::text,author_bot_id::text,refs,created_at,outcome,action_record_id::text`
 
 func scanRecord(row pgx.Row) (model.AssistantTaskRecord, error) {
 	var v model.AssistantTaskRecord
-	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Author, &v.Kind, &v.Text, &v.RequestFingerprint, &v.ItemID, &v.AuthorBotID, &v.Refs, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Author, &v.Kind, &v.Text, &v.RequestFingerprint, &v.ItemID, &v.AuthorBotID, &v.Refs, &v.CreatedAt, &v.Outcome, &v.ActionRecordID)
 	v.CreatedAt = v.CreatedAt.UTC()
 	return v, err
 }
@@ -55,7 +55,7 @@ func (d *DAO) InsertRecord(ctx context.Context, v model.AssistantTaskRecord) (mo
 		}
 	}
 	v.CreatedAt = stamp
-	result, err := one(d.tx.QueryRow(ctx, `INSERT INTO assistant_task_records(id,owner_user_id,task_id,author,kind,text,request_fingerprint,item_id,author_bot_id,refs,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+recordColumns, v.ID, v.OwnerUserID, v.TaskID, v.Author, v.Kind, v.Text, v.RequestFingerprint, v.ItemID, v.AuthorBotID, v.Refs, v.CreatedAt), "insert assistant record", scanRecord)
+	result, err := one(d.tx.QueryRow(ctx, `INSERT INTO assistant_task_records(id,owner_user_id,task_id,author,kind,text,request_fingerprint,item_id,author_bot_id,refs,created_at,outcome,action_record_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING `+recordColumns, v.ID, v.OwnerUserID, v.TaskID, v.Author, v.Kind, v.Text, v.RequestFingerprint, v.ItemID, v.AuthorBotID, v.Refs, v.CreatedAt, v.Outcome, v.ActionRecordID), "insert assistant record", scanRecord)
 	if err != nil {
 		return model.AssistantTaskRecord{}, err
 	}

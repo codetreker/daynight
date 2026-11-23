@@ -3,9 +3,9 @@ package task_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -74,11 +74,11 @@ func TestDAOStreamingFailuresDiscardIncompleteResults(t *testing.T) {
 	w := task.NewWriter(f.tx, f.project)
 	a := mustTask(t, w, store.TaskWrite{Title: "stream alpha"})
 	b := mustTask(t, w, store.TaskWrite{Title: "dependent", Status: model.TaskInProgress, DependsOn: []string{a.ID}})
-	goal := uuid.NewString()
-	_, err := f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title) VALUES($1,$2,'goal','goal')`, goal, f.project)
+	_, err := f.tx.Exec(ctx, `UPDATE tasks SET assigned_to=$1,started_at=created_at WHERE id=$2`, f.user, b.ID)
 	mustOK(t, err)
-	stamp := time.Now().UTC()
-	mustOK(t, w.InsertTaskStep(ctx, a.ID, model.TaskStep{ID: "00000001", Title: "step", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}))
+	goal := uuid.NewString()
+	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title) VALUES($1,$2,'goal','goal')`, goal, f.project)
+	mustOK(t, err)
 	_, e := task.NewThreadDAO(f.tx).InsertMessage(ctx, model.ThreadMessage{TaskID: a.ID, Author: model.ThreadAuthor{UserID: f.user}, Body: "message"})
 	mustOK(t, e)
 	tests := map[string]func(pgx.Tx) error{
@@ -121,13 +121,6 @@ func TestDAOStreamingFailuresDiscardIncompleteResults(t *testing.T) {
 			v, e := task.NewReader(tx).ResolveTaskAssignees(ctx, f.project, []string{f.user})
 			if e != nil && v != nil {
 				t.Fatal("partial resolved assignees escaped")
-			}
-			return e
-		},
-		"step page": func(tx pgx.Tx) error {
-			v, e := task.NewReader(tx).TaskStepPage(ctx, a.ID, -1, 10, false)
-			if e != nil && v != nil {
-				t.Fatal("partial steps escaped")
 			}
 			return e
 		},
@@ -185,6 +178,19 @@ func TestDAOStreamingFailuresDiscardIncompleteResults(t *testing.T) {
 		}
 	}
 	for _, mode := range []string{"query", "scan", "stream"} {
+		for phase := 1; phase <= 4; phase++ {
+			t.Run(fmt.Sprintf("work phase %d/%s", phase, mode), func(t *testing.T) {
+				tx := &interruptedTx{Tx: f.tx, target: phase, scanFailure: mode == "scan", rejectQuery: mode == "query"}
+				groupID := min(a.ID, b.ID)
+				page, err := task.NewReader(tx).TaskWorkGroups(ctx, f.project, store.TaskWorkQuery{AssignedTo: f.user, GroupID: &groupID, Limit: 10})
+				if !errors.Is(err, io.ErrUnexpectedEOF) {
+					t.Fatalf("work read failure lost: %v", err)
+				}
+				if len(page.Items) != 0 || len(page.Targets) != 0 {
+					t.Fatalf("partial work selection escaped: %#v", page)
+				}
+			})
+		}
 		t.Run("search edges/"+mode, func(t *testing.T) {
 			_, e := task.NewSearchSnapshot(&interruptedTx{Tx: f.tx, target: 2, scanFailure: mode == "scan", rejectQuery: mode == "query"}).ContextGraph(ctx, f.project, []string{a.ID})
 			if !errors.Is(e, io.ErrUnexpectedEOF) {

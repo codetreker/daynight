@@ -29,32 +29,54 @@ func TestOAuthSessionCredentialRechecksExpiryAfterLock(t *testing.T) {
 	for _, clockError := range []bool{false, true} {
 		t.Run(map[bool]string{false: "expired after lock", true: "clock query failure"}[clockError], func(t *testing.T) {
 			calls := 0
+			principal := model.Principal{Kind: model.OAuthCredential, UserID: "user", CredentialID: "access"}
+			expiry := time.Now().Add(time.Hour)
 			tx := rowTx{query: func(sql string, args ...any) pgx.Row {
 				calls++
-				if calls == 1 {
+				switch calls {
+				case 1, 2:
+					if len(args) != 2 || args[0] != principal.CredentialID || args[1] != principal.UserID {
+						t.Fatalf("unexpected lock query %d: %q %v", calls, sql, args)
+					}
 					return scanRow(func(dest ...any) error {
-						expiry := time.Now().Add(time.Hour)
-						*dest[0].(**time.Time) = &expiry
+						*dest[0].(*string) = "locked"
 						return nil
 					})
-				}
-				if sql != `SELECT $1::timestamptz > clock_timestamp()` || len(args) != 1 {
-					t.Fatalf("expiry was not checked against database clock: %q %v", sql, args)
-				}
-				return scanRow(func(dest ...any) error {
-					if clockError {
-						return cause
+				case 3:
+					if len(args) != 2 || args[0] != principal.CredentialID || args[1] != principal.UserID {
+						t.Fatalf("unexpected credential query: %q %v", sql, args)
 					}
-					*dest[0].(*bool) = false
+					return scanRow(func(dest ...any) error {
+						*dest[0].(**time.Time) = &expiry
+						*dest[1].(*string) = "daynight:api"
+						return nil
+					})
+				case 4:
+					if len(args) != 1 {
+						t.Fatalf("expiry was not checked against database clock: %q %v", sql, args)
+					}
+					observed, ok := args[0].(*time.Time)
+					if !ok || observed == nil || !observed.Equal(expiry) {
+						t.Fatalf("expiry was not propagated: %v", args)
+					}
+					return scanRow(func(dest ...any) error {
+						if clockError {
+							return cause
+						}
+						*dest[0].(*bool) = false
+						return nil
+					})
+				default:
+					t.Fatalf("unexpected query %d: %q", calls, sql)
 					return nil
-				})
+				}
 			}}
-			err := New(tx).LockCredential(t.Context(), model.Principal{Kind: model.OAuthCredential}, time.Now())
+			err := New(tx).LockCredential(t.Context(), principal, time.Now())
 			want := model.ErrNotFound
 			if clockError {
 				want = cause
 			}
-			if !errors.Is(err, want) || calls != 2 {
+			if !errors.Is(err, want) || calls != 4 {
 				t.Fatalf("post-lock expiry: calls=%d error=%v", calls, err)
 			}
 		})

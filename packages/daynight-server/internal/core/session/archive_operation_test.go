@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,15 +49,15 @@ func TestArchiveOwnerAndInstanceAdmission(t *testing.T) {
 	first, second := archiveAdmissionFixture(t, root), archiveAdmissionFixture(t, root)
 	owner, other := model.Principal{UserID: uuid.NewString()}, model.Principal{UserID: uuid.NewString()}
 	ctx := context.Background()
-	held, err := first.BeginArchive(ctx, owner, "", "", "", ArchiveV1Upload)
+	held, err := first.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = first.BeginArchive(ctx, other, "", "", "", ArchiveV2Read)
+	_, err = first.BeginArchive(ctx, other, "", "", uuid.NewString(), ArchiveV2Read)
 	requireArchiveBusy(t, err)
-	_, err = second.BeginArchive(ctx, owner, "", "", "", ArchiveV2Read)
+	_, err = second.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV2Read)
 	requireArchiveBusy(t, err)
-	separate, err := second.BeginArchive(ctx, other, "", "", "", ArchiveV2Read)
+	separate, err := second.BeginArchive(ctx, other, "", "", uuid.NewString(), ArchiveV2Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestArchiveOwnerAndInstanceAdmission(t *testing.T) {
 	if err = held.Close(); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := second.BeginArchive(ctx, owner, "", "", "", ArchiveV1Read)
+	fresh, err := second.BeginArchive(ctx, owner, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +177,11 @@ func TestArchivePreflightAdmissionIsBounded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		_, err := s.BeginArchive(ctx, model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+		_, err := s.BeginArchive(ctx, model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 		result <- err
 	}()
 	<-entered
-	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	cancel()
 	select {
@@ -205,7 +206,7 @@ type failedArchiveGate struct {
 	permit *failedArchivePermit
 }
 
-func (g failedArchiveGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g failedArchiveGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return g.permit, nil
 }
 func TestArchiveClosePreservesErrorAndReleasesInstanceOnce(t *testing.T) {
@@ -214,14 +215,14 @@ func TestArchiveClosePreservesErrorAndReleasesInstanceOnce(t *testing.T) {
 	permit := &failedArchivePermit{err: failure}
 	s.files = failedArchiveGate{Storage: s.files, permit: permit}
 	p := model.Principal{UserID: uuid.NewString()}
-	op, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Upload)
+	op, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !errors.Is(op.Close(), failure) || !errors.Is(op.Close(), failure) || permit.calls.Load() != 1 {
 		t.Fatal("close did not retain failure or ran more than once")
 	}
-	next, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	next, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +239,8 @@ type archivePermitFailure struct {
 }
 
 func (c archivePermitFailure) Close() error { return errors.Join(c.Closer.Close(), c.failure) }
-func (s archivePermitFailureStorage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
-	permit, err := s.Storage.TryAcquireResidency(ctx, key)
+func (s archivePermitFailureStorage) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	permit, err := s.Storage.TryAcquireArchive(ctx, owner, session, limit, cleanup)
 	if err != nil {
 		return nil, err
 	}
@@ -331,14 +332,14 @@ type failedBusyGate struct {
 	failure error
 }
 
-func (g failedBusyGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g failedBusyGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return nil, errors.Join(filestorage.ErrGateBusy, g.failure)
 }
 func TestArchiveGateBusyCleanupFailureRemainsObservable(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
 	failure := errors.New("gate close failed")
 	s.files = failedBusyGate{Storage: s.files, failure: failure}
-	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	var fault *model.Fault
 	if !errors.Is(err, failure) || !errors.Is(err, filestorage.ErrGateBusy) || errors.As(err, &fault) {
 		t.Fatalf("gate cleanup failure disguised as ordinary busy: %v", err)
@@ -400,26 +401,26 @@ func TestArchivePreflightReservationSharedAndReleased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	_, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = s.BeginArchive(canceled, p, "", "", "", ArchiveV1Read); !errors.Is(err, context.Canceled) {
+	if _, err = s.BeginArchive(canceled, p, "", "", uuid.NewString(), ArchiveV1Read); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
-	op, err := s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved)
+	op, err := s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = reserved.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	_, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	requireArchiveBusy(t, err)
 	if err = op.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved); err == nil {
+	if _, err = s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved); err == nil {
 		t.Fatal("reused preflight reservation")
 	}
 	reserved, err = s.TryReserveArchivePreflight()
@@ -432,7 +433,7 @@ func TestArchivePreflightReservationSharedAndReleased(t *testing.T) {
 	if err = reserved.Close(); err != nil {
 		t.Fatal(err)
 	}
-	op, err = s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Read)
+	op, err = s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +455,7 @@ func TestArchivePreflightReservationConcurrentClaimAndClose(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			<-start
-			op, _ := s.BeginArchiveReserved(context.Background(), p, "", "", "", ArchiveV1Read, reserved)
+			op, _ := s.BeginArchiveReserved(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Read, reserved)
 			results <- op
 		}()
 		go func() { <-start; _ = reserved.Close(); close(done) }()
@@ -477,7 +478,7 @@ func TestArchivePreflightReservationConcurrentClaimAndClose(t *testing.T) {
 func TestArchiveContentRejectsBusyBeforeReading(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
 	p := model.Principal{UserID: uuid.NewString()}
-	op, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Upload)
+	op, err := s.BeginArchive(context.Background(), p, "", "", uuid.NewString(), ArchiveV1Upload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +493,7 @@ func TestArchiveContentRejectsBusyBeforeReading(t *testing.T) {
 
 func TestArchiveOperationRejectsWrongModeAndClosed(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
-	op, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	op, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +513,7 @@ type archiveErrorGate struct {
 	err error
 }
 
-func (g archiveErrorGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+func (g archiveErrorGate) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
 	return nil, g.err
 }
 
@@ -530,7 +531,7 @@ func TestArchiveGateBusyClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := archiveAdmissionFixture(t, t.TempDir())
 			s.files = archiveErrorGate{Storage: s.files, err: tc.err}
-			_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+			_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", uuid.NewString(), ArchiveV1Read)
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("lost cause: %v", err)
 			}
@@ -704,7 +705,7 @@ func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup()
-			_, err := s.BeginArchive(ctx, p, "", "", "", ArchiveV1Read)
+			_, err := s.BeginArchive(ctx, p, "", "", uuid.NewString(), ArchiveV1Read)
 			if err == nil || tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("unexpected result: %v", err)
 			}
@@ -714,5 +715,151 @@ func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
 			}
 			_ = r.Close()
 		})
+	}
+}
+
+func TestArchiveOwnerMultipleSessionsAndCleanupAdmission(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	s.archiveSlots = make(chan struct{}, 4)
+	s.archivePreflightSlots = make(chan struct{}, 4)
+	s.archiveOwnerLimit = 2
+	owner := model.Principal{UserID: uuid.NewString()}
+	firstID, secondID := uuid.NewString(), uuid.NewString()
+	first, err := s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	_, err = s.BeginArchive(t.Context(), owner, "", "", strings.ToUpper(firstID), ArchiveV1Upload)
+	requireArchiveBusy(t, err)
+	second, err := s.BeginArchive(t.Context(), owner, "", "", secondID, ArchiveV1Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	_, err = s.BeginArchive(t.Context(), owner, "", "", uuid.NewString(), ArchiveV1Read)
+	requireArchiveBusy(t, err)
+	if len(s.archiveSlots) != 2 {
+		t.Fatalf("failed owner admission retained an instance slot: %d", len(s.archiveSlots))
+	}
+	_, err = s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if !errors.Is(err, filestorage.ErrGateBusy) {
+		t.Fatalf("cleanup entered while archive permits held: %v", err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if !errors.Is(err, filestorage.ErrGateBusy) {
+		t.Fatalf("cleanup entered while second archive held: %v", err)
+	}
+	if err = second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := s.files.TryAcquireArchive(t.Context(), owner.UserID, "", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	requireArchiveBusy(t, err)
+	if len(s.archiveSlots) != 0 {
+		t.Fatalf("cleanup refusal retained instance slot: %d", len(s.archiveSlots))
+	}
+	if err = cleanup.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.BeginArchive(t.Context(), owner, "", "", firstID, ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfiguredArchiveCapacity(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	s.Engine = NewEngine(s.files, ArchiveLimits{MaxConcurrent: 20, MaxConcurrentPerOwner: 5})
+	assertStage := func(err error, stage string) {
+		t.Helper()
+		requireArchiveBusy(t, err)
+		var capacity *ArchiveCapacityError
+		if !errors.As(err, &capacity) || capacity.Stage != stage {
+			t.Fatalf("capacity stage = %v, want %s", err, stage)
+		}
+		if got := capacity.Error(); got != "Session archive capacity is unavailable." {
+			t.Fatalf("capacity error = %q", got)
+		}
+	}
+	begin := func(owner string) (*ArchiveOperation, error) {
+		return s.BeginArchive(t.Context(), model.Principal{UserID: owner}, "", "", uuid.NewString(), ArchiveV1Read)
+	}
+	owner := uuid.NewString()
+	held := make([]*ArchiveOperation, 0, 20)
+	for i := 0; i < 5; i++ {
+		op, err := begin(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err := begin(owner)
+	assertStage(err, "owner_busy")
+	for i := 5; i < 20; i++ {
+		op, err := begin(uuid.NewString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err = begin(uuid.NewString())
+	assertStage(err, "instance_full")
+	if err := held[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := begin(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range held[1:] {
+		if err := op.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reservations := make([]*ArchivePreflightReservation, 0, 20)
+	for i := 0; i < 20; i++ {
+		r, err := s.TryReserveArchivePreflight()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservations = append(reservations, r)
+	}
+	_, err = s.TryReserveArchivePreflight()
+	assertStage(err, "preflight_full")
+	for _, r := range reservations {
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNewEngineRejectsInvalidArchiveLimits(t *testing.T) {
+	for _, limits := range [][]ArchiveLimits{
+		{{MaxConcurrent: 0, MaxConcurrentPerOwner: 5}},
+		{{MaxConcurrent: 20, MaxConcurrentPerOwner: 0}},
+		{{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}, {MaxConcurrent: 2, MaxConcurrentPerOwner: 2}},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("invalid limits did not panic: %+v", limits)
+				}
+			}()
+			NewEngine(nil, limits...)
+		}()
 	}
 }

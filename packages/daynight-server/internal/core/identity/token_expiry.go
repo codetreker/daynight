@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -78,6 +79,27 @@ func (s *Identity) ComparePATExpiry(ctx context.Context, dao store.IdentityDAO, 
 	}
 	current, err := dao.LockActivePAT(ctx, p.UserID, id, now)
 	if err != nil {
+		return model.PersonalAccessToken{}, false, err
+	}
+	// The row lock can wait past either credential's expiry. Recheck both
+	// credentials against database time sampled while holding the locks.
+	clock, ok := dao.(interface {
+		FreshPATTime(context.Context, time.Time) (time.Time, error)
+	})
+	if !ok {
+		return model.PersonalAccessToken{}, false, fmt.Errorf("PAT time capability is unavailable")
+	}
+	fresh, err := clock.FreshPATTime(ctx, now)
+	if err != nil {
+		return model.PersonalAccessToken{}, false, err
+	}
+	if err := dao.LockSession(ctx, p, fresh); err != nil {
+		return model.PersonalAccessToken{}, false, err
+	}
+	if current.ExpiresAt != nil && !current.ExpiresAt.After(fresh) {
+		return model.PersonalAccessToken{}, false, model.ErrNotFound
+	}
+	if _, err := validatedTokenExpiry(expiry, fresh); err != nil {
 		return model.PersonalAccessToken{}, false, err
 	}
 	if !equalTokenExpiry(current.ExpiresAt, expected) {

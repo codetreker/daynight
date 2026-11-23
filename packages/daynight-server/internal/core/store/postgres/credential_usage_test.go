@@ -33,7 +33,7 @@ func usageWrite(t *testing.T, ctx context.Context, db *Store, events ...model.Cr
 
 func usageSeedPAT(t *testing.T, ctx context.Context, db *Store, user, id string, at time.Time) {
 	t.Helper()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at) VALUES ($1,$2,decode(replace(($1::uuid)::text,'-','')||replace(($1::uuid)::text,'-',''),'hex'),'fixture',$3,$4)`, id, user, at, at.Add(24*time.Hour))
+	_, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,decode(replace(($1::uuid)::text,'-','')||replace(($1::uuid)::text,'-',''),'hex'),'fixture',$3,$4)`, id, user, at, at.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

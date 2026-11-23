@@ -14,6 +14,11 @@ OAuth 用户分支在该 callback 外独立执行 `WriteCredentialFamily`，以�
 调用方 context；普通成功结果仍在取消或到期后拒绝返回，等待阶段仍按原 select 处理取消。回查只使用真实 user UUID 与 access UUID，
 不签发凭据，不重复记录 credential usage。MCP family 不取得一般 readonly 请求权限。
 
+显式 `NewScopedReadOnly` 装配将当前 PAT 的 `worker:inspect` 请求权限与
+`worker:report` 生产权限分开，沿用相同的身份、连接及结果复核位置。
+策略读取与原有效性锁定同属身份事务；原生产构造器保持原行为。
+完整映射及启用条件见[凭据 Scope 内部合同](credential-scope-internal.md#worker-报告与检查准入)。
+
 Broker 在请求派发前、Worker 结果交付时和用户返回前都使用保存的原请求者 Principal 回查，
 生产者上下文中的 Worker PAT 不替代该用户 access。随后沿用 owner、online、Provider、
 连接与能力代次检查。Worker WebSocket 始终要求原 PAT；用户 OAuth 只授予其原用户权限。

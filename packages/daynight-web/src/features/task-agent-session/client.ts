@@ -1035,8 +1035,8 @@ export class TaskSessionClient {
     while ((this.paused() ? await this.admit() : this.admitted()) && this.sameSession(s)) {
       const operation = this.view.state.operations.get(command.operationId)!;
       if (accepted(operation)) return;
-      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'));
-      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.')); }
+      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'), 'terminal');
+      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.'), 'unknown'); }
       await this.delay(750);
       if (!(this.paused() ? await this.admit() : this.admitted())) break;
       try { await this.checkOperation(command.operationId); } catch { /* Only queries are retried; native inputs are never replayed. */ }
@@ -1061,8 +1061,9 @@ export class TaskSessionClient {
         throw error;
       }
       if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
-      if (!imageSubmission && this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
-      throw new OperationRequestError(command.operationId, error);
+      const rejected = !imageSubmission && this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500;
+      if (rejected) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
+      throw new OperationRequestError(command.operationId, error, rejected ? 'terminal' : null);
     }
   }
   /** Consumes the exact immutable command whose dispatch claim is already committed. */
@@ -1110,7 +1111,23 @@ export class TaskSessionClient {
     });
   }
   checkOperation = async (id: string): Promise<void> => {
-    if (this.imageOperationIds.has(id)) { await this.imageDrafts.checkStatus(); return; }
+    if (this.imageOperationIds.has(id)) {
+      if (this.view.checking.has(id)) return;
+      const draft = this.imageDrafts.getSnapshot();
+      const ref = draft.recoveries.find(entry => entry.ref.operationId === id)?.ref;
+      if (!ref && draft.loading) throw new Error('The original image draft is still loading.');
+      this.publish({ checking: new Set(this.view.checking).add(id) });
+      try {
+        if (ref) await this.imageDrafts.checkStatus(ref);
+        else {
+          const snapshot = this.view.state.snapshot;
+          if (!snapshot) throw new Error('The original image operation is unavailable.');
+          await this.observeImageOperation(snapshot, id);
+        }
+      }
+      finally { if (!this.accountStopped) this.publish({ checking: new Set([...this.view.checking].filter(value => value !== id)) }); }
+      return;
+    }
     const snapshot = this.view.state.snapshot;
     if (!snapshot || !this.live() || this.view.checking.has(id)) return;
     const checking = new Set(this.view.checking).add(id); this.publish({ checking });

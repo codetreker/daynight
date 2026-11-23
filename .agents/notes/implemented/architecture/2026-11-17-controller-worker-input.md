@@ -10,6 +10,8 @@ A Worker can observe an idle native session before another input or a task autho
 
 Worker initial and subsequent text inputs enter the Controller's existing native queue. At dispatch, the Controller reads the current task using the ticket's service and user, checks the original active claim and local readiness, and checks readiness again after the read. The initial operation retains its identity and frozen text; later input uses `worker_input` in the existing journal. Relay reconciliation excludes this local operation kind while retaining remote messages with the same display origin. The private observe response advertises the complete input protocol. The [Worker design](../../../../docs/design/daynight-worker.md) owns the dispatch contract and limits.
 
+The [unsubmitted input recovery decision](../bug-fix/2026-11-23-recover-unsubmitted-worker-input.md) extends this admission to a later generation when durable evidence proves the original input was never dispatched.
+
 ## Alternatives
 
 **Check only in the Worker before IPC.** A user message or task change can occur while input waits behind another native command, so the earlier observation cannot establish readiness at dispatch.

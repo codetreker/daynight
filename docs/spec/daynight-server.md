@@ -6,7 +6,7 @@
 逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
-[Steps 资源契约](daynight-task-steps.md)定义独立的完整有序集合、单项读取、原子添加、内容与状态更新、位置移动、当前记录删除、共享父版本、编码容量及未知结果核对；常规 Task 投影保持独立。
+[Steps 退役要求](daynight-task-steps.md)定义旧 REST 路径的非成功处理及内部实现边界；常规 Task 投影保持独立。
 [Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
@@ -95,7 +95,7 @@ MCP 握手的 `result.instructions` 简短介绍 Daynight，并指示客户端�
 `resources/read` 直接读取 `daynight://manuals/overview.md`，无需先查询目录。认证客户端也可通过
 `resources/list` 发现总览和十五篇英文专题手册，并按其 `daynight://manuals/<主题>.md` URI
 读取完整 Markdown。总览按操作导航至对象与 Project 上下文、Task 读取、Task 写入、依赖、写入安全、正式材料、
-Steps、Thread、附件读取、附件写入、Session 观察、Session 历史、Session 消息和 Worker assignment 专题。
+Thread、附件读取、附件写入、Session 观察、Session 历史、Session 消息和 Worker assignment 专题。
 总览说明工具发现、结果信封和示意符号、目标 Project、完整内容与授权的基本规则，并区分必读
 与按条件增读的专题。客户端可复用仍适用的完整正文；每个专题说明必要的额外读取条件，写入需
 取得完整公共写入安全规则及操作自身的约束。Task 读取与生命周期写入分别由 tasks 和 task-writes
@@ -147,7 +147,8 @@ Task 包含以下持久化字段：
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
 | `type` | 必填资源类型，公开创建支持 `task` 或 `goal` |
-| `parentId` | 必填、可空的父 Goal UUID；普通 Task 创建和更新可指定 |
+| `parentId` | 必填、可空的直属 Goal UUID；普通根可按既有规则创建和更新 |
+| `parentTaskId` | 显式扩展表示中的可空直属普通父 Task UUID；创建可指定非空 UUID，与非空 parentId 互斥，已有普通父边不可修改 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -162,7 +163,7 @@ Task 包含以下持久化字段：
 
 完整 REST Task、列表、ready、搜索结果和同步摘要，以及 MCP Task 完整和摘要结果包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。REST 和 MCP 创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。REST PATCH 和 MCP `task_update` 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名、改色或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
 
-完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 Goal-only `parentId`；显式关系表示增加可空 `parentTaskId`，选择、搜索上下文和直属筛选见[父项读取设计](../design/daynight-task-parent-reads.md)。最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 
@@ -180,7 +181,7 @@ proposed/todo/cancelled 可有未满足前置，in_progress/done 的前置必须
 ## 状态与更新规则
 
 新建 task 和数据库默认值均为 `proposed`，初始版本为1，执行起止和取消时间均为null，`allowAgents=false`。
-创建只接受 `title`、可选 `status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 和 `properties`；
+创建接受 `title`、可选 `type`、`parentId`、`parentTaskId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo`、`tagIds` 和 `properties`；普通父项创建及不可改挂约束见[父子写入设计](../design/daynight-task-parent-writes.md)。
 status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents 和执行时间。内部已确认的多步任务可显式创建 todo。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
 任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。字段、依赖和属性写入额度及完整 Task 成功响应预算见[输入与资源额度](daynight-api-input-limits.md)；确定的容量拒绝在提交前回滚。提交后发送失败不得表述为确定未写入。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
@@ -191,7 +192,7 @@ status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents �
 统一状态入口为 `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status`，普通请求为
 `{"version":123,"status":"in_progress"}`，done 目标另可提供 claimId 以完成当前 worker 执行。版本为正 int64 JSON 数字，范围
 `1..9223372036854775807`；拒绝缺失、null、字符串、非整数、越界、重复或未知字段及 query。
-只接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。
+只接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。可选严格布尔 `cancelDescendants` 仅允许普通 Task 的 cancelled 操作，显式 false 也受该限制；true 在同一事务取消可见未结束后代，省略或 false 仅取消目标。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。普通父项终态、不可改挂及未结束孩子的拒绝和整批取消见[父子写入设计](../design/daynight-task-parent-writes.md)。
 
 没有 active 执行归属的普通任务可在 proposed/todo/in_progress/done 之间直接设置状态，无需经过固定阶段，并允许进入不可恢复的cancelled；受控执行另有[认领保护](../design/daynight-worker-claims.md)。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
 同状态返回当前完整资源，不写持久化字段、版本、updatedAt 或计时；附带 claimId 的 done 同状态须匹配 completed 记录及其 owner。过期同状态仍返回
@@ -265,13 +266,6 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表，支持显式负责人筛选 |
 | `GET` | `/api/v1/projects/{projectId}/task-assignees` | 返回项目成员与保留负责人目录，或限定 userId 解析；始终有 items/unresolvedUserIds |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
-| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps` | 返回完整有序 StepsResource，合法空集合为 [] |
-| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | 返回同一父版本及 Task 内指定 Step |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps` | 按父 version 原子追加或 before/after 插入，返回 `201`、规范单项 Location 和完整集合 |
-| `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | 按父 version 原子更新 title/description，返回 `200` 和完整集合 |
-| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}/status` | 按父 version 独立设置四状态，返回 `200` 和完整集合 |
-| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}/position` | 按父 version 以 before/after/first/last 移动，返回 `200` 和完整集合 |
-| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | JSON version 原子删除当前记录并压紧位置，返回 `200` 和完整剩余集合，空为 [] |
 | `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |
@@ -306,40 +300,10 @@ HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 chars
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
 未知或只读字段、错误类型、必填字段为 `null` 和尾随 JSON。
 
-Steps 读取与写入均不接受 query，包括尾部空 `?`。集合允许 `GET, HEAD, POST`，
-单项允许 `GET, HEAD, PATCH, DELETE`，单项 status 和 position 子路径只允许 `PUT`。
-添加要求提交前确定的 8 位十六进制 id、title 和正 int64 version；可选 description
-省略为空字符串，status 省略为 todo，before 与 after 互斥。内容 PATCH 仅接受
-version 及 title/description 至少一个，省略字段保留，空 description 明确清空，
-成对内容一次原子保存；状态 PUT 仅接受 version 和必填四状态之一，允许自由转换。
-位置 PUT 仅接受 version 和 before/after/position 恰好一个；position 为 first 或 last，
-相对锚点必须为同 Task 内另一 Step，自引用拒绝，缺失锚点不回退其他位置。
-Step DELETE 仅接受 JSON version，所有状态均可删除；不存在目标为 404，不是 no-op。
-当前缺失目标先于版本耗尽，陈旧版本先于目标缺失；存在目标的删除总是实际变化。
-所有字段拒绝显式 null，文本拒绝 NUL、无效 UTF-8 和孤立转义 UTF-16 surrogate，
-保留合法原值；详情由 [Steps 资源契约](daynight-task-steps.md)拥有。
-
-admin/member 均可修改 Steps，Task 状态、许可和 Worker/Session 归属不增加门槛。
-准入先检查父墓碑与精确版本，再解析 Task 内目标；当前同值更新返回完整原集合，
-保留全部版本和时间，且不采样时钟、UPDATE 目标或 touch 父任务。当前位置的移动同样
-为 no-op，不写位置。最大 int64 版本的 no-op 仍成功，陈旧同值仍冲突；
-缺失目标或锚点先于真实变化的版本耗尽拒绝。
-真实变化只推进父版本及更新时间一次，内容/状态修改只更新目标内容时间，目标创建
-时间、身份和位置以及其他 Step 的字段与时间保持。移动仅修改受影响区间的稠密位置，
-保留所有 Step 的内容和创建/更新时间。删除移除目标并压紧后续位置，保留其他 Step
-的内容、时间和相对顺序，释放 Task 内 ID；后续同 ID 的 POST 是新建，不是恢复。
-Step 删除不删除引用附件、PR 或 Session。所有 Steps 操作保留其他 Task
-业务字段、依赖、属性、执行计时及 Worker/Session 归属，不冻结 Session。
-
-完整候选必须在任何数据修改前通过公共 codec 的 64 MiB 检查，编码计入转义、末尾 LF
-及父版本的 19 位预留。超限返回 `steps_limit_exceeded`，`error.details` 包含
-`encodedBytes`、`maxEncodedBytes`，不提交部分修改；状态值变长也参与相同检查。
-事务完成与响应结果独立记录，no-op 的业务 unchanged 与事务 committed 可同时成立。
-未知 Commit 或响应丢失按原身份只读核对当前事实，不自动重放写入；当前缺失不能
-证明某次未知删除造成了该状态，同 ID 当前存在也不能证明是原记录。
+Steps 集合、单项、status 和 position 子路径不注册 REST handler 或专用 CORS/scope 路由。旧 GET、HEAD、POST、PATCH、DELETE 和 PUT 进入既有未知 API 处理，不返回成功、不回落 SPA，也不调用 Steps 存储、修改父 Task 或产生领域事件。普通 Task、Thread 和附件沿用各自现有准入及错误行为。Steps 应用服务与专用领域逻辑已移除，Steps 存储合同、专用模型和 DAO 已移除，迁移删除旧表及全部数据；详情由 [Steps 退役要求](daynight-task-steps.md)拥有。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
-不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或父 Goal 已删除的任务的定点资源返回
+不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或祖先已删除的任务的定点资源返回
 `410 task_deleted`；非成员与不存在任务仍为 `404 not_found`。列表、ready、图、同步、统计与
 新增依赖引用排除有效删除的普通任务；未改变的依赖保留物理状态用于满足性、重开保护和环检测。DELETE 正文 removeDepends 可省略或为严格布尔：省略/false 遇未删除引用者时拒绝且零变更；true 原子清除全部传入普通/外部及已删除源历史引用，并各自增加受影响源版本一次。目标自己的前置与附件保留，active 目标 worker 仍禁止删除。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
 
@@ -371,7 +335,7 @@ Task 更新示例：
 Team、Project 和 Task 列表按请求条数读取一批候选，并以一项 lookahead 判断续页；cursor 指向最后返回项。普通资源直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域或共享 MCP 读取响应字节预算。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
-Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 匹配没有直属 Goal 的资源，UUID 只匹配该直属 Goal 的孩子。`parentTaskId` 指定可见同项目普通父 Task UUID，与 `parentId` 互斥。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及两种 Parent 筛选。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
 
@@ -456,15 +420,13 @@ blocked 只计入前置未全部完成的 todo；查询不改变任务状态、�
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
 | `404` | `not_found` | 路径资源缺失、当前用户不是对应 Team/项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
-| `409` | `version_conflict` | 任务元数据、生命周期、Steps、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
+| `409` | `version_conflict` | 任务元数据、生命周期、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
 | `409` | `identity_mismatch` | Team 管理或项目创建输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
 | `409` | `personal_team_immutable` | 变更 Personal Team |
 | `409` | `team_not_empty` | 删除仍有活跃 Project 的 Team |
 | `409` | `active_worker_claims` | 项目仍有 active Worker claim，删除未执行 |
-| `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
-| `409` | `steps_limit_exceeded` | Steps 真实变化候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
 | `409` | `resource_limit_exceeded` | 已知写入响应在提交前无法通过容量准入 |
-| `409` | `version_exhausted` | Steps 父 Task 或 Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
+| `409` | `version_exhausted` | Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |

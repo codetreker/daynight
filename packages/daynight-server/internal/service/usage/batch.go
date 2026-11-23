@@ -91,6 +91,10 @@ func (s *Service) Batch(ctx context.Context, id, token string, input Batch) (Bat
 		if err = validateGrant(upload, token, now); err != nil {
 			return err
 		}
+		parent := model.Principal{Kind: model.PATCredential, UserID: upload.AuthorityUserID, CredentialID: core.Value(upload.ParentCredentialID)}
+		if err = s.requireProducer(ctx, scope, parent, now, true); err != nil {
+			return err
+		}
 		states := map[string]model.UsageRecord{id: upload}
 		for _, e := range input.Events {
 			if e.Kind == "measurement" {
@@ -366,6 +370,10 @@ func (s *Service) Sources(ctx context.Context, id, token string, keys []string) 
 			return err
 		}
 		if err = validateGrant(r, token, now); err != nil {
+			return err
+		}
+		parent := model.Principal{Kind: model.PATCredential, UserID: r.AuthorityUserID, CredentialID: core.Value(r.ParentCredentialID)}
+		if err = s.requireProducer(ctx, scope, parent, now, false); err != nil {
 			return err
 		}
 		out.StateSequence = r.StateSequence

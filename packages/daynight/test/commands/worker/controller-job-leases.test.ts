@@ -25,5 +25,32 @@ it("retains other responsibilities and reports a handle release failure on Worke
   vi.spyOn(jobs, "releaseControllerJobLease").mockImplementation(() => { throw failure; });
   const owner = createControllerJobLeases("win32"); await owner.retain(launchId, proof, Date.now() + 5000);
   const error = await owner.close().catch(error => error);
-  expect(error.errors).toEqual([failure]); expect(await owner.get(launchId)).toBeUndefined();
+  expect(error.errors).toEqual([failure]); expect(await owner.get(launchId)).toBe(lease);
+});
+
+it("adopts the suspended birth handles before dispatch and retains them until native closure is confirmed", async () => {
+  const lease = {} as jobs.ControllerJobLease;
+  const acquire = vi.spyOn(jobs, "acquireControllerJobLease");
+  const release = vi.spyOn(jobs, "releaseControllerJobLease").mockImplementation(() => {});
+  const closeHandles = vi.fn().mockImplementationOnce(() => { throw new Error("original process still running"); });
+  const owner = createControllerJobLeases("win32");
+  owner.adopt(launchId, proof, lease, closeHandles);
+  expect(await owner.retain(launchId, proof, Date.now() + 5000)).toBe(lease);
+  expect(acquire).not.toHaveBeenCalled();
+  await expect(owner.close()).rejects.toThrow("release failed");
+  expect(await owner.get(launchId)).toBe(lease); expect(release).not.toHaveBeenCalled();
+  await owner.release(launchId);
+  expect(closeHandles).toHaveBeenCalledTimes(2); expect(release).toHaveBeenCalledExactlyOnceWith(lease);
+  expect(await owner.get(launchId)).toBeUndefined();
+});
+
+
+it("joins the original pending birth cleanup before permitting another attempt", async () => {
+  const owner = createControllerJobLeases("linux"), pending = Promise.withResolvers<void>();
+  const cleanup = vi.fn(() => pending.promise);
+  owner.retainBirthCleanup(launchId, cleanup);
+  await expect(owner.cleanupBirth(launchId, Date.now())).rejects.toThrow("remains pending");
+  const reconciling = owner.cleanupBirth(launchId, Date.now() + 5000);
+  expect(cleanup).toHaveBeenCalledOnce(); pending.resolve(); await reconciling;
+  await owner.close(); expect(cleanup).toHaveBeenCalledOnce();
 });

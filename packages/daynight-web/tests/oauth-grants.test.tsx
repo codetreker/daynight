@@ -8,10 +8,10 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
 const user = { personalTeam: { id: "00000000-0000-4000-8000-000000000701", kind: "personal" as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
-const grant: OwnerGrant = { id: "00000000-0000-4000-8000-000000000002", lastUsedAt: null, clientName: "App", clientId: "https://client.test", resource: "https://daynight.cc/mcp", scope: "daynight:mcp", createdAt: "2026-10-25T10:00:00Z", expiresAt: "2099-10-25T10:00:00Z", revokedAt: null, status: "active" };
-const token = { id: "00000000-0000-4000-8000-000000000005", name: "CLI", lastUsedAt: null, createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
+const grant: OwnerGrant = { id: "00000000-0000-4000-8000-000000000002", lastUsedAt: null, description: null, clientName: "App", clientId: "https://client.test", resource: "https://daynight.cc/mcp", scope: "daynight:mcp", createdAt: "2026-10-25T10:00:00Z", expiresAt: "2099-10-25T10:00:00Z", revokedAt: null, status: "active" };
+const token = { id: "00000000-0000-4000-8000-000000000005", name: "CLI", description: null, lastUsedAt: null, createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const fixture = (items: readonly OwnerGrant[] = [grant]) => ({ list: vi.fn().mockResolvedValue(items), revoke: vi.fn().mockImplementation((_id, _user, _signal, _mismatch, onDispatch?: () => void) => { onDispatch?.(); return Promise.resolve(true); }) });
+const fixture = (items: readonly OwnerGrant[] = [grant]) => ({ describe: vi.fn().mockImplementation(async (id, input) => ({ id, description: input.description })), list: vi.fn().mockResolvedValue(items), revoke: vi.fn().mockImplementation((_id, _user, _signal, _mismatch, onDispatch?: () => void) => { onDispatch?.(); return Promise.resolve(true); }) });
 const panel = (transport: ReturnType<typeof fixture>) => <OwnerGrantsPanel user={user} onIdentityMismatch={vi.fn()} transport={transport} />;
 const open = () => fireEvent.click(screen.getByRole("button", { name: "撤销 App 的应用授权" }));
 
@@ -94,7 +94,7 @@ describe("application authorizations", () => {
   });
   it("preserves a PAT draft and existing grant rows during a pending refresh", async () => {
     const read = deferred<readonly OwnerGrant[]>(); const transport = fixture(); transport.list.mockResolvedValueOnce([grant]).mockReturnValueOnce(read.promise);
-    const pats: TokenManagementApi = { list: vi.fn().mockResolvedValue([token]), create: vi.fn(), revoke: vi.fn(), update: vi.fn() };
+    const pats: TokenManagementApi = { list: vi.fn().mockResolvedValue([token]), create: vi.fn(), revoke: vi.fn(), describe: vi.fn(), update: vi.fn() };
     render(<><TokensPanel user={user} onIdentityMismatch={vi.fn()} transport={pats} />{panel(transport)}</>);
     await screen.findByText("App"); await screen.findByText("CLI");
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));

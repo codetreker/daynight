@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"testing"
 	"time"
 
@@ -110,7 +111,7 @@ func TestIdentityOperationsPreserveDatabaseFailures(t *testing.T) {
 		{"read identity personal team", func() error { _, err := dao.IdentityPersonalTeam(ctx, ""); return err }},
 		{"delete session", func() error { return dao.DeleteSession(ctx, model.Principal{}) }},
 		{"lock session", func() error { return dao.LockSession(ctx, model.Principal{Kind: model.SessionCredential}, now) }},
-		{"insert PAT", func() error { return dao.InsertPAT(ctx, model.PersonalAccessToken{}) }},
+		{"insert PAT", func() error { return dao.InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy()}) }},
 		{"list PATs", func() error { _, err := dao.ListPATs(ctx, "", now); return err }},
 		{"delete PAT", func() error { return dao.DeletePAT(ctx, "", "") }},
 		{"lock PAT", func() error { _, err := dao.LockActivePAT(ctx, "", "", now); return err }},

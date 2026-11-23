@@ -29,7 +29,7 @@ const restoreTaskProjectionView = `DROP VIEW task_resource_rows;
 
 func taskProjectionView(title, createdAt, updatedAt string) string {
 	return `ALTER VIEW task_resource_rows RENAME TO resource_source;
- CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,` + title + `,status,version,` +
+ CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,parent_type,` + title + `,status,version,` +
 		createdAt + `,` + updatedAt + `,started_at,completed_at,cancelled_at,allow_agents,
  required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`
 }
@@ -39,7 +39,7 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 		return reader.TaskGraphTasks(ctx, projectID, readerID(11), readerGraphSelection(), 160)
 	}, []taskReaderFault{
 		{name: "query", ddl: hideTaskProjection, restore: restoreTaskProjection, state: "42P01"},
-		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 7},
+		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 8},
 		{
 			name: "iteration", state: "P1003",
 			ddl: `CREATE FUNCTION fail_graph_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$
@@ -55,8 +55,8 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 		return reader.TaskSyncTasks(ctx, projectID, nil, 160)
 	}, []taskReaderFault{
 		{name: "query", ddl: hideTaskProjection, restore: restoreTaskProjection, state: "42P01"},
-		{name: "missing-title", ddl: taskProjectionView("NULL::text AS title", "created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 3},
-		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 8},
+		{name: "missing-title", ddl: taskProjectionView("NULL::text AS title", "created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 4},
+		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 9},
 		{
 			name: "iteration", state: "P1003",
 			ddl: `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$

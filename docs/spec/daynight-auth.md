@@ -78,7 +78,19 @@ SameSite=Lax；显式 HTTP 主站测试配置使用不带 Secure/`__Host-` 的�
 返回位置限主站内部路径，解码后的 UTF-8 内容最多 4096 bytes。首次合法登录请求缺少有效的第一方 scope Cookie 时，服务设置该 Cookie 并以 303 返回同一登录 URL，不建立交易。支持 Cookie 的客户端返回后才创建交易；每个 scope 最多有 5 条未完成且未过期的交易，全服务最多有 10000 条，期限为 10 分钟。scope 超限返回 429 `rate_limited`，全服务满时返回 503 `capacity_exhausted` 和 `Retry-After`；拒绝不撤销已有交易。scope 表示 Cookie 标识的逻辑浏览器，清除 Cookie 或并发首次请求无法关联为同一物理浏览器。注销终止当前 Daynight 会话，上游登录状态由 UniAuth 管理。
 Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝，不回退到 Cookie。
 
-浏览器会话绝对有效期七天，与 PAT 的到期规则独立。PAT 由 Web 会话显式创建，或由该会话批准的
+浏览器会话以主库时钟计算连续 168 小时的闲置期限，主站和预览共用同一 sessions 行。只有通过认证且符合入口来源准入的请求才记录活动；后台刷新、轮询及认证后的 304 计入。主站准入要求实际 authority 等于配置的主站 authority，入口是明确注册的业务 handler，包含内部 dispatcher 实际支持的方法，并具有同源 Fetch Metadata 或精确 Origin；GET 隐含的 HEAD 和内部 dispatcher 支持的 HEAD 均可计入，明确拒绝的 HEAD 不计入；注册的纯方法拒绝 handler 即使使用方法限定模式也不计入活动，并保留原只读认证、授权及 CSRF 检查；缺失或相互矛盾的来源信息不续期。Cookie 写请求还必须具有精确主站 Origin；即使 Fetch Metadata 声明同源，缺失、重复或不匹配的 Origin 也不能触发续期或业务写入，认证拒绝仍先于 Origin 拒绝。公开入口、登录中间步骤、注销、方法拒绝、失败认证、纯服务端轮询和协议 ping/pong 不计入活动。预览仅在规范 Task Host 的受保护 GET/HEAD 读取获准后，复核原预览凭据并续期：允许同源请求、受支持的同站 iframe 文档导航和显式用户发起的顶层文档导航；跨站自动请求、其他同站子资源以及缺失或矛盾的来源信息不续期，读取权限规则保持原义。预览活动不授予主站权限。
+
+续期按实际主站或预览凭据散列锁定已有行，锁后读取主库当前时间，严格要求同一凭据仍有效且 expires_at > now，单调更新 last_used_at 和其后 168 小时的期限。缺行、到期、撤销或预览换发后的旧凭据不能插入或恢复记录；仅提交确认后承认续期。新签发、认证、预览 SSO、权限重检和会话清理统一使用主库时钟，PAT/OAuth 的独立期限不变。新增可空 last_used_at 不回填旧行；新签发记录保存实际签发时间，旧记录仅在首次合格活动后获得最近使用时间。
+
+POST /api/v1/auth/session/activity 只接受有效主站 Cookie、精确主站 Origin 和必填 expectedUserId UUID，写入前在锁内核对账号，账号不符返回 409 identity_mismatch，成功返回无正文的 204 和 no-store。它供可见且已连接的实时观察使用；前端在取消、身份变化、隐藏或断连时停止发送，前端不能由全局定时器或为此冒用 /me 启动请求制造活动。
+
+普通活动响应不重发 Cookie。仅新登录和预览 SSO 请求 Cookie 持久保存 400 天，保留 host-only/预览 Domain、Secure、HttpOnly、SameSite=Lax 与两域隔离。浏览器可提前清除 Cookie；旧 Cookie 保留原期限，不转换，丢失后按既有主站登录或预览 SSO 恢复。
+
+浏览器会话管理只接受有效主站 Cookie，写入校验精确主站 Origin，响应使用 no-store。列表仅包含本账号尚未到期的会话，当前会话单列，其余按创建时间和 ID 倒序分页；游标绑定账号和调用会话。会话投影仅包含 ID、浏览器及系统分类、创建、最近使用和到期时间；分类与最近使用时间可为空，旧记录不回填，也不保存原始 User-Agent 或 IP。单条读取用于核对目标是否仍有效。撤销请求绑定预期账号和调用会话，身份变化或目标为当前会话返回 409，其他账号或无有效目标同形返回 404，确认成功返回 204。结果未知时只读取目标核对，不自动重发；不存在只证明目标不再活跃。当前浏览器仍通过 logout 退出。撤销后目标主站、预览及后续权限核验失效，其他浏览器会话、PAT 和 OAuth 凭据不受影响。
+
+`GET /api/v1/me/browser-sessions` 接受 `limit`（1–100，默认 50）及不透明 `cursor`，返回 `{userId,current,items,nextCursor}`，无下一页时 `nextCursor` 为 null。`current` 与各 `items` 包含必有的 `id`、`browser`、`os`、`createdAt`、`lastUsedAt`、`expiresAt`；时间为 UTC 时间字符串，未知分类与最近使用为 null。`GET /api/v1/me/browser-sessions/{id}` 返回同一投影。`POST /api/v1/me/browser-sessions/{id}/revoke` 接受必填 UUID 字段 `{expectedUserId,expectedSessionId}`，成功无正文。单条读取和撤销不接受 query；这些入口拒绝 HEAD 和显式 Authorization。无效输入返回 400 `invalid_input`，无效会话返回 401，身份或当前会话冲突返回 409 `identity_mismatch`，目标不可用返回 404 `not_found`，提交结果未知返回 503 `write_outcome_unknown`；错误采用现有 `{error:{code,message,requestId}}` 格式。
+
+PAT 由 Web 会话显式创建，或由该会话批准的
 设备授权在领取时自动创建；默认永不过期，以 `expiresAt:null` 表达。手工创建请求必须显式提供
 `name` 和 `expiresAt`，到期值为 null 或以 Z 结尾的未来 UTC 时间，不接受旧 `days` 输入。
 有限时间以数据库微秒精度保存，正规化后仍须为未来。
@@ -100,6 +112,16 @@ Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝�
 须由用户显式读取当前状态，读回结果不声称恢复了原请求的历史回执。身份准入暂停时，撤销的本地等待结束并保留已确认或未知结果；未派发的取消不视为未知提交。暂停期间保留列表，不自动读取或重放。已确认结果的后续读取仍须通过原身份准入，旧结果不能关闭较新的对话框。后台身份与数据检查保留已有界面和草稿；
 确认账户变化或会话失效时隔离旧账户数据。
 
+账户凭据管理 API 支持为每条 PAT 和 OAuth grant 保存独立的可空描述。描述是单行文本，先拒绝无效 Unicode、NUL 和行分隔符，再裁剪首尾 Unicode White_Space；空结果表示无描述，非空最多 100 个 Unicode 码点。描述修改只改变该字段，不改变秘密、期限、撤销、刷新、最近使用时间或清理行为。仍保留的过期 PAT 和过期或撤销的 OAuth grant 可以编辑；删除记录时描述随之删除。旧记录、设备签发和新 OAuth 授权的描述初始为 null。
+
+`GET /api/v2/me/tokens` 包含仍保存的过期 PAT，`POST /api/v2/me/tokens` 接受绑定当前账户的 `expectedUserId` 和可选描述，确认创建后只交付一次秘密。`GET /api/v3/oauth/grants` 保留 v2 元数据并增加必有的可空描述。两类记录分别通过 `PATCH /api/v2/me/tokens/{id}/description` 和 `PATCH /api/v3/oauth/grants/{id}/description`，以必填 `expectedUserId`、`expectedDescription` 和 `description` 保存；观察值必须是 null 或服务返回的规范值。观察值变化返回 409，不存在或不属于当前账户返回 404。新入口只接受主站浏览器会话，写入校验精确 Origin 和账户；拒绝 query、HEAD 和显式 Authorization，响应 no-store。提交未知不能当作成功或自动重放。旧 PAT v1 和 OAuth v1/v2 表示及设备、OAuth 签发协议保持兼容。
+
+账户页用名称下方的单行纯文本展示非空描述，铅笔紧邻描述；无描述时省略该行，铅笔紧邻名称。创建 PAT 可选填描述，并保留一次性明文交付。两类记录共用编辑、取消、清空和校验交互，支持中英文、键盘、触摸及窄屏；同名记录的编辑入口可区分目标，成功和取消后焦点回到原记录铅笔。多行粘贴必须在浏览器清理输入前拒绝，超长输入不截断。
+
+明确失败保留草稿及上次确认值。冲突或未知结果保留该记录的核对入口，只读回后由用户明确再次保存；读回失败只重试读取，可信目标消失结束保存资格。不同记录的未决描述独立，同一面板的列表读取与写入互斥。描述与期限回执只合并各自权威字段。期限 404 用新列表核对仍保留的过期 PAT。确认创建的秘密独立于后续列表读取；后续读取失败不能隐藏秘密、把创建标为失败或重发创建。创建结果未知时提示可能已签发，列表不重建秘密。同账户 SPA 导航保留草稿、在途及待核对状态和待展示秘密，账户变化隔离旧状态，晚到结果不能修改新页面。整页重载结束内存状态。
+
+新凭据路由返回 401 时先以独立 `/api/v1/me` 复核身份：仅真实失效触发全局过期；原账号有效提示接口暂不可用，另一账号进入身份暂停，复核失败保留输入和读取错误。不得放宽响应解析、自动降级或重发写入。
+
 PAT 和 OAuth grant 的内部元数据可保存最后一次已记录的真实合格使用事件时间。新建和升级后的
 既有记录初始均为 null，不从历史数据推断或回填；null 只表示没有已记录值。对同一对象，较旧、
 相同时间或错误账户的事件不能使记录回退或改变其他对象。迟到事件不能复活已删除对象；仍保留的
@@ -115,8 +137,9 @@ OAuth grant 的 v1 列表保持精确原表示；v2 列表在相同字段上增�
 在采用新字段的 Web 投入流量前，backend 必须先具备 PAT 字段及 OAuth v2 读取能力；新客户端上线后，
 恢复 artifact 必须保留这些协议能力，除非已真实退役这些客户端。数据库保留新增列不能替代协议兼容。
 
-撤销或已设置的到期时间到达后，新请求返回未认证，不影响其他会话或令牌。凭据代表用户当前全部
-项目权限，不另设令牌角色。CLI 凭据绑定有效服务 origin，不进入仓库绑定、明文命令参数或日志，
+撤销或已设置的到期时间到达后，新请求返回未认证，不影响其他会话或令牌。凭据权限为其明确业务 scope 与用户当前资源权限的交集，不另设令牌角色。
+新设备批准、手动 PAT 创建与权限编辑必须选择非空的明确 scope；存量凭据通过冻结全集迁移保留既有能力。
+目录、逐凭据编辑及启用恢复合同由[凭据 Scope 设计](../design/credential-scope-internal.md)维护。CLI 凭据绑定有效服务 origin，不进入仓库绑定、明文命令参数或日志，
 重定向不得转发凭据。
 
 CLI 在缺少配置文件或 `serverUrl` 时使用 `https://daynight.cc`，保留显式地址配置供测试服务使用。
@@ -668,6 +691,8 @@ HEAD 的资源仍拒绝 HEAD。请求头匹配大小写不敏感，业务 parser
 归档生产写入、上传准备和生产者上传回执读取不属于用户 CORS；它们的 OPTIONS 无凭据
 返回 403，不发送 CORS 头，不认证或预留上传。用户归档状态、content 和文件读取，以及
 用户图片上传保持用户 CORS。准备和生产者状态即使用 GET 仍需原 PAT owner upload admission。
+公开助手任务收件箱接收路由 `/api/v1/assistant-task-inbox/{inboxId}` 不属于用户 CORS，其 OPTIONS
+落入该路由的 405；接收契约见[助手任务收件箱规格](assistant-task-inbox.md)。
 CORS 不授予身份或资源权限；主站 Cookie 写 Origin、账号根及生产者凭据要求保持。
 S2S issuer 不提供浏览器 CORS，Public OAuth/MCP 保留原独立 CORS，静态资源和健康检查不受影响。
 公开签发和 API token 的 REST 准入分别由其认证入口负责。
@@ -708,7 +733,7 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 | 配置 | 要求 |
 |---|---|
 | `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
-| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。显式 HTTP 测试可用同站测试域名，或同一数字 loopback IP 的不同端口。 |
+| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。除同一数字 loopback IP 不同端口的显式 HTTP 夹具外，两边 hostname 均须为小写、含点且无末尾点的 DNS 名称，并且不同；同一 DNS hostname 的不同端口不足以隔离 Cookie。显式 HTTP 测试可用同站 `.test` 或 `.localhost` 域名。hostname 非法时按主站优先归因到实际字段，保留校验阶段及 env/YAML 来源，错误不回显配置值。 |
 | `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
 | `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
 | `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
@@ -786,7 +811,7 @@ App Secret、一次性 code 或邀请秘密。
 | AU-V9 | 启用的同一版本通过原有适用 Go/CLI/Web/部署门禁、严格覆盖率、原生安装/补全、生产浏览器及资源预算。 |
 | AU-V10 | 独立登录的缺失/合法/非法目标、已有会话、历史、任务/文件/query、已知 callback 失败、邀请和设备账号切换、普通退出及失败重试保持上述连续性；公开首页不成为私有授权依据。 |
 | AU-V10 | 日志按请求/用户/项目关联登录、授权和错误；Cookie、PAT、App Secret、设备秘密、上游一次性 code 与邀请秘密不进入诊断或持久 URL；设备短码只用于核对和验证链接，不进入日志。 |
-| AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值，浏览器会话仍为七天。 |
+| AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值；浏览器会话验证主站与预览单侧后台使用跨过原期限、静默满 168 小时失效、锁等待后到期、续期与撤销/清理/预览换发并发、来源准入矩阵和新旧 Cookie 的实际保留。压力测试独立于 CI，记录并发预览与轮询的锁等待和 WAL。 |
 | AU-V14 | 直接添加在目标初始化前拒绝无权主体；独立初始化确认后再次核验权限、凭据与状态。同角色真实 PostgreSQL 收敛保留版本和时间，异角色无写；成员等待后的到期、并发撤权和 eligibility 失败回滚保持完整目标账号与成员阶段边界。正常集成入口通过真实 PAT 请求添加外部身份，并从后续目录读回实际目标 UUID、资料与成员版本和时间。 |
 | AU-V12 | Team 创建者 admin 原子性、本人过滤和跨账号 cursor、不可见/非 admin/Personal 拒绝、合法 Unicode 与原文空白、NUL/非法转义/全空白拒绝、重名、精确版本 no-op/冲突/耗尽、空删除与非空拒绝均有验证；真实 PostgreSQL 锁等待证明删除和 ownership 写入互斥，错误身份零领域 SQL，取消、回滚失败和未知 COMMIT 保持结果分类。 |
 

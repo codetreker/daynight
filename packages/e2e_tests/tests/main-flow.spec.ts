@@ -16,7 +16,7 @@ type SearchItem = { id: string; title: string; match: { fields: string[]; descri
 type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(540_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
@@ -39,6 +39,9 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   try {
     const device = await Promise.race([authorization, login.finished.then(() => { throw new Error("CLI login exited before publishing authorization instructions."); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    const teamPermissions = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+    await teamPermissions.locator('summary').click();
+    await teamPermissions.getByRole('checkbox', { name: /^Select this group/ }).check();
     await page.getByRole("checkbox", { name: "This code matches the one in my terminal", exact: true }).check();
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);
@@ -66,7 +69,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   }, { timeout: 60_000, intervals: [1_000] }).toEqual(expect.any(String));
 
   await page.goto(`${topology.baseURL}/account`);
-  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v1/me/tokens") && response.request().method() === "GET");
+  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v2/me/tokens") && response.request().method() === "GET");
   await page.getByRole("link", { name: "Access credentials", exact: true }).click();
   const tokenResponse = await tokenList;
   expect(tokenResponse.status()).toBe(200);
@@ -172,11 +175,13 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const projectGroup = page.getByRole("region", { name: `${name} · Personal · ${projectId}` });
   await expect(projectGroup).toContainText("1 in progress");
   await expect(projectGroup.getByText(referenceTitle, { exact: true })).toHaveCount(0);
-  await expect(projectGroup).not.toContainText("No current Session");
+  await expect(projectGroup).not.toContainText("No current session");
   const personalRow = projectGroup.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(personalRow.locator('.task-row-id')).toHaveText(task.id);
-  await expect(personalRow).toContainText('In progress');
-  await expect(personalRow.locator('.project-session-status')).toHaveCount(0);
+  await expect(personalRow).toHaveAttribute('data-task-status', 'in_progress');
+  await expect(personalRow.locator('.task-row-primary-status')).toHaveText('In progress');
+  await expect(personalRow.getByRole('button', { name: /Open Session/ })).toHaveCount(0);
+  await expect(personalRow.locator('.task-agent-permission')).toHaveCount(0);
   const sharedFacts = await personalRow.locator('.task-row-meta > :not(.task-row-execution)').allTextContents();
   const projectRead = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === 'GET');
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
@@ -188,10 +193,12 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
   const projectRow = page.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(projectRow.locator('.task-row-id')).toHaveText(task.id);
-  await expect(projectRow).toContainText('In progress');
+  await expect(projectRow).toHaveAttribute('data-task-status', 'in_progress');
+  await expect(projectRow.locator('.task-row-primary-status')).toHaveText('In progress');
   await expect(projectRow.locator('.task-row-meta > :not(.task-row-execution)')).toHaveText(sharedFacts);
-  await expect(projectRow).not.toContainText('No current Session');
-  await expect(projectRow.locator('.project-session-status')).toHaveCount(0);
+  await expect(projectRow).not.toContainText('No current session');
+  await expect(projectRow.getByRole('button', { name: /Open Session/ })).toHaveCount(0);
+  await expect(projectRow.locator('.task-agent-permission')).toHaveCount(0);
   await page.goto(`${topology.baseURL}/my-tasks`);
   await projectGroup.getByRole("link", { name, exact: true }).click();
   await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();

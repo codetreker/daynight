@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
@@ -13,8 +13,8 @@ import { openBotExecutionStore, type BotExecutionStore } from "./execution-store
 import { parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
 import { botMigrationHash, readBotMigrationManifest } from "./migration-state.js";
 
-type LocalIdentity = { server_origin: string; owner_user_id: string; bot_id: string };
-type Stores = { store: BotStore; executions: BotExecutionStore; storeClosed: boolean; executionsClosed: boolean; release(): void };
+type LocalIdentity = { server_origin: string; owner_user_id: string; bot_id: string; worker_id?: string };
+type Stores = { owner: BotOwner; store: BotStore; executions: BotExecutionStore; storeClosed: boolean; executionsClosed: boolean; assertLocked(): void; release(): void };
 const physicalDirectory = (directory: string): void => {
   const entry = lstatSync(directory);
   if (!entry.isDirectory() || entry.isSymbolicLink() || realpathSync(directory) !== directory
@@ -42,7 +42,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
   const assertOwner = (value: BotOwner) => {
     if (closed || closing) throw new Error("Bot storage has closed or is closing.");
     const checked = parseBotOwner(value);
-    if (checked.serverOrigin !== owner.serverOrigin || checked.ownerUserId !== owner.ownerUserId || checked.workerId !== owner.workerId) throw new Error("Bot storage requires its original service, account and Worker.");
+    if (checked.serverOrigin !== owner.serverOrigin || checked.ownerUserId !== owner.ownerUserId) throw new Error("Bot storage requires its original service and account.");
   };
   const localIdentity = (botId: string): LocalIdentity | null => {
     const paths = resolveBotPaths(options.stateDirectory, botId);
@@ -59,7 +59,9 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
         return null;
       }
       if (identity.bot_id !== botId) throw new Error("Bot storage has lost its durable service/account identity.");
-      return identity;
+      const workers = db.prepare("SELECT worker_id FROM bots UNION SELECT worker_id FROM bot_executions").all() as { worker_id: string }[];
+      if (workers.length > 1) throw new Error("Bot storage retains inconsistent original Worker bindings.");
+      return { ...identity, ...(workers[0] === undefined ? {} : { worker_id: workers[0].worker_id }) };
     } finally { db.close(); }
   };
   const local = (botId: string, create: boolean): Stores | null => {
@@ -69,6 +71,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     const identity = localIdentity(botId);
     if (identity !== null && !sameAccount(identity, owner)) throw new Error("Bot directory belongs to another service or account.");
     if (identity === null && !create) return null;
+    const originalOwner = parseBotOwner({ ...owner, workerId: identity?.worker_id ?? owner.workerId });
     mkdirSync(path.dirname(paths.directory), { recursive: true, mode: 0o700 });
     physicalDirectory(path.dirname(paths.directory));
     mkdirSync(paths.directory, { mode: 0o700, recursive: true }); physicalDirectory(paths.directory);
@@ -91,14 +94,17 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
             db.prepare("INSERT INTO bot_identity VALUES (1, ?, ?, ?)").run(owner.serverOrigin, owner.ownerUserId, botId);
           }
           for (const table of ["bots", "bot_executions"]) {
-            const other = db.prepare(`SELECT 1 FROM ${table} WHERE server_origin <> ? OR owner_user_id <> ? OR bot_id <> ? OR worker_id <> ? LIMIT 1`).get(owner.serverOrigin, owner.ownerUserId, botId, owner.workerId);
-            if (other !== undefined) throw new Error("Bot storage retains another Worker binding; verified takeover is required.");
+            const other = db.prepare(`SELECT 1 FROM ${table} WHERE server_origin <> ? OR owner_user_id <> ? OR bot_id <> ? OR worker_id <> ? LIMIT 1`).get(owner.serverOrigin, owner.ownerUserId, botId, originalOwner.workerId);
+            if (other !== undefined) throw new Error("Bot storage identity changed before storage acquisition.");
           }
         }).immediate();
       } finally { closeSqliteDatabase(db, { file: paths.databaseFile, format: botStoreFormat }); }
       store = openBotStore(paths.databaseFile, { ...migration, format: botStoreFormat, storageStateDirectory: paths.controllerStateDirectory });
       executions = openBotExecutionStore(paths.databaseFile, { ...migration, format: botStoreFormat });
-      const stores = { store, executions, storeClosed: false, executionsClosed: false, release: lock.release };
+      const assertLocked = (): void => {
+        if (JSON.parse(readFileSync(paths.lockFile, "utf8")).owner !== lock.owner) throw new Error("Bot storage no longer holds its original instance lock.");
+      };
+      const stores = { owner: originalOwner, store, executions, storeClosed: false, executionsClosed: false, assertLocked, release: lock.release };
       opened.set(botId, stores); return stores;
     } catch (error) {
       const failures = [error];
@@ -110,9 +116,12 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
       throw error;
     }
   };
-  const selected = (value: BotOwner, botId: string, create = false): Pick<Stores, "store" | "executions"> | null => {
+  const selected = (value: BotOwner, botId: string, create = false): Pick<Stores, "owner" | "store" | "executions"> | null => {
     assertOwner(value);
-    const manifest = readBotMigrationManifest(options.stateDirectory, value, botId);
+    const held = opened.get(botId), identity = held === undefined ? localIdentity(botId) : null;
+    const originalOwner = held?.owner ?? (identity?.worker_id === undefined ? value : parseBotOwner({ ...value, workerId: identity.worker_id }));
+    if (value.workerId !== owner.workerId && value.workerId !== originalOwner.workerId) throw new Error("Bot storage requires the current or original Worker identity.");
+    const manifest = readBotMigrationManifest(options.stateDirectory, originalOwner, botId);
     if (manifest !== null && manifest.phase !== "committed") throw new Error("Bot migration is incomplete; run worker migrate-bot for the original Bot before any storage writes.");
     if (legacyStore !== undefined) {
       const db = new Database(sqliteFilename(options.legacyDatabaseFile), { readonly: true, fileMustExist: true });
@@ -123,8 +132,9 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     }
     const original = legacyStore?.get(value, botId);
     if (original != null) {
+      if (value.workerId !== owner.workerId) throw new Error("Legacy Bot storage requires its original Worker; explicit migration is required.");
       if (localIdentity(botId) !== null) throw new Error("Bot has both legacy and dedicated storage; migration must establish one authoritative location.");
-      return { store: legacyStore!, executions: legacyExecutions! };
+      return { owner: value, store: legacyStore!, executions: legacyExecutions! };
     }
     if (legacyStore !== undefined) {
       const db = new Database(sqliteFilename(options.legacyDatabaseFile), { readonly: true, fileMustExist: true });
@@ -133,7 +143,8 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
       } finally { db.close(); }
     }
     const result = local(botId, create);
-    const migrated = result?.store.get(value, botId)?.migration;
+    result?.assertLocked();
+    const migrated = result?.store.get(result.owner, botId)?.migration;
     if (migrated !== undefined && manifest === null || manifest !== null && (result === null || migrated?.state !== "registration_pending")) throw new Error("Bot migration storage has lost its authority fence.");
     return result;
   };
@@ -156,28 +167,37 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     if (failures.length) throw new AggregateError(failures, "Bot storage shutdown failed; unconfirmed locks are retained.");
     closed = true;
   };
-  const store: BotStore = {
-    close,
-    get: (value, botId) => selected(value, botId)?.store.get(value, botId) ?? null,
-    list: value => {
+  const scan = (value: BotOwner = owner): { records: BotRecord[]; errors: { botId: string; message: string }[] } => {
       assertOwner(value);
       const records = legacyStore?.list(value) ?? [], root = path.join(options.stateDirectory, "bots");
+      const errors: { botId: string; message: string }[] = [];
       for (const record of records) selected(value, record.botId);
-      if (!existsSync(root)) return records;
+      if (!existsSync(root)) return { records, errors };
       physicalDirectory(root);
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         if (canonicalId(entry.name) !== entry.name || entry.name === "00000000-0000-0000-0000-000000000000") continue;
-        const identity = localIdentity(entry.name);
-        if (identity === null || !sameAccount(identity, owner)) continue;
-        if (records.some(record => record.botId === entry.name)) throw new Error("Bot has both legacy and dedicated storage; explicit migration is required.");
-        const record = selected(value, entry.name)!.store.get(value, entry.name);
-        if (record !== null) records.push(record);
+        try {
+          const identity = localIdentity(entry.name);
+          if (identity === null || !sameAccount(identity, owner)) continue;
+          if (records.some(record => record.botId === entry.name)) throw new Error("Bot has both legacy and dedicated storage; explicit migration is required.");
+          const selectedStore = selected(value, entry.name)!;
+          const record = selectedStore.store.get(selectedStore.owner, entry.name);
+          if (record !== null) records.push(record);
+        } catch (cause) {
+          errors.push({ botId: entry.name, message: cause instanceof Error ? cause.message : "Bot storage discovery failed." });
+        }
       }
-      return records.sort((left, right) => left.botId.localeCompare(right.botId));
-    },
+      return { records: records.sort((left, right) => left.botId.localeCompare(right.botId)), errors };
+  };
+  const store: BotStore = {
+    close,
+    get: (value, botId) => { const selectedStore = selected(value, botId); return selectedStore?.store.get(selectedStore.owner, botId) ?? null; },
+    list: value => scan(value).records,
     observe: (value, bot, observedAt) => {
       parseBot(bot, value);
       const existing = selected(value, bot.id);
+      if (existing !== null && existing.owner.workerId !== value.workerId) throw new Error("Bot observations must preserve their original Worker binding.");
+      if (existing === null && value.workerId !== owner.workerId) throw new Error("Only the current Worker may initialize Bot storage.");
       if (existing === null && bot.deletion === null && (bot.sessionId !== null || bot.testExecutionId !== null)) throw new Error("An existing bound Bot requires its original storage or explicit migration.");
       return (existing ?? selected(value, bot.id, true)!).store.observe(value, bot, observedAt);
     },
@@ -185,6 +205,8 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     freezeRole: (value, botId, role) => selected(value, botId)!.store.freezeRole(value, botId, role),
     freezeToolLaunch: (record, launch, observation) => required(record).store.freezeToolLaunch(record, launch, observation),
     prepareDeletion: (record, stop, targets) => required(record).store.prepareDeletion(record, stop, targets),
+    bindDeletionWorker: (record, workerId) => required(record).store.bindDeletionWorker(record, workerId),
+    rejectNeverStartedDeletion: record => required(record).store.rejectNeverStartedDeletion(record),
     completeDeletionTarget: (record, file) => required(record).store.completeDeletionTarget(record, file),
     finishDeletion: record => required(record).store.finishDeletion(record),
   };
@@ -196,7 +218,20 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     markShutdown: (record, eligible) => required(record).executions.markShutdown(record, eligible),
     resumeObserved: record => required(record).executions.resumeObserved(record),
     blockRecovery: (record, reason) => required(record).executions.blockRecovery(record, reason),
+    replaceUnsubmittedLaunch: (record, launchId, home) => required(record).executions.replaceUnsubmittedLaunch(record, launchId, home),
     beginRecovery: (record, stopped, home, launch) => required(record).executions.beginRecovery(record, stopped, home, launch),
   };
-  return { store, executions, close };
+  const assertLocked = (record: BotRecord): void => {
+    assertOwner(record.owner);
+    const selectedStore = selected(record.owner, record.botId);
+    const held = opened.get(record.botId);
+    if (selectedStore === null || held === undefined || held.owner.workerId !== record.owner.workerId) throw new Error("Bot recovery requires its dedicated storage and original instance lock.");
+    held.assertLocked();
+  };
+  const isDedicated = (record: BotRecord): boolean => {
+    assertOwner(record.owner);
+    selected(record.owner, record.botId);
+    return opened.has(record.botId);
+  };
+  return { store, executions, close, assertLocked, isDedicated, scan };
 };

@@ -156,6 +156,7 @@ var _ store.SnapshotScope = (*taskSnapshotScopeMock)(nil)
 
 type taskProjectScopeMock struct {
 	taskMockBase
+	BotBarrierDAOFn            func() store.BotBarrierDAO
 	EligibilityDAOFn           func() store.WebhookEligibilityDAO
 	CaptureDAOFn               func() store.WebhookCaptureDAO
 	ProjectDAOFn               func() store.ProjectWriteDAO
@@ -209,6 +210,7 @@ var _ store.ProjectWriteScope = (*taskProjectScopeMock)(nil)
 
 type taskThreadScopeMock struct {
 	taskMockBase
+	BotBarrierDAOFn func() store.BotBarrierDAO
 	CaptureDAOFn    func() store.WebhookCaptureDAO
 	TaskDAOFn       func() store.ThreadTaskDAO
 	CredentialDAOFn func() store.ThreadCredentialDAO
@@ -253,10 +255,6 @@ type taskReaderMock struct {
 	TaskPriorityListFn         func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
 	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
 	TaskHeaderFn               func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn                 func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn                func(context.Context, string) ([]model.TaskStep, error)
-	TaskStepPageFn             func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
-	TaskStepSummaryFn          func(context.Context, string, string) (store.TaskStepProjection, error)
 	ThreadMessageFn            func(context.Context, string, string) (model.ThreadMessage, error)
 	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
 	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
@@ -265,6 +263,7 @@ type taskReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
 	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
@@ -308,26 +307,6 @@ func (mock *taskReaderMock) TaskHeader(p0 context.Context, p1 string, p2 string)
 	return mock.TaskHeaderFn(p0, p1, p2)
 }
 
-func (mock *taskReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", mock.TaskStepFn != nil)
-	return mock.TaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	mock.need("TaskStepPage", mock.TaskStepPageFn != nil)
-	return mock.TaskStepPageFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskReaderMock) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	mock.need("TaskStepSummary", mock.TaskStepSummaryFn != nil)
-	return mock.TaskStepSummaryFn(p0, p1, p2)
-}
-
 func (mock *taskReaderMock) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
 	mock.need("ThreadMessage", mock.ThreadMessageFn != nil)
 	return mock.ThreadMessageFn(p0, p1, p2)
@@ -368,6 +347,11 @@ func (mock *taskReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *tim
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
 }
 
+func (mock *taskReaderMock) TaskSyncGoalDependsOn(ctx context.Context, project string, ids []string) (map[string][]string, error) {
+	mock.need("TaskSyncGoalDependsOn", mock.TaskSyncGoalDependsOnFn != nil)
+	return mock.TaskSyncGoalDependsOnFn(ctx, project, ids)
+}
+
 func (mock *taskReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
 	mock.need("TaskSyncActiveTasks", mock.TaskSyncActiveTasksFn != nil)
 	return mock.TaskSyncActiveTasksFn(ctx, project)
@@ -388,6 +372,7 @@ type taskWriterMock struct {
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDsFn     func(context.Context, []string) ([]string, error)
 	ActiveDependentIDsFn func(context.Context, string) ([]string, error)
+	UnfinishedChildIDsFn func(context.Context, string) ([]string, error)
 	ReachableFn          func(context.Context, string, string, store.DependencyReplacement) (bool, error)
 	CreateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
 	UpdateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
@@ -395,12 +380,7 @@ type taskWriterMock struct {
 	DependentIDsFn       func(context.Context, string) ([]string, error)
 	DeleteTaskFn         func(context.Context, string, bool) (model.TaskTombstone, error)
 	TaskHeaderFn         func(context.Context, string) (model.TaskHeader, error)
-	TaskStepsFn          func(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStepFn     func(context.Context, string, model.TaskStep) error
 	TouchTaskFn          func(context.Context, string, time.Time) error
-	UpdateTaskStepFn     func(context.Context, string, model.TaskStep) error
-	MoveTaskStepFn       func(context.Context, string, string, int64, int64) error
-	DeleteTaskStepFn     func(context.Context, string, string, int64, int64) error
 }
 
 func (mock *taskWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
@@ -431,6 +411,11 @@ func (mock *taskWriterMock) VisibleTaskIDs(ctx context.Context, ids []string) ([
 func (mock *taskWriterMock) ActiveDependentIDs(p0 context.Context, p1 string) ([]string, error) {
 	mock.need("ActiveDependentIDs", mock.ActiveDependentIDsFn != nil)
 	return mock.ActiveDependentIDsFn(p0, p1)
+}
+
+func (mock *taskWriterMock) UnfinishedChildIDs(ctx context.Context, id string) ([]string, error) {
+	mock.need("UnfinishedChildIDs", mock.UnfinishedChildIDsFn != nil)
+	return mock.UnfinishedChildIDsFn(ctx, id)
 }
 
 func (mock *taskWriterMock) Reachable(p0 context.Context, p1 string, p2 string, p3 store.DependencyReplacement) (bool, error) {
@@ -468,34 +453,9 @@ func (mock *taskWriterMock) TaskHeader(p0 context.Context, p1 string) (model.Tas
 	return mock.TaskHeaderFn(p0, p1)
 }
 
-func (mock *taskWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
-	return mock.InsertTaskStepFn(p0, p1, p2)
-}
-
 func (mock *taskWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
 	mock.need("TouchTask", mock.TouchTaskFn != nil)
 	return mock.TouchTaskFn(p0, p1, p2)
-}
-
-func (mock *taskWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
-	return mock.UpdateTaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
-	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
-	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 var _ store.TaskWriteDAO = (*taskWriterMock)(nil)
@@ -927,11 +887,6 @@ func taskMockAccess(project model.Project, principal model.Principal) model.Proj
 	return model.ProjectAccess{ProjectID: project.ID, UserID: principal.UserID, Role: model.ProjectAdmin, OwnerTeam: model.TeamRef{ID: project.Ownership.TeamID, Kind: "personal"}, Ownership: project.Ownership}
 }
 
-func taskMockStep(id string, position int64) model.TaskStep {
-	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
-	return model.TaskStep{ID: id, Position: position, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
-}
-
 func (mock *sessionReaderMock) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
 	mock.need("TaskSessionSources", false)
 	return nil, nil
@@ -944,7 +899,7 @@ func (mock *taskReaderMock) TaskWorkGroups(context.Context, string, store.TaskWo
 	mock.need("TaskWorkGroups", false)
 	return store.TaskWorkGroups{}, nil
 }
-func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []store.TaskWorkTargetPosition) (store.TaskWorkTargets, error) {
 	mock.need("TaskWorkTargets", false)
 	return store.TaskWorkTargets{}, nil
 }
@@ -985,6 +940,33 @@ func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdm
 	return mock.WorkerClaimAdmissionDAOFn()
 }
 
+func (mock *taskProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
+}
+
+func (mock *taskThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
+}
+
 func (*workerReaderMock) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
 	panic("unexpected review participation read")
+}
+
+func (mock *taskWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskWriterMock) TaskForStart(ctx context.Context, id string) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (mock *taskWriterMock) HasTerminalAncestorGoal(ctx context.Context, id string) (bool, error) {
+	parent, err := mock.ParentTask(ctx, id)
+	return parent.Status.IsTerminal(), err
+}
+
+func (d *taskWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

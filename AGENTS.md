@@ -118,6 +118,8 @@ original circumstances. Explicit archives remain immutable.
 - Perform code, configuration, and documentation changes in one dedicated
   worktree under the repository's `.worktrees/` directory. Keep the primary
   checkout clean. One task shares one worktree and branch across its agents.
+- Never use a depth-limited checkout or clone of `main`, including when a clone
+  selects `main` as its default branch. Use full history for these operations.
 - Inspect existing work before changing files; preserve unrelated modifications.
   Define file ownership for workers and coordinate concurrent edits. Install
   dependencies once per task.

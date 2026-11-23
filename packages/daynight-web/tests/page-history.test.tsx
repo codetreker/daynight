@@ -12,6 +12,30 @@ const arrival = (state: unknown, path = '/account') => act(() => {
   dispatchEvent(new PopStateEvent('popstate', { state }));
 });
 
+it('restores retired tabs in all nested history selections without changing attachment identities', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const legacy = { id: child, navigation: { tab: 'steps', path: 'docs/result.md' } };
+  const nested = { graphRootId: null, task: legacy };
+  const projectState = { version: 1, userId: user, pageKey: `project:${project}`, selection: { section: 'tasks', view: 'goals', projectGraphWitness: null, detail: { id: root, source: 'direct', insideProjectGraph: false, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const myState = { version: 1, userId: user, pageKey: 'my-tasks', selection: { projectPages: {}, detail: { projectId: project, id: root, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const resourceState = { version: 1, userId: user, pageKey: `resource:${project}/${root}`, selection: { goalChildren: nested, externalGoal: { id: root, witness: child, navigation: { tab: 'steps', path: null }, goalChildren: nested } } };
+  const projectResult = readProjectHistory(projectState, user, project)!;
+  const myResult = readMyTasksHistory(myState, user)!;
+  const resourceResult = readResourceHistory(resourceState, user, project, root)!;
+  for (const detail of [projectResult.detail, myResult.detail, resourceResult.externalGoal]) {
+    expect(detail?.navigation).toEqual({ tab: 'overview', path: null });
+    expect(detail?.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  }
+  expect(resourceResult.goalChildren?.task?.navigation).toEqual({ tab: 'attachments', path: 'docs/result.md' });
+  expect(readProjectHistory(projectState, other, project)).toBeNull();
+  expect(readMyTasksHistory(myState, other)).toBeNull();
+  expect(readResourceHistory(resourceState, other, project, root)).toBeNull();
+  const invalid = { ...resourceState, selection: { ...resourceState.selection, goalChildren: { ...nested, task: { ...legacy, navigation: { tab: 'steps', path: '../private' } } } } };
+  expect(() => readResourceHistory(invalid, user, project, root)).toThrow();
+});
+
 describe('standalone resource reading history', () => {
   const project = '10000000-0000-4000-8000-000000000001';
   const root = '20000000-0000-4000-8000-000000000001';
@@ -520,6 +544,81 @@ describe('Project reading history', () => {
       expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, carried));
       arrival(old, `${path}?tab=tasks`);
       expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('preserves the current chain usage member detail on content retirement without reviving an old entry', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    const renders: ProjectReading[] = [];
+    try {
+      const { result, unmount } = renderHook(() => {
+        const value = useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child);
+        renders.push(value.selection); return value;
+      });
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, id: root } }));
+      const old = history.state;
+      act(() => result.current.select(detail));
+      const count = history.length, start = renders.length;
+      act(() => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); });
+      expect(renders.slice(start)).not.toHaveLength(0);
+      expect(renders.slice(start).every(value => JSON.stringify(value) === JSON.stringify(detail))).toBe(true);
+      expect(result.current.selection).toEqual(detail);
+      expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, detail));
+      expect(history.length).toBe(count);
+      arrival(old, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['access-first', 'history-first', 'combined'])('never carries a chain usage detail across access retirement (%s)', order => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const emit = (event: Parameters<Parameters<typeof scope.subscribe>[0]>[0]) => { for (const listener of listeners) listener(event); };
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child));
+      act(() => result.current.select(detail));
+      act(() => {
+        if (order === 'combined') emit({ projectId: project, accessRevoked: true, historyChanged: true });
+        else if (order === 'access-first') { scope.suspendProject(project); emit({ projectId: project, historyChanged: true }); }
+        else { emit({ projectId: project, historyChanged: true }); scope.suspendProject(project); }
+      });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not carry a different detail or a different history entry for the same detail', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const detail: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: null,
+      detail: { id: child, source: 'summary', insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, () => false, id => id === child));
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, id: root } }));
+      act(retire);
+      expect(result.current.selection.detail).toBeNull();
+      act(() => result.current.select(detail));
+      const old = history.state;
+      act(() => result.current.select({ ...detail, detail: { ...detail.detail!, navigation: { tab: 'discussion', path: null } } }));
+      act(() => { history.replaceState(old, '', `${path}?tab=tasks`); dispatchEvent(new PopStateEvent('popstate', { state: old })); retire(); });
+      expect(result.current.selection.detail).toBeNull();
       unmount();
     } finally { scope.dispose(); }
   });

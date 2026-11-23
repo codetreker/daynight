@@ -60,18 +60,18 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 	defer cancel()
 	user, id := uuid.NewString(), uuid.NewString()
 	completion, err := db.WritePrompt(ctx, func(tx PromptWriteScope) error {
-		_, err := tx.CreatePrompt(ctx, user, model.PromptScopeProject, id, "saved")
+		_, err := tx.CreatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, "saved")
 		return err
 	})
 	if err != nil || completion.Outcome != TransactionCommitted {
 		t.Fatalf("commit: %+v %v", completion, err)
 	}
 	read := func(scope PromptSnapshot, revision int64, expected string) error {
-		metadata, err := scope.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+		metadata, err := scope.PromptMetadata(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if err != nil {
 			return err
 		}
-		text, err := scope.PromptText(ctx, user, model.PromptScopeProject, id)
+		text, err := scope.PromptText(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if err != nil {
 			return err
 		}
@@ -87,7 +87,7 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 			return err
 		}
 		completion, err := db.WritePrompt(ctx, func(tx PromptWriteScope) error {
-			_, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "new")
+			_, err := tx.UpdatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 2, 1, "new")
 			return err
 		})
 		if err != nil {
@@ -110,7 +110,7 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 	check()
 	refusal := errors.New("cancel proposed update")
 	completion, err = db.WritePrompt(ctx, func(tx PromptWriteScope) error {
-		if _, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 3, 2, "rolled back"); err != nil {
+		if _, err := tx.UpdatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 3, 2, "rolled back"); err != nil {
 			return err
 		}
 		return refusal

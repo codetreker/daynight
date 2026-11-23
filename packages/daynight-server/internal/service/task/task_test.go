@@ -61,6 +61,12 @@ func newTaskRuleFixture(t *testing.T) *taskRuleFixture {
 		sessions:      &projectSessionMock{taskMockBase: base.withLabel("sessions")},
 		capture:       &captureDAOMock{taskMockBase: base.withLabel("capture")},
 	}
+	fixture.writer.UnfinishedChildIDsFn = func(_ context.Context, id string) ([]string, error) {
+		if id != target.ID {
+			t.Fatalf("unexpected child lookup: %s", id)
+		}
+		return nil, nil
+	}
 	fixture.projectReader.ProjectAccessFn = func(_ context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		if actor != principal || id != project.ID {
 			t.Fatalf("read authorization changed: %#v %s", actor, id)

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { jsonObjectSources } from "./json-source.js";
-import { array, bool, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
+import { array, bool, count, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
 import type * as T from "./assistant-task-types.js";
 
 export const assistantTaskId = (value: unknown): string => { const result = id(value); return result === "00000000-0000-0000-0000-000000000000" ? malformed() : result; };
@@ -72,17 +72,50 @@ export const parseAssistantTaskClaimResult = (value: unknown, taskId: string, op
   if (BigInt(currentClaim.claimGeneration) < BigInt(operation.resultingGeneration) || instant(currentClaim.observedAt) < instant(operation.admittedAt)) return malformed();
   return { operation, currentClaim };
 };
+export const parseAssistantTaskInbox = (value: unknown): T.AssistantTaskInbox => {
+  const d = fields(value, ["inboxId", "enabled", "createdAt", "rotatedAt", "overlapUntil", "suppressedCount"]);
+  const result = { inboxId: nullableId(d.inboxId), enabled: bool(d.enabled), createdAt: nullableTimestamp(d.createdAt), rotatedAt: nullableTimestamp(d.rotatedAt), overlapUntil: nullableTimestamp(d.overlapUntil), suppressedCount: assistantTaskInteger(d.suppressedCount, true) };
+  if (result.enabled ? result.inboxId === null || result.createdAt === null : result.inboxId !== null || result.createdAt !== null || result.rotatedAt !== null || result.overlapUntil !== null || result.suppressedCount !== "0") return malformed();
+  return result;
+};
+const inboxKinds = { enable: ["inbox_enable"], disable: ["inbox_disable"], rotate: ["inbox_rotate_overlap", "inbox_rotate_immediate"] } as const;
+/** expected narrows the receipt to the submitted management action; a receipt read accepts any inbox kind. */
+export const parseAssistantTaskInboxResult = (value: unknown, taskId: string, operationId: string, expected?: "enable" | "disable" | "rotate", withToken = false): T.AssistantTaskInboxTokenResult => {
+  const d = fields(value, withToken ? ["operation", "inbox", "token"] : ["operation", "inbox"]), o = fields(d.operation, ["operationId", "kind", "taskId", "requestFingerprint", "admittedAt", "resultingVersion"]);
+  const kinds: readonly T.AssistantTaskInboxOperationKind[] = expected === undefined ? [...inboxKinds.enable, ...inboxKinds.disable, ...inboxKinds.rotate] : inboxKinds[expected];
+  const operation = { operationId: assistantTaskId(o.operationId), kind: choice(o.kind, kinds), taskId: assistantTaskId(o.taskId), requestFingerprint: text(o.requestFingerprint), admittedAt: timestamp(o.admittedAt), resultingVersion: assistantTaskInteger(o.resultingVersion) };
+  if (operation.taskId !== taskId || operation.operationId !== operationId || !/^[a-f0-9]{64}$/.test(operation.requestFingerprint)) return malformed();
+  const token = withToken && d.token !== null ? text(d.token) : null;
+  if (token !== null && !/^dnib_[A-Za-z0-9_-]{43}$/.test(token)) return malformed();
+  if (withToken && d.token === undefined) return malformed();
+  return { operation, inbox: parseAssistantTaskInbox(d.inbox), token };
+};
 export const parseAssistantTaskManual = (value: unknown, taskId: string, version?: string): T.AssistantTaskManual => {
   const d = fields(value, ["taskId", "version", "body", "rules", "source", "proposalId", "createdAt"]);
   const result = { taskId: checkScope(d, taskId), version: assistantTaskInteger(d.version), body: text(d.body, true), rules: json(d.rules), source: choice(d.source, ["initial", "revision", "rollback"]), proposalId: nullableId(d.proposalId), createdAt: timestamp(d.createdAt) };
   if (version !== undefined && result.version !== version) return malformed();
   return result;
 };
+// The server sends scope only when it restricts a dimension and validation only
+// after the first registration; absence means unrestricted and unvalidated.
+const appendixScope = (value: unknown): T.AssistantTaskAppendixScope => {
+  const d = fields(value, ["projectIds", "eventTypes", "itemCategories"]);
+  const result = { projectIds: array(d.projectIds, assistantTaskId), eventTypes: array(d.eventTypes, v => text(v, true)), itemCategories: array(d.itemCategories, v => text(v, true)) };
+  return result.projectIds.length + result.eventTypes.length + result.itemCategories.length === 0 ? malformed() : result;
+};
+const appendixValidation = (value: unknown): T.AssistantTaskAppendixValidation => {
+  const d = fields(value, ["successCount", "failureCount", "lastValidatedAt"]);
+  const result = { successCount: assistantTaskInteger(d.successCount, true), failureCount: assistantTaskInteger(d.failureCount, true), lastValidatedAt: timestamp(d.lastValidatedAt) };
+  return result.successCount === "0" && result.failureCount === "0" ? malformed() : result;
+};
 export const parseAssistantTaskAppendix = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskAppendix => {
-  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt"]);
+  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt", "scope", "validation"]);
   const state = choice(d.state, ["active", "edited", "deleted"] as const);
-  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
-  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0)) return malformed();
+  const declared = { scope: Object.hasOwn(d, "scope"), validation: Object.hasOwn(d, "validation") };
+  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt),
+    ...(declared.scope ? { scope: appendixScope(d.scope) } : {}), ...(declared.validation ? { validation: appendixValidation(d.validation) } : {}) };
+  // Deletion clears the content together with the scope and every registered validation.
+  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0 || declared.scope || declared.validation)) return malformed();
   return result;
 };
 export const parseAssistantTaskProposal = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskProposal => {
@@ -94,8 +127,11 @@ export const parseAssistantTaskItem = (value: unknown, taskId: string, expectedI
   return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), key: text(d.key, true), episode: assistantTaskInteger(d.episode), state: choice(d.state, ["open", "closed"]), category: text(d.category), followerBotId: nullableId(d.followerBotId), appState: json(d.appState), version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
 };
 export const parseAssistantTaskRecord = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskRecord => {
-  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "refs", "createdAt"]);
-  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind: choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note"]), text: text(d.text, true), refs: json(d.refs), createdAt: timestamp(d.createdAt) };
+  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "outcome", "actionRecordId", "refs", "createdAt"]);
+  const kind = choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note", "outcome"]);
+  // Only outcome records carry the evaluation; any other record with either key is malformed.
+  const evaluation = kind === "outcome" ? { outcome: choice(d.outcome, ["effective", "ineffective", "inconclusive"] as const), actionRecordId: assistantTaskId(d.actionRecordId) } : Object.hasOwn(d, "outcome") || Object.hasOwn(d, "actionRecordId") ? malformed() : {};
+  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind, text: text(d.text, true), ...evaluation, refs: json(d.refs), createdAt: timestamp(d.createdAt) };
 };
 export const parseAssistantTaskEvent = (value: unknown, taskId?: string, expectedId?: string): T.AssistantTaskEvent => {
   const d = fields(value, ["id", "taskId", "targetBotId", "type", "payload", "state", "attention", "createdAt", "deliveredAt", "seenAt", "ackOperationId"]);
@@ -106,6 +142,21 @@ export const parseAssistantTaskInquiry = (value: unknown, taskId: string, expect
   const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), fromBotId: assistantTaskId(d.fromBotId), toBotId: assistantTaskId(d.toBotId), answerBotId: nullableId(d.answerBotId), question: text(d.question, true), answer: text(d.answer), state: choice(d.state, ["open", "answered", "timed_out"] as const), createdAt: timestamp(d.createdAt), deadline: timestamp(d.deadline), answeredAt: nullableTimestamp(d.answeredAt) };
   if ((result.state === "answered") !== (result.answeredAt !== null) || (result.state === "answered") !== (result.answerBotId !== null)) return malformed();
   return result;
+};
+export const parseAssistantTaskMetrics = (value: unknown): T.AssistantTaskMetrics => {
+  const d = fields(value, ["observedAt", "windowStart", "windowEnd", "actionCount", "outcomes", "escalationCount", "resultUnknownCount", "closureCount", "untimedClosureCount", "averageResolutionMs", "recurringItemCount"]);
+  const o = fields(d.outcomes, ["effective", "ineffective", "inconclusive"]);
+  const result = { observedAt: timestamp(d.observedAt), windowStart: timestamp(d.windowStart), windowEnd: timestamp(d.windowEnd), actionCount: count(d.actionCount), outcomes: { effective: count(o.effective), ineffective: count(o.ineffective), inconclusive: count(o.inconclusive) }, escalationCount: count(d.escalationCount), resultUnknownCount: count(d.resultUnknownCount), closureCount: count(d.closureCount), untimedClosureCount: count(d.untimedClosureCount), averageResolutionMs: d.averageResolutionMs === null ? null : count(d.averageResolutionMs), recurringItemCount: count(d.recurringItemCount) };
+  // Every closure is either timed or untimed, and only timed closures have an average.
+  if (result.untimedClosureCount > result.closureCount || (result.averageResolutionMs === null) !== (result.untimedClosureCount === result.closureCount) || result.windowEnd !== result.observedAt || Date.parse(result.windowStart) > Date.parse(result.windowEnd)) return malformed();
+  return result;
+};
+// Related experience is complete for its query: at most five distinct
+// non-deleted appendices of the task and no continuation.
+export const parseAssistantTaskRelatedAppendices = (value: unknown, taskId: string): T.AssistantTaskRelatedAppendices => {
+  const d = fields(value, ["items", "observedAt"]), items = array(d.items, v => parseAssistantTaskAppendix(v, taskId));
+  if (items.length > 5 || items.some(v => v.state === "deleted") || new Set(items.map(v => v.id)).size !== items.length) return malformed();
+  return { items, observedAt: timestamp(d.observedAt) };
 };
 export const parseAssistantTaskPage = <V>(value: unknown, parse: (value: unknown) => V): T.AssistantTaskPage<V> => {
   const d = fields(value, ["items", "nextCursor", "observedAt"]), items = array(d.items, parse);

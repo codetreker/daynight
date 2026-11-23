@@ -10,6 +10,8 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
@@ -24,10 +26,12 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
 	normalized, err := ParseWorkerConfiguration(raw)
+	normalized.LegacyPlatformTaskMode = value.LegacyPlatformTaskMode
 	normalized.PreserveToolPaths = value.PreserveToolPaths
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
 	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
+	normalized.PreserveWindowsProcessCleanup = value.PreserveWindowsProcessCleanup
 	normalized.PreserveTaskTagFilter = value.PreserveTaskTagFilter
 	return normalized, err
 }
@@ -281,10 +285,13 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
+	if err := preparePlatformTaskMode(current, fields, &value); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
 	if err := prepareTaskTagFilter(current, fields, &value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup || value.PreserveTaskTagFilter) {
+	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup || value.PreserveWindowsProcessCleanup || value.PreserveTaskTagFilter) {
 		return putWithPreservedRaw(ctx, dao, principal, workerID, current, fields, actual, value)
 	}
 	if err := storedPaths(fields, &value); err != nil {
@@ -304,6 +311,17 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 		}
 		value.PreserveSudoCleanup = false
 	}
+	if value.PreserveWindowsProcessCleanup {
+		if raw := fields["enableWindowsProcessCleanup"]; len(raw) != 0 {
+			if err := configurationDecode(raw, &value.EnableWindowsProcessCleanup); err != nil {
+				return model.WorkerConfigurationResource{}, err
+			}
+		} else {
+			value.EnableWindowsProcessCleanup = false
+		}
+		value.PreserveWindowsProcessCleanup = false
+	}
+	value.LegacyPlatformTaskMode = false
 	value, err = NormalizeConfiguration(value)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
@@ -331,6 +349,21 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 // ExchangeConfiguration bootstraps desired state once and compares observation
 // revisions independently from desired writes.
 func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+	return exchangeConfiguration(ctx, dao, principal, workerID, input, nil)
+}
+
+// ExchangeConfigurationAuthorized admits the desired projection and checks
+// configuration authority only when the locked candidate changes desired state.
+func ExchangeConfigurationAuthorized(ctx context.Context, dao store.WorkerWriteDAO, authorization model.CredentialAuthorization, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+	return exchangeConfiguration(ctx, dao, authorization.Principal, workerID, input, func(operation scopepolicy.Operation) error {
+		return scopeadmission.Require(authorization, operation)
+	})
+}
+
+func exchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange, admit func(scopepolicy.Operation) error) (*model.WorkerConfigurationReceipt, error) {
+	if input.Bootstrap != nil && input.Bootstrap.PlatformTaskMode == model.PlatformTaskOnly {
+		return nil, invalidInput("Bootstrap cannot enable only platform tasks.")
+	}
 	if input.Bootstrap != nil && input.Bootstrap.TaskTagFilter != nil {
 		return nil, invalidInput("Bootstrap cannot set a task tag filter.")
 	}
@@ -338,12 +371,22 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 	if err != nil {
 		return nil, err
 	}
+	if admit != nil {
+		if err := admit(scopepolicy.WorkerRead); err != nil {
+			return nil, err
+		}
+	}
 	if current.Desired != nil && current.Desired.Raw != nil {
 		raw, changed, err := adoptRawConfiguration(current.Desired, input)
 		if err != nil {
 			return nil, err
 		}
 		if changed {
+			if admit != nil {
+				if err := admit(scopepolicy.WorkerConfigure); err != nil {
+					return nil, err
+				}
+			}
 			revision, _ := strconv.ParseInt(current.Desired.Revision, 10, 64)
 			if revision == math.MaxInt64 {
 				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
@@ -383,9 +426,15 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			value.ToolPaths = adoptToolPaths(value.ToolPaths, *input.ToolPathsBootstrap)
 		}
 		if current.Desired == nil || !reflect.DeepEqual(original, value) {
+			if admit != nil {
+				if err := admit(scopepolicy.WorkerConfigure); err != nil {
+					return nil, err
+				}
+			}
 			if revision == math.MaxInt64 {
 				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
 			}
+			value.LegacyPlatformTaskMode = false
 			value, err = NormalizeConfiguration(value)
 			if err != nil {
 				return nil, err
@@ -425,6 +474,7 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 
 func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, current model.WorkerConfigurationResource, fields map[string]json.RawMessage, actual int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
 	preservePaths, preserveSudo, preserveFilter := value.PreserveToolPaths, value.PreserveSudoCleanup, value.PreserveTaskTagFilter
+	preserveWindows := value.PreserveWindowsProcessCleanup
 	if preserveFilter {
 		value.TaskTagFilter = nil
 		value.PreserveTaskTagFilter = false
@@ -436,6 +486,10 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	if preserveSudo {
 		value.EnableSudoCleanup = false
 		value.PreserveSudoCleanup = false
+	}
+	if preserveWindows {
+		value.EnableWindowsProcessCleanup = false
+		value.PreserveWindowsProcessCleanup = false
 	}
 	if value.PreserveArchiveSessions {
 		value.ArchiveSessions = storedArchive(current.Desired)
@@ -470,7 +524,7 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	for key, raw := range fields {
 		comparison[key] = raw
 	}
-	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo, "taskTagFilter": preserveFilter} {
+	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo, "enableWindowsProcessCleanup": preserveWindows, "taskTagFilter": preserveFilter} {
 		if !preserve {
 			continue
 		}

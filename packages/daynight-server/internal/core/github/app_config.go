@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -101,16 +102,61 @@ func appConfigFacts(ctx context.Context, dao store.GitHubAppConfigReader, actor 
 	return f, nil
 }
 
+// admitAppConfig checks access and versions without reading credential material.
+func admitAppConfig(ctx context.Context, dao store.GitHubAppConfigReader, actor string, version int64, proof *AppUpdateProof, impact *int64, admit func() error) error {
+	if admit == nil {
+		return nil
+	}
+	reader, ok := dao.(store.GitHubAppConfigAccessReader)
+	if !ok {
+		return fmt.Errorf("GitHub App configuration access capability unavailable")
+	}
+	access, err := reader.ConfigAccess(ctx, actor)
+	if errors.Is(err, model.ErrNotFound) {
+		if proof != nil {
+			return &model.Fault{Code: "github_admin_changed", Message: "App administrator changed.", Cause: err}
+		}
+		return &model.Fault{Code: "not_found", Message: "App was not found.", Cause: err}
+	}
+	if err != nil {
+		return err
+	}
+	if proof != nil && access.MembershipVersion != proof.MembershipVersion {
+		return &model.Fault{Code: "github_admin_changed", Message: "App administrator changed."}
+	}
+	if access.AppVersion != version {
+		return &model.Fault{Code: "version_conflict", Message: "App version changed."}
+	}
+	if impact != nil && access.ImpactVersion != *impact {
+		return &model.Fault{Code: "impact_changed", Message: "App impact changed."}
+	}
+	return admit()
+}
+
 // ReadAppConfigForUpdate checks current authority and version before any secret comparison or remote proof.
 func ReadAppConfigForUpdate(ctx context.Context, dao store.GitHubAppConfigReader, p model.Principal, in UpdateAppInput) (store.GitHubAppConfigFacts, error) {
+	return ReadAppConfigForUpdateWithAdmission(ctx, dao, p, in, nil)
+}
+
+func ReadAppConfigForUpdateWithAdmission(ctx context.Context, dao store.GitHubAppConfigReader, p model.Principal, in UpdateAppInput, admit func() error) (store.GitHubAppConfigFacts, error) {
 	if err := team.RequireActor(p, in.ExpectedUserID); err != nil {
+		return store.GitHubAppConfigFacts{}, err
+	}
+	if err := admitAppConfig(ctx, dao, p.UserID, in.Version, nil, nil, admit); err != nil {
 		return store.GitHubAppConfigFacts{}, err
 	}
 	return appConfigFacts(ctx, dao, p.UserID, in.Version, nil)
 }
 
 func UpdateApp(ctx context.Context, dao store.GitHubAppConfigWriter, p model.Principal, in UpdateAppInput, proof *AppUpdateProof) (AppMetadata, error) {
+	return UpdateAppWithAdmission(ctx, dao, p, in, proof, nil)
+}
+
+func UpdateAppWithAdmission(ctx context.Context, dao store.GitHubAppConfigWriter, p model.Principal, in UpdateAppInput, proof *AppUpdateProof, admit func() error) (AppMetadata, error) {
 	if err := team.RequireActor(p, in.ExpectedUserID); err != nil {
+		return AppMetadata{}, err
+	}
+	if err := admitAppConfig(ctx, dao, p.UserID, in.Version, proof, nil, admit); err != nil {
 		return AppMetadata{}, err
 	}
 	f, err := appConfigFacts(ctx, dao, p.UserID, in.Version, proof)
@@ -150,7 +196,14 @@ func UpdateApp(ctx context.Context, dao store.GitHubAppConfigWriter, p model.Pri
 }
 
 func RemoveApp(ctx context.Context, dao store.GitHubAppConfigWriter, p model.Principal, in RemoveAppInput) error {
+	return RemoveAppWithAdmission(ctx, dao, p, in, nil)
+}
+
+func RemoveAppWithAdmission(ctx context.Context, dao store.GitHubAppConfigWriter, p model.Principal, in RemoveAppInput, admit func() error) error {
 	if err := team.RequireActor(p, in.ExpectedUserID); err != nil {
+		return err
+	}
+	if err := admitAppConfig(ctx, dao, p.UserID, in.Version, nil, &in.ImpactVersion, admit); err != nil {
 		return err
 	}
 	f, err := appConfigFacts(ctx, dao, p.UserID, in.Version, nil)

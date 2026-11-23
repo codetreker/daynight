@@ -1,7 +1,7 @@
 # Assistant tasks
 
 Assistant tasks are user-owned collaboration resources, separate from Project
-Tasks, Worker execution claims, Steps and Threads. They contain a manual,
+Tasks, Worker execution claims and Threads. They contain a manual,
 appendices, revision proposals, items, records, inquiries and delivery events.
 No Project argument or repository discovery is required. Read
 [write safety](write-safety.md) before mutations; command help owns exact flags.
@@ -15,7 +15,14 @@ daynight assistant-task manual show <task-id> --json
 daynight assistant-task record list <task-id> --limit 200 --json
 daynight assistant-task item list <task-id> --json
 daynight assistant-task item show <task-id> <item-id> --json
+daynight assistant-task metrics <task-id> --json
 ```
+
+`metrics` reports the last 30 days from one database snapshot: action records,
+outcome records by value, `escalation` and `result_unknown` events, item
+closures, recurring items, and `averageResolutionMs`. That average covers only
+closures with a known open time; `untimedClosureCount` counts the rest, and the
+average is `null` when no closure is timed.
 
 All commands support `--json`. Lists return one page with `items`, `nextCursor`
 and `observedAt`; follow `--cursor` explicitly. Versions and generations are exact
@@ -77,15 +84,28 @@ daynight assistant-task appendix add <task-id> --text "Observed behavior" --sour
 daynight assistant-task propose <task-id> --base-version <manual-version> --body "Revised manual" --reason "Evidence" --evidence-record <record-id> --json
 daynight assistant-task proposal list <task-id> --json
 daynight assistant-task record add <task-id> --kind fact --text "Observed result" --json
+daynight assistant-task record add <task-id> --kind outcome --outcome effective --action-record <action-record-id> --text "Observed result" --json
+daynight assistant-task appendix validate <task-id> <appendix-id> --outcome-record <outcome-record-id> --json
+daynight assistant-task appendix related <task-id> --project <project-id> --event-type report --category "build" --json
 daynight assistant-task ask <task-id> --question "What is the current finding?" --json
 daynight assistant-task answer <task-id> <inquiry-id> --answer "Observed result" --json
 ```
 
 The responsible Bot needs a current saved credential for protected writes.
 Another Bot can ask a question or append an `action`/`note` intervention record;
-other record kinds require the holder. Inquiries have a fixed five-minute
+other record kinds require the holder. An `outcome` record evaluates one earlier
+`action` record of the same task as `effective`, `ineffective` or `inconclusive`;
+the action stays unchanged and later observations append further outcomes. Inquiries have a fixed five-minute
 deadline. Read `inquiry list` and `record list` to distinguish an answer from a
-timeout. Appendices cite records; proposals cite evidence and retain the base
+timeout. Appendices cite records and may declare a scope with repeatable
+`--scope-project`, `--scope-event-type` and `--scope-category`; a dimension
+without values stays unrestricted. `appendix validate` registers one
+`effective` (success) or `ineffective` (failure) outcome record as evidence for
+an appendix; `inconclusive` outcomes and repeated registrations are refused, and
+`appendix list` shows the scope and counts once used. `appendix related` reads
+at most five live appendices for a project, event type and item category, each
+optional: a declared matching dimension ranks higher, a declared mismatch
+excludes the appendix, and recent validation breaks ties. Proposals cite evidence and retain the base
 manual version. Proposals do not change the effective manual until a user decides.
 
 User terminals can create/update/pause/resume/delete tasks, edit/delete appendices,
@@ -94,6 +114,12 @@ decide proposals and roll back manuals. `proposal decide` uses `approved`,
 Rollback appends a new version with the selected historical content. Pausing
 stops application work while allowing claims and renewal. Deletion removes the
 resource and its materials; it is separate from releasing a claim.
+
+`inbox show <task-id>` reads the task's inbox state for a user or Bot; it never
+returns a token. Only user terminals may run `inbox enable`, `inbox rotate
+--mode overlap|immediate`, `inbox disable` (each with `--if-version`) and
+`inbox operation <task-id> <operation-id>`. Enable and rotate print the full
+token once; a replay or receipt read cannot recover it.
 
 ## Events and write outcomes
 

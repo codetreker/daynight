@@ -175,6 +175,67 @@ func TestWorkerSudoCleanupMigration(t *testing.T) {
 	}
 }
 
+func TestWorkerWindowsProcessCleanupMigration(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	if len(schemaMigrations) < 110 || schemaMigrations[109].version != 112 {
+		t.Fatal("windows process cleanup migration must follow version 111")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:109]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	stamp := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
+	userID := queryID(1)
+	for _, workerID := range []string{queryID(2), queryID(3), queryID(4), queryID(5)} {
+		putWorkerSnapshot(t, database, workerSnapshotFixture(userID, workerID, stamp))
+	}
+	for _, fixture := range []struct{ id, desired string }{
+		{queryID(2), `{"other":{"value":7}}`},
+		{queryID(3), `{"enableWindowsProcessCleanup":true,"other":1}`},
+		{queryID(4), `{"enableWindowsProcessCleanup":false}`},
+	} {
+		mustQueryExec(t, database, `UPDATE workers SET configuration_revision=9,configuration_updated_at=$3,desired_configuration=$4,configuration_observation_revision=8,configuration_observation='{"items":[]}' WHERE user_id=$1 AND worker_id=$2`, userID, fixture.id, stamp, fixture.desired)
+	}
+	mustQueryExec(t, database, `UPDATE workers SET configuration_revision=9223372036854775807 WHERE user_id=$1 AND worker_id=$2`, userID, queryID(3))
+	rows := func(query string) string {
+		t.Helper()
+		var result string
+		if err := pool.QueryRow(ctx, query).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	unchanged := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w WHERE worker_id <> '` + queryID(2) + `'`)
+	otherFacts := rows(`SELECT (to_jsonb(w)-'desired_configuration'-'configuration_revision'-'configuration_updated_at')::text FROM workers w WHERE worker_id = '` + queryID(2) + `'`)
+	if err := migrate(ctx, pool, schemaMigrations[:110]); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w WHERE worker_id <> '` + queryID(2) + `'`); got != unchanged {
+		t.Fatalf("existing field or null configuration changed: before=%s after=%s", unchanged, got)
+	}
+	if got := rows(`SELECT (to_jsonb(w)-'desired_configuration'-'configuration_revision'-'configuration_updated_at')::text FROM workers w WHERE worker_id = '` + queryID(2) + `'`); got != otherFacts {
+		t.Fatalf("unrelated worker facts changed: before=%s after=%s", otherFacts, got)
+	}
+	var desired string
+	var revision int64
+	var updated time.Time
+	if err := pool.QueryRow(ctx, `SELECT desired_configuration::text,configuration_revision,configuration_updated_at FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, queryID(2)).Scan(&desired, &revision, &updated); err != nil {
+		t.Fatal(err)
+	}
+	var expected bool
+	if err := pool.QueryRow(ctx, `SELECT $1::jsonb = '{"other":{"value":7},"enableWindowsProcessCleanup":false}'::jsonb`, desired).Scan(&expected); err != nil || !expected || revision != 10 || !updated.After(stamp) {
+		t.Fatalf("migrated desired=%s revision=%d updated=%v err=%v", desired, revision, updated, err)
+	}
+	beforeRepeat := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w`)
+	if err := migrate(ctx, pool, schemaMigrations[:110]); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w`); got != beforeRepeat {
+		t.Fatal("repeated migration changed worker facts")
+	}
+}
+
 func TestWorkerSudoCleanupMigrationRevisionOverflowRollsBack(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)

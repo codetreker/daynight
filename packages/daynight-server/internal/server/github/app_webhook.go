@@ -31,13 +31,22 @@ type appWebhookHandler struct {
 
 // RegisterAppWebhookRoute installs the App-aware boundary without user authentication.
 // Its adoption in the public server is controlled by the App integration.
-func RegisterAppWebhookRoute(mux *http.ServeMux, operations AppWebhookOperations, logger *slog.Logger) {
+func RegisterAppWebhookRoute(mux httpx.RouteRegistrar, operations AppWebhookOperations, logger *slog.Logger) {
+	registerAppWebhookRoute(NewRouteRegistry(mux, nil), operations, logger)
+}
+
+// RegisterAppWebhookRouteWithRegistry exposes the same registration facts to an assembler.
+func RegisterAppWebhookRouteWithRegistry(routes *RouteRegistry, operations AppWebhookOperations, logger *slog.Logger) {
+	registerAppWebhookRoute(routes, operations, logger)
+}
+
+func registerAppWebhookRoute(routes *RouteRegistry, operations AppWebhookOperations, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	h := &appWebhookHandler{operations: operations, logger: logger, budget: webhookBudget, parse: appWebhookEvent}
-	mux.HandleFunc("POST /api/v1/github/apps/{localAppId}/webhook", h.receive)
-	mux.HandleFunc("/api/v1/github/apps/{localAppId}/webhook", httpx.MethodNotAllowed(logger, "POST"))
+	routes.handle("POST /api/v1/github/apps/{localAppId}/webhook", h.receive, routeWebhook)
+	routes.handle("/api/v1/github/apps/{localAppId}/webhook", httpx.MethodNotAllowed(logger, "POST"), routeFallback)
 }
 
 func (h *appWebhookHandler) receive(w http.ResponseWriter, r *http.Request) {

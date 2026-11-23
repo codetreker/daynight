@@ -25,20 +25,6 @@ User-requested migration designs, test strategies, and operating manuals can be 
 Do not invent delivery requirements to justify uploading execution logs.
 Operational authorization still constrains current behavior, but does not become task content merely because a later session needs it.
 
-## Task Steps and Session content
-
-A Step is a durable, ordered record of work within one Task. Its description can
-hold that work's objective, completion conditions, result and references to its
-materials. The Task material remains the owner of the overall
-requirements and formal deliverables; a Step may reference them. Steps persist
-across Sessions and can be empty; do not infer them from Task descriptions,
-Session todos or execution logs.
-
-Session owns its work organization, command schedules, tool activity, logs and operational
-authorization. Do not copy the Session timeline into Steps or treat a Step as
-permission to execute, deliver, communicate externally or merge. Project rules
-own how Steps are divided and maintained; see [task execution](task-execution.md#maintain-steps).
-
 ## Definitions and results
 
 The Task's own material and readable references together provide the following information, without mandatory headings or empty templates:
@@ -56,7 +42,7 @@ The Task's own material and readable references together provide the following i
 
 The Task's own material must identify its specific work and where to find its sources.
 Provide the detail the actual work needs without inventing interfaces or empty sections. The selected solution, detailed design and implementation steps must define the delivery task's own work, even when shared detail comes from referenced sources.
-These content requirements do not mandate a separate plan file, line-by-line code instructions, or Task Steps resources.
+These content requirements do not mandate a separate plan file or line-by-line code instructions.
 Do not duplicate complete documents.
 The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment on the Goal, produced by the requirements Task. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
 The [complete delivery standard](delivery.md#worker-delivery-results) governs managed tasks' attachment and separate review-file requirements; these content categories do not waive them.

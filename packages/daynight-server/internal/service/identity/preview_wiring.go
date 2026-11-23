@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
@@ -13,3 +14,9 @@ func NewWithPreviewSSO(writer store.IdentityWriter, client *uniauth.Client, call
 }
 
 func (s *Identity) PreviewSSO() *PreviewSSO { return s.preview }
+
+func NewScopedWithPreviewSSO(writer store.IdentityWriter, client *uniauth.Client, callbackURL string, preview *PreviewSSO, catalog scopepolicy.CatalogSnapshot) *Identity {
+	identity := NewWithDeviceScopes(writer, client, callbackURL, catalog)
+	identity.preview = preview
+	return identity
+}

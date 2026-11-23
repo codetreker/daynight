@@ -48,11 +48,12 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
   const workerControlMode = { supported: false };
   const workerToolPaths = { supported: false };
   const workerArchiveSessions = { supported: false };
+  const workerPlatformTaskMode = { supported: false };
 
   const query = async <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>, expectedUserId?: string): Promise<T> => {
     const operation = createOperation({ signal });
     try {
-      return await action(createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
+      return await action(createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
     } finally { operation.dispose(); }
   };
   const verifiedUserId = (): string => {
@@ -100,18 +101,18 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     report: (workerId, input, operation) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
     writeMonitoring: (workerId, observation, operation, requestId) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, observation, requestId);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, observation, requestId);
     },
     configuration: (workerId, signal, operation) => operation === undefined
       ? request(signal, api => api.getWorkerConfiguration(workerId))
-      : createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
+      : createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
     reportConfiguration: (workerId, input, configuration, operation, selectors) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
+      return createApiClient({ workerControlMode, workerToolPaths, workerArchiveSessions, workerPlatformTaskMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {

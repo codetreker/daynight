@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
@@ -39,6 +40,45 @@ func (d *appAdminDAO) App(ctx context.Context, appID string) (githubpr.AppIdenti
 		return githubpr.AppIdentity{}, fmt.Errorf("live github app credentials are missing")
 	}
 	return app, nil
+}
+
+func (d *appAdminDAO) AppAdminVisibility(ctx context.Context, appID, actor string) error {
+	var secrets, admin bool
+	err := d.tx.QueryRow(ctx, `SELECT private_key_pem IS NOT NULL AND webhook_secret IS NOT NULL, EXISTS (SELECT 1 FROM github_app_admins m WHERE m.app_resource_id=a.id AND m.user_id=$2) FROM github_apps a WHERE a.id=$1 AND a.deleted_at IS NULL`, appID, actor).Scan(&secrets, &admin)
+	if err != nil {
+		return pg.QueryError("check github app administrator", err)
+	}
+	if !secrets {
+		return fmt.Errorf("live github app credentials are missing")
+	}
+	if !admin {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
+func (d *appAdminDAO) AdminMembershipVisibility(ctx context.Context, appID, userID string) error {
+	var visible bool
+	err := d.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM github_app_admins WHERE app_resource_id=$1 AND user_id=$2)`, appID, userID).Scan(&visible)
+	if err != nil {
+		return pg.QueryError("check github app administrator target", err)
+	}
+	if !visible {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
+func (d *appAdminDAO) AdminInvitationVisibility(ctx context.Context, appID, invitationID string) error {
+	var visible bool
+	err := d.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM github_app_admin_invitations WHERE app_resource_id=$1 AND id=$2)`, appID, invitationID).Scan(&visible)
+	if err != nil {
+		return pg.QueryError("check github app invitation target", err)
+	}
+	if !visible {
+		return model.ErrNotFound
+	}
+	return nil
 }
 
 func (d *appAdminDAO) ObservedAt(ctx context.Context) (time.Time, error) {

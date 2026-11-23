@@ -11,11 +11,14 @@ import { parseWorkerTaskTagFilter, type WorkerTaskTagFilter } from './worker-tas
 export type WorkerConfigurationNative = { readonly agent: WorkerAgent; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerConfigurationOverrides = { readonly agent?: WorkerAgent; readonly model?: string | null; readonly args?: readonly string[] };
 export type WorkerControlMode = 'herdr' | 'web';
+export type PlatformTaskMode = 'all' | 'prefer' | 'only';
 export type WorkerConfigurationValue = {
   readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean;
+  readonly platformTaskMode?: PlatformTaskMode;
   readonly agentControlMode?: WorkerControlMode | null;
   readonly archiveSessions?: boolean;
   readonly enableSudoCleanup?: boolean;
+  readonly enableWindowsProcessCleanup?: boolean;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly taskTagFilter?: WorkerTaskTagFilter;
   readonly native: WorkerConfigurationNative;
@@ -28,7 +31,7 @@ export type WorkerConfigurationFailure = {
   readonly phase: 'validate' | 'prepare' | 'apply' | 'stop' | 'persist'; readonly occurredAt: string;
 };
 export type WorkerConfigurationKey =
-  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'archiveSessions' | 'enableSudoCleanup' | 'native' | 'taskTagFilter' }
+  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'platformTaskMode' | 'agentControlMode' | 'archiveSessions' | 'enableSudoCleanup' | 'enableWindowsProcessCleanup' | 'native' | 'taskTagFilter' }
   | { readonly kind: 'projectPreparation' | 'projectRemoval' | 'projectNative'; readonly projectId: string };
 export type WorkerConfigurationOutcome = {
   readonly key: WorkerConfigurationKey; readonly targetRevision: string;
@@ -46,6 +49,7 @@ export type WorkerConfigurationResource = {
   readonly controlModeSupported?: boolean;
   readonly toolPathsSupported?: boolean;
   readonly archiveSessionsSupported?: boolean;
+  readonly platformTaskModeSupported?: boolean;
 };
 
 const fields = (value: unknown, names: readonly string[], optional = false, allowUnknown = false): Record<string, unknown> => {
@@ -91,20 +95,23 @@ const overrides = (value: unknown): WorkerConfigurationOverrides => {
     ...(Object.hasOwn(data, 'args') ? { args: array(data.args, text) } : {}),
   };
 };
-export const parseWorkerConfigurationValue = (value: unknown, options: WorkerConfigurationCapabilityInput = { controlMode: Object.hasOwn(record(value), 'agentControlMode'), toolPaths: Object.hasOwn(record(value), 'toolPaths'), archiveSessions: Object.hasOwn(record(value), 'archiveSessions') }): WorkerConfigurationValue => {
-  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported } = workerConfigurationCapabilities(options);
-  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'projects', ...(controlModeSupported ? ['agentControlMode'] : []), ...(toolPathsSupported ? ['toolPaths'] : []), ...(archiveSessionsSupported ? ['archiveSessions'] : [])], false, true);
+export const parseWorkerConfigurationValue = (value: unknown, options: WorkerConfigurationCapabilityInput = { controlMode: Object.hasOwn(record(value), 'agentControlMode'), toolPaths: Object.hasOwn(record(value), 'toolPaths'), archiveSessions: Object.hasOwn(record(value), 'archiveSessions'), platformTaskMode: Object.hasOwn(record(value), 'platformTaskMode') }): WorkerConfigurationValue => {
+  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported, platformTaskMode: modeSupported } = workerConfigurationCapabilities(options);
+  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', ...(modeSupported ? ['platformTaskMode'] : ['preferPlatformSpecificTasks']), 'native', 'projects', ...(controlModeSupported ? ['agentControlMode'] : []), ...(toolPathsSupported ? ['toolPaths'] : []), ...(archiveSessionsSupported ? ['archiveSessions'] : [])], false, true);
+  if (modeSupported ? Object.hasOwn(data, 'preferPlatformSpecificTasks') : Object.hasOwn(data, 'platformTaskMode')) return malformed();
   if (!controlModeSupported && Object.hasOwn(data, 'agentControlMode') || !toolPathsSupported && Object.hasOwn(data, 'toolPaths') || !archiveSessionsSupported && Object.hasOwn(data, 'archiveSessions')) return malformed();
   const projects = array(data.projects, value => {
     const project = fields(value, ['projectId', 'nativeOverrides'], false, true);
     return { projectId: id(project.projectId), nativeOverrides: overrides(project.nativeOverrides) };
   }).sort((a, b) => a.projectId.localeCompare(b.projectId));
   if (new Set(projects.map(project => project.projectId)).size !== projects.length) return malformed();
-  return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), preferPlatformSpecificTasks: boolean(data.preferPlatformSpecificTasks),
+  return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), preferPlatformSpecificTasks: modeSupported ? choice(data.platformTaskMode, ['all', 'prefer', 'only'] as const) !== 'all' : boolean(data.preferPlatformSpecificTasks),
+    ...(modeSupported ? { platformTaskMode: choice(data.platformTaskMode, ['all', 'prefer', 'only'] as const) } : {}),
     ...(toolPathsSupported ? { toolPaths: parseWorkerCloudToolPaths(knownToolPaths(data.toolPaths)) } : {}),
     ...(archiveSessionsSupported ? { archiveSessions: boolean(data.archiveSessions) } : {}),
     ...(Object.hasOwn(data, 'taskTagFilter') ? { taskTagFilter: parseWorkerTaskTagFilter(data.taskTagFilter) } : {}),
     ...(Object.hasOwn(data, 'enableSudoCleanup') ? { enableSudoCleanup: boolean(data.enableSudoCleanup) } : {}),
+    ...(Object.hasOwn(data, 'enableWindowsProcessCleanup') ? { enableWindowsProcessCleanup: boolean(data.enableWindowsProcessCleanup) } : {}),
     ...(controlModeSupported ? { agentControlMode: data.agentControlMode === null ? null : choice(data.agentControlMode, ['herdr', 'web'] as const) } : {}),
     native: parseConfigurationNative(data.native), projects };
 };
@@ -114,7 +121,7 @@ const failure = (value: unknown): WorkerConfigurationFailure | null => {
   return { code: choice(data.code, ['not_found', 'permission_denied', 'timeout', 'command_failed', 'invalid_output', 'invalid_configuration', 'io_error', 'unavailable']),
     category: choice(data.category, ['validation', 'repository', 'agent', 'runtime', 'storage']), phase: choice(data.phase, ['validate', 'prepare', 'apply', 'stop', 'persist']), occurredAt: configurationTimestamp(data.occurredAt) };
 };
-const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsSupported: boolean): WorkerConfigurationOutcome => {
+const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsSupported: boolean, modeSupported: boolean): WorkerConfigurationOutcome => {
   const data = fields(value, ['key', 'targetRevision', 'appliedValue', 'state', 'error', 'lastFailure', 'nextAttemptAt'], false, true);
   const rawKey = record(data.key);
   const projectKind = rawKey.kind === 'projectPreparation' || rawKey.kind === 'projectRemoval' || rawKey.kind === 'projectNative';
@@ -122,14 +129,15 @@ const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsS
   if (!projectKind && Object.hasOwn(rawKey, 'projectId')) return malformed();
   const key: WorkerConfigurationKey = projectKind
     ? { kind: choice(rawKey.kind, ['projectPreparation', 'projectRemoval', 'projectNative']), projectId: id(rawKey.projectId) }
-    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'enableSudoCleanup', 'native', 'taskTagFilter', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
+    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', ...(modeSupported ? ['platformTaskMode' as const] : ['preferPlatformSpecificTasks' as const]), 'enableSudoCleanup', 'enableWindowsProcessCleanup', 'native', 'taskTagFilter', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
   let appliedValue: WorkerConfigurationOutcome['appliedValue'] = null;
   if (data.appliedValue !== null) {
     switch (key.kind) {
       case 'maxConcurrent': appliedValue = integer(data.appliedValue, 1); break;
       case 'pollIntervalMs': appliedValue = integer(data.appliedValue, 1, 2_147_483_647); break;
       case 'recoveryLimit': appliedValue = integer(data.appliedValue, 0); break;
-      case 'preferPlatformSpecificTasks': case 'archiveSessions': case 'enableSudoCleanup': appliedValue = boolean(data.appliedValue); break;
+      case 'preferPlatformSpecificTasks': case 'archiveSessions': case 'enableSudoCleanup': case 'enableWindowsProcessCleanup': appliedValue = boolean(data.appliedValue); break;
+      case 'platformTaskMode': appliedValue = choice(data.appliedValue, ['all', 'prefer', 'only'] as const); break;
       case 'taskTagFilter': if (typeof data.appliedValue !== 'string' || !/^[0-9a-f]{64}$/.test(data.appliedValue)) return malformed(); appliedValue = data.appliedValue; break;
       case 'agentControlMode': appliedValue = choice(data.appliedValue, ['herdr', 'web'] as const); break;
       case 'native': case 'projectNative': appliedValue = parseConfigurationNative(data.appliedValue); break;
@@ -145,8 +153,8 @@ export const parseWorkerConfiguration = (value: unknown, options?: WorkerConfigu
   const source = record(value);
   const desired = source.desired === null || source.desired === undefined ? null : record(source.desired);
   const desiredValue = desired === null ? null : record(desired.value);
-  const capabilities = options ?? { controlMode: false, toolPaths: desiredValue !== null && Object.hasOwn(desiredValue, 'toolPaths'), archiveSessions: desiredValue !== null && Object.hasOwn(desiredValue, 'archiveSessions') };
-  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported } = workerConfigurationCapabilities(capabilities);
+  const capabilities = options ?? { controlMode: false, toolPaths: desiredValue !== null && Object.hasOwn(desiredValue, 'toolPaths'), archiveSessions: desiredValue !== null && Object.hasOwn(desiredValue, 'archiveSessions'), platformTaskMode: desiredValue !== null && Object.hasOwn(desiredValue, 'platformTaskMode') };
+  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported, platformTaskMode: modeSupported } = workerConfigurationCapabilities(capabilities);
   const data = fields(value, ['desired', 'observationRevision', 'observation'], false, true);
   const observationRevision = parseConfigurationRevision(data.observationRevision, true);
   let target: WorkerConfigurationDesired | null = null, observation: WorkerConfigurationObservation | null = null;
@@ -157,28 +165,29 @@ export const parseWorkerConfiguration = (value: unknown, options?: WorkerConfigu
     const stored = record(raw.value);
     const { agentControlMode: _mode, toolPaths: rawTools, ...rest } = stored;
     const projected = { ...rest, ...(toolPathsSupported ? { toolPaths: rawTools === undefined ? { codex: null, copilot: null } : { codex: null, copilot: null, ...record(knownToolPaths(rawTools)) } } : {}) };
-    target = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(projected, { controlMode: false, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported === true }) };
+    target = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(projected, { controlMode: false, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported === true, platformTaskMode: modeSupported === true }) };
   }
   if (data.observation !== null) {
     const raw = fields(data.observation, ['baseRevision', 'desiredRevision', 'items', 'reportedAt'], false, true);
-    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'projectPreparation', 'projectRemoval', 'projectNative', 'taskTagFilter'];
+    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'platformTaskMode', 'native', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'enableWindowsProcessCleanup', 'projectPreparation', 'projectRemoval', 'projectNative', 'taskTagFilter'];
     const desiredRevision = parseConfigurationRevision(raw.desiredRevision);
     const items = array(raw.items, item => {
       const entry = record(item), key = record(entry.key);
       if (typeof key.kind !== 'string') return malformed();
       if (BigInt(parseConfigurationRevision(entry.targetRevision)) > BigInt(desiredRevision)) return malformed();
+      if (key.kind === 'platformTaskMode' && !modeSupported || key.kind === 'preferPlatformSpecificTasks' && modeSupported) return malformed();
       if (key.kind === 'agentControlMode' && !controlModeSupported || key.kind === 'archiveSessions' && !archiveSessionsSupported) return malformed();
-      return kinds.includes(key.kind) ? outcome(item, controlModeSupported, archiveSessionsSupported === true) : null;
+      return kinds.includes(key.kind) ? outcome(item, controlModeSupported, archiveSessionsSupported === true, modeSupported === true) : null;
     }).filter((item): item is WorkerConfigurationOutcome => item !== null);
     if (new Set(items.map(item => `${item.key.kind}/${'projectId' in item.key ? item.key.projectId : ''}`)).size !== items.length || items.some(item => BigInt(item.targetRevision) > BigInt(desiredRevision))) return malformed();
     observation = { baseRevision: parseConfigurationRevision(raw.baseRevision, true), desiredRevision, items, reportedAt: configurationTimestamp(raw.reportedAt) };
     if (target === null || BigInt(desiredRevision) > BigInt(target.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
   }
   if ((observationRevision === '0') !== (observation === null) || target === null && observation !== null) return malformed();
-  return { desired: target, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}), ...(archiveSessionsSupported ? { archiveSessionsSupported: true } : {}) };
+  return { desired: target, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}), ...(archiveSessionsSupported ? { archiveSessionsSupported: true } : {}), ...(modeSupported ? { platformTaskModeSupported: true } : {}) };
 };
 
-export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean };
+export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean; readonly platformTaskModeSupported?: boolean };
 export const workerConfigurationBaseline = (resource: WorkerConfigurationResource): ConfigurationBaseline | null => resource.desired?.document === undefined ? null : configurationBaseline(resource.desired.document);
 const rememberDocument = (document: ConfigurationDocument): WorkerConfigurationResource => {
   return { ...document.known, document, desired: document.known.desired === null ? null : { ...document.known.desired, document }, observation: document.known.observation === null ? null : { ...document.known.observation, document } };
@@ -190,40 +199,44 @@ const decoder = (options: WorkerConfigurationCapabilityInput) => async (response
 const url = (workerId: string) => `/api/v1/me/workers/${requestId(workerId)}/configuration`;
 export const getWorkerConfiguration = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission & { readonly toolPathsSupported?: boolean }): Promise<WorkerConfigurationResource> => {
   const userId = requestId(admission.userId);
-  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Archive-Sessions': '1', 'Daynight-Worker-Tool-Paths': '2' } });
+  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Archive-Sessions': '1', 'Daynight-Worker-Tool-Paths': '2', 'Daynight-Worker-Platform-Task-Mode': '1' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   if (response.ok && response.headers.get('Daynight-Worker-Tool-Paths') !== '2') throw new ApiError('protocol', response.status, 'worker_tool_paths_upgrade');
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
     if (toolHeader !== '2') throw new ApiError('protocol', response.status);
+    const modeHeader = response.headers.get('Daynight-Worker-Platform-Task-Mode');
+    if (modeHeader !== null && modeHeader !== '1') throw new ApiError('protocol', response.status);
     const archiveHeader = response.headers.get('Daynight-Worker-Archive-Sessions');
     if (archiveHeader !== null && archiveHeader !== '1') throw new ApiError('protocol', response.status);
     return rememberDocument(data as ConfigurationDocument);
-  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }));
+  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: response.headers.get('Daynight-Worker-Archive-Sessions') === '1', platformTaskMode: response.headers.get('Daynight-Worker-Platform-Task-Mode') === '1' }));
 };
 export const saveWorkerConfiguration = async (workerId: string, revision: string, value: WorkerConfigurationValue | ConfigurationSubmission, signal: AbortSignal, admission: WorkerConfigurationWriteAdmission): Promise<WorkerConfigurationResource> => {
-  const supported = false, toolsSupported = true, archiveSupported = admission.archiveSessionsSupported === true;
+  const supported = false, toolsSupported = true, archiveSupported = admission.archiveSessionsSupported === true, modeSupported = admission.platformTaskModeSupported === true;
   const userId = requestId(admission.userId), expected = parseConfigurationRevision(revision);
   const input = 'valueSource' in value ? value.known : value;
-  const projected = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'agentControlMode' && (toolsSupported || key !== "toolPaths") && (archiveSupported || key !== "archiveSessions")));
-  const validated = parseWorkerConfigurationValue(projected, { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archiveSupported });
-  const submission: ConfigurationSubmission = 'valueSource' in value ? { ...value, valueSource: archiveSupported ? value.valueSource : withoutArchiveSessions(value.valueSource) } : { baseline: { revision: expected, valueSource: JSON.stringify(validated), known: validated }, valueSource: JSON.stringify(validated), known: validated };
+  const projected = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'agentControlMode' && (toolsSupported || key !== "toolPaths") && (archiveSupported || key !== "archiveSessions") && (modeSupported ? key !== 'preferPlatformSpecificTasks' : key !== 'platformTaskMode')));
+  const validated = parseWorkerConfigurationValue(projected, { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archiveSupported, platformTaskMode: modeSupported });
+  const submission: ConfigurationSubmission = 'valueSource' in value ? { ...value, valueSource: archiveSupported ? value.valueSource : withoutArchiveSessions(value.valueSource) } : { baseline: { revision: expected, valueSource: JSON.stringify(projected), known: validated }, valueSource: JSON.stringify(projected), known: validated };
   if (submission.baseline.revision !== expected || unsupportedConfigurationFields(submission.valueSource).length > 0) throw new ApiError('protocol');
-  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Tool-Paths': '2', ...(archiveSupported ? { 'Daynight-Worker-Archive-Sessions': '1' } : {}) }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
+  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Tool-Paths': '2', ...(modeSupported ? { 'Daynight-Worker-Platform-Task-Mode': '1' } : {}), ...(archiveSupported ? { 'Daynight-Worker-Archive-Sessions': '1' } : {}) }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   if (response.ok && response.headers.get('Daynight-Worker-Tool-Paths') !== '2') throw new ApiError('protocol', response.status, 'worker_tool_paths_upgrade');
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
     if (toolHeader !== '2') throw new ApiError('protocol', response.status);
+    const modeHeader = response.headers.get('Daynight-Worker-Platform-Task-Mode');
+    if (modeHeader !== null && modeHeader !== '1' || modeSupported && modeHeader !== '1') throw new ApiError('protocol', response.status);
     const archiveHeader = response.headers.get('Daynight-Worker-Archive-Sessions');
     if (archiveHeader !== null && archiveHeader !== '1' || archiveSupported && archiveHeader !== '1') throw new ApiError('protocol', response.status);
     const resource = rememberDocument(data as ConfigurationDocument), baseline = workerConfigurationBaseline(resource);
     if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { archiveSessions: archiveSupported, semanticTagFilter: true })) throw new ApiError('protocol', response.status);
     admission.onConfirmed?.(resource);
     return resource;
-  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), true, admission.onRejected);
+  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1', platformTaskMode: modeSupported && response.headers.get('Daynight-Worker-Platform-Task-Mode') === '1' }), true, admission.onRejected);
 };
 export const listWorkerConfigurationProjects = async (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<ProjectPage> => {
   const userId = requestId(admission.userId), parameters = new URLSearchParams();

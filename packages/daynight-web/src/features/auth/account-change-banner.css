@@ -9,7 +9,7 @@
   border-radius: 6px;
   background: #fffaf1;
   color: #79623d;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 

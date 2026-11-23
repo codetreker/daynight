@@ -67,8 +67,8 @@ func newStrictAuthHTTPWithSettings(t *testing.T, settings authconfig.AuthSetting
 		startLogin: func(ctx context.Context, provider, returnPath, browserScope string) (identitycore.LoginStart, error) {
 			return authRequestResult[identitycore.LoginStart](h.take(ctx, "StartLogin", provider, returnPath, browserScope))
 		},
-		completeLogin: func(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
-			return authRequestResult[identitycore.LoginCompletion](h.take(ctx, "CompleteLogin", query, binding))
+		completeLogin: func(ctx context.Context, query url.Values, binding, userAgent string) (identitycore.LoginCompletion, error) {
+			return authRequestResult[identitycore.LoginCompletion](h.take(ctx, "CompleteLogin", query, binding, userAgent))
 		},
 		authenticate: func(ctx context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
 			return authRequestResult[model.Principal](h.take(ctx, "Authenticate", kind, value))

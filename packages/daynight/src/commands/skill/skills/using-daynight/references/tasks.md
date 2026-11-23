@@ -10,8 +10,10 @@ daynight task create --title "Improve installation" --description "Document prer
 daynight task create --title "Implement confirmed work" --status todo
 daynight task create --type goal --title "Improve installation"
 daynight task create --parent <goal-id> --title "Document prerequisites" --status todo
+daynight task create --parent-task <task-id> --title "Fix a finding" --status todo
 daynight task list --type goal --json
 daynight task list --parent <goal-id> --json
+daynight task list --parent-task <task-id> --all --json
 daynight task list --tag <tag-id> --tag <another-tag-id> --tag-match any --json
 daynight task list --untagged --json
 daynight task list --all --json
@@ -36,19 +38,29 @@ Ordinary Tasks default to automatic execution disabled. Creation returns text, n
 Task resources require `type` (`task` or `goal`) and nullable `parentId`.
 Create, list and search default to `task`; `--type goal` selects Goals. Create,
 update, list, search and ready accept `--parent <goal-id|none>`. For queries,
-omission does not filter by parent, `none` selects Tasks without a Goal and a UUID
+omission does not filter by parent, `none` selects Tasks without a direct Goal and a UUID
 selects direct children of that Goal. On create omission means no parent; on update
 it preserves the current parent. `none` writes null and a UUID sets the Goal.
 Goals cannot have parents and may be empty. Membership is independent of Task
 dependencies, status, assignee and materials; changing it does not move materials.
 Existing Tasks and their materials are not migrated into Goals automatically.
 
+Create, list, search and ready also accept `--parent-task <task-id>` for a
+direct ordinary Task parent; it conflicts with `--parent`. Ordinary parentage is
+fixed at creation and cannot be changed through update. A parent must be visible,
+in the same Project and nonterminal. Parentage does not create a dependency or
+automatically start or complete the parent. Use `--all` on list to include done
+and cancelled children. `--parent none` also matches ordinary children because
+they have no direct Goal. Extended reads expose `parentTaskId` alongside the
+Goal-only `parentId`; older services may omit the new field. An old service that
+rejects a new filter or write is not retried with a weaker request.
+
 Full Goal reads include `progress:{total,done,cancelled,unfinished}` for visible
 direct ordinary children, independently of dependency chains. Counts are
 nonnegative integers; done+cancelled+unfinished=total, with proposed/todo/in_progress
 unfinished and all zeros for an empty Goal. Summary/sync omit progress; ordinary
 Tasks have no progress object. Visible reads exclude deletion of a resource or
-its parent Goal; authorized direct reads return `410 task_deleted` for effective
+any deleted ancestor; authorized direct reads return `410 task_deleted` for effective
 deletion without implying a child-row or version rewrite.
 
 | Read | Scope/output |
@@ -61,7 +73,7 @@ deletion without implying a child-row or version rewrite.
 
 List filters are `--ready`, `--assigned-to <user-uuid|me|unassigned>`,
 `--allow-agents true|false`, `--compatible-platform windows|linux|macos`,
-`--type task|goal` and `--parent <goal-id|none>`.
+`--type task|goal`, `--parent <goal-id|none>` and `--parent-task <task-id>`.
 They combine with AND before pagination and persist on every page. Platform
 matching includes unrestricted Tasks and exact matches. `me` uses response
 identity even on empty pages. Ready supports parent and permission/platform filters but no
@@ -82,8 +94,9 @@ truncated. Grouped chain queries reject tag options.
 Lists order in_progress, ready todo, blocked todo, proposed, then selected
 terminal Tasks; done/cancelled stay distinct. Neither list nor ready ordering
 ranks relevance. List/show/graph include [Session observations](session-reads.md#observations);
-ready and Task-returning writes retain full Task data without querying live Sessions.
-Task and Goal details, lists, ready results and receipts contain their own `tags`
+ready and full Task-returning writes do not query live Sessions. An update with
+explicit Project and version returns a minimal receipt instead.
+Full Task and Goal details, lists, ready results and full receipts contain their own `tags`
 array of `{id,name}` references; `[]` means no tags. Text displays each name on
 its own line, or `Tags: none`. Missing or invalid references fail as protocol
 errors; graph nodes do not include tags.
@@ -100,15 +113,16 @@ a leading dash. Grammar: uppercase `AND`, `OR`, `NOT`, parentheses, quoted phras
 with ASCII case folding.
 
 Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents`,
-`--compatible-platform`, `--type`, `--parent` and the tag filters above, not `--all`; it traverses all pages in server relevance
-order. Matches and actual parent Goal context are compact, not full Tasks.
+`--compatible-platform`, `--type`, `--parent`, `--parent-task` and the tag filters above, not `--all`; it traverses all pages in server relevance
+order. Matches and direct parent context are compact, not full Tasks.
 Tag filters intersect the expression; tag names are not search fields. An
 expression is still required, so use list for tag-only queries.
 Text/JSON omit assignee and update time;
-JSON fields are id, type, parentId, projectId, title, tags, status, cancelledAt, context
-and match. Search text also displays Type and Parent. `context:{taskId,title}`
-identifies the visible actual parent Goal, or is null for an independent Task;
-dependencies do not establish Goal membership.
+JSON fields include id, type, parentId, parentTaskId, projectId, title, tags,
+status, cancelledAt, context, parentTaskContext and match when supported by the
+service. Search text also displays Type and Parent. `context:{taskId,title}`
+identifies the direct Goal; `parentTaskContext` identifies the direct ordinary
+parent. Dependencies do not establish parentage.
 Any failure, including `search_changed`, leaves stdout empty; search again after
 changes.
 
@@ -121,6 +135,15 @@ daynight task update <task-id> --parent none --if-version <observed-version>
 daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-version>
 daynight task update <task-id> --allow-agents true --required-platform linux --if-version <observed-version>
 ```
+
+With explicit `--project` and `--if-version`, update sends one PATCH without
+Project or Task pre-reads and prints only Project ID, Task ID and resulting
+version. Older services may return a full Task, which is validated in the same
+response and reduced to that receipt. Without an explicit version, update reads
+the Task first. A title change needs `task:write`; an `allowAgents` change needs
+`agent:authorize`. Combined fields require all applicable scopes. Explicit Project
+selection also lets show/list/graph read the Task endpoint directly; repository
+discovery and other commands retain their existing read requirements.
 
 Follow the [material writing guidance](materials.md#descriptions-and-references) when updating a description.
 Update needs at least one mutable field. Supplied description replaces the
@@ -170,6 +193,7 @@ the submitted IDs.
 ```bash
 daynight task set-status <task-id> in_progress --if-version <observed-version>
 daynight task set-status <task-id> done --if-version <observed-version>
+daynight task set-status <task-id> cancelled --confirm --if-version <observed-version>
 ```
 
 Goal read states are todo, in_progress, done and cancelled. They
@@ -191,6 +215,17 @@ These are client recognition and confirmation rules; the CLI does not implement
 Goal-specific lifecycle effects. Service business/version checks govern writes.
 
 The following lifecycle and timing rules describe ordinary Tasks.
+
+An unfinished direct child prevents its parent's completion, ordinary
+cancellation or deletion. The refusal identifies blocking Tasks when the caller
+may read them. To cancel a parent and its unfinished descendants atomically,
+pass `--confirm` with `cancelled`; the CLI submits the explicit request once
+using the supplied or observed version. Already terminal descendants retain their
+status. A protected descendant, including one with an active claim, rejects the
+whole operation. `--force` remains the separate Goal confirmation option. An old
+service may reject the new field; the CLI does not retry without it. For an
+unknown write outcome, observe the original Task and descendants before deciding
+what to do next.
 
 | Status | Meaning |
 | --- | --- |
@@ -228,7 +263,7 @@ establish cancelled delivery.
 
 Status writes neither release, stop, withdraw nor transfer Workers. An active
 claim needs authorized release before cancellation. A cancelled Task cannot be claimed or withdrawn to proposed/todo; Session and archive history remain readable. Cancellation
-preserves readable Task material, properties, Steps, Thread, execution history
+preserves readable Task material, properties, Thread, execution history
 and attachment bytes; it does not mark deletion, rotate Project epoch or close
 PRs/branches. Resource cleanup retains its ownership/retry rules. Ordinary
 completion has no claim; assigned Workers use [the original claim](worker-operations.md).
@@ -258,7 +293,7 @@ unique across options, including equivalent UUID forms. Omit both to preserve;
 dependency options for unrelated metadata changes; direct API partial-patch
 semantics do not establish CLI preservation.
 
-Graph nodes are ordinary Tasks, retaining parentId; Goal resources are not nodes.
+Graph nodes are ordinary Tasks, retaining direct parent fields; Goal resources are not nodes.
 Graph includes every status in the full bidirectional ordinary component plus
 one layer of members' external prerequisites; external Tasks are not expanded.
 Nodes omit full descriptions, PR properties and exact versions. Limits fail,

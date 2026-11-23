@@ -4,6 +4,9 @@ import path from "node:path";
 import type { Operation } from "../api/operation.js";
 import { cleanupMs, diagnostic, gitArgs, gitEnvironment, gitTimeout, maxOutputBytes, RepositoryGitError } from "./git-policy.js";
 import type { RepositoryGitOptions, RepositoryGitResult } from "./git-policy.js";
+import { createOperation } from "../api/operation.js";
+import { currentOwnedCommandLifecycle, ownedCommandClosure, reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleSink } from "../commands/worker/owned-command-lifecycle.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandError } from "../commands/worker/owned-command.js";
 
 export class RepositoryGitCleanupPendingError extends AggregateError {
   readonly code = "repository_git_cleanup_pending";
@@ -24,11 +27,58 @@ export type OwnedRepositoryGit = {
   requestStop(): void;
 };
 
+const startLifecycleRepositoryGit = (cwd: string, args: readonly string[], operation: Operation, options: Omit<RepositoryGitOptions, "processGroup">, sink: OwnedCommandLifecycleSink): OwnedRepositoryGit => {
+  const stop = new AbortController();
+  const scoped = createOperation({ signal: AbortSignal.any([operation.signal, stop.signal]), limits: { ...operation.limits, totalMs: Math.ceil(operation.remainingMs()) } });
+  let resourceId: string | undefined, resolveJoined!: (settlement: GitSettlement) => void;
+  const joined = new Promise<GitSettlement>(resolve => { resolveJoined = resolve; });
+  let settled = false, reconciling = false;
+  const finish = () => { if (!settled) { settled = true; resolveJoined({ kind: "local-closed", cleanupErrors: [] }); } };
+  const outcome: Promise<GitOwnedOutcome> = runLifecycleOwnedCommand({ file: "git", args: gitArgs(args), cwd, environment: gitEnvironment(options.environment) }, scoped,
+    async event => {
+      resourceId = event.resourceId;
+      if (event.stage === "prepared") {
+        // Inventory owns the same closure and may finish it independently of
+        // requestStop. Join the original producer before releasing Git callers.
+        void ownedCommandClosure(resourceId).then(async () => { await outcome; finish(); });
+      }
+      await sink(event);
+    }, { maximumOutputBytes: maxOutputBytes * 2, maximumStreamBytes: maxOutputBytes, timeoutMs: gitTimeout(operation, options.timeoutMs), ...(options.allowExitOne === undefined ? {} : { allowExitOne: options.allowExitOne }) }).then(result => {
+      finish(); return { kind: "success", result: { ...result, stderr: diagnostic(result.stderr) } } as GitOwnedOutcome;
+    }, (cause: unknown) => {
+      const error = cause instanceof OwnedCommandError ? new RepositoryGitError("Repository Git command failed", cause.exitCode, cause.signal, diagnostic(cause.stderr), { cause }) : cause;
+      if (resourceId !== undefined && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) return { kind: "cleanup-pending", error: new RepositoryGitCleanupPendingError([], error) } as GitOwnedOutcome;
+      finish(); return { kind: "failure", error, settlement: "joined" } as GitOwnedOutcome;
+    }).finally(() => scoped.dispose());
+  const requestStop = (): void => {
+    stop.abort(new Error("Repository Git stop requested."));
+    if (settled || reconciling) return;
+    reconciling = true;
+    void outcome.then(async result => {
+      // Inventory can close this exact command before its Git owner retries.
+      // Only its original cleanup receipt can confirm that completed closure.
+      const confirmed = () => result.kind === "cleanup-pending" && hasOwnedCommandCleanupFailure(result.error) && !hasUnconfirmedOwnedCommandCleanup(result.error);
+      try {
+        if (settled || resourceId === undefined) return;
+        if (confirmed()) { finish(); return; }
+        await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 10_000);
+        if (confirmed()) finish();
+      }
+      catch { /* The original reservation remains unknown and joined remains pending. */ }
+      finally { if (confirmed()) finish(); reconciling = false; }
+    });
+  };
+  void outcome.then(result => { if (result.kind === "cleanup-pending") requestStop(); });
+  return { outcome, joined, requestStop };
+};
+
 /** Owns the original child, its output streams and any started stop helper until their close events. */
 export const startOwnedRepositoryGit = (
   cwd: string, args: readonly string[], operation: Operation,
   options: Omit<RepositoryGitOptions, "processGroup"> = {},
 ): OwnedRepositoryGit => {
+  const lifecycle = currentOwnedCommandLifecycle();
+  if (lifecycle !== undefined) return startLifecycleRepositoryGit(cwd, args, operation, options, lifecycle);
   const timeoutMs = gitTimeout(operation, options.timeoutMs);
   let resolveOutcome!: (value: GitOwnedOutcome) => void;
   let resolveJoined!: (value: GitSettlement) => void;

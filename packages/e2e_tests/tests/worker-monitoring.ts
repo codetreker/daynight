@@ -70,6 +70,31 @@ export const verifyWorkerMonitoring = async (page: Page): Promise<void> => {
       throw new Error(`Worker monitoring browser requests: ${webReads.diagnostics()}`, { cause: error });
     } finally { webReads.close(); }
 
+    // The browser and the independent reads use the same authenticated Worker
+    // resource. Do not intercept this route: the real service owns persistence.
+    const participationPath = `${root}/review-participation`;
+    const readParticipation = async () => {
+      const response = await page.request.get(participationPath);
+      expect(response.status(), await response.text()).toBe(200);
+      return await response.json() as { enabled: boolean; version: string };
+    };
+    const initialParticipation = await readParticipation();
+    expect(initialParticipation).toEqual({ enabled: false, version: "1" });
+    await page.locator('[data-worker-tab="configuration"]:visible').click();
+    const participation = page.getByRole("switch", { name: "Participate in PR review", exact: true });
+    await expect(participation).toBeEnabled();
+    await expect(participation).not.toBeChecked();
+    for (const [enabled, version] of [[true, "2"], [false, "3"]] as const) {
+      const saved = page.waitForResponse(response => new URL(response.url()).pathname === participationPath && response.request().method() === "PUT");
+      await participation.click();
+      expect((await saved).status()).toBe(200);
+      await expect(participation).toHaveAttribute("aria-checked", String(enabled));
+      expect(await readParticipation()).toEqual({ enabled, version });
+      await page.reload();
+      await page.locator('[data-worker-tab="configuration"]:visible').click();
+      await expect(participation).toHaveAttribute("aria-checked", String(enabled));
+    }
+
     const readWorker = async () => {
       const response = await page.request.get(root, { headers: { "Daynight-Worker-Alias": "1", "Daynight-Worker-Tool-Paths": "2" } });
       expect(response.status(), await response.text()).toBe(200);

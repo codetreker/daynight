@@ -103,7 +103,7 @@ export const TaskStatusFilter = ({ value, onChange }: { readonly value: readonly
     event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus();
   }}>
     <span>{m.statusFilter}</span>
-    <SelectTrigger ref={triggerRef} density="filter" touchMode="responsive" focusTone="task" aria-label={`${m.statusFilter}: ${summary}`} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen(previous => !previous)}>
+    <SelectTrigger ref={triggerRef} density="filter" touchMode="responsive-target" focusTone="task" aria-label={`${m.statusFilter}: ${summary}`} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen(previous => !previous)}>
       {summary}
     </SelectTrigger>
     {open && <div ref={panelRef} id={panelId} className="task-status-filter-panel" role="group" aria-label={m.statusFilter}>

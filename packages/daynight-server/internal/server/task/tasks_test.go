@@ -344,6 +344,9 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			want["reachable:"+id] = 1
 		}
 	}
+	if current != nil && result != nil && current.Status != result.Status && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if result != nil {
 		want["mutation"] = 1
 		if current != nil {
@@ -373,6 +376,14 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, id, current.ID)
 			return copyTaskHTTPTask(*current), nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, id, current.ID)
+			return []string{}, nil
 		}
 	}
 	if validateDependencies {
@@ -699,6 +710,9 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 	if status && before != nil && before.Status == model.TaskDone && result.Status != model.TaskDone {
 		want["dependents"] = 1
 	}
+	if status && before != nil && changed && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if changed {
 		want["save"] = 1
 		if before != nil {
@@ -739,6 +753,14 @@ func platformHTTPWrite(f *taskHTTPFixture, before *model.Task, values store.Task
 		writer.ActiveDependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
 			f.require(ctx, f.project.ID)
 			plan.Called("dependents")
+			platformHTTPCheck(f.t, id, before.ID)
+			return []string{}, nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			f.require(ctx, f.project.ID)
+			plan.Called("children")
 			platformHTTPCheck(f.t, id, before.ID)
 			return []string{}, nil
 		}

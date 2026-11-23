@@ -1,0 +1,31 @@
+.horizontal-tab-list {
+  position: relative;
+  min-width: 0;
+  container-type: inline-size;
+}
+.horizontal-tab-list-track {
+  display: flex;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.horizontal-tab-list::before,
+.horizontal-tab-list::after {
+  content: "";
+  display: none;
+  position: absolute;
+  inset-block: 1px;
+  width: 8px;
+  z-index: 1;
+  pointer-events: none;
+}
+.horizontal-tab-list[data-overflow-start="true"]::before {
+  display: block;
+  left: 0;
+  background: linear-gradient(to right, #72809766, #72809700);
+}
+.horizontal-tab-list[data-overflow-end="true"]::after {
+  display: block;
+  right: 0;
+  background: linear-gradient(to left, #72809766, #72809700);
+}

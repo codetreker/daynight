@@ -48,6 +48,14 @@ describe('Worker monitoring response contracts', () => {
     expect(await getWorkerMonitoring(id, signal, admission)).toEqual(value);
     expect(await queryWorkerMonitoring([id], signal, admission)).toEqual(summaries);
   });
+  it('accepts the fixed archive capacity diagnostic and rejects private details', () => {
+    const error = { type: 'operation', code: 'archive-quota-exceeded', cause: 'Session archive capacity was exceeded (quota_exceeded).', causeTruncated: false };
+    for (const path of [['data', 'currentFailures', '0', 'error'], ['data', 'delivery', 'lastFailure', 'error']]) {
+      const value = mutate(path, error);
+      expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+      expect(() => parseWorkerMonitoringDetail(mutate(path, { ...error, cause: `${error.cause} private path` }))).toThrow();
+    }
+  });
   it('accepts only the fixed Markdown repair diagnostic', () => {
     const error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
     const value = mutate(['data', 'currentFailures', '0', 'error'], error);

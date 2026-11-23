@@ -19,13 +19,20 @@ func (s *Service) taskQuery(ctx context.Context, principal model.Principal, proj
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
-		load := func(id string) (*sessioncore.Access, error) { return loadSession(ctx, op, scope, id) }
+		if err = check(); err != nil {
+			return err
+		}
+		load := func(id string) (*sessioncore.Access, error) { return loadTaskReadSession(ctx, op, scope, id) }
 		return work(op, scope, task, load)
 	})
 }
@@ -37,7 +44,14 @@ func (s *Service) credential(ctx context.Context, principal model.Principal, wor
 	}
 	defer op.Close()
 	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if err := op.LockCredential(ctx, scope, principal); err != nil {
+			return err
+		}
+		if err := check(); err != nil {
 			return err
 		}
 		return work(op, scope)
@@ -45,11 +59,18 @@ func (s *Service) credential(ctx context.Context, principal model.Principal, wor
 }
 
 func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, p model.Principal, authority sessioncore.Authority) error {
+	check, err := readCheck(ctx, scope, p)
+	if err != nil {
+		return err
+	}
 	if err := op.LockPurposeCredential(ctx, scope, p, authority.Purpose); err != nil {
 		return err
 	}
 	if !authority.Test {
-		return op.CheckProjectAccess(ctx, scope, p, authority.ProjectID)
+		if err := op.CheckProjectAccess(ctx, scope, p, authority.ProjectID); err != nil {
+			return err
+		}
+		return check()
 	}
 	if p.UserID != authority.OwnerID {
 		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
@@ -60,5 +81,5 @@ func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scop
 			return err
 		}
 	}
-	return nil
+	return check()
 }

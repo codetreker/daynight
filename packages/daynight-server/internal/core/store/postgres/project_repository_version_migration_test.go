@@ -1,14 +1,18 @@
 package postgres
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestProjectRepositoryVersionMigrationPreservesProjects(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if len(schemaMigrations) == 0 || schemaMigrations[len(schemaMigrations)-1].version != 95 {
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 95 })
+	if index < 0 || schemaMigrations[index].sql != projectRepositoryVersionSQL {
 		t.Fatal("repository version migration is missing")
 	}
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -17,7 +21,7 @@ func TestProjectRepositoryVersionMigrationPreservesProjects(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT to_jsonb(p)::text FROM projects p WHERE id=$1`, project.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
 	var after string

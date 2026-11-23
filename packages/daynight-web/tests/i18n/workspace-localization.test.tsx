@@ -72,7 +72,9 @@ describe("workspace localization", () => {
     const statistics = await screen.findByRole("region", { name: "Project task statistics" });
     expect(statistics.querySelectorAll(".stat")).toHaveLength(7);
     const waiting = statistics.querySelectorAll(".stat")[3]!;
-    expect(waiting).toHaveTextContent("To do1Waiting to start");
+    expect([...statistics.querySelectorAll(".stat")].map(card => [...card.children].map(child => child.textContent))).toEqual([
+      ["Total tasks", "1"], ["Done", "0"], ["Proposed", "0"], ["To do", "1"], ["In progress", "0"], ["Ready", "1"], ["Not ready", "0"],
+    ]);
     await selectTaskList();
     await user.click(await screen.findByRole("tab", { name: "Standalone tasks" }));
     const row = screen.getByRole("link", { name: "Task 用户数据" });
@@ -82,7 +84,10 @@ describe("workspace localization", () => {
     expect(document.querySelector(".stats")).toBe(statistics);
     expect(statistics).toHaveAttribute("aria-label", "项目任务统计");
     expect(statistics).not.toBeVisible();
-    expect(waiting).toHaveTextContent("待处理1等待开始");
+    expect(waiting).toHaveTextContent("待处理1");
+    expect([...statistics.querySelectorAll(".stat")].map(card => [...card.children].map(child => child.textContent))).toEqual([
+      ["任务总数", "1"], ["已完成", "0"], ["待确认", "0"], ["待处理", "1"], ["进行中", "0"], ["可开始", "1"], ["未就绪", "0"],
+    ]);
     expect(screen.getByRole("link", { name: "Task 用户数据" })).toBe(row);
     expect(row.closest(".task-row")).toHaveTextContent("待处理");
     expect(row.closest(".task-row")).toHaveTextContent("可开始");

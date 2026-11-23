@@ -53,3 +53,12 @@ export const CredentialLastUse = ({ value }: { readonly value: string | null }) 
   const full = format.dateTime(value);
   return <details className="credential-last-use"><summary title={`${m.recordedTime}: ${full}`}>{m.lastUsed}: <time dateTime={value}>{relative}</time></summary><p className="full-time">{m.recordedTime}: <time dateTime={value}>{full}</time></p></details>;
 };
+
+// Independent list snapshots cannot roll an already confirmed scope version back.
+export const mergeScopedCredentialUses = <T extends { readonly id: string; readonly lastUsedAt: string | null; readonly scopePolicy: { readonly scopeVersion: string } | null }>(previous: readonly T[] | null, incoming: readonly T[]): readonly T[] => {
+  const old = new Map((previous ?? []).map(item => [item.id, item]));
+  return mergeCredentialUses(previous, incoming.map(item => {
+    const prior = old.get(item.id)?.scopePolicy;
+    return prior != null && item.scopePolicy != null && BigInt(prior.scopeVersion) > BigInt(item.scopePolicy.scopeVersion) ? { ...item, scopePolicy: prior } : item;
+  }));
+};

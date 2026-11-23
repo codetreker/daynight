@@ -31,3 +31,34 @@ func TestContentReadVersionRequiresOneSupportedHandshakeValue(t *testing.T) {
 		})
 	}
 }
+
+func TestOnlineRelayCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		relay, body                  []string
+		wantRelay, wantBody, invalid bool
+	}{
+		{"absent", nil, nil, false, false, false},
+		{"legacy task body", nil, []string{"1"}, false, true, false},
+		{"relay", []string{"1"}, nil, true, false, false},
+		{"task body", []string{"1"}, []string{"1"}, true, true, false},
+		{"unknown", []string{"2"}, nil, false, false, true},
+		{"duplicate", []string{"1", "1"}, nil, false, false, true},
+		{"bad body", []string{"1"}, []string{"2"}, false, false, true},
+		{"duplicate body", []string{"1"}, []string{"1", "1"}, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/api/v1/controller-channel", nil)
+			for _, v := range tc.relay {
+				r.Header.Add("Daynight-Online-Relay-Version", v)
+			}
+			for _, v := range tc.body {
+				r.Header.Add("Daynight-Task-Body-History-Version", v)
+			}
+			relay, body, err := onlineRelayCapabilities(r)
+			if relay != tc.wantRelay || body != tc.wantBody || (err != nil) != tc.invalid {
+				t.Fatalf("relay=%v body=%v error=%v", relay, body, err)
+			}
+		})
+	}
+}

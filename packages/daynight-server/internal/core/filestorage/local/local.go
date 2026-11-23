@@ -25,6 +25,9 @@ type Storage struct {
 	root          *os.Root
 	exactSpelling bool
 	namespace     sync.Mutex
+	archiveMu     sync.Mutex
+	archiveVolume fs.FileInfo
+	archiveMount  uint64
 	fileSync      func(*os.File) error
 	gates         filestorage.Gates
 	closed        atomic.Bool
@@ -286,6 +289,11 @@ func (s *Storage) discard(temporary string) error {
 
 func (s *Storage) pruneParents(address string) error {
 	for directory := path.Dir(address); strings.Contains(directory, "/"); directory = path.Dir(directory) {
+		// Session directories are physical lock identities. Only coordinated
+		// archive cleanup may remove them or their ancestors.
+		if strings.HasPrefix(directory, "session-archives/") && len(strings.Split(directory, "/")) <= 5 {
+			return nil
+		}
 		info, err := s.root.Lstat(directory)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

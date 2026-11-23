@@ -40,6 +40,53 @@ const geometry = (container: HTMLElement) => ({
 beforeEach(installGraphMeasurements);
 
 describe('Goal graph prerequisite inspection', () => {
+  it('recomputes successors for a retained selection and clears them when that selection disappears', async () => {
+    const view = render(<GoalTaskGraph {...baseProps} index={buildGraphIndex(data)} />);
+    await ready(view.container);
+    fireEvent.click(body(view.container, 'left'));
+    expect(card(view.container, 'join')).toHaveAttribute('data-inspection', 'successor');
+    const changed = { ...data, tasks: data.tasks.map(task => task.id === 'join' ? { ...task, dependsOn: ['right'] } : task) };
+    view.rerender(<GoalTaskGraph {...baseProps} index={buildGraphIndex(changed)} />);
+    await ready(view.container);
+    expect(body(view.container, 'left')).toHaveAttribute('aria-pressed', 'true');
+    expect(card(view.container, 'join')).toHaveAttribute('data-inspection', 'unrelated');
+    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(0);
+    fireEvent.click(body(view.container, 'external'));
+    for (const id of ['left', 'right', 'join']) expect(card(view.container, id)).toHaveAttribute('data-inspection', 'successor');
+    const removed = { ...changed, tasks: changed.tasks.map(task => ['left', 'right'].includes(task.id) ? { ...task, dependsOn: [], externalDependsOn: [] } : task) };
+    view.rerender(<GoalTaskGraph {...baseProps} index={buildGraphIndex(removed)} />);
+    await ready(view.container, 4);
+    expect(card(view.container, 'external')).toBeNull();
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(4);
+    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(0);
+    view.rerender(<GoalTaskGraph {...baseProps} index={buildGraphIndex(data)} />);
+    await ready(view.container);
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(5);
+  });
+
+  it('keeps bypass edges and sibling tasks unrelated while highlighting a successor join', async () => {
+    const source = graph([
+      { id: 'a', status: 'done' }, { id: 'b', status: 'done', dependsOn: ['a'] },
+      { id: 'c', dependsOn: ['a', 'b'], externalDependsOn: ['b'] },
+      { id: 'd', dependsOn: ['b'] }, { id: 'join', dependsOn: ['c', 'd'] },
+      { id: 'sibling', dependsOn: ['a'] },
+    ]);
+    const index = buildGraphIndex({ ...source, tasks: source.tasks.map(task => ({ ...task, parentId: 'goal' })) });
+    const view = render(<GoalTaskGraph {...baseProps} index={index} />);
+    await ready(view.container, 6);
+    const before = geometry(view.container);
+    fireEvent.click(body(view.container, 'b'));
+    expect(card(view.container, 'a')).toHaveAttribute('data-inspection', 'prerequisite');
+    for (const id of ['c', 'd', 'join']) expect(card(view.container, id)).toHaveAttribute('data-inspection', 'successor');
+    expect(card(view.container, 'sibling')).toHaveAttribute('data-inspection', 'unrelated');
+    expect(view.container.querySelector('.task-dependency-edge[data-source="a"][data-target="c"]')).toHaveAttribute('data-inspection', 'unrelated');
+    expect(view.container.querySelector('.task-dependency-edge[data-source="b"][data-target="c"]')).toHaveAttribute('data-inspection', 'successor');
+    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(4);
+    expect(geometry(view.container)).toEqual(before);
+    fireEvent.click(view.container.querySelector('.react-flow__pane')!);
+    expect(view.container.querySelectorAll('.task-node-successor')).toHaveLength(0);
+  });
+
   it('traces fork/join ancestors through the full index while painting only real projected edges and arrows', async () => {
     const view = render(<GoalTaskGraph {...baseProps} index={buildGraphIndex(data)} />);
     await ready(view.container);
@@ -63,7 +110,8 @@ describe('Goal graph prerequisite inspection', () => {
     }
     fireEvent.click(body(view.container, 'external'));
     expect(card(view.container, 'external')).toHaveAttribute('data-inspection', 'selected');
-    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="unrelated"]')).toHaveLength(4);
+    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(4);
+    for (const id of ['left', 'right', 'join']) expect(card(view.container, id)).toHaveAttribute('data-inspection', 'successor');
     expect(view.container.querySelector('.task-graph')).toHaveAttribute('data-hidden-upstream-count', '2');
     fireEvent.click(body(view.container, 'external'));
     expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(5);
@@ -124,7 +172,7 @@ describe('Goal graph prerequisite inspection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Fit all tasks' }));
     expect(body(view.container, 'join')).toHaveAttribute('aria-pressed', 'true');
     view.rerender(<GoalTaskGraph {...baseProps} index={buildGraphIndex(updated)} direction="vertical" onOpenTask={open} />);
-    await waitFor(() => expect(measure).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'vertical'));
+    await waitFor(() => expect(measure).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'vertical', expect.any(Map)));
     expect(body(view.container, 'join')).toHaveAttribute('aria-pressed', 'true');
     measure.mockRestore(); compile.mockRestore();
   });

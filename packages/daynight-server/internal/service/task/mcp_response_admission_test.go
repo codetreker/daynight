@@ -157,3 +157,21 @@ func TestMCPTaggedResponseAdmissionReservesRenameInWireEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPReceiptAdmissionMeasuresCompleteEnvelope(t *testing.T) {
+	task := mcpAdmissionTask()
+	for _, modern := range []bool{false, true} {
+		for _, batch := range []bool{false, true} {
+			base, err := taskprotocol.EncodeMCPReceiptResponse(io.Discard, task, "request", "changed", "x", modern, math.MaxInt64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := strings.Repeat("x", taskcore.MaxTaskResponseJSONBytes-int(base)+1)
+			ctx := WithMCPTaskReceiptResponse(t.Context(), "request", id, modern, batch)
+			if err := admitTaskResponse(ctx, task, true); err != nil {
+				t.Fatalf("exact receipt rejected: %v", err)
+			}
+			assertResponseLimit(t, admitTaskResponse(WithMCPTaskReceiptResponse(t.Context(), "request", id+"x", modern, batch), task, true))
+		}
+	}
+}

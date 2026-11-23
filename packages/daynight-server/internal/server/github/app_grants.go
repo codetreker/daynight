@@ -35,28 +35,37 @@ type grantHandler struct {
 
 // RegisterGrantRoutes installs the independent grant adapter. The caller supplies
 // authentication for each route.
-func RegisterGrantRoutes(mux *http.ServeMux, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterGrantRoutes(mux httpx.RouteRegistrar, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerGrantRoutes(NewRouteRegistry(mux, nil), ops, auth, logger)
+}
+
+// RegisterGrantRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterGrantRoutesWithRegistry(routes *RouteRegistry, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerGrantRoutes(routes, ops, auth, logger)
+}
+
+func registerGrantRoutes(routes *RouteRegistry, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &grantHandler{operations: ops, logger: logger}
 	base := "/api/v1/github/apps/{id}"
-	mux.HandleFunc("POST "+base+"/team-grant-preview", auth.Require(h.preview))
-	mux.HandleFunc("GET "+base+"/team-grants", auth.Require(h.list))
-	mux.HandleFunc("POST "+base+"/team-grants", auth.Require(h.create))
-	mux.HandleFunc("GET "+base+"/team-grants/{grantId}", auth.Require(h.get))
-	mux.HandleFunc("POST "+base+"/team-grants/{grantId}/revoke", auth.Require(h.revoke))
-	mux.HandleFunc("GET "+base+"/removal-preview", auth.Require(h.impact(false, false)))
-	mux.HandleFunc("GET "+base+"/removal-preview/projects", auth.Require(h.impact(false, true)))
-	mux.HandleFunc("GET "+base+"/team-grants/{grantId}/revocation-preview", auth.Require(h.impact(true, false)))
-	mux.HandleFunc("GET "+base+"/team-grants/{grantId}/revocation-preview/projects", auth.Require(h.impact(true, true)))
-	mux.HandleFunc("GET /api/v1/teams/{teamId}/github/apps", auth.Require(h.teamApps))
-	mux.HandleFunc(base+"/team-grant-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc(base+"/team-grants", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc(base+"/team-grants/{grantId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/team-grants/{grantId}/revoke", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc(base+"/removal-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/removal-preview/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/team-grants/{grantId}/revocation-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/team-grants/{grantId}/revocation-preview/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/teams/{teamId}/github/apps", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("POST "+base+"/team-grant-preview", auth.Require(h.preview), routeRead)
+	routes.handle("GET "+base+"/team-grants", auth.Require(h.list), routeRead)
+	routes.handle("POST "+base+"/team-grants", auth.Require(h.create), routeReadManage)
+	routes.handle("GET "+base+"/team-grants/{grantId}", auth.Require(h.get), routeRead)
+	routes.handle("POST "+base+"/team-grants/{grantId}/revoke", auth.Require(h.revoke), routeManage)
+	routes.handle("GET "+base+"/removal-preview", auth.Require(h.impact(false, false)), routeRead)
+	routes.handle("GET "+base+"/removal-preview/projects", auth.Require(h.impact(false, true)), routeRead)
+	routes.handle("GET "+base+"/team-grants/{grantId}/revocation-preview", auth.Require(h.impact(true, false)), routeRead)
+	routes.handle("GET "+base+"/team-grants/{grantId}/revocation-preview/projects", auth.Require(h.impact(true, true)), routeRead)
+	routes.handle("GET /api/v1/teams/{teamId}/github/apps", auth.Require(h.teamApps), routeRead)
+	routes.handle(base+"/team-grant-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")), routeFallback)
+	routes.handle(base+"/team-grants", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")), routeFallback)
+	routes.handle(base+"/team-grants/{grantId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle(base+"/team-grants/{grantId}/revoke", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")), routeFallback)
+	routes.handle(base+"/removal-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle(base+"/removal-preview/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle(base+"/team-grants/{grantId}/revocation-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle(base+"/team-grants/{grantId}/revocation-preview/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/teams/{teamId}/github/apps", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
 }
 
 func grantTeam(t store.GitHubGrantTeam) api.GitHubGrantTeam {

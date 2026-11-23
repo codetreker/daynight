@@ -96,6 +96,14 @@ func TestAppendixUserEditReplacesReferencesOnlyWhenProvided(t *testing.T) {
 				input.SourceRecords, want = []string{}, []string{}
 			case "delete":
 				input.State, want = "deleted", []string{}
+				old.Scope = model.AssistantTaskAppendixScope{ProjectIDs: []string{targetID}, EventTypes: []string{"report"}, ItemCategories: []string{"build"}}
+				old.SuccessCount, old.FailureCount, old.LastValidatedAt = 2, 1, ptr(epoch)
+				d.deleteValidations = func(_ context.Context, owner, task, appendix string) error {
+					if owner != ownerID || task != taskID || appendix != entryID {
+						t.Fatal("wrong validation scope")
+					}
+					return nil
+				}
 			}
 			if name == "replace" {
 				d.record = func(_ context.Context, owner, task, record string) (model.AssistantTaskRecord, error) {
@@ -109,8 +117,8 @@ func TestAppendixUserEditReplacesReferencesOnlyWhenProvided(t *testing.T) {
 				if version != 3 || value.Version != 4 || value.State != input.State || !reflect.DeepEqual(value.SourceRecords, want) || value.AuthorBotID == nil || *value.AuthorBotID != botID {
 					t.Fatalf("wrong edit: %#v", value)
 				}
-				if input.State == "deleted" && value.Text != "" {
-					t.Fatal("deleted appendix retained content")
+				if input.State == "deleted" && (value.Text != "" || value.SuccessCount != 0 || value.FailureCount != 0 || value.LastValidatedAt != nil || len(value.Scope.ProjectIDs)+len(value.Scope.EventTypes)+len(value.Scope.ItemCategories) != 0) {
+					t.Fatalf("deleted appendix retained content or validations: %#v", value)
 				}
 				return true, nil
 			}

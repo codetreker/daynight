@@ -30,7 +30,9 @@ func (s *Store) WriteAttachmentMutation(ctx context.Context, operation func(stor
 }
 
 func transactAttachment(ctx context.Context, tx pgx.Tx, operation func(store.AttachmentMutationScope) error) (store.Completion, error) {
-	err := transact(ctx, tx, func(tx pgx.Tx) error { return operation(attachment.NewMutationScope(tx)) })
+	err := transact(ctx, tx, func(tx pgx.Tx) error {
+		return operation(&transferAttachmentScope{AttachmentMutationScope: attachment.NewMutationScope(tx), credentials: &privateTransferDAO{tx: tx}})
+	})
 	if err == nil {
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
@@ -40,4 +42,16 @@ func transactAttachment(ctx context.Context, tx pgx.Tx, operation func(store.Att
 		outcome = failure.Outcome
 	}
 	return store.Completion{Outcome: outcome}, err
+}
+
+type transferAttachmentScope struct {
+	store.AttachmentMutationScope
+	credentials *privateTransferDAO
+}
+
+func (s *transferAttachmentScope) CurrentTransferAttachmentAuthorization(ctx context.Context, principal model.Principal, kind, authorityID, projectID, taskID string) (model.CredentialAuthorization, error) {
+	if err := s.credentials.Authorize(ctx, principal, kind, authorityID, projectID, taskID); err != nil {
+		return model.CredentialAuthorization{}, err
+	}
+	return s.credentials.CurrentTransferAuthorization(ctx, principal)
 }

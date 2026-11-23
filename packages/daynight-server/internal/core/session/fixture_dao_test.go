@@ -56,6 +56,7 @@ type fixtureDAO struct {
 	DeleteBotSessionFn                  func(context.Context, string, string) error
 	RedactDeletedBotFn                  func(context.Context, string) error
 	SessionOperationFn                  func(context.Context, string, string) (store.SessionOperation, error)
+	SessionOperationExistsFn            func(context.Context, string, string) (bool, error)
 	InsertSessionOperationFn            func(context.Context, store.SessionOperation) error
 	SetSessionOperationReceiptFn        func(context.Context, sp.Operation) error
 	SetSessionOperationEpochFn          func(context.Context, string, string, int64) error
@@ -75,6 +76,11 @@ type fixtureDAO struct {
 	TerminalArchiveFn                   func(context.Context, string) (v2.ArchiveStatus, *v2.Receipt, string, error)
 	CurrentTerminalSessionFn            func(context.Context, string, string, string) (string, error)
 	TerminalHistoryFn                   func(context.Context, string, string, *time.Time, *string, int) ([]store.TerminalHistoryRow, error)
+}
+
+func (d *fixtureDAO) SessionOperationExists(ctx context.Context, session, operation string) (bool, error) {
+	d.invoke(ctx, "SessionOperationExists", d.SessionOperationExistsFn != nil)
+	return d.SessionOperationExistsFn(ctx, session, operation)
 }
 
 func newFixtureDAO(t *testing.T) *fixtureDAO {
@@ -451,9 +457,11 @@ func (d *fixtureDAO) TerminalHistory(a0 context.Context, a1 string, a2 string, a
 }
 
 type fixtureWriter struct {
-	dao     *fixtureDAO
-	bot     store.BotWriteDAO
-	WriteFn func(context.Context, func(store.SessionScope) error) (store.Completion, error)
+	WorkerVersion *int64
+	WorkerCheck   func(context.Context, string, string) error
+	dao           *fixtureDAO
+	bot           store.BotWriteDAO
+	WriteFn       func(context.Context, func(store.SessionScope) error) (store.Completion, error)
 }
 
 func (w *fixtureWriter) SessionDAO() store.SessionDAO { return w.dao }
@@ -503,4 +511,16 @@ type fixtureData struct {
 	UnreconciledCount   int
 	OtherFirstInput     bool
 	InteractionResponse bool
+}
+
+func (w *fixtureWriter) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return w }
+func (w *fixtureWriter) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	return w.WorkerCheck(ctx, user, worker)
+}
+
+func (w *fixtureWriter) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	if err := w.WorkerCheck(ctx, user, worker); err != nil {
+		return nil, err
+	}
+	return w.WorkerVersion, nil
 }

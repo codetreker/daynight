@@ -16,7 +16,7 @@ Use this topic for definitions, projections, readiness, inventories and property
 | Property definitions or complete values | `task_properties`, `mode: "schema"` or `"values"` |
 | Activity, grouped ongoing work and Session identity | [Session reads](daynight://manuals/session-reads.md) |
 | Session messages and complete entries | [Session history](daynight://manuals/session-history.md) |
-| Separate material | [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md), [Attachment reads](daynight://manuals/attachment-reads.md) |
+| Separate material | [Threads](daynight://manuals/threads.md), [Attachment reads](daynight://manuals/attachment-reads.md) |
 
 Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`titleTruncated`, status, exact decimal-string version, readiness, `blockedByCount`, assignment, platform and automatic-selection fields. Summaries omit full title/description, properties, dependency arrays and execution times. A preview is neither identity nor duplicate proof.
 
@@ -29,11 +29,11 @@ Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`t
 
 Full time-bearing resources expose creation/update times and nullable `startedAt`, `completedAt`, `cancelledAt`. Returned `dependsOn` includes all prerequisites; `externalDependsOn` is its subset. Write inputs use a different partition described in [Dependency writes](daynight://manuals/dependency-writes.md). Full and summary Task resources include `tags: [{id,name}]`, or `[]`.
 
-Full Task show does not supply attachment inventory/bytes or complete Step/Thread collections. Normal list/show and non-dependency-only graph add ephemeral Session observations; ready results, Task mutation receipts and dependency-only graphs do not. Task versions freeze neither Session state, attachment bytes nor separate observations. [Session reads](daynight://manuals/session-reads.md) owns freshness, partial observations and nullable send eligibility; observations grant no intervention authority.
+Full Task show does not supply attachment inventory/bytes or complete Thread collections. Normal list/show and non-dependency-only graph add ephemeral Session observations; ready results, Task mutation receipts and dependency-only graphs do not. Task versions freeze neither Session state, attachment bytes nor separate observations. [Session reads](daynight://manuals/session-reads.md) owns freshness, partial observations and nullable send eligibility; observations grant no intervention authority.
 
 ## Stored type, status and Parent
 
-`type: "task"` identifies ordinary work; `type: "goal"` identifies a stored Goal. An ordinary Task's nullable `parentId` names its Goal owner; titles and dependency edges do not establish ownership. Summary/full resources expose both fields. A Goal has `parentId: null` and cannot contain another Goal.
+`type: "task"` identifies ordinary work; `type: "goal"` identifies a stored Goal. Nullable `parentId` names a direct Goal owner. Select `taskParentView: "v1"` to also receive `parentTaskId: UUID | null` for a direct ordinary Parent; at most one parent field is non-null. Default projections retain Goal-only `parentId`, so an ordinary child has null `parentId` there. Titles and dependency edges do not establish ownership. A Goal has no Parent and cannot contain another Goal. Ordinary child creation and immutable parent links are described in Task writes.
 
 Full Goal resources additionally expose `progress: {total, done, cancelled, unfinished}` for current direct children. Goal summaries and ordinary Tasks omit progress. Child changes do not increment the Goal version; counts establish no whole-Goal acceptance.
 
@@ -59,13 +59,13 @@ There is no assignee filter. To obtain all ready Tasks assigned to the caller, t
 
 ## Inventory filters and continuation
 
-`task_list` defaults to `type: "task"`; `type: "goal"` selects Goals. On list and ready queries, omitted `parentId` permits any Parent, null selects unowned Tasks, and a Goal UUID selects its direct children. Filters apply before pagination/ready limits.
+`task_list` defaults to `type: "task"`; `type: "goal"` selects Goals. On list and ready queries, omitted `parentId` permits any Parent, null selects Tasks without a direct Goal (including ordinary children), and a Goal UUID selects its direct children. Optional `parentTaskId` selects visible direct children of an ordinary Task and conflicts with any supplied `parentId`. Use `all: true` on `task_list` to include all five ordinary states in a direct-child inventory. Filters apply before pagination/ready limits.
 
 Both queries accept Project tag UUIDs in `tagIds`, `tagMatch: "all" | "any"` (default `all`) and `untagged: true`. Nonempty tags conflict with `untagged: true`; empty tags without `untagged` add no condition. Duplicate IDs do not change selection. Malformed UUIDs fail `invalid_input`; nonexistent, deleted or cross-Project tags fail `invalid_tag_filter`. Remove the invalid selection and restart.
 
 List conditions combine. Without `all: true` or explicit `status`, done/cancelled are excluded; `all: true` and explicit status conflict. `assignedTo` accepts a user UUID, `me` or `unassigned`; readiness, automatic permission and platform filters remain independent. Limit defaults to 50, maximum 100. Ordering is in-progress, ready todo, blocked todo, proposed, selected terminal work; within groups use creation time/UUID. This is not relevance ranking.
 
-List data contains `items`, `nextCursor` and `projection`. Continue non-null `nextCursor` as `cursor` under the same caller, Project, type, Parent, filters and view, including normalized tag selection, until null. The cursor binds ordering and a Project-wide typed resource revision fence; relevant changes outside the selected type/Parent can invalidate it. Malformed/mismatched cursors fail `invalid_input`; a changed fence returns `list_changed`. Discard and restart that traversal before claiming completeness. No reusable cursor lifetime is promised.
+List data contains `items`, `nextCursor` and `projection`. Continue non-null `nextCursor` as `cursor` under the same caller, Project, type, Parent, filters and view, including normalized tag selection and ordinary Parent/projection selection, until null. The cursor binds ordering and a Project-wide typed resource revision fence; relevant changes outside the selected type/Parent can invalidate it. Malformed/mismatched cursors fail `invalid_input`; a changed fence returns `list_changed`. Discard and restart that traversal before claiming completeness. No reusable cursor lifetime is promised.
 
 Task show, graphs and material reads are separate observations outside the list fence. Do not combine old list versions and later content as one snapshot. Scope changes require a fresh traversal.
 

@@ -10,6 +10,7 @@ import (
 
 type Destination struct{ Kind, AdapterVersion, URL string }
 type Mutation struct {
+	ReturnReceipt                                           bool
 	Kind, EndpointID, OperationID, IssuedAt, ExpectedUserID string
 	IfVersion                                               int64
 	RequestSHA256                                           string
@@ -20,12 +21,15 @@ type Mutation struct {
 	Subscriptions                                           []core.SubscriptionInput
 	ConfirmProjectIDs                                       []string
 	Mode                                                    string
+	// ClientKey is accepted only on create and is immutable afterwards.
+	ClientKey *string
 }
 type ListQuery struct {
-	Query   string
-	Enabled *bool
-	Limit   int
-	Cursor  *string
+	Query     string
+	Enabled   *bool
+	ClientKey *string
+	Limit     int
+	Cursor    *string
 }
 type Result struct {
 	Body   any

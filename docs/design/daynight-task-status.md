@@ -111,7 +111,7 @@ MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_
 
 ## Web 读取、缓存与进度
 
-Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足、终态时间和进度规则。sameSummary 与完整响应保护包含 cancelledAt。读取资料不走 markDeleted，不清空仍有权访问的描述、附件、Steps 或 Thread。
+Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足、终态时间和进度规则。sameSummary 与完整响应保护包含 cancelledAt。读取资料不走 markDeleted，不清空仍有权访问的描述、附件或 Thread。
 
 持久缓存的必需字段变化通过显式 schema 升级重建受影响的 Project、summary 和 detail 记录；未改变的 profile 格式保留。不能用缺 cancelledAt→null 兼容旧缓存。既有用户/项目 generation、历史 fence、高版本合并和同版本不一致拒绝继续适用。
 

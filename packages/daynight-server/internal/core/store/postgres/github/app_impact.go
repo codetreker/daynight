@@ -19,7 +19,7 @@ const impactConnections = `SELECT c.project_id FROM project_github c
  JOIN projects p ON p.id=c.project_id AND p.deleted_at IS NULL
  WHERE c.app_resource_id=$1 AND c.enabled AND ($3::uuid IS NULL OR c.team_grant_id=$3)`
 
-func (d *appImpactDAO) Summary(ctx context.Context, q store.GitHubAppImpactQuery) (store.GitHubAppImpact, error) {
+func (d *appImpactDAO) ImpactVisibility(ctx context.Context, q store.GitHubAppImpactQuery) (store.GitHubAppImpact, error) {
 	var result store.GitHubAppImpact
 	var grantCurrent bool
 	err := d.tx.QueryRow(ctx, `SELECT a.version,a.impact_version,
@@ -30,9 +30,14 @@ func (d *appImpactDAO) Summary(ctx context.Context, q store.GitHubAppImpactQuery
 	if err != nil {
 		return result, pg.AuthQueryError("read github app impact", err)
 	}
-	if !grantCurrent {
-		result.GrantMissing = true
-		return result, nil
+	result.GrantMissing = !grantCurrent
+	return result, nil
+}
+
+func (d *appImpactDAO) Summary(ctx context.Context, q store.GitHubAppImpactQuery) (store.GitHubAppImpact, error) {
+	result, err := d.ImpactVisibility(ctx, q)
+	if err != nil || result.GrantMissing {
+		return result, err
 	}
 	err = d.tx.QueryRow(ctx, `WITH affected AS (`+impactConnections+`), access AS (`+pg.ProjectAccessRelation+`)
  SELECT count(*), count(*) FILTER (WHERE access.user_id IS NOT NULL)

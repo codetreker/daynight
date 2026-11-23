@@ -1,7 +1,6 @@
 export type PauseMessages = {
   readonly label: string;
   readonly count: (count: string) => string;
-  readonly openTask: (title: string) => string;
   readonly listTitle: string;
   readonly truncated: string;
   readonly unpause: string;

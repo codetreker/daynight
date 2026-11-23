@@ -12,6 +12,7 @@ import type { ControllerSnapshot } from "../../../src/commands/controller/lifecy
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
+import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -32,6 +33,29 @@ vi.mock("node:child_process", async importOriginal => {
   } };
 });
 // OS process ownership is a separate boundary; the child exit and failed IPC are real.
+vi.mock("../../../src/platform/windows-suspended-process.js", () => ({
+  createSuspendedProcess: async (options: import("../../../src/platform/windows-suspended-process.js").SuspendedProcessOptions) => {
+    const { spawn } = await import("node:child_process");
+    // Keep the real bootstrap behind an IPC gate until the launch proof is saved.
+    const gate = 'await new Promise(resolve => process.once("message", resolve)); process.disconnect(); await import((await import("node:url")).pathToFileURL(process.argv[1]).href);';
+    const child = spawn(options.file, ["--input-type=module", "-e", gate, ...options.args], {
+      cwd: options.cwd, env: options.environment, stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true,
+    });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    return {
+      pid: child.pid!,
+      resume: () => { expect(child.exitCode).toBeNull(); child.send({ kind: "resume" }); },
+      terminate: () => { child.kill("SIGKILL"); },
+      hasExited: () => child.exitCode !== null || child.signalCode !== null,
+      close: () => { expect(child.exitCode !== null || child.signalCode !== null).toBe(true); },
+    };
+  },
+}));
+vi.mock("../../../src/commands/controller/windows-job.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../../../src/commands/controller/windows-job.js")>(),
+  createControllerJobLease: async () => ({}),
+  releaseControllerJobLease: () => {},
+}));
 vi.mock("../../../src/commands/controller/process-proof.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/commands/controller/process-proof.js")>();
   return { ...actual,
@@ -95,7 +119,9 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const sessionApi = { grant: vi.fn(async () => ({ token: "fixture-token", expiresAt: new Date(900_000).toISOString(), sessionId: e.sessionId!,
     claimId: task.claimId, executionGeneration: e.executionGeneration, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId })) } as unknown as WorkerSessionApi;
   let clock = 10;
-  const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
+  const jobLeases = createControllerJobLeases();
+  disposals.push(() => jobLeases.close());
+  const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, jobLeases, now: () => clock });
   const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
     operation.check();
     expect(candidate).toMatchObject({ projectId: project.projectId, localPath: home });
@@ -103,7 +129,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     expect(cwd).toBe(home); expect(requireBranch).toBe(true); expect(binding).toEqual(task.resources.worktree); expect(allowRestore).toBe(false);
     return task.resources.worktree!;
   }) } as unknown as WorkerGitManager;
-  const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
+  const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, jobLeases, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
   let remoteTask: Task = { type: "task", parentId: null, id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", tags: [], status: "in_progress", allowAgents: true,
     assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, properties: { pullRequests: [], worker: { claimId: identity.claimId, workerId: identity.workerId, worktreeId: identity.worktreeId,
@@ -122,7 +148,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const coordinator = createWorkerCoordinator({ store: workerStore, webStore: store, webBackend: { ...backend, cleanup: async input => ({ task: input, complete: true }) },
     git, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, userId: identity.userId, platform: "linux",
     machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration,
-    maxConcurrent: 1, preferPlatformSpecificTasks: false, emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
+    maxConcurrent: 1, platformTaskMode: "all" as const, emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
   disposals.push(async () => { await coordinator.shutdown(); });
   const reconcile = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   const launch = async () => {

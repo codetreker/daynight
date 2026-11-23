@@ -21,6 +21,43 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const width of [1280, 320]) test(`PR typography and responsive search retain input state at ${width}px`, async ({ page }) => {
+  const state = await installPrList(page);
+  await page.setViewportSize({ width, height: 900 });
+  await open(page);
+  const row = page.locator('.pr-row').first(), search = page.locator('#pr-search');
+  await expect(row.locator('.pr-row-title')).toHaveCSS('font-size', '14px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '12px');
+  await expect(page.locator('.pr-results-count')).toHaveCSS('font-size', '12px');
+  await expect(search).toHaveAttribute('data-touch-text', 'responsive');
+  await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '14px');
+  if (width === 320) expect(await search.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '12px'; });
+  await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '10.5px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '9px');
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  await search.fill('Pull request'); await search.focus();
+  await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 5));
+  await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+  await expect(search).toBeFocused(); await expect(search).toHaveValue('Pull request');
+  expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 5]);
+  await expect(search).toHaveCSS('font-size', width === 320 ? '32px' : '28px');
+  await expect(row.locator('.pr-row-title')).toHaveCSS('font-size', '28px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '24px');
+  await page.locator('.pr-author-trigger').click();
+  const author = page.locator('.pr-author-menu input');
+  await expect(author).toHaveAttribute('data-touch-text', 'responsive');
+  await expect(author).toHaveCSS('font-size', width === 320 ? '32px' : '28px');
+  if (width === 320) expect(await author.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(42);
+  await author.fill('author'); await expect(author).toBeFocused();
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  await expect(author).toHaveCSS('font-size', width === 320 ? '16px' : '14px');
+  await expect(author).toBeFocused(); await expect(author).toHaveValue('author');
+  await page.locator('.pr-author-menu').getByRole('option', { name: /^author$/ }).click();
+  await expect(page.locator('.pr-author-trigger')).toBeFocused();
+  expect(state.unexpected).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
   test(`status icons center within short and multiline cards at ${width}px in ${locale}`, async ({ page }) => {
     const state = await installPrList(page, locale);
@@ -77,8 +114,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 3
     expect([geometry.listBorder, geometry.listOverflow]).toEqual(['0px', 'visible']);
     expect([geometry.padding, geometry.rowGap]).toEqual(compact ? ['9px 11px', '6px'] : ['10px 15px', '12px']);
     expect([geometry.border, geometry.radius, geometry.background]).toEqual(['1px solid rgb(213, 220, 229)', '8px', 'rgb(250, 251, 252)']);
-    expect(geometry.title).toEqual(['13px', '650', '19.5px', 'rgb(23, 33, 50)']);
-    expect(geometry.meta).toEqual(['11px', '16.5px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
+    expect(geometry.title).toEqual(['14px', '650', '21px', 'rgb(23, 33, 50)']);
+    expect(geometry.meta).toEqual(['14px', '21px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
     expect(geometry.content.every(Boolean)).toBe(true);
     const badge = page.locator('.pr-row-badge.draft').first();
     await expect(badge).toHaveCSS('color', 'rgb(85, 97, 118)');
@@ -591,11 +628,37 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const prChart = panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' });
     await expect(taskChart.getByRole('option')).toHaveCount(30);
     await expect(prChart.getByRole('option')).toHaveCount(30);
+    const cards = panel.locator('.statistics-card');
+    await expect(cards).toHaveCount(2);
+    for (const card of await cards.all()) {
+      const title = card.locator('.statistics-chart-heading h3');
+      const control = card.locator('.statistics-chart-heading select, .statistics-chart-heading button');
+      await expect(card.locator('.statistics-header h2')).toHaveCSS('font-size', '18px');
+      await expect(title).toHaveCSS('font-size', '14px');
+      const geometry = await title.evaluate(element => {
+        const heading = element.parentElement!, control = heading.querySelector('select, button')!;
+        const text = document.createRange(); text.selectNodeContents(element);
+        const titleBox = text.getBoundingClientRect(), controlBox = control.getBoundingClientRect(), box = heading.getBoundingClientRect();
+        return { titleLeft: titleBox.left, titleRight: titleBox.right, titleTop: titleBox.top, titleBottom: titleBox.bottom,
+          controlLeft: controlBox.left, controlRight: controlBox.right, controlTop: controlBox.top,
+          controlBottom: controlBox.bottom, left: box.left, right: box.right, scroll: element.scrollWidth, client: element.clientWidth };
+      });
+      expect(geometry.titleLeft).toBeGreaterThanOrEqual(geometry.left - 1);
+      expect(geometry.titleRight).toBeLessThanOrEqual(geometry.right + 1);
+      expect(geometry.scroll).toBeLessThanOrEqual(geometry.client + 1);
+      expect(geometry.controlLeft).toBeGreaterThanOrEqual(geometry.left - 1);
+      expect(geometry.controlRight).toBeLessThanOrEqual(geometry.right + 1);
+      expect(geometry.titleBottom <= geometry.controlTop + 1 || geometry.controlBottom <= geometry.titleTop + 1 || geometry.titleRight <= geometry.controlLeft + 1).toBe(true);
+      if (width === 320) expect(geometry.controlTop).toBeGreaterThanOrEqual(geometry.titleBottom - 1);
+    }
     for (const chart of [taskChart, prChart]) await expectChartLabelsFit(chart.locator('..'));
     await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-label', /: 4$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await prChart.focus(); await page.keyboard.press('End');
-    await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+    for (const chart of [taskChart, prChart]) {
+      await chart.focus(); await page.keyboard.press('End');
+      await expect(chart.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+      await expect(chart.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " bar-chart ")][1]').locator('output')).toHaveText((await chart.getByRole('option').last().getAttribute('aria-label'))!);
+    }
     const picker = panel.locator('.pr-author-trigger');
     await picker.click();
     await page.locator('[data-author-id="42"]').click();

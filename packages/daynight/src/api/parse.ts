@@ -25,11 +25,12 @@ const cancellationTime = (taskStatus: TaskStatus, value: unknown): string | null
   return parsed;
 };
 const requiredPlatform = (value: unknown): TaskPlatform | null => value === null || value === "windows" || value === "linux" || value === "macos" ? value : malformed();
-const resourceType = (data: Record<string, unknown>): { type: "task" | "goal"; parentId: string | null } => {
+const resourceType = (data: Record<string, unknown>): { type: "task" | "goal"; parentId: string | null; parentTaskId?: string | null } => {
   const type = data.type === "task" || data.type === "goal" ? data.type : malformed();
   const parentId = data.parentId === null ? null : id(data.parentId);
-  if (type === "goal" && parentId !== null) return malformed();
-  return { type, parentId };
+  const parentTaskId = Object.hasOwn(data, "parentTaskId") ? data.parentTaskId === null ? null : id(data.parentTaskId) : undefined;
+  if (type === "goal" && (parentId !== null || parentTaskId != null) || parentId !== null && parentTaskId != null) return malformed();
+  return { type, parentId, ...(parentTaskId === undefined ? {} : { parentTaskId }) };
 };
 
 const validAttachmentPath = (value: string): boolean => isText(value) && !/^[A-Za-z]:\//.test(value) && !/[\\\p{Cc}]/u.test(value) && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
@@ -331,7 +332,9 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
     const parsedStatus = status(item.status), typed = resourceType(item);
     if (typed.type === "goal" && parsedStatus === "proposed") return malformed();
-    return { id: id(item.id), ...typed, projectId: itemProject, title: text(item.title, true), tags: parseTagReferences(item.tags), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
+    const parentTaskContext = item.parentTaskContext === undefined ? undefined : (() => { const raw = record(item.parentTaskContext); return { taskId: id(raw.taskId), title: text(raw.title, true) }; })();
+    if (context !== null && context.taskId !== typed.parentId || (typed.parentTaskId != null) !== (parentTaskContext !== undefined) || parentTaskContext !== undefined && parentTaskContext.taskId !== typed.parentTaskId) return malformed();
+    return { id: id(item.id), ...typed, ...(parentTaskContext === undefined ? {} : { parentTaskContext }), projectId: itemProject, title: text(item.title, true), tags: parseTagReferences(item.tags), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -384,9 +387,11 @@ const graphChainMembers = (byId: ReadonlyMap<string, GraphTask>, taskId: string)
   return members;
 };
 
-export const parseTaskGraph = (value: unknown, projectId: string, taskId: string): TaskGraph => {
+export const parseTaskGraph = (value: unknown, projectId: string, taskId: string, taskOnly = false): TaskGraph => {
   const data = record(value);
-  const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
+  const project = taskOnly ? { id: id(fields(data.project, ["id"]).id) } : parseProject(data.project, projectId);
+  if (project.id !== projectId) return malformed();
+  const parsed = { observedAt: timestamp(data.observedAt), project, summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
   if (byId.size !== parsed.tasks.length) return malformed();
   const members = graphChainMembers(byId, taskId);

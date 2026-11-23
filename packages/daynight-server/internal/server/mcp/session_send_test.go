@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"log/slog"
 	"net/http"
@@ -318,5 +319,54 @@ func TestSessionSendHTTPDeliveryFailureInvokesSubmitOnce(t *testing.T) {
 	httpx.RequestLogging(logger, entry).ServeHTTP(writer, request)
 	if calls != 1 || !strings.Contains(logs.String(), `"write_outcome":"confirmed"`) || !strings.Contains(logs.String(), "MCP response delivery failed") {
 		t.Fatalf("delivery lost completion/repeated send: calls=%d logs=%s", calls, logs.String())
+	}
+}
+
+func TestSessionToolsReturnScopeRefusalWithoutReceipt(t *testing.T) {
+	for _, tool := range []string{"task_session_send", "task_session_operation"} {
+		t.Run(tool, func(t *testing.T) {
+			f := newEntryFixture(t)
+			calls := 0
+			refusal := &model.Fault{Code: "insufficient_scope", Message: "The credential has insufficient scope."}
+			ops := sessionSendMock{
+				t: t,
+				submit: func(_ context.Context, p model.Principal, project, task, session string, command sp.Command) (sp.Operation, error) {
+					calls++
+					if tool != "task_session_send" || p != (model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}) || project != testProjectID || task != testTargetID || session != sendArguments()["sessionId"] || command.Kind != "send_message" {
+						t.Error("send changed original principal, resource or operation")
+					}
+					return sp.Operation{State: "provider_accepted"}, refusal
+				},
+				read: func(_ context.Context, p model.Principal, project, task, session, operation string) (sessioncore.TaskOperationResult, error) {
+					calls++
+					if tool != "task_session_operation" || p != (model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}) || project != testProjectID || task != testTargetID || session != sendArguments()["sessionId"] || operation != sendArguments()["operationId"] {
+						t.Error("read changed original principal, resource or operation")
+					}
+					return sessioncore.TaskOperationResult{Operation: sp.Operation{State: "provider_accepted"}, CurrentBinding: true}, refusal
+				},
+			}
+			if err := RegisterSessionTools(f.entry, SessionSendModule(ops)); err != nil {
+				t.Fatal(err)
+			}
+			client := f.client(t, "2026-07-28", "alice")
+			args := sendArguments()
+			if tool == "task_session_operation" {
+				for _, field := range []string{"claimId", "executionGeneration", "expectedTurnId", "text"} {
+					delete(args, field)
+				}
+			}
+			result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tool, Arguments: args})
+			if err != nil || !result.IsError || calls != 1 {
+				t.Fatalf("result=%#v error=%v calls=%d", result, err, calls)
+			}
+			env := structured(t, result)
+			failure := object(t, env["error"])
+			if failure["code"] != "insufficient_scope" || env["data"] != nil || strings.Contains(fmt.Sprint(env), "provider_accepted") || strings.Contains(fmt.Sprint(env), "currentBinding") {
+				t.Fatalf("scope refusal exposed receipt: %#v", env)
+			}
+			if tool == "task_session_send" && failure["writeOutcome"] != "not_committed" {
+				t.Fatalf("scope refusal lost write outcome: %#v", failure)
+			}
+		})
 	}
 }

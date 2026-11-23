@@ -137,6 +137,44 @@ func TestCreatePreservesOriginalDigestAndNormalizesInput(t *testing.T) {
 	}
 }
 
+func TestCreateClientKeyInputAndExistingEndpointRefusal(t *testing.T) {
+	s := &fakeService{}
+	h := fixture(s, io.Discard)
+	body := strings.Replace(createBody("https://example.test/Path"), `"name":`, `"clientKey":"assistant-task-inbox:1","name":`, 1)
+	w := request(h, "POST", "/api/v1/me/webhooks", body)
+	if w.Code != http.StatusCreated || s.input.ClientKey == nil || *s.input.ClientKey != "assistant-task-inbox:1" {
+		t.Fatalf("create: status=%d input=%#v", w.Code, s.input)
+	}
+	w = request(h, "POST", "/api/v1/me/webhooks", createBody("https://example.test/Path"))
+	if w.Code != http.StatusCreated || s.input.ClientKey != nil {
+		t.Fatalf("unkeyed create: status=%d input=%#v", w.Code, s.input)
+	}
+	patch := fmt.Sprintf(`{"operationId":"%s","issuedAt":"2026-11-07T08:00:00Z","expectedUserId":"%s","ifVersion":"1","clientKey":"other"}`, operationID, userID)
+	before := s.calls
+	if w = request(h, "PATCH", "/api/v1/me/webhooks/"+endpointID, patch); w.Code != http.StatusBadRequest || s.calls != before {
+		t.Fatalf("immutable key: status=%d calls=%d", w.Code, s.calls)
+	}
+	for _, tc := range []struct {
+		fault   *model.Fault
+		details string
+	}{
+		{&model.Fault{Code: "endpoint_exists", ExistingEndpoint: &model.ExistingEndpointDetails{ID: endpointID, ConfigVersion: 9007199254740993}}, `{"endpointId":"` + endpointID + `","configVersion":"9007199254740993"}`},
+		{&model.Fault{Code: "endpoint_exists"}, ""},
+	} {
+		s.err = tc.fault
+		w = request(h, "POST", "/api/v1/me/webhooks", body)
+		var response struct {
+			Error struct {
+				Code    string          `json:"code"`
+				Details json.RawMessage `json:"details"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusConflict || response.Error.Code != "endpoint_exists" || string(response.Error.Details) != tc.details {
+			t.Fatalf("refusal: status=%d body=%s err=%v", w.Code, w.Body, err)
+		}
+	}
+}
+
 func TestWritesRejectMalformedInputsBeforeService(t *testing.T) {
 	good := createBody("https://example.test/Path")
 	tests := []struct {
@@ -155,6 +193,10 @@ func TestWritesRejectMalformedInputsBeforeService(t *testing.T) {
 		{"fragment", createBody("https://example.test/#secret"), "application/json", 400, "invalid_input"},
 		{"identity", strings.Replace(good, userID, teamID, 1), "application/json", 409, "identity_mismatch"},
 		{"media", good, "text/plain", 400, "invalid_input"},
+		{"null client key", strings.Replace(good, `"name":`, `"clientKey":null,"name":`, 1), "application/json", 400, "invalid_input"},
+		{"empty client key", strings.Replace(good, `"name":`, `"clientKey":"","name":`, 1), "application/json", 400, "invalid_input"},
+		{"invisible client key", strings.Replace(good, `"name":`, `"clientKey":"a b","name":`, 1), "application/json", 400, "invalid_input"},
+		{"long client key", strings.Replace(good, `"name":`, `"clientKey":"`+strings.Repeat("k", 201)+`","name":`, 1), "application/json", 400, "invalid_input"},
 		{"oversize", good + strings.Repeat(" ", maxBody), "application/json", 413, "content_too_large"},
 	}
 	for _, tc := range tests {
@@ -229,10 +271,14 @@ func TestListValidation(t *testing.T) {
 	h := fixture(s, io.Discard)
 	base := "/api/v1/me/webhooks"
 	w := request(h, "GET", base+"?q=release&enabled=false&limit=10&cursor=abc", "")
-	if w.Code != 200 || s.query.Query != "release" || s.query.Enabled == nil || *s.query.Enabled || s.query.Limit != 10 || *s.query.Cursor != "abc" {
+	if w.Code != 200 || s.query.Query != "release" || s.query.Enabled == nil || *s.query.Enabled || s.query.Limit != 10 || *s.query.Cursor != "abc" || s.query.ClientKey != nil {
 		t.Fatal(w.Code, s.query)
 	}
-	for _, q := range []string{"?cursor=", "?q=a&q=b", "?unknown=x", "?enabled=1", "?limit=101", "?q=%FF"} {
+	w = request(h, "GET", base+"?clientKey=assistant-task-inbox%3A1", "")
+	if w.Code != 200 || s.query.ClientKey == nil || *s.query.ClientKey != "assistant-task-inbox:1" {
+		t.Fatal(w.Code, s.query)
+	}
+	for _, q := range []string{"?cursor=", "?q=a&q=b", "?unknown=x", "?enabled=1", "?limit=101", "?q=%FF", "?clientKey=", "?clientKey=a%20b", "?clientKey=a&clientKey=b", "?clientKey=" + strings.Repeat("k", 201)} {
 		before := s.calls
 		w = request(h, "GET", base+q, "")
 		if w.Code != 400 || s.calls != before {
@@ -530,6 +576,11 @@ func (s *webhookHTTPScope) Endpoints(ctx context.Context, owner wm.Owner) ([]wm.
 	s.call(ctx, "Endpoints")
 	s.equal(owner, s.endpoint.Owner, "list owner")
 	return []wm.Endpoint{}, nil
+}
+func (s *webhookHTTPScope) LiveEndpointByClientKey(ctx context.Context, owner wm.Owner, key string) (wm.Endpoint, error) {
+	s.call(ctx, "LiveEndpointByClientKey")
+	s.equal(owner, s.endpoint.Owner, "client key owner")
+	return wm.Endpoint{}, model.ErrNotFound
 }
 func (s *webhookHTTPScope) SigningKeys(ctx context.Context, endpoint string) ([]wm.SigningKey, error) {
 	s.call(ctx, "SigningKeys")

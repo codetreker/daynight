@@ -193,6 +193,15 @@ describe("assignee version manifest", () => {
 });
 
 describe("strict summary protocol", () => {
+  it.each([{ dependsOn: [] }, { dependsOn: [projectId] }])("accepts Goal acceptance edges in snapshots and deltas: %j", ({ dependsOn }) => {
+    const goal = { ...task, type: "goal", allowAgents: false, dependsOn };
+    for (const mode of ["snapshot", "delta"]) {
+      expect(parseTaskSync({ ...sync, mode, tasks: [goal], dependencyStates: {} }, projectId).tasks[0]).toMatchObject({ type: "goal", dependsOn, externalDependsOn: [] });
+    }
+    expect(() => parseTaskSummary({ ...goal, dependsOn: [projectId], externalDependsOn: [projectId] })).toThrow("invalid response");
+    expect(() => parseTaskSync({ ...sync, tasks: [goal] }, projectId)).toThrow("invalid response");
+  });
+
   it("requires and preserves resource type and parent fields", () => {
     expect(parseTaskSummary({ ...task, parentId: projectId })).toMatchObject({ type: "task", parentId: projectId });
     expect(parseTaskSummary({ ...task, type: "goal", allowAgents: false })).toMatchObject({ type: "goal", parentId: null });

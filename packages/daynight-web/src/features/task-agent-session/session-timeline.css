@@ -4,9 +4,21 @@
 .session-tool summary::-webkit-details-marker { display: none; }
 .session-tool-chevron { flex: none; color: var(--task-helper); }
 .session-tool[open] > summary .session-tool-chevron { transform: rotate(90deg); }
-.session-tool summary .session-tool-name { flex: 0 1 auto; max-width: 28%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
-.session-tool-summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--task-helper); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.session-tool-status { flex: none; white-space: nowrap; font-size: 11px; }
+.session-tool summary .session-tool-name { flex: 0 1 auto; max-width: 28%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); font-weight: 600; }
+.session-tool-summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--task-helper); font-size: var(--text-sm); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.session-tool-summary:empty { display: none; }
+.session-tool-status { flex: none; white-space: nowrap; font-size: var(--text-sm); }
+.session-tool-name-compact { display: none; }
+.session-tool-exact-name { margin: 0; overflow-wrap: anywhere; }
+@container session-timeline (width < 480px) {
+  .session-timeline-content .session-tool > summary { display: grid; grid-template-columns: 14px minmax(0, 1fr) max-content; column-gap: 8px; row-gap: 2px; }
+  .session-tool summary .session-tool-name { max-width: 100%; }
+  .session-tool-name-wide { display: none; }
+  .session-tool-name-compact { display: inline; }
+  .session-tool-summary { grid-row: 2; grid-column: 2 / -1; }
+  .session-tool-status { grid-row: 1; grid-column: 3; }
+}
+@media (pointer: coarse) { .session-tool summary { min-height: 36px; } }
 .session-tool.session-tool-failed { border-color: var(--task-error-border); }
 .session-tool-failed .session-tool-status { color: var(--task-error-ink); font-weight: 600; }
 .session-tool-running .session-tool-status { color: var(--task-in_progress-ink); }
@@ -14,10 +26,10 @@
 .session-tool pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
 .session-entry .session-error p, .session-compaction p { white-space: pre-wrap; }
 
-.session-cancellation { margin: 8px 12px; color: var(--task-cancelled-ink); font-size: 12px; }
+.session-cancellation { margin: 8px 12px; color: var(--task-cancelled-ink); font-size: var(--text-sm); }
 
 .session-daynight-notification { min-width: 0; }
-.session-daynight-notification > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; min-height: 32px; padding: 2px 6px; color: var(--task-helper); font-size: 12px; cursor: pointer; list-style: none; }
+.session-daynight-notification > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; min-height: 32px; padding: 2px 6px; color: var(--task-helper); font-size: var(--text-sm); cursor: pointer; list-style: none; }
 .session-daynight-notification > summary::-webkit-details-marker { display: none; }
 .session-daynight-notification > summary svg { flex: none; }
 .session-daynight-notification > summary:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; border-radius: 3px; }
@@ -26,25 +38,31 @@
 .session-notification-content > :first-child { margin-top: 0; }
 .session-notification-content > :last-child { margin-bottom: 0; }
 
-.session-history-loading { color: var(--task-helper); font-size: 12px; text-align: center; margin-bottom: 12px; }
+.session-history-loading { color: var(--task-helper); font-size: var(--text-sm); text-align: center; margin-bottom: 12px; }
 .session-history-error { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
 
-.session-diagnostic { margin: 8px 12px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.session-diagnostic { margin: 8px 12px; min-width: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
 .session-diagnostic-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 0; }
 .session-diagnostic-heading > strong { flex: none; font-size: inherit; font-weight: 600; }
 .session-diagnostic-summary { flex: 1 1 180px; min-width: 0; white-space: normal; }
 .session-diagnostic-retry { color: var(--task-helper); }
 .session-diagnostic-error { color: var(--task-error-ink); }
-.session-diagnostic-details { margin-top: 2px; color: var(--task-helper); font-size: 11px; }
+.session-diagnostic-details { margin-top: 2px; color: var(--task-helper); font-size: var(--text-sm); }
 .session-diagnostic-details > summary { width: fit-content; min-height: 24px; align-content: center; cursor: pointer; }
 .session-diagnostic-details > div { padding-top: 4px; }
 .session-diagnostic-details pre { max-height: 280px; max-width: 100%; margin: 6px 0 0; padding: 10px; overflow: auto; border-radius: 5px; background: #f0f2f6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .session-diagnostic-details > summary:focus-visible, .session-diagnostic-details pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
 
-.session-timeline-navigation { position: absolute; bottom: 12px; left: 12px; right: 12px; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
-.session-timeline-navigation .button { max-width: 100%; pointer-events: auto; box-shadow: 0 3px 12px #24304a22; }
+.session-timeline-navigation { flex: none; display: flex; justify-content: center; gap: 6px; padding: 6px 12px; }
+.session-timeline-navigation .button { max-width: 100%; }
 .session-timeline-navigation .session-latest { position: static; transform: none; }
 .session-pending-request { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
+.session-pending-request { min-width: 0; }
 .session-pending-request > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-pending-request > span:last-child { flex: none; }
 .session-interaction:focus { outline: 2px solid #6262ba; outline-offset: 2px; }
+.session-timeline-shell-compact .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 45%; gap: 4px; padding: 2px; pointer-events: none; }
+.session-timeline-shell-compact .session-pending-request { flex: 1 1 0; }
+.session-timeline-shell-compact .session-latest { flex: none; }
+.session-timeline-shell-compact .session-pending-prefix { display: none; }
+.session-timeline-shell-compact .session-timeline-navigation .button { min-height: 36px; padding-inline: 4px; pointer-events: auto; }

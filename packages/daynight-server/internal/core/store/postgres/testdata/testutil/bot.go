@@ -69,7 +69,7 @@ func RuntimeBotState(t *testing.T, pool *pgxpool.Pool, id string) string {
 func RuntimeBotPAT(t *testing.T, database store.IdentityWriter, candidate model.Bot) model.Principal {
 	t.Helper()
 	digest := sha256.Sum256([]byte(uuid.NewString()))
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: candidate.OwnerUserID, TokenHash: digest[:], Name: "Runtime boundary", CreatedAt: time.Now().UTC()}
+	pat := model.PersonalAccessToken{ScopePolicy: PATPolicy(), ID: uuid.NewString(), UserID: candidate.OwnerUserID, TokenHash: digest[:], Name: "Runtime boundary", CreatedAt: time.Now().UTC()}
 	completion, err := database.WriteIdentity(context.Background(), func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(t.Context(), pat) })
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("identity transaction: %#v %v", completion, err)

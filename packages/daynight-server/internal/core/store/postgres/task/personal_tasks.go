@@ -89,7 +89,7 @@ func (s *Reader) PersonalTaskPage(ctx context.Context, actor string, query store
  AND (($8::boolean AND (c.started_at<$9::timestamptz OR c.started_at IS NULL OR (c.started_at=$9::timestamptz AND c.id>$10::uuid))) OR (NOT $8::boolean AND c.started_at IS NULL AND c.id>$10::uuid)))
  ORDER BY c.project_name COLLATE "C",c.team_kind COLLATE "C",COALESCE(c.team_name,'') COLLATE "C",c.team_id,c.project_id,c.started_at DESC NULLS LAST,c.id LIMIT $11)
  SELECT page.project_id::text,page.id::text,page.title,page.version,page.created_at,page.started_at,page.allow_agents,page.required_platform,
- page.parent_id::text,goal.title,paused.value,page.project_name,page.team_kind,page.team_name,page.team_id::text
+ goal.id::text,goal.title,paused.value,page.project_name,page.team_kind,page.team_name,page.team_id::text
  FROM page LEFT JOIN tasks goal ON goal.id=page.parent_id AND goal.project_id=page.project_id AND goal.type='goal'
  LEFT JOIN task_properties paused ON paused.task_id=page.id AND paused.name='blocked'
  ORDER BY page.project_name COLLATE "C",page.team_kind COLLATE "C",COALESCE(page.team_name,'') COLLATE "C",page.team_id,page.project_id,page.started_at DESC NULLS LAST,page.id`, actor, hasAfter, name, kind, teamName, teamID, projectID, hasStarted, started, taskID, query.Limit+1)

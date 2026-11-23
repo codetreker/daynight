@@ -16,6 +16,14 @@ type PrivateTransferWriter interface {
 	WritePrivateTransfer(context.Context, func(PrivateTransferDAO) error) (Completion, error)
 }
 
+// PrivateTransferCredentialScope reads the policy for the credential already
+// admitted by Authorize in the same transaction. The original authority locks
+// remain held until completion; the returned policy must not be persisted in a
+// transfer ticket. An unavailable capability must fail scoped admission.
+type PrivateTransferCredentialScope interface {
+	CurrentTransferAuthorization(context.Context, model.Principal) (model.CredentialAuthorization, error)
+}
+
 // PrivateTransferStats contains aggregate operational facts without transfer identifiers.
 type PrivateTransferStats struct {
 	ReservedBytes          int64

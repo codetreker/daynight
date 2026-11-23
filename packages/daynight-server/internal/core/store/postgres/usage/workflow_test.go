@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +36,7 @@ func workflowInStore(t *testing.T, db *postgres.Store, number int) *workflowFixt
 	task := testutil.QueryTask(t, db, project.ID, number, model.TaskInProgress)
 	patID := uuid.NewString()
 	hash := sha256.Sum256([]byte(patID))
-	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'usage fixture',clock_timestamp())`, patID, owner.UserID, hash[:])
+	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'usage fixture',clock_timestamp())`, patID, owner.UserID, hash[:])
 	owner.Kind = model.PATCredential
 	owner.CredentialID = patID
 	claim := testutil.WorkerClaim(number, owner.UserID, uuid.NewString(), model.WorkerActive)
@@ -57,7 +56,7 @@ func workflowInStore(t *testing.T, db *postgres.Store, number int) *workflowFixt
 	}
 	testutil.MustExec(t, db.Pool, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id,connection_parent_credential_id) VALUES($1,$2,$3,$4,$5,$6,'{}',$7,$8,$8)`, sessionID, project.ID, task.ID, claim.ClaimID, owner.UserID, uuid.NewString(), raw, patID)
 	input := app.Registration{Protocol: core.Protocol, StateID: uuid.NewString(), SessionID: sessionID, Generation: "1", ControllerInstanceID: instance, ConnectionEpoch: "1", NativeSessionID: native, ProfileID: "copilot-event-1.0.11-v1", ProviderVersion: "isolated-fixture", RegistrationID: uuid.NewString()}
-	service, err := app.New(db, app.Options{WriteEnabled: true, QualifiedProfiles: []string{input.ProfileID + "@" + input.ProviderVersion}, CursorKey: []byte(strings.Repeat("k", 32))})
+	service, err := app.New(db, app.Options{WriteEnabled: true, QualifiedProfiles: []string{input.ProfileID + "@" + input.ProviderVersion}})
 	if err != nil {
 		t.Fatal(err)
 	}

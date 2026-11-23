@@ -91,7 +91,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 		return store.TaskSearchPage{}, fmt.Errorf("invalid task search assignee")
 	}
 	args := []any{projectID, input.Status, input.Ready, input.AllowAgents, input.CompatiblePlatform, string(input.AssignedTo.Mode), assignee, afterExact, afterPriority, afterTime, afterID, input.Limit + 1}
-	resourceFilter, err := taskResourceFilter(input.Type, input.Parent, &args)
+	resourceFilter, err := taskRelationshipFilter(input.Type, input.Parent, input.ParentTask, &args)
 	if err != nil {
 		return store.TaskSearchPage{}, searchError("query task search", err)
 	}
@@ -142,8 +142,8 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
  page AS (SELECT * FROM matched WHERE $8::boolean IS NULL OR exact_id_priority < $8 OR
  (exact_id_priority=$8 AND (title_priority < $9::boolean OR (title_priority=$9 AND (updated_at < $10::timestamptz OR (updated_at=$10 AND id > $11::uuid)))))
  ORDER BY exact_id_priority DESC,title_priority DESC,updated_at DESC,id ASC LIMIT $12)
- SELECT total.total,t.id::text,t.type,t.parent_id::text,t.title,t.description,t.status,t.assigned_to::text,t.cancelled_at,p.updated_at,p.exact_id_priority,p.title_priority
- FROM total LEFT JOIN page p ON true LEFT JOIN tasks t ON t.id=p.id AND t.project_id=$1
+ SELECT total.total,t.id::text,t.type,t.parent_id::text,t.parent_type,t.title,t.description,t.status,t.assigned_to::text,t.cancelled_at,p.updated_at,p.exact_id_priority,p.title_priority
+ FROM total LEFT JOIN page p ON true LEFT JOIN task_resource_rows t ON t.id=p.id AND t.project_id=$1
  ORDER BY p.exact_id_priority DESC,p.title_priority DESC,p.updated_at DESC,p.id ASC`
 	rows, err := s.tx.Query(ctx, sql, args...)
 	if err != nil {
@@ -151,11 +151,11 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, taskType, parentID, title, description, status *string
+		var id, taskType, parentID, parentType, title, description, status *string
 		var assigned *string
 		var updated, cancelled *time.Time
 		var exactPriority, titlePriority *bool
-		if err := rows.Scan(&result.Total, &id, &taskType, &parentID, &title, &description, &status, &assigned, &cancelled, &updated, &exactPriority, &titlePriority); err != nil {
+		if err := rows.Scan(&result.Total, &id, &taskType, &parentID, &parentType, &title, &description, &status, &assigned, &cancelled, &updated, &exactPriority, &titlePriority); err != nil {
 			return store.TaskSearchPage{}, searchError("read task search", err)
 		}
 		if id == nil {
@@ -165,7 +165,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 			result.HasMore = true
 			break
 		}
-		result.Items = append(result.Items, store.TaskSearchRow{ID: *id, Type: model.TaskType(*taskType), ParentID: parentID, Title: *title, Description: *description, Status: model.TaskStatus(*status), AssignedTo: assigned, CancelledAt: pg.UTCTime(cancelled), UpdatedAt: updated.UTC(), ExactIDPriority: *exactPriority, TitlePriority: *titlePriority})
+		result.Items = append(result.Items, store.TaskSearchRow{ID: *id, Type: model.TaskType(*taskType), ParentID: parentID, ParentType: taskParentType(parentType), Title: *title, Description: *description, Status: model.TaskStatus(*status), AssignedTo: assigned, CancelledAt: pg.UTCTime(cancelled), UpdatedAt: updated.UTC(), ExactIDPriority: *exactPriority, TitlePriority: *titlePriority})
 	}
 	if err := rows.Err(); err != nil {
 		return store.TaskSearchPage{}, searchError("read task search", err)
@@ -183,4 +183,11 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 		result.Items[i].Tags = tags[result.Items[i].ID]
 	}
 	return result, nil
+}
+
+func taskParentType(value *string) model.TaskType {
+	if value == nil {
+		return ""
+	}
+	return model.TaskType(*value)
 }

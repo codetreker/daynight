@@ -11,15 +11,15 @@ import (
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
-func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
+func propertyRoutes(mux httpx.RouteRegistrar, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	const schemaPath = "/api/v1/task-properties/schema"
 	mux.HandleFunc("GET "+schemaPath, auth.Require(handler.propertySchema))
 	mux.HandleFunc(schemaPath, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/properties"
 	mux.HandleFunc("GET "+path, auth.Require(handler.getProperties))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("PUT "+path+"/{name}", auth.Require(handler.setProperty))
-	mux.HandleFunc("DELETE "+path+"/{name}", auth.Require(handler.removeProperty))
+	mux.HandleFunc("PUT "+path+"/{name}", auth.Require(declaredBot(logger, taskBotRefusal("task_property", "set"), handler.setProperty)))
+	mux.HandleFunc("DELETE "+path+"/{name}", auth.Require(declaredBot(logger, taskBotRefusal("task_property", "remove"), handler.removeProperty)))
 	mux.HandleFunc(path+"/{name}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT, DELETE")))
 }
 
@@ -126,5 +126,9 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 	}
 	logger.InfoContext(request.Context(), "task property operation applied", "type", "resource", "component", "task_property", "phase", phase,
 		"outcome", outcome, "request_id", httpx.RequestID(request.Context()))
+	if taskReceiptRequested(request.Context()) {
+		writeTaskReceipt(w, request, logger, "task_property", http.StatusOK, task)
+		return
+	}
 	httpx.WriteMutationJSON(w, request, logger.With("tx_outcome", "committed"), "task_property", http.StatusOK, propertyResponse(task))
 }

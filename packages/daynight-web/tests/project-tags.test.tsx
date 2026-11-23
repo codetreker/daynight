@@ -48,7 +48,7 @@ it('previews the current resource and cancels without a write, then sends its or
 
 it('keeps rename draft through a conflict and requires explicit use of the observed version', async () => {
   const fresh = { ...tag, name: 'current', version: 4n };
-  vi.mocked(updateProjectTag).mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict', null, undefined, undefined, undefined, 'not_committed')).mockResolvedValue({ ...fresh, name: 'draft', version: 5n });
+  vi.mocked(updateProjectTag).mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict', null, undefined, undefined, 'not_committed')).mockResolvedValue({ ...fresh, name: 'draft', version: 5n });
   setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(await screen.findByRole('button', { name: 'Edit: backend' }));
   const dialog = screen.getByRole('dialog');
@@ -274,7 +274,7 @@ it('reenables writing only after a fresh successful access check following a 403
   const check = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(check.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
@@ -339,7 +339,7 @@ it('retries a failed permission check without replaying the rejected write or lo
   const retry = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockRejectedValueOnce(new ApiError('network')).mockReturnValueOnce(retry.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
@@ -363,7 +363,7 @@ it('retires a permission check on section exit and requires a fresh check on ret
   const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(), fresh = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
@@ -387,7 +387,7 @@ it('does not let a retired permission check unlock a newer pending check', async
   const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(), fresh = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
@@ -411,7 +411,7 @@ it('retains a denied draft across remount without carrying it to another identit
   const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
@@ -443,7 +443,7 @@ it('recovers after a real 404 access withdrawal without an accessRestored event'
   const recovered = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockRejectedValueOnce(new ApiError('server', 404, 'not_found')).mockReturnValueOnce(recovered.promise);
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   const view = setup(); const events: { accessRevoked?: true; accessRestored?: true }[] = [];
   const unsubscribe = view.scope.subscribe(event => { if (event.projectId === projectId) events.push(event); });
@@ -471,7 +471,7 @@ it('retires an in-flight permission check when the real project scope is revoked
   const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
   vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockRejectedValueOnce(new ApiError('network')).mockReturnValueOnce(old.promise).mockRejectedValue(new ApiError('network'));
   vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
-    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, 'not_committed');
   });
   const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'New tag' }));

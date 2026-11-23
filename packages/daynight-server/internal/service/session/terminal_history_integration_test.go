@@ -125,7 +125,7 @@ func TestPersistedTerminalHistoryReadAndRevocation(t *testing.T) {
 			if !bytes.Equal(content.Data, data) {
 				t.Fatal("archive bytes changed")
 			}
-			permit, err := files.TryAcquireResidency(ctx, "session/archive/owner/"+f.owner.UserID)
+			permit, err := files.TryAcquireArchive(ctx, f.owner.UserID, "", 1, true)
 			if !errors.Is(err, filestorage.ErrGateBusy) {
 				if permit != nil {
 					_ = permit.Close()
@@ -208,7 +208,8 @@ func TestParentDeletionHidesPersistedTerminalHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _, _ := seedTerminalHistory(t, f, files)
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, goal); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `WITH deleted AS (UPDATE tasks SET deleted_at=now() WHERE id=$1 RETURNING deleted_at)
+		UPDATE tasks SET ancestor_deleted_at=deleted.deleted_at FROM deleted WHERE parent_id=$1`, goal); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.TerminalHistory(ctx, f.owner, f.project, f.task, "", 10); err == nil {

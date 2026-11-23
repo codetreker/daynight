@@ -1,9 +1,6 @@
 package pg_test
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
-
 	"context"
 	"errors"
 	"fmt"
@@ -12,12 +9,13 @@ import (
 	"testing"
 	"time"
 
-	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
-
-	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -153,51 +151,150 @@ func TestProjectAccessMissingOwnershipIsIntegrityFailure(t *testing.T) {
 	}
 }
 
+func rollbackSourceFenceHolder(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		t.Errorf("roll back authorization source holder: %v", err)
+	}
+}
+
+func rollbackSourceFenceReader(t *testing.T, readCtx context.Context, tx pgx.Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn := tx.Conn().PgConn()
+	closedBefore, cleanupDone := conn.IsClosed(), conn.CleanupDone()
+	err := tx.Rollback(ctx)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) && (closedBefore || readCtx.Err() != nil) {
+		select {
+		case <-cleanupDone:
+			return
+		case <-ctx.Done():
+			err = errors.Join(err, ctx.Err())
+		}
+	}
+	t.Errorf("roll back authorization source reader: %v", err)
+}
+
+func commitSourceFenceHolder(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holder pgx.Tx,
+	queryPrefix string, wait func(context.Context, chan<- uint32) error,
+) error {
+	t.Helper()
+	holderPID := holder.Conn().PgConn().PID()
+	waitCtx, cancel := context.WithCancel(ctx)
+	started := make(chan uint32, 1)
+	finished := make(chan struct{})
+	var waitErr error
+	go func() {
+		defer close(finished)
+		waitErr = wait(waitCtx, started)
+	}()
+	defer func() {
+		cancel()
+		rollbackSourceFenceHolder(t, holder)
+		<-finished
+	}()
+
+	var waiterPID uint32
+	select {
+	case waiterPID = <-started:
+	case <-finished:
+		t.Fatalf("authorization source contender finished before waiting for %s: %v", queryPrefix, waitErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for {
+		select {
+		case <-finished:
+			t.Fatalf("authorization source contender finished before waiting for %s: %v", queryPrefix, waitErr)
+		default:
+		}
+		var waiting bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE pid=$1
+ AND query LIKE $3 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))`, waiterPID, holderPID, queryPrefix+"%").Scan(&waiting); err != nil {
+			t.Fatalf("inspect %s lock wait for contender %d and holder %d: %v", queryPrefix, waiterPID, holderPID, err)
+		}
+		if waiting {
+			break
+		}
+		if err := testutil.WaitThreadClock(ctx); err != nil {
+			t.Fatalf("authorization source contender %d did not wait for holder %d on %s: %v", waiterPID, holderPID, queryPrefix, err)
+		}
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		return waitErr
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return ctx.Err()
+	}
+}
+
 func TestThreadSourceFencesBlockOnlyRealAuthorizationChanges(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
 	for _, source := range []string{"ownership", "team", "grant"} {
-		t.Run(source, func(t *testing.T) {
-			database := testutil.OpenStore(t, postgres.Open)
+		if !t.Run(source, func(t *testing.T) {
 			owner, person, project := testutil.ProjectMembershipFixture(t, database)
 			teamID := testutil.OrdinaryProjectTeam(t, database.Pool, project.ID)
 			testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, teamID, person.UserID)
 			testutil.MustExec(t, database.Pool, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, person.UserID)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			tx, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback(context.Background())
+			defer rollbackSourceFenceHolder(t, tx)
 			access, err := pg.LockProjectAuthorization(ctx, tx, person.UserID, project.ID)
-			if err != nil || access.Role != model.ProjectAdmin {
+			if err != nil || access.Role != model.ProjectAdmin || access.OwnerTeam.ID != teamID ||
+				access.TeamRole == nil || *access.TeamRole != model.ProjectMemberRole ||
+				access.DirectGrant == nil || access.DirectGrant.Role != model.ProjectAdmin {
 				t.Fatalf("source admission: %#v %v", access, err)
 			}
-			writer, err := database.Pool.Acquire(ctx)
+			var query string
+			var args []any
+			switch source {
+			case "ownership":
+				query = `UPDATE project_ownership SET team_id=(SELECT id FROM teams WHERE personal_user_id=$2),version=version+1 WHERE project_id=$1`
+				args = []any{project.ID, owner.UserID}
+			case "team":
+				query = `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`
+				args = []any{teamID, person.UserID}
+			case "grant":
+				query = `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`
+				args = []any{project.ID, person.UserID}
+			}
+			err = commitSourceFenceHolder(t, ctx, database.Pool, tx, query, func(ctx context.Context, started chan<- uint32) error {
+				writer, err := database.Pool.Acquire(ctx)
+				if err != nil {
+					return err
+				}
+				defer writer.Release()
+				started <- writer.Conn().PgConn().PID()
+				result, err := writer.Exec(ctx, query, args...)
+				if err != nil {
+					return err
+				}
+				if result.RowsAffected() != 1 {
+					return fmt.Errorf("%s mutation affected %d rows", source, result.RowsAffected())
+				}
+				return nil
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer writer.Release()
-			done := make(chan error, 1)
-			go func() {
-				var err error
-				switch source {
-				case "ownership":
-					_, err = writer.Exec(ctx, `UPDATE project_ownership SET team_id=(SELECT id FROM teams WHERE personal_user_id=$2),version=version+1 WHERE project_id=$1`, project.ID, owner.UserID)
-				case "team":
-					_, err = writer.Exec(ctx, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, person.UserID)
-				case "grant":
-					_, err = writer.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, person.UserID)
-				}
-				done <- err
-			}()
-			testutil.WaitThreadBackendLock(t, database.Pool, writer.Conn().PgConn().PID())
-			if err := tx.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
-		})
+			testutil.AssertPoolReusable(t, database.Pool)
+		}) {
+			return
+		}
 	}
 }
 
@@ -259,22 +356,22 @@ func TestProjectAccessMissingOwnerTeamCannotAuthorizeEitherSource(t *testing.T) 
 }
 
 func TestThreadAuthorizationRechecksTeamSourceAfterLockWait(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
 	for _, mutation := range []string{"role", "delete", "delete-with-grant"} {
-		t.Run(mutation, func(t *testing.T) {
-			database := testutil.OpenStore(t, postgres.Open)
+		if !t.Run(mutation, func(t *testing.T) {
 			_, person, project := testutil.ProjectMembershipFixture(t, database)
 			teamID := testutil.OrdinaryProjectTeam(t, database.Pool, project.ID)
 			testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, person.UserID)
 			if mutation == "delete-with-grant" {
 				testutil.MustExec(t, database.Pool, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, person.UserID)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			writer, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer writer.Rollback(context.Background())
+			defer rollbackSourceFenceHolder(t, writer)
 			if mutation == "role" {
 				_, err = writer.Exec(ctx, `UPDATE team_members SET role='member',version=nextval('team_member_versions') WHERE team_id=$1 AND user_id=$2`, teamID, person.UserID)
 			} else {
@@ -283,31 +380,38 @@ func TestThreadAuthorizationRechecksTeamSourceAfterLockWait(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reader, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer reader.Rollback(context.Background())
-			done := make(chan error, 1)
 			var access model.ProjectAccess
-			go func() {
-				var err error
+			err = commitSourceFenceHolder(t, ctx, database.Pool, writer, "SELECT role FROM team_members", func(ctx context.Context, started chan<- uint32) error {
+				reader, err := database.Pool.Begin(ctx)
+				if err != nil {
+					return err
+				}
+				defer rollbackSourceFenceReader(t, ctx, reader)
+				started <- reader.Conn().PgConn().PID()
 				access, err = pg.LockProjectAuthorization(ctx, reader, person.UserID, project.ID)
-				done <- err
-			}()
-			testutil.WaitThreadBackendLock(t, database.Pool, reader.Conn().PgConn().PID())
-			if err := writer.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			err = <-done
-			if mutation == "delete" {
+				return err
+			})
+			switch mutation {
+			case "delete":
 				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("deleted team source admitted: %#v %v", access, err)
 				}
-			} else if err != nil || access.Role != model.ProjectMemberRole {
-				t.Fatalf("pre-wait Team role retained: %#v %v", access, err)
+			case "role":
+				if err != nil || access.Role != model.ProjectMemberRole || access.TeamRole == nil || *access.TeamRole != model.ProjectMemberRole ||
+					access.DirectGrant != nil || access.CanTransfer {
+					t.Fatalf("pre-wait Team role retained: %#v %v", access, err)
+				}
+			case "delete-with-grant":
+				if err != nil || access.Role != model.ProjectMemberRole || access.TeamRole != nil || access.DirectGrant == nil ||
+					access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != person.UserID ||
+					access.DirectGrant.Role != model.ProjectMemberRole || access.CanTransfer {
+					t.Fatalf("authorization did not fall back to the remaining direct grant: %#v %v", access, err)
+				}
 			}
-		})
+			testutil.AssertPoolReusable(t, database.Pool)
+		}) {
+			return
+		}
 	}
 }
 

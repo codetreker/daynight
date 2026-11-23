@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { ArchiveRepairRequiredError } from "../../../../src/commands/controller/archive-error.js";
+import { ArchiveFileFailedError } from "../../../../src/commands/controller/archive-error.js";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../../../src/api/client.js";
 import { createOperation, OperationError } from "../../../../src/api/operation.js";
@@ -422,6 +423,13 @@ it.each(["archive_incomplete", "projection_gap", "markdown_projection_failed"] a
   const error = new ArchiveRepairRequiredError(code); error.message = secret;
   expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic(code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked"));
   expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
+});
+
+it("reports a confirmed archive quota failure without exposing server text", () => {
+  const error = new ArchiveFileFailedError("quota_exceeded", secret);
+  expect(classifyFailure(error)).toEqual(diagnostic("archive-quota-exceeded"));
+  expect(JSON.stringify(classifyFailure(error))).not.toContain(secret);
+  expect(classifyFailure(new ArchiveFileFailedError("invalid_archive", secret))).toEqual(diagnostic("unknown"));
 });
 
 describe("failure worktree snapshots", () => {

@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 18，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 增加 Markdown 投影修复分类，17→18 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 15，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 18，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 增加 worker_lifecycle_bindings；17 增加按精确 ticket_hash 保存完整停止快照的 stopped_generations；18 保存在线模式，旧 execution 保持 legacy 语义 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -32,11 +32,15 @@ Review v2 不为接入公共机制额外提高版本或改写记录；journal v6
 
 Controller v6、v8 和 v10 仅从 SQL 行或已提交索引指定的来源执行必要映射，不扫描或采用未引用文件，不验证消息完整性、hash、身份或资源关联。目标不能表示或必要来源缺失时，仅丢弃相应最小项，其他项继续；外部文件不因坏值删除或修复。v12 仅映射 capture state 的变化字段，无法映射的 state 保留原值，receipt 和图片关联不修复。v13 仅从有效 JSON 对象的 native index lease 移除 maximumBytes，保留其他字段和无法映射的原值。正文、实际输出的 totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对完成，才允许下一 writer。upgrade-only 保留 pending，不得制造 stopped。v15 只新增独立在线详情表及统计，并给已有 execution 保存默认 legacy 策略；不得搬移、筛除或重解释原正文，也不得更改已冻结同步、归档或确认事实。新建 Task execution 的正文策略由业务初始化选择，恢复沿用已持久策略。当前格式的普通内容生产者和消费者统一使用 SQL；在线读取与正文同步分别按[Session SQLite 内容设计](../design/session-sqlite-content.md)选择其来源和容量约束，旧解码器仅服务编号迁移。
 
+Controller v16 创建 `worker_lifecycle_bindings`，保存 generation、原 ticket_hash 及生命周期绑定；v17 只创建空的 `stopped_generations`，不得合成历史停止回执。原 ticket 的完整 stopped 快照须由实际停止结算与当前快照在同一事务保存；后继 writer 覆盖单例前必须验证并保存原停止证据。升级后单例仍保留的有效原快照可由业务入口保存，已覆盖且没有完整回执的历史明确失败，不能通过迁移、PID 消失或 Windows Job 名称不存在来补造证明。
+
+v18 为已有 execution 记录 legacy 在线模式，不改写其他执行事实，新增修订与 source 序号关联和原生图片槽位但不猜测旧证明。新 execution 在实际协商后固定在线模式，恢复不得切换。
+
 旧 Herdr lifecycle 数据由用户处理；Worker 不打开、迁移或重置该数据库。
 
 ## 查询与并发
 
-当前格式的查询在同一个只读快照中检查版本并读取数据，不为迁移取得实例锁或额外写权限。运行中的 writer 可以继续提交；查询仍读取自己的已提交快照。SQLite 自身打开既有 WAL/SHM 所需的权限不因该约束改变。
+当前格式的查询在同一个只读快照中检查版本并读取数据，不为迁移取得实例锁或额外写权限。普通 Bot 推进和关停的退出启动对账、已有 Windows 停证读取、独立 Test Session 恢复库存，以及 Web 独立原生取消、编排恢复、普通 shutdown 重启资格、健康预算耗尽或 retry 的资格观察及关停和输入操作回执查询须接受实际 schema 与原票据、快照和进程证明验证通过的 Controller v16/v17/v18，不为观察写库，不能因仍存活的 v16/v17 writer 无法迁移而阻止已验证原边界的独立停止；正常关停保留原优雅停止窗口；健康执行即使恢复预算为 0 或已耗尽，关停后仍可普通重启，不产生人为暂停或消耗恢复预算。恢复库存不得为无关的存活 v16/v17 执行触发迁移或阻塞合格目标；目标的原停证、授权和 native lease 校验保持不变。后续停止结算仍持原 permit 完成必要升级，可写入口保持当前格式要求。不支持的非空来源、身份冲突及缺失完整停止证明继续失败，Job 名称消失不能替代边界证明。摘要保护的 Bot 迁移副本必须保持受保护文件和 manifest 摘要不变；CLI 升级后历史和恢复读取继续接受实际 schema 与原票据验证通过的 Controller v16/v17/v18 副本，时间线执行相同只读格式校验，不通过原地迁移副本取得读取资格。运行中的 writer 可以继续提交；查询仍读取自己的已提交快照。SQLite 自身打开既有 WAL/SHM 所需的权限不因该约束改变。
 
 需要重置或升级的查询先结束并关闭读取连接，经领域准入完成迁移，再重开只读快照、检查当前格式并执行原查询。数据库在检查后消失时不得被重新创建；最终快照遇到较新版本、未知非零结构或再次回到旧格式时明确失败，不无限重开。
 
@@ -60,6 +64,6 @@ Resume lease 申请只有成功返回后才能用于启动新的原生执行。�
 
 ## 验证边界
 
-真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。从真实旧 journal 进入业务入口并拒绝后，用新连接检查目标版本、映射数据与业务回滚；当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。Controller v1–9 真实来源还须验证原子导入、来源关系保留、旧 reader 下不退休、空闲连接下的后置 checkpoint、旧索引耐久清空、清 pending 结果未知与实际存储失败后的真实阶段和可重入性。
+真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。从真实旧 journal 进入业务入口并拒绝后，用新连接检查目标版本、映射数据与业务回滚；当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。Controller v16→17 还须验证新表初始为空、原 execution 与生命周期绑定保留，迁移不制造 stopped 回执；停止事务、后继 writer 保存原快照及缺失历史的拒绝由 Controller 行为验证覆盖。Controller v1–9 真实来源还须验证原子导入、来源关系保留、旧 reader 下不退休、空闲连接下的后置 checkpoint、旧索引耐久清空、清 pending 结果未知与实际存储失败后的真实阶段和可重入性。
 
 [升级设计](../design/cli-sqlite-migrations.md)拥有组件、事务和连接生命周期；[Review 需求](daynight-review.md)、[Worker 需求](daynight-worker.md)和[Controller 需求](controller-test-sessions.md)继续拥有各领域的业务行为。

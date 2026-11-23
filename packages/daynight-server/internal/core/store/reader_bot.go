@@ -12,6 +12,7 @@ type BotReader interface {
 	Bots(context.Context, string, *string, Page) (BotPage, error)
 	BotWorker(context.Context, string, string) error
 	BotDefaults(context.Context, string) (model.BotDefaultsInput, error)
+	BotObservation(context.Context, string, string) (BotObservationSource, error)
 }
 
 // BotCreationReader supplies bounded inputs for selecting one creation target.

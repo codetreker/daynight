@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { createOperation } from "../../../src/api/operation.js";
 import { runRepositoryGit } from "../../../src/repository/git.js";
-import { captureProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, confirmControllerProcessesStopped } from "../../../src/commands/controller/process-proof.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -73,8 +73,9 @@ const fixture = async () => {
   const web = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"));
   let record = web.register({ ...owner, project, workerId, userId, serverOrigin: origin, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }, Date.now());
   record = web.bindWorktree(record, binding, Date.now()); record = web.initializeWebExecution(record, Date.now());
-  const child = spawn(process.execPath, ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "ignore"] }); children.push(child); await once(child.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
+  const child = spawn(process.execPath, ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"], { detached: true, stdio: ["ignore", "pipe", "ignore"] }); children.push(child); await once(child.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
   const proof = await captureProcessProof(child.pid!);
+  expect(proof.processGroupId).toBe(proof.pid);
   const execution = record.webExecution!, sessionId = randomUUID();
   record = web.updateWebExecution(record, { sessionId, initialPrompt: "fixture", launchSubmission: "acknowledged", controllerProcess: proof }, Date.now());
   record = web.bindNativeSession(record, { source: "controller", sessionId: nativeSessionId }, Date.now());
@@ -83,7 +84,8 @@ const fixture = async () => {
   const journalDirectory = controllerExecutionDirectory(home, execution.executionId); await mkdir(journalDirectory, { recursive: true });
   const journalPath = path.join(journalDirectory, "journal.sqlite");
   const controller = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, controllerProcess: proof });
-  const exit = once(child, "exit"); child.kill("SIGTERM"); await exit;
+  const closed = once(child, "close"); child.kill("SIGTERM"); await closed;
+  expect(await confirmControllerProcessesStopped(proof, [], Date.now() + 5000)).toBe(true);
   controller.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: now, nativeSessionId, activity: "stopped" }); controller.close();
   await writeFile(`${journalPath}.archive-receipt-${execution.executionGeneration}.json`, JSON.stringify(receipt));
   const cleanupStartedAt = Date.now();
@@ -91,8 +93,9 @@ const fixture = async () => {
   return { home, owner, paths, binding, requests, rejectArchive: () => { wrongArchive = true; }, supersede: () => { successor = true; } };
 };
 
-// This fixture records a real POSIX child birth and exit. Windows Job proof has
-// its own process tests and is not simulated by a fabricated stopped PID here.
+// This fixture records a real POSIX group birth and confirms the whole group is
+// empty. Windows Job proof has its own process tests and is not simulated by a
+// fabricated stopped PID here.
 describe.runIf(process.platform !== "win32")("completed Web resource recovery runtime", () => {
   it("verifies original SQLite, process, ticket, archive and Git evidence before confirmed removal", { timeout: 45_000 }, async () => {
     const f = await fixture(), output: string[] = [];

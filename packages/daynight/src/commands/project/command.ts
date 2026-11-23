@@ -25,6 +25,12 @@ export const runProjectCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.command.name === "set-repository") {
+    const { prepareSetRepository, runSetRepository } = await import("./set-repository.js");
+    const prepared = prepareSetRepository(command, context);
+    await dependencies.runServerCommand(context, (session) => runSetRepository(command, context, session, prepared));
+    return;
+  }
   if (command.command.name === "delete") {
     const { prepareDelete, runDelete } = await import("./delete.js");
     const prepared = prepareDelete(command, context);

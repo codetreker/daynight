@@ -56,10 +56,10 @@ func selectedSessionProtocol(r *http.Request) (string, error) {
 	return socketProtocol, nil
 }
 func terminalFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
-func (h *Routes) registerTerminalRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET "+sessionBase, h.auth.Require(h.Parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+func (h *Routes) registerTerminalRoutes(mux httpx.RouteRegistrar) {
+	mux.HandleFunc("GET "+sessionBase, httpx.MethodDispatch(h.auth.Require(h.Parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		h.Failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
-	})))
+	}, true)), http.MethodGet))
 }
 
 // terminalRoute retains only historical directory and archive reads. The

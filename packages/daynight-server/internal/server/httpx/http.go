@@ -252,11 +252,16 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
+		case "insufficient_scope":
+			status = http.StatusForbidden
+			w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
 		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_tag_filter", "invalid_search_expression":
 			status = http.StatusBadRequest
 		case "goal_dependency_target_unavailable":
 			status = http.StatusBadRequest
 		case "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch":
+			status = http.StatusConflict
+		case "task_unfinished_children", "task_parent_terminal", "task_parent_immutable":
 			status = http.StatusConflict
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
@@ -266,6 +271,14 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "unsupported", "upgrade_required":
 			status = http.StatusNotImplemented
+		case "lifecycle_unsupported":
+			status = http.StatusUnprocessableEntity
+		case "worker_disabled":
+			status = http.StatusLocked
+		case "lifecycle_unavailable":
+			status = http.StatusServiceUnavailable
+		case "disable_incomplete", "safety_blocked", "stale_instance", "stale_intent", "stale_report", "operation_resolved_not_committed":
+			status = http.StatusConflict
 		case "busy":
 			status = http.StatusTooManyRequests
 		case "history_unavailable":
@@ -292,13 +305,16 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "github_repository_mismatch", "project_repository_conflict", "project_repository_identity_unavailable":
 			status = http.StatusConflict
-		case "worker_task_tag_filter_unsupported", "archive_conflict", "archive_incomplete", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
+		case "worker_platform_task_mode_upgrade_required", "worker_platform_task_mode_unsupported", "worker_task_tag_filter_unsupported", "archive_conflict", "archive_incomplete", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
 			status = http.StatusConflict
 		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
+			if fault.Code == "insufficient_scope" {
+				response.Code = "forbidden"
+			}
 			var claim *model.AssistantTaskClaimError
 			if errors.As(err, &claim) {
 				response.Details = &api.ErrorDetails{HolderBotID: claim.Claim.HolderBotID, ClaimGeneration: &claim.Claim.Generation, LeaseUntil: claim.Claim.LeaseUntil}

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	dbwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
@@ -145,3 +146,35 @@ func (s *Store) WriteWebhook(ctx context.Context, o webhook.Owner, id string, op
 }
 
 var _ store.WebhookTransactions = (*Store)(nil)
+
+// CurrentWebhookAuthorization reads current policy within the business transaction.
+// A write caller holds the credential lock before its final authorization check.
+func (s *webhookScope) CurrentWebhookAuthorization(ctx context.Context, p model.Principal, profile model.CredentialPolicyProfile) (model.CredentialAuthorization, error) {
+	auth := model.CredentialAuthorization{Principal: p, Profile: profile}
+	if profile == model.ScopedPATProfile {
+		var ids []scopepolicy.ScopeID
+		var version *int64
+		err := s.tx.QueryRow(ctx, `SELECT business_scopes,scope_version FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND (expires_at IS NULL OR expires_at>clock_timestamp())`, p.CredentialID, p.UserID).Scan(&ids, &version)
+		if err != nil {
+			return auth, pg.QueryError("read webhook PAT scope", err)
+		}
+		if ids == nil || version == nil {
+			return auth, fmt.Errorf("missing webhook PAT scope policy")
+		}
+		policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, ids, *version)
+		if err != nil {
+			return auth, err
+		}
+		auth.Policy = &policy
+	} else {
+		credential, err := pg.ThreadCredential(ctx, s.tx, p, "")
+		if err != nil {
+			return auth, err
+		}
+		auth.Policy = credential.ScopePolicy
+	}
+	if err := auth.Validate(); err != nil {
+		return auth, err
+	}
+	return auth, nil
+}

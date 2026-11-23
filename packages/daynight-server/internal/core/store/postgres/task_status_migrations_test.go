@@ -406,7 +406,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 
 func cancellationMigrationRows(t *testing.T, database *Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id')::text FROM tasks t ORDER BY id`)
+	rows, err := database.Pool.Query(t.Context(), `SELECT (to_jsonb(t)-'cancelled_at'-'type'-'parent_id'-'ancestor_deleted_at')::text FROM tasks t ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}

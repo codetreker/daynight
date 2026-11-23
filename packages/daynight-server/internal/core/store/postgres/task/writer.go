@@ -55,7 +55,7 @@ func (tx *Writer) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, e
 }
 
 func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT `+pg.TaskProjection+` FROM tasks t
+	rows, err := tx.tx.Query(ctx, `SELECT `+pg.PhysicalTaskProjection()+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, pg.QueryError(phase, err)
@@ -213,26 +213,4 @@ func (tx *Writer) DependentIDs(ctx context.Context, id string) ([]string, error)
 		return nil, pg.QueryError("read dependents", err)
 	}
 	return ids, nil
-}
-
-func (tx *Writer) DeleteTask(ctx context.Context, id string, removeDepends bool) (model.TaskTombstone, error) {
-	var tombstone model.TaskTombstone
-	if removeDepends {
-		if _, err := tx.tx.Exec(ctx, `WITH removed AS (
-			DELETE FROM task_dependencies WHERE project_id = $1 AND depends_on_task_id = $2 AND dependency_type = 'task'
-			RETURNING task_id
-		) UPDATE tasks SET version = version + 1, updated_at = statement_timestamp()
-		WHERE project_id = $1 AND id IN (SELECT task_id FROM removed)`, tx.projectID, id); err != nil {
-			return tombstone, pg.QueryError("remove dependent relationships", err)
-		}
-	}
-	err := tx.tx.QueryRow(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
-		updated_at = statement_timestamp(), version = version + 1
-		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL
-		RETURNING project_id::text, id::text, version, deleted_at`, tx.projectID, id).
-		Scan(&tombstone.ProjectID, &tombstone.ID, &tombstone.Version, &tombstone.DeletedAt)
-	if err != nil {
-		return tombstone, pg.QueryError("delete task", err)
-	}
-	return tombstone, nil
 }

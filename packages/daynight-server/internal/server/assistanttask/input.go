@@ -18,21 +18,6 @@ func strictID(value string) (string, error) {
 	return id, nil
 }
 
-func botIdentity(request *http.Request) (*string, error) {
-	values, exists := request.Header[http.CanonicalHeaderKey("X-Daynight-Bot-Id")]
-	if !exists {
-		return nil, nil
-	}
-	if len(values) != 1 {
-		return nil, httpx.InvalidInput("X-Daynight-Bot-Id must occur exactly once")
-	}
-	value, err := strictID(values[0])
-	if err != nil {
-		return nil, err
-	}
-	return &value, nil
-}
-
 type inputFields struct {
 	fields map[string]json.RawMessage
 	err    error

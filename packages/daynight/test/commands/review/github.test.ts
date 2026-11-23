@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { pollRepositories, pollRepository } from "../../../src/commands/review/polling.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +19,7 @@ const repository: GitHubRepository = { host: "github.com", githubId: "42", owner
 const endpoint = (state = "open", page = 1, prefix = "repos/owner/repo"): string => `${prefix}/pulls?state=${state}&sort=created&direction=asc&per_page=100&page=${page}`;
 const link = (state = "open", page = 2, prefix = "repositories/42", host = "https://api.github.com/"): string => `<${host}${endpoint(state, page, prefix)}>; rel="next"`;
 const pr = (number: number, changes: Record<string, unknown> = {}): Record<string, unknown> => ({
-  number, state: "open", draft: false, merged_at: null, head: { sha: `head-${number}` }, base: { ref: "main", sha: "base-a" }, ...changes,
+  number, state: "open", draft: false, merged_at: null, head: { sha: `head-${number}` }, base: { ref: "main", sha: "base-a", repo: { id: 42 } }, ...changes,
 });
 const suites = (nodes: unknown[] = [], cursor: string | null = null, totalCount = nodes.length): Record<string, unknown> => ({
   totalCount, nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor },
@@ -84,6 +85,23 @@ afterEach(() => {
 });
 
 describe("read-only GitHub CLI transport", () => {
+  it("resolves a renamed repository by stable ID and rejects an identity or coordinate mismatch", async () => {
+    const resolved = queue(response({ id: 42, full_name: "owner/renamed" }));
+    expect(await resolved.client.resolveRepositoryById(repository)).toEqual({ ...repository, name: "renamed" });
+    expect(resolved.calls[0]!.args.at(-1)).toBe("repositories/42");
+    await expect(queue(response({ id: 99, full_name: "owner/renamed" })).client.resolveRepositoryById(repository)).rejects.toThrow("different repository");
+    await expect(queue(response({ id: 42, full_name: "owner/renamed/other" })).client.resolveRepositoryById(repository)).rejects.toThrow();
+  });
+  it("preserves int64 repository IDs from GitHub JSON without numeric rounding", async () => {
+    const id = "9007199254740993";
+    const large = { ...repository, githubId: id };
+    const byId = queue(rawResponse(`{"id":${id},"full_name":"owner/renamed"}`));
+    expect(await byId.client.resolveRepositoryById(large)).toMatchObject({ githubId: id, name: "renamed" });
+    const byName = queue(rawResponse(`{"id":${id}}`));
+    expect(await byName.client.resolveRepository(configuration)).toMatchObject({ githubId: id });
+    const observed = queue(rawResponse(`{"number":11,"state":"open","draft":false,"merged_at":null,"head":{"sha":"head"},"base":{"ref":"main","sha":"base","repo":{"id":${id}}}}`));
+    expect(await observed.client.getPullRequest(large, 11)).toMatchObject({ number: 11 });
+  });
   it("uses explicit GET, host, version and accept headers with bounded capture and argument arrays", async () => {
     const { client, calls } = queue(response({ id: 42 }));
     const signal = new AbortController().signal;
@@ -94,7 +112,7 @@ describe("read-only GitHub CLI transport", () => {
     }]);
   });
 
-  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "42", null, undefined])("rejects unstable or invalid repository REST identity %s", async (id) => {
+  it.each([0, -1, 1.5, "42", null, undefined])("rejects unstable or invalid repository REST identity %s", async (id) => {
     const { client } = queue(response({ id, node_id: "opaque-node-id" }));
     await expect(client.resolveRepository(configuration)).rejects.toThrow("repository ID");
   });
@@ -510,6 +528,10 @@ describe("complete PR scans", () => {
     const { client } = queue(response(pr(12)));
     await expect(client.getPullRequest(repository, 11)).rejects.toThrow("different PR");
   });
+  it("rejects a single-PR response from another repository", async () => {
+    const { client } = queue(response(pr(11, { base: { ref: "main", sha: "base-a", repo: { id: 43 } } })));
+    await expect(client.getPullRequest(repository, 11)).rejects.toThrow("different repository");
+  });
 });
 
 describe("durable repository observations", () => {
@@ -638,6 +660,27 @@ describe("native child process capture", () => {
   const nativeClient = (mode: string, bounds: { timeoutMs?: number; maxBufferBytes?: number } = {}) => createGitHubClient({
     ...bounds, execute: (_file, _args, options) => executeCommand(process.execPath, [script, mode], options),
   });
+
+  it("retains complete HTTP error bodies inside the Worker command lifecycle", async () => {
+    const events: OwnedCommandLifecycleEvent[] = [];
+    await withOwnedCommandLifecycle(async event => { events.push(event); }, async () => {
+      await expect(nativeClient("not-found").resolveRepository(configuration)).rejects.toMatchObject({ status: 404, cause: { code: 1 } });
+    });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+    expect(events[1]!.proof).not.toBeNull();
+  }, 35_000);
+
+  it("preserves review output budgets and native Git status in the Worker lifecycle", async () => {
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const run = (file: string, args: string[], maxBufferBytes: number) => withOwnedCommandLifecycle(async event => { events.push(event); },
+      () => executeCommand(file, args, { timeoutMs: 30_000, maxBufferBytes }));
+    const output = await run(process.execPath, ["-e", "process.stdout.write('x'.repeat(128 * 1024))"], 256 * 1024);
+    expect(output.error).toBeNull();
+    expect(output.stdout).toHaveLength(128 * 1024);
+    const invalid = await run("git", ["rev-parse", "--verify", "refs/heads/daynight-missing-review-fixture"], 16 * 1024 * 1024);
+    expect(invalid.error).toMatchObject({ code: 128, signal: null });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+  }, 35_000);
 
   it("accepts actual mixed-newline HTTP output without a trailing newline", async () => {
     expect(await nativeClient("success").resolveRepository(configuration)).toEqual(repository);

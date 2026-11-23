@@ -19,25 +19,29 @@ context, arguments, order and calls. Real authentication adaptation, tool
 registration, schemas, SDK, HTTP and response encoding remained in the test.
 The Application assembly tests separately verified default constructor bindings.
 The later [component ownership decision](2026-11-11-go-component-test-ownership.md)
-moves the lifecycle matrix to a focused MCP Entry host while retaining those
-operation and wire observations; Root retains application assembly proofs.
+moved the lifecycle matrix to a focused MCP Entry host while retaining those
+operation and wire observations; Root retained application assembly proofs.
 
-Step read, content and order Service tests retain their coordination proofs;
-Core owns admission and encoding, and the Webhook Capturer owns event freezing.
-Store tests retain SQL, transaction and persisted-state proofs. The
+The [MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md)
+removes that protocol matrix with the seven tools. Production HTTP sessions now
+verify the absence of the retired entry points and preserve ordinary Task and
+Thread calls. The [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md)
+removes the other public consumer. The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
+then removes Step coordination, Core admission, encoding and their dedicated
+tests. Store tests retain SQL, transaction and persisted-state proofs. The
 [Root DAO decision](2026-11-09-root-http-test-dao-ownership.md) records the
-earlier fixture boundary, which this decision changes for this Step matrix.
-The [Step limits decision](2026-11-10-step-limits-test-ownership.md) records
+earlier fixture boundary changed for the original Step matrix. The
+[Step limits decision](2026-11-10-step-limits-test-ownership.md) records
 the distinct Core capacity and text receivers.
 
 ## Alternatives
 
-**Keep the DAO-only fixture.** It preserves the protocol path but continues to
+**Keep the DAO-only fixture.** It preserved the protocol path but continued to
 execute lower business decisions to construct results at the Root boundary.
 
 **Replace production application construction.** A synthetic application could
 hide a registration or assembly defect; the real constructor and exported slots
-retain the intended wiring observation.
+retained the intended wiring observation.
 
 **Model state in the operation mocks.** Deriving subsequent reads from proposed
 writes would couple the oracle to a simulated persistence implementation and
@@ -45,8 +49,8 @@ could conceal incorrect wire arguments.
 
 ## Consequences
 
-The operation test isolates protocol and registration failures without claiming
-that controlled completion proves persistence. Receiver tests remain necessary
-and contribute to validation cost; package timing alone does not establish a
-hosted CI improvement. Other Root MCP and Identity matrices retain their own
-existing boundaries.
+The original operation test isolated protocol and registration failures without
+claiming that controlled completion proved persistence. Its fixture no longer
+serves a live Step MCP operation. Surviving Store and ordinary-operation tests remain necessary and
+contribute to validation cost; package timing alone does not establish a hosted
+CI improvement. Other Root MCP and Identity matrices retain their own boundaries.
