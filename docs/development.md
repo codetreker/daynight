@@ -147,6 +147,17 @@ contracts, and process lifetime tests also use executable invocations. The
 [Task CLI batching decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
 owns these boundaries.
 
+Task protocol matrices live in `packages/daynight/test/cli/task-protocol.test.ts`;
+native and mixed cases remain in `packages/daynight/test/cli/task.test.ts`. They
+share `test/fixtures/compiled-task.ts` and retain their original case names,
+assertions, timeouts and compiled invocation routes. The protocol file proves
+request and response behavior with real compiled CLI processes and loopback HTTP.
+The native file retains Git, guarded startup and environment behavior, Unicode
+arguments, file and binary transfers, interrupted responses, physical stdout,
+exit wiring and SIGINT. Ambiguous complete cases stay native. Ordinary CI runs
+both files on Linux, Windows and macOS ARM64; classification alone does not
+change platform selection or demonstrate a CI time saving.
+
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
 continuous-cursor fixture advances time by 10 ms per response: three pages fit
