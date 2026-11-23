@@ -58,6 +58,22 @@ test('Goal attachment image recovers from a network failure without rereading th
   expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
 });
 
+async function makeDirtyTaskTags(page: Page, surface: Locator) {
+  const tagId = '00000000-0000-4000-8000-000000000099';
+  await page.route(`**/api/v1/projects/${projectId}/tags**`, route => {
+    const path = new URL(route.request().url()).pathname;
+    const tag = { id: tagId, name: 'Draft label' };
+    const body = path.endsWith('/colors/resolve') ? { catalogEpoch: taskSyncEpoch(projectId), items: [{ id: tagId, state: 'found', version: 1, color: '#9AA3B2' }] }
+      : path.endsWith('/tags/resolve') ? { items: [tag] }
+      : { items: [{ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null };
+    return route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await surface.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const checkbox = surface.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await checkbox.check();
+  return checkbox;
+}
+
 async function restoreGoalGraph(page: Page, surface: Locator, representativeId = firstId) {
   await expect(surface.locator('.goal-information-counts').first()).toBeAttached();
   await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined);
@@ -823,10 +839,10 @@ for (const width of [1440, 390, 320]) test(`Task parent Goal is a read-only over
   expect(writes).toEqual([]);
 });
 
-test('Task parent Goal link preserves native modified clicks', async ({ page, context }) => {
+test('Task parent Goal link preserves native modified clicks and protects tag drafts', async ({ page, context }) => {
   await install(page);
   const writes: string[] = [];
-  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method()) && !request.url().includes('/tags/resolve') && !request.url().includes('/tags/colors/resolve')) writes.push(request.method()); });
   await page.goto(`/projects/${projectId}/tasks/${firstId}`);
   const task = page.locator('.task-detail-page');
   const link = task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
@@ -836,7 +852,14 @@ test('Task parent Goal link preserves native modified clicks', async ({ page, co
   await expect(popup).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await popup.close();
   await expect(page).toHaveURL(new RegExp(`/tasks/${firstId}$`));
+  const draft = await makeDirtyTaskTags(page, task);
   await link.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toBeChecked();
+  await link.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
   expect(writes).toEqual([]);
 });
@@ -1516,7 +1539,7 @@ for (const width of [1440, 320]) test(`Project reading traverses graph and neste
   expect(writes).toEqual([]);
 });
 
-test('Project nested child retains its reading and closing replaces the parent selection', async ({ page }) => {
+test('Project nested child protects its tag draft and restores focus on close', async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
@@ -1525,19 +1548,18 @@ test('Project nested child retains its reading and closing replaces the parent s
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task', exact: true });
-  await graphDialog.getByRole('button', { name: 'First task, Details' }).click();
+  const trigger = graphDialog.getByRole('button', { name: 'First task, Details' });
+  await trigger.click();
   const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'First task' }) });
-  await child.getByRole('tab', { name: 'Discussion', exact: true }).click();
-  const draft = child.locator('.thread-composer textarea');
-  await draft.fill('Project child draft');
-  const original = await child.elementHandle();
-  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
-  await child.getByRole('button', { name: /^notes\.txt/ }).click();
-  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
-  await page.goBack(); await expect(draft).toHaveValue('Project child draft');
-  expect(await child.evaluate((element, previous) => element === previous, original)).toBe(true);
+  const draft = await makeDirtyTaskTags(page, child);
   await child.getByRole('button', { name: 'Close task details' }).click();
-  await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toBeChecked();
+  await child.getByRole('button', { name: 'Close task details' }).click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible(); await expect(trigger).toBeFocused();
   await page.goBack(); await expect(graphDialog).toBeVisible();
   await page.goForward(); await expect(graphDialog).toBeVisible(); await expect(child).toHaveCount(0);
   await graphDialog.getByRole('button', { name: 'Close dependency graph' }).click();
@@ -1602,25 +1624,27 @@ test('closing a standalone Goal child replaces the current entry with its graph 
   await page.goForward(); await expect(graphDialog).toHaveCount(0);
 });
 
-test('standalone Goal child keeps its reading across tab and file history', async ({ page }) => {
+test('standalone Goal child protects tag draft through tab and file history', async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const goalPage = page.locator('.goal-detail-surface');
   await restoreGoalChild(page, singleId);
   const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Standalone task' }) });
-  await child.getByRole('tab', { name: 'Discussion', exact: true }).click();
-  const draft = child.locator('.thread-composer textarea');
-  await draft.fill('Retained child draft');
+  const draft = await makeDirtyTaskTags(page, child);
   const original = await child.elementHandle();
   await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await child.getByRole('button', { name: /^notes\.txt/ }).click();
   await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
   await page.goBack();
-  await expect(draft).toHaveValue('Retained child draft');
+  await expect(draft).toBeChecked();
   expect(await child.evaluate((element, previous) => element === previous, original)).toBe(true);
   await page.goBack();
-  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toBeChecked();
   await page.goBack();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(child).toHaveCount(0);
 });
 

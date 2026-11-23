@@ -46,7 +46,7 @@ async function install(page: Page, running = false, linked = false, large = fals
   await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), options.locale ?? 'en');
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve') && !path.endsWith('/tags/resolve')) writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
     if (options.workerAlias && path.endsWith('/alias')) return send({ workerId: path.split('/')[5], alias: { value: options.workerAlias, version: '1' } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -55,6 +55,16 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') return send({ items: [{ id: '00000000-0000-4000-8000-000000000099', projectId, name: 'Draft label', version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      return send({ catalogEpoch: taskSyncEpoch(projectId), items: ids.map(id => ({ id, state: 'found', version: 1, color: '#9AA3B2' })) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tags/resolve`) {
+      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
+      const known = [...details().flatMap(detail => detail.tags), { id: '00000000-0000-4000-8000-000000000099', name: 'Draft label' }];
+      return send({ items: known.filter(tag => ids.includes(tag.id)) });
+    }
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), ...(options.formerAssignee ? { assigneeVersions: [{ userId: TEST_VIEWER_ID, version: 'a'.repeat(64), hasProjectAccess: false }] } : {}), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
     if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
@@ -329,7 +339,7 @@ test('ID search keeps long results readable and opens the correct task on narrow
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
-test('history restores the earlier direct search detail from a summary task', async ({ page }) => {
+test('history protects a summary tag draft before restoring direct search detail', async ({ page }) => {
   const writes = await install(page);
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
@@ -345,8 +355,18 @@ test('history restores the earlier direct search detail from a summary task', as
   await expect(dialog).toHaveCount(0);
   await input.fill('');
   await page.locator(`#standalone-task-${taskId}`).click();
-  await dialog.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const draft = dialog.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await draft.check();
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await page.evaluate(() => history.go(-3));
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(dialog.locator('.task-tags-editor input[type=checkbox]')).toBeChecked();
+  await page.evaluate(() => history.go(-3));
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(directEntry);
   await expect(dialog).toHaveAccessibleName('Target task');
   await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');

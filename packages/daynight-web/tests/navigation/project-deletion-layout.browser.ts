@@ -135,6 +135,9 @@ test('a collapsed deletion result reserves space for the task Session composer',
     if (path === `/api/v1/projects/${deleting}/deletion-preview`) return send({ observedAt: time, project: { id: deleting, name: 'Project', repoUrl: deletedProject.repoUrl, ownerTeam: personal }, summary: { taskCount: 0, unfinishedTaskCount: 0, attachmentCount: 0 }, activeClaims: [], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { actorAccess: access(projectId), query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === `/api/v1/projects/${projectId}/access`) return send(access(projectId));
+    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') return send({ items: [{ id: '00000000-0000-4000-8000-000000000099', projectId, name: 'Draft label', version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: '00000000-0000-4000-8000-000000000098', nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) return send({ catalogEpoch: '00000000-0000-4000-8000-000000000098', items: [{ id: '00000000-0000-4000-8000-000000000099', state: 'found', version: 1, color: '#9AA3B2' }] });
+    if (path === `/api/v1/projects/${projectId}/tags/resolve`) return send({ items: [{ id: '00000000-0000-4000-8000-000000000099', name: 'Draft label' }] });
     if (path === root) return route.fulfill({ status: 200, body: stringifyWireJson(detail), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': fixtureTaskEpoch(projectId) } });
     if (path === `${root}/sessions/current`) return send({ status: 'registered', session: snapshot });
     if (path === `${root}/thread/messages`) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
@@ -225,7 +228,17 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.keyboard.press('Escape');
   await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('.session-fullscreen-toggle')).toBeFocused();
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit tags', exact: true }).click();
+  const draft = page.locator('.task-tags-editor').getByRole('checkbox', { name: 'Draft label' });
+  await draft.check();
   // Keyboard activation gives every engine the same explicit focus owner.
   await lastResult.focus(); await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/projects$/);
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toBeVisible();
+  await expect(page.locator('.standalone-deletion-slot')).toHaveAttribute('inert');
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page.locator('.standalone-deletion-slot')).not.toHaveAttribute('inert');
+  await expect(lastResult).toBeFocused();
+  await expect(draft).toBeChecked();
 });
