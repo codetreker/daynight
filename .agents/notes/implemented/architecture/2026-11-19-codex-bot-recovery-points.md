@@ -52,6 +52,15 @@ paginated SQLite history or cross-version compatibility. The
 [Worker runtime design](../../../../docs/design/worker-bot-runtime.md#codex-原生恢复点)
 owns lifecycle and deletion boundaries.
 
+The original function-name rejection also rejected code-mode cell waits observed
+in 0.169.0. The exact native function call `wait` now has an argument exception:
+a JSON object with a nonblank string `cell_id` and only the supported optional
+nonnegative safe-integer budgets and boolean `terminate`. Unknown namespaces,
+other call formats, malformed arguments and mixed agent fields remain rejected.
+Only native response items and compact replacement calls use this classification;
+tool declarations and returned data cannot introduce a dependency. This exception
+does not bypass terminal-turn, dirty, ownership or integrity checks.
+
 ## Alternatives
 
 **Isolate CODEX_HOME immediately.** Copying selected files cannot preserve every
