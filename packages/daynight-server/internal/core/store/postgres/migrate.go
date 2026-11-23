@@ -365,6 +365,9 @@ var sessionOnlineModeSQL string
 //go:embed schema/migrations/118_browser_session_activity.sql
 var browserSessionActivitySQL string
 
+//go:embed schema/migrations/119_worker_platform_task_mode.sql
+var workerPlatformTaskModeSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -489,6 +492,7 @@ var schemaMigrations = []migration{
 	{version: 116, sql: archiveUploadVersionSQL},
 	{version: 117, sql: sessionOnlineModeSQL},
 	{version: 118, sql: browserSessionActivitySQL},
+	{version: 119, sql: workerPlatformTaskModeSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
