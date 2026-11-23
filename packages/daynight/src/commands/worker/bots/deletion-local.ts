@@ -5,15 +5,14 @@ import { ApiError } from "../../../api/client.js";
 import { acquireInstanceLockSync, InstanceLockHeldError } from "../../../platform/instance-lock.js";
 import { inspectSqlite } from "../../../platform/sqlite-format.js";
 import { sqliteFilename } from "../../../platform/sqlite-filename.js";
-import type { BotDeletionRecovery } from "../../bot/deletion-api.js";
 import { resolveWorkerPaths } from "../paths.js";
 import { readWorkerIdentity } from "../identity.js";
 import { workerStoreFormat } from "../store-format.js";
 import { resolveBotPaths } from "./paths.js";
 import { botStoreFormat } from "./store-format.js";
 import { assertMigrationPhysicalPath } from "./migration-state.js";
-import { parseBot, parseBotOwner, type BotRecord } from "./types.js";
-import { checkBotDeletionRecovery, createBotDeletion } from "./delete.js";
+import { parseBot, parseBotOwner, type BotRecord, type BotDeleted } from "./types.js";
+import { requiresBotDeletionRecovery, createBotDeletion } from "./delete.js";
 import { openLocalBotStores } from "./local-store.js";
 import { createBotRemote } from "./remote.js";
 import { createBotSessionApi } from "./session-api.js";
@@ -39,32 +38,18 @@ const lockIsHeld = (cause: unknown, seen = new Set<unknown>()): boolean => {
   return cause instanceof AggregateError ? cause.errors.some(value => lockIsHeld(value, seen))
     : cause instanceof Error && lockIsHeld(cause.cause, seen);
 };
-type InspectionInput = { homeDirectory: string; serverUrl: string; ownerUserId: string; botId: string; recovery: BotDeletionRecovery; signal: AbortSignal };
-export type LocalBotDeletionInspection = {
-  botId: string; workerId: string; localWorkerId: string | null; originalWorkerMatched: boolean;
-  hostingWorkerId: string; hostingWorkerMatched: boolean;
-  storage: "missing" | "available" | "unreadable"; evidence: "missing" | "retained" | "stop_receipt";
-  canRecover: boolean; localCompleted: boolean;
-  checks: { bindingMatched: boolean; launchIntentPresent: boolean; executionRecordPresent: boolean; stopReceiptPresent: boolean; journalPresent: boolean; ticketPresent: boolean };
-  localProcessState: "unverified";
-};
+type RecoveryInput = { homeDirectory: string; serverUrl: string; ownerUserId: string; botId: string; bot: BotDeleted; signal: AbortSignal };
 
-/** Inspect committed records without creating, migrating or repairing local storage. */
-export const inspectLocalBotDeletion = async (input: InspectionInput): Promise<LocalBotDeletionInspection> => {
+/** Missing storage must not be created or migrated into recovery evidence. */
+const preflight = async (input: RecoveryInput): Promise<string> => {
   input.signal.throwIfAborted();
-  const paths = resolveWorkerPaths(input.homeDirectory), recovery = input.recovery;
-  if (recovery.botId !== input.botId) throw new DeletionLocalError("deletion_changed");
-  let localWorkerId: string | null = null;
+  const paths = resolveWorkerPaths(input.homeDirectory);
+  if (input.bot.id !== input.botId || input.bot.deletion.workerCleanup.state !== "failed"
+    || input.bot.deletion.workerCleanup.code !== "execution_evidence_missing") throw new DeletionLocalError("deletion_changed");
+  let localWorkerId: string;
   try { localWorkerId = await readWorkerIdentity(paths, input.signal); }
-  catch { input.signal.throwIfAborted(); }
-  const result: LocalBotDeletionInspection = {
-    botId: input.botId, workerId: recovery.workerId, localWorkerId, originalWorkerMatched: localWorkerId === recovery.workerId,
-    hostingWorkerId: recovery.hostingWorkerId, hostingWorkerMatched: localWorkerId === recovery.hostingWorkerId,
-    storage: "missing", evidence: "missing", canRecover: false, localCompleted: false,
-    checks: { bindingMatched: false, launchIntentPresent: false, executionRecordPresent: false, stopReceiptPresent: false, journalPresent: false, ticketPresent: false },
-    localProcessState: "unverified",
-  };
-  const owner = parseBotOwner({ serverOrigin: input.serverUrl, ownerUserId: input.ownerUserId, workerId: recovery.workerId });
+  catch (cause) { input.signal.throwIfAborted(); throw new DeletionLocalError("wrong_worker", { cause }); }
+  const owner = parseBotOwner({ serverOrigin: input.serverUrl, ownerUserId: input.ownerUserId, workerId: input.bot.workerId });
   const dedicated = resolveBotPaths(paths.stateDirectory, input.botId).databaseFile;
   const records: BotRecord[] = [];
   let executionRecordPresent = false;
@@ -95,43 +80,26 @@ export const inspectLocalBotDeletion = async (input: InspectionInput): Promise<L
     if (records.length > 1) throw new Error("Bot has multiple local authorities.");
     const record = records[0];
     if (record !== undefined) {
-      result.storage = "available";
-      // Inspection reports evidence availability, not a stopped process. The
-      // locked recovery path independently validates each original record.
-      if (record.observed.deletion === null) {
-        record.observed = { id: input.botId, workerId: recovery.workerId, version: recovery.version,
-          deletion: { deletionId: recovery.deletionId, requestedVersion: recovery.requestedVersion, workerCleanup: recovery.workerCleanup, serverCleanup: recovery.serverCleanup } };
-      }
-      checkBotDeletionRecovery(record, recovery);
-      const bindingPresent = record.intent != null || record.cleanup?.stop != null;
-      result.checks.bindingMatched = !recovery.requiresStopProof || bindingPresent;
-      result.checks.launchIntentPresent = record.intent != null;
-      result.checks.executionRecordPresent = executionRecordPresent;
-      result.checks.stopReceiptPresent = record.cleanup?.stop != null;
-      result.checks.journalPresent = record.intent != null && existsSync(record.intent.journalPath);
-      result.checks.ticketPresent = record.intent != null && existsSync(record.intent.ticketPath);
-      result.localCompleted = record.cleanup?.localCompleted === true;
-      result.evidence = result.checks.stopReceiptPresent ? "stop_receipt" : result.checks.launchIntentPresent ? "retained" : "missing";
+      const deletion = record.observed.deletion;
+      if (deletion !== null && (deletion.deletionId !== input.bot.deletion.deletionId
+        || deletion.requestedVersion !== input.bot.deletion.requestedVersion)) throw new DeletionLocalError("deletion_changed");
     }
-    const rejectedNeverStarted = recovery.recoveryRequired && record?.cleanup?.stop?.stopProof.kind === "never_started";
-    result.canRecover = result.hostingWorkerMatched && recovery.decision === null && record?.migration === undefined && !rejectedNeverStarted
-      && (!recovery.requiresStopProof || result.checks.bindingMatched && (result.checks.stopReceiptPresent || executionRecordPresent
-        || recovery.recoveryRequired && result.checks.launchIntentPresent && result.checks.journalPresent && result.checks.ticketPresent));
-  } catch {
+    if (record === undefined || record.migration !== undefined || record.cleanup?.stop?.stopProof.kind === "never_started"
+      || record.cleanup?.stop == null && (record.intent === null || !executionRecordPresent
+        && (!existsSync(record.intent.journalPath) || !existsSync(record.intent.ticketPath)))) throw new DeletionLocalError("evidence_missing");
+  } catch (cause) {
     input.signal.throwIfAborted();
-    result.storage = "unreadable"; result.canRecover = false;
+    if (cause instanceof DeletionLocalError) throw cause;
+    throw new DeletionLocalError("storage_unreadable", { cause });
   }
-  return result;
+  return localWorkerId;
 };
 
 /** Recovery borrows the original Worker and Bot locks; it cannot start an execution. */
-export const recoverLocalBotDeletion = async (input: InspectionInput & {
+export const recoverLocalBotDeletion = async (input: RecoveryInput & {
   packageDirectory: string; workingDirectory: string; serverToken: string;
 }): Promise<{ receiptConfirmed: true }> => {
-  const inspection = await inspectLocalBotDeletion(input);
-  if (!inspection.hostingWorkerMatched) throw new DeletionLocalError("wrong_worker");
-  if (inspection.storage === "unreadable") throw new DeletionLocalError("storage_unreadable");
-  if (!inspection.canRecover) throw new DeletionLocalError("evidence_missing");
+  const localWorkerId = await preflight(input);
   const paths = resolveWorkerPaths(input.homeDirectory);
   let lock: ReturnType<typeof acquireInstanceLockSync>;
   try { lock = acquireInstanceLockSync(paths.lockFile, paths.databaseFile, undefined, { fileMustExist: true }); }
@@ -139,20 +107,23 @@ export const recoverLocalBotDeletion = async (input: InspectionInput & {
   let local: ReturnType<typeof openLocalBotStores> | undefined, process: ReturnType<typeof createBotProcess> | undefined;
   let failure: unknown, failed = false, receiptConfirmed = false;
   try {
-    const owner = parseBotOwner({ serverOrigin: input.serverUrl, ownerUserId: input.ownerUserId, workerId: input.recovery.hostingWorkerId });
-    const originalOwner = { ...owner, workerId: input.recovery.workerId };
+    const owner = parseBotOwner({ serverOrigin: input.serverUrl, ownerUserId: input.ownerUserId, workerId: localWorkerId });
+    const originalOwner = { ...owner, workerId: input.bot.workerId };
     if (await readWorkerIdentity(paths, input.signal) !== owner.workerId) throw new DeletionLocalError("wrong_worker");
     const remote = createBotRemote({ owner, serverToken: input.serverToken });
     const bot = await remote.read(input.botId, input.signal, originalOwner);
-    const recovery = await remote.readDeletionRecovery!(input.botId, input.signal, originalOwner);
-    if (bot === null || bot.deletion === null || recovery === null || recovery.decision !== null
-      || recovery.hostingWorkerId !== owner.workerId || bot.deletion.deletionId !== input.recovery.deletionId || recovery.deletionId !== input.recovery.deletionId) throw new DeletionLocalError("deletion_changed");
+    if (bot === null || bot.deletion === null || bot.deletion.deletionId !== input.bot.deletion.deletionId
+      || bot.deletion.requestedVersion !== input.bot.deletion.requestedVersion || BigInt(bot.version) < BigInt(input.bot.version)
+      || bot.deletion.workerCleanup.state !== "failed" || bot.deletion.workerCleanup.code !== "execution_evidence_missing") throw new DeletionLocalError("deletion_changed");
     local = openLocalBotStores({ stateDirectory: paths.stateDirectory, legacyDatabaseFile: paths.databaseFile, owner });
+    if (local.store.get(originalOwner, input.botId) === null) throw new DeletionLocalError("evidence_missing");
     const record = local.store.observe(originalOwner, bot, Date.now());
-    checkBotDeletionRecovery(record, recovery);
-    if (recovery.requiresStopProof && record.intent === null && record.cleanup?.stop == null) throw new DeletionLocalError("evidence_missing");
+    if (!requiresBotDeletionRecovery(record) || record.intent === null && record.cleanup?.stop == null) throw new DeletionLocalError("evidence_missing");
     const stores = local;
-    const hosting = createBotReconciliation({ owner, store: openBotRecoveryStore({ stateDirectory: paths.stateDirectory, owner, assertLocked: stores.assertLocked }),
+    const recoveryStore = openBotRecoveryStore({ stateDirectory: paths.stateDirectory, owner, assertLocked: stores.assertLocked });
+    const hostingState = stores.isDedicated(record) ? recoveryStore.read(record) : null, receipt = hostingState?.current ?? hostingState?.registration;
+    if (hostingState?.pending != null || receipt != null && (!receipt.current || receipt.receipt.workerId !== owner.workerId)) throw new DeletionLocalError("wrong_worker");
+    const hosting = createBotReconciliation({ owner, store: recoveryStore,
       api: createBotRecoveryApi({ owner, serverToken: input.serverToken }), applicable: stores.isDedicated, canSubmit: () => false });
     if (!hosting.ownsHosting(record)) throw new DeletionLocalError("wrong_worker");
     const sessionApi = createBotSessionApi({ owner, serverToken: input.serverToken, stateDirectory: paths.stateDirectory, recovery: hosting });

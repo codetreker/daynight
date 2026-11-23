@@ -397,3 +397,33 @@ it('shows a neutral deleted target with a stable title when a passive detail rea
  expect(getBotDeletionCoordinator(view.scope).snapshot()[0]?.phase).toBe('completed');
  expect(f.fetch.mock.calls.some(([,options])=>options?.method==='DELETE')).toBe(false);
 });
+
+it('shows missing execution evidence with original-machine compensation and only reads when checking deletion', async () => {
+ const deleted: DeletedBot = { id: botId(2), workerId: botId(20), version: '2', deletion: { deletionId: botId(90), requestedVersion: '1', workerCleanup: { state: 'failed', code: 'execution_evidence_missing' }, serverCleanup: { state: 'pending', code: null } } };
+ const fetcher = vi.fn(async (url: string | URL | Request, _options?: RequestInit) => {
+  const path = String(url);
+  if (path.includes('/defaults')) return botResponse(botDefaults());
+  if (path.includes('/bots?')) return botResponse({ items: [], nextCursor: null });
+  if (path.endsWith(`/bots/${deleted.id}`)) return botResponse(deleted);
+  throw new Error(`Unexpected route ${path}`);
+ }); vi.stubGlobal('fetch', fetcher);
+ mount(deleted.id);
+ await screen.findByText('Execution records are missing; deletion cannot be confirmed.');
+ expect(screen.queryByRole('heading', { name: 'Loading…' })).toBeNull();
+ expect(screen.getAllByRole('heading', { name: 'Assistants' }).length).toBeGreaterThan(0);
+ const status = within(screen.getByRole('region', { name: 'Assistant deletion' }));
+ expect(status.getByText('execution_evidence_missing')).toBeVisible();
+ expect(status.queryByRole('button', { name: 'Retry original deletion' })).toBeNull();
+ fireEvent.click(status.getByText('Show original-machine recovery steps'));
+ expect(status.getByText(`daynight bot recover ${deleted.id} --deletion-id ${deleted.deletion.deletionId}`)).toBeVisible();
+ expect(status.getByText(/original DN_CONFIG_DIR/)).toBeVisible();
+ expect(status.getByText(/Missing evidence can prevent recovery from completing deletion/)).toBeVisible();
+ expect(status.getByText(`daynight bot show ${deleted.id} --json`)).toBeVisible();
+ await waitFor(() => expect(status.getByRole('button', { name: 'Check deletion' })).toBeEnabled());
+ const reads = fetcher.mock.calls.length;
+ fireEvent.click(status.getByRole('button', { name: 'Check deletion' }));
+ await waitFor(() => expect(fetcher.mock.calls.length).toBeGreaterThan(reads));
+ await waitFor(() => expect(status.getByRole('button', { name: 'Check deletion' })).toBeEnabled());
+ expect(status.queryByText('Deletion completed')).toBeNull();
+ expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+});

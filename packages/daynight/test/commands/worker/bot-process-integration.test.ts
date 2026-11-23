@@ -17,7 +17,6 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
 import { recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
-import type { BotDeletionRecovery } from "../../../src/commands/bot/deletion-api.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
@@ -317,7 +316,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
   const workerPaths = resolveWorkerPaths(home), databaseFile = options.localRecovery ? workerPaths.databaseFile : path.join(home, "worker.sqlite");
   if (options.localRecovery) {
-    await mkdir(workerPaths.workerDirectory, { recursive: true });
+    await mkdir(workerPaths.workerDirectory, { recursive: true, mode: 0o700 });
     await writeFile(workerPaths.configFile, `workerId: ${owner.workerId}\n`, { mode: 0o600 });
   }
   const store = openBotStore(databaseFile, { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
@@ -923,23 +922,18 @@ test("explicit recovery stops a real journal-bound Controller after its Bot exec
   const deleted: BotDeleted = { id: bot.id, workerId: bot.workerId, version: String(BigInt(bot.version) + 1n),
     deletion: { deletionId: randomUUID(), requestedVersion: bot.version, workerCleanup, serverCleanup } };
   f.store.observe(f.owner, deleted, Date.now());
-  const recovery: BotDeletionRecovery = { schemaVersion: 1, botId: bot.id, workerId: bot.workerId, hostingWorkerId: bot.workerId,
-    version: deleted.version, deletionId: deleted.deletion.deletionId, requestedVersion: deleted.deletion.requestedVersion,
-    requiresStopProof: true, recoveryRequired: true, decision: null, workerCleanup, serverCleanup,
-    originalBinding: { sessionId: ticket.sessionId!, testExecutionId: ticket.executionId, executionGeneration: ticket.executionGeneration,
-      controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId } };
   const requests: string[] = [];
   f.http!.on("request", (request, response) => {
     requests.push(request.method!);
     response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
     const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
-    if (request.method !== "GET" || ![ `/api/v1/me/bots/${bot.id}`, `/api/v1/me/bots/${bot.id}/deletion-recovery` ].includes(pathname)) {
+    if (request.method !== "GET" || pathname !== `/api/v1/me/bots/${bot.id}`) {
       response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Unexpected recovery request", requestId: "fixture" } })); return;
     }
-    response.end(JSON.stringify(pathname.endsWith("/deletion-recovery") ? recovery : deleted));
+    response.end(JSON.stringify(deleted));
   });
   const input = { homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd,
-    serverUrl: f.owner.serverOrigin, ownerUserId: f.owner.ownerUserId, serverToken: "fixture-parent-token", botId: bot.id, recovery, signal };
+    serverUrl: f.owner.serverOrigin, ownerUserId: f.owner.ownerUserId, serverToken: "fixture-parent-token", botId: bot.id, bot: deleted, signal };
   await expect(recoverLocalBotDeletion(input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
   expect(await confirmControllerProcessesStopped(proof, original.nativeProcesses, undefined, cleanupLease)).toBe(true);
   const stopped = f.journal()!;
@@ -950,7 +944,7 @@ test("explicit recovery stops a real journal-bound Controller after its Bot exec
   expect(f.executions.get(f.current())).toBeNull(); expect(f.current().cleanup).toBeUndefined();
   expect(f.current().observed).toEqual(deleted); expect(existsSync(f.current().intent!.ticketPath)).toBe(true);
   expect(existsSync(f.current().intent!.journalPath)).toBe(true); expect(existsSync(paths.lockFile)).toBe(false);
-  expect(requests).toEqual(["GET", "GET", "GET", "GET"]); expect(await f.launches()).toHaveLength(1);
+  expect(requests).toEqual(["GET", "GET"]); expect(await f.launches()).toHaveLength(1);
 }, 120_000);
 
 test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
@@ -958,7 +952,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   // Native credentials and command aliases are fixture-owned; the host, stores,
   // HTTP adapters, Controller, journal, IPC, provider adapter and deletion run unchanged.
   vi.spyOn(botEnvironment, "prepareBotEnvironment").mockImplementation(f.prepareEnvironment);
-  let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null, serverController: string | null = null;
+  let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null;
   const parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
   f.http!.on("request", (request, response) => {
     void (async () => {
@@ -974,21 +968,10 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
       }
       if (request.method === "GET" && pathname.endsWith(`/workers/${f.owner.workerId}/bots`)) return send({ items: [deleted ?? f.getBot()], nextCursor: null });
       if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}`)) return send(deleted ?? f.getBot());
-      if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}/deletion-recovery`)) {
-        expect(deleted).not.toBeNull();
-        const needsProof = deleted!.deletion.serverCleanup.state !== "completed";
-        const originalBinding = needsProof ? { sessionId: f.getBot().sessionId, testExecutionId: f.getBot().testExecutionId,
-          executionGeneration: serverGeneration, controllerId: serverController, controllerInstanceId: serverInstance } : null;
-        return send({ schemaVersion: 1, botId: deleted!.id, workerId: deleted!.workerId, hostingWorkerId: f.owner.workerId,
-          version: deleted!.version, deletionId: deleted!.deletion.deletionId, requestedVersion: deleted!.deletion.requestedVersion,
-          requiresStopProof: needsProof, recoveryRequired: false, originalBinding, decision: null,
-          workerCleanup: deleted!.deletion.workerCleanup, serverCleanup: deleted!.deletion.serverCleanup });
-      }
       if (request.method === "POST" && pathname.endsWith("/register")) {
         expect(body.registration).toEqual(f.current().intent!.registration);
         expect(body.roleConfiguration).toEqual(f.current().intent!.roleConfiguration);
         const registered = await f.api.register(f.current()); serverInstance = registered.snapshot.identity.controllerInstanceId;
-        serverController = registered.snapshot.identity.controllerId;
         return send({ bot: registered.bot, session: registered.snapshot });
       }
       if (request.method === "GET" && pathname.startsWith("/api/v1/test-sessions/")) {
@@ -1047,7 +1030,6 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   expect(await readFile(sentinel, "utf8")).toBe("user data");
   expect(calls.filter(call => call.path.endsWith("/register"))).toHaveLength(1);
   expect(calls.filter(call => call.path.endsWith("/deletion-complete"))).toHaveLength(1);
-  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/deletion-recovery"))).toBe(true);
   expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
   expect((await f.requests()).filter(request => request.method === "thread/resume")).toHaveLength(1);
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);

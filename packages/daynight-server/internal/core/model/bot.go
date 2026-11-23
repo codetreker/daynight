@@ -67,39 +67,12 @@ type BotCleanupResult struct {
 // BotDeletion records the original deletion request and both cleanup obligations.
 // A pending intent is not evidence that a process stopped or history was removed.
 type BotDeletion struct {
-	// Recovery is an owner decision, never a Worker stop receipt. Public Bot
-	// projections omit it; the deletion-recovery resource owns its representation.
-	Recovery *BotDeletionRecovery `json:"recovery,omitempty"`
 	// ReceiptDigest preserves exact completed Worker replay after Session removal.
 	ReceiptDigest    string           `json:"receiptDigest,omitempty"`
 	DeletionID       string           `json:"deletionId"`
 	RequestedVersion int64            `json:"requestedVersion,string"`
 	WorkerCleanup    BotCleanupResult `json:"workerCleanup"`
 	ServerCleanup    BotCleanupResult `json:"serverCleanup"`
-}
-
-type BotDeletionBinding struct {
-	SessionID            string `json:"sessionId"`
-	TestExecutionID      string `json:"testExecutionId"`
-	ExecutionGeneration  string `json:"executionGeneration"`
-	ControllerID         string `json:"controllerId"`
-	ControllerInstanceID string `json:"controllerInstanceId"`
-}
-
-type BotDeletionDecision struct {
-	OperationID      string    `json:"operationId"`
-	RequestedVersion int64     `json:"requestedVersion,string"`
-	ActorUserID      string    `json:"actorUserId"`
-	Reason           string    `json:"reason"`
-	AcknowledgedAt   time.Time `json:"acknowledgedAt"`
-	LocalDisposition string    `json:"localDisposition"`
-}
-
-// The original binding survives removal of the Session and private definition.
-type BotDeletionRecovery struct {
-	WorkerID        string              `json:"workerId"`
-	OriginalBinding *BotDeletionBinding `json:"originalBinding"`
-	Decision        BotDeletionDecision `json:"decision"`
 }
 
 // BotSelection records the authority and discovery snapshot of a frozen selection.

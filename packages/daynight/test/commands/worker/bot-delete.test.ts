@@ -6,7 +6,6 @@ import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
 import type { Bot, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
-import type { BotDeletionRecovery } from "../../../src/commands/bot/deletion-api.js";
 import { ApiError } from "../../../src/api/client.js";
 import { BotExecutionEvidenceMissingError } from "../../../src/commands/worker/bots/process.js";
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
@@ -39,13 +38,6 @@ const fixture=()=>{
  return {home,database,store,executions,intent,current,stop,stopProof,remote,api,create,setRemote:(bot:BotDeleted)=>{remoteBot=bot;}};
 };
 
-const recoveryFor = (f: ReturnType<typeof fixture>, patch: Partial<BotDeletionRecovery> = {}): BotDeletionRecovery => ({
- schemaVersion: 1, botId: f.current().botId, workerId: f.current().owner.workerId, hostingWorkerId: f.remote.owner.workerId,
- version: f.current().observed.version, deletionId: id(8), requestedVersion: "1", requiresStopProof: true, recoveryRequired: false,
- originalBinding: { sessionId: f.stopProof.sessionId, testExecutionId: f.stopProof.testExecutionId, executionGeneration: "1", controllerId: f.stopProof.controllerId, controllerInstanceId: f.stopProof.controllerInstanceId },
- workerCleanup: f.current().observed.deletion!.workerCleanup as BotDeletionRecovery["workerCleanup"], decision: null,
- serverCleanup: { state: "pending", code: null }, ...patch,
-});
 const loseEvidence = (f: ReturnType<typeof fixture>, poisoned = false): void => {
  const record = f.current(); record.intent = null; record.definition = null;
  if (poisoned) record.cleanup = { deletionId: id(8), requestedVersion: "1", stop: null, targets: [], localCompleted: true };
@@ -53,24 +45,14 @@ const loseEvidence = (f: ReturnType<typeof fixture>, poisoned = false): void => 
  f.database.prepare("DELETE FROM bot_executions").run();
 };
 
-test.each([false, true])("missing server-bound evidence reports recovery without trusting localCompleted=%s", async poisoned => {
- const f = fixture(), recovery = recoveryFor(f); loseEvidence(f, poisoned);
- Object.assign(f.remote, { readDeletionRecovery: async () => ({ ...recovery, version: f.current().observed.version }) });
- await f.create().advance(f.current(), new AbortController().signal);
- expect(f.stop).not.toHaveBeenCalled();
- expect(f.api.completeDeletion.mock.calls.map(call => call[1].result)).toEqual([{ state: "failed", code: "execution_evidence_missing" }]);
- // A new manager uses the existing persisted server observation after restart.
- await f.create().advance(f.current(), new AbortController().signal);
- expect(f.api.completeDeletion).toHaveBeenCalledTimes(1);
- expect(existsSync(f.intent.journalPath)).toBe(true);
-});
-
-test("an old service's known missing-evidence state remains read-only without the sidecar", async () => {
- const f = fixture(); loseEvidence(f, true);
+test.each([false, true])("known missing evidence remains read-only without trusting localCompleted=%s", async poisoned => {
+ const f = fixture(); loseEvidence(f, poisoned);
  f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
  await f.create().advance(f.current(), new AbortController().signal);
  await f.create().advance(f.current(), new AbortController().signal);
  expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
+ await expect(f.create().advance(f.current(), new AbortController().signal, { recover: true })).rejects.toThrow("execution_evidence_missing");
+ expect(existsSync(f.intent.journalPath)).toBe(true);
 });
 
 test("a definitive old-service null-proof conflict transitions to the existing recovery failure", async () => {
@@ -84,24 +66,37 @@ test("a definitive old-service null-proof conflict transitions to the existing r
  expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
 });
 
-test("a never-bound Bot can still complete with no stop proof", async () => {
+test.each([401, 500])("a null-proof HTTP %s failure cannot create a missing-evidence report", async status => {
  const f = fixture(); loseEvidence(f, true);
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f, { requiresStopProof: false, originalBinding: null }) });
+ const failure = new ApiError({ operation: "worker.bot.delete" }, "response", {
+   status, serverError: { code: "session_conflict", message: "No proof conclusion.", requestId: "fixture" }, cause: new Error("failed") });
+ f.api.completeDeletion.mockRejectedValueOnce(failure);
+ await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toBe(failure);
+ expect(f.api.completeDeletion).toHaveBeenCalledOnce();
+ expect(f.current().observed.deletion!.workerCleanup).toEqual({ state: "pending", code: null });
+});
+
+test("an unknown missing-evidence report is reconciled by GET without replaying the rejected receipt", async () => {
+ const f = fixture(); loseEvidence(f, true);
+ const complete = f.api.completeDeletion.getMockImplementation()!;
+ f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
+   status: 409, serverError: { code: "session_conflict", message: "Receipt rejected.", requestId: "fixture" }, cause: new Error("rejected") }))
+   .mockImplementationOnce(async (...args) => { await complete(...args); throw new Error("failure report response lost"); });
+ await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toThrow("response lost");
+ expect(f.current().observed.deletion!.workerCleanup.state).toBe("pending");
+ await f.create().advance(f.current(), new AbortController().signal);
+ expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
+ expect(f.api.completeDeletion).toHaveBeenCalledTimes(2);
+});
+
+test("a null-proof receipt can complete when the existing service accepts it", async () => {
+ const f = fixture(); loseEvidence(f, true);
  await f.create().advance(f.current(), new AbortController().signal);
  expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: null, result: { state: "completed" } });
 });
 
-test("owner settlement stops late receipts without treating local cleanup as verified", async () => {
- const f = fixture(); loseEvidence(f, true);
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f, { decision: { operationId: id(99), requestedVersion: "2", actorUserId: id(1), reason: "Unverified local state accepted.", acknowledgedAt: "2026-11-05T00:00:00Z", localDisposition: "unverified" }, serverCleanup: { state: "completed", code: null } }) });
- await f.create().advance(f.current(), new AbortController().signal);
- expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
- expect(f.current().cleanup!.stop).toBeNull();
-});
-
 test("only explicit recovery uses retained original evidence and a failed stop keeps recovery required", async () => {
  const f = fixture(); f.setRemote({ ...f.current().observed, version: "4", deletion: { ...f.current().observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f, { recoveryRequired: true }) });
  await f.create().advance(f.current(), new AbortController().signal); expect(f.stop).not.toHaveBeenCalled();
  f.stop.mockRejectedValueOnce(new Error("original writer remains unconfirmed"));
  await expect(f.create().advance(f.current(), new AbortController().signal, { recover: true })).rejects.toThrow("original writer");
@@ -111,24 +106,11 @@ test("only explicit recovery uses retained original evidence and a failed stop k
  expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: f.stopProof, result: { state: "completed" } });
 });
 
-test("an original Worker observes a new host without sending a cleanup receipt", async () => {
- const f = fixture(); Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f, { hostingWorkerId: id(77) }) });
- await f.create().advance(f.current(), new AbortController().signal);
- expect(f.stop).not.toHaveBeenCalled(); expect(f.api.completeDeletion).not.toHaveBeenCalled();
-});
-
-test("conflicting original binding stops before touching private files", async () => {
- const f = fixture(), recovery = recoveryFor(f);
- Object.assign(f.remote, { readDeletionRecovery: async () => ({ ...recovery, originalBinding: { ...recovery.originalBinding!, controllerInstanceId: id(77) } }) });
- await expect(f.create().advance(f.current(), new AbortController().signal)).rejects.toThrow("conflicts");
- expect(f.stop).not.toHaveBeenCalled(); expect(existsSync(f.intent.journalPath)).toBe(true);
-});
-
 test("restored original evidence replaces an empty null-proof plan only after stopping again", async () => {
  const f = fixture(), record = f.current();
  record.cleanup = { deletionId: id(8), requestedVersion: "1", stop: null, targets: [], localCompleted: false };
  f.database.prepare("UPDATE bots SET record = ?").run(JSON.stringify(record));
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f) });
+ f.setRemote({ ...record.observed, version: "4", deletion: { ...record.observed.deletion!, workerCleanup: { state: "failed", code: "execution_evidence_missing" } } } as BotDeleted);
  await f.create().advance(f.current(), new AbortController().signal, { recover: true });
  expect(f.stop).toHaveBeenCalledOnce();
  expect(f.api.completeDeletion.mock.calls[0]![1]).toMatchObject({ stop: f.stopProof, result: { state: "completed" } });
@@ -144,11 +126,10 @@ test("partial execution evidence loss reports recovery and retains the original 
  expect(f.stop).toHaveBeenCalledOnce(); expect(f.api.completeDeletion).toHaveBeenCalledOnce();
 });
 
-test("a rejected historical never-started receipt becomes recovery-required after fresh binding verification", async () => {
+test("a rejected historical never-started receipt retains the service failure without inferring a binding", async () => {
  const f = fixture();
  f.api.completeDeletion.mockRejectedValueOnce(new ApiError({ operation: "worker.bot.delete" }, "response", {
  status: 409, serverError: { code: "session_conflict", message: "Original execution consumed its grant.", requestId: "fixture" }, cause: new Error("rejected") }));
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f) });
  await f.create().advance(f.current(), new AbortController().signal);
  expect(f.current()).toMatchObject({ intent: null, cleanup: { localCompleted: true, stop: { stopProof: { kind: "never_started" } } } });
  expect(f.current().observed.deletion!.workerCleanup.code).toBe("execution_evidence_missing");
@@ -162,7 +143,6 @@ test("an unfinished historical never-started plan cannot erase files after its e
  const record = f.current(), targets = await capture(f.home, record, f.executions.get(record), new AbortController().signal);
  f.store.prepareDeletion(record, f.stopProof, targets);
  f.database.prepare("DELETE FROM bot_executions").run();
- Object.assign(f.remote, { readDeletionRecovery: async () => recoveryFor(f) });
  await f.create().advance(f.current(), new AbortController().signal);
  expect(existsSync(f.intent.journalPath)).toBe(true); expect(existsSync(f.intent.ticketPath)).toBe(true);
  expect(f.current().cleanup!.localCompleted).toBe(false);

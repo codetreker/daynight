@@ -16,12 +16,7 @@ The management page excludes completed records from its visible deletion
 feedback while retaining the complete coordinator snapshot for admission,
 invalidation and the selected name. A selected deleted address shows the existing
 neutral deleted state, using the general title when no name is known. Incomplete
-and inaccessible states retain their feedback and actions. An owner-authorized
-[evidence-loss settlement](2026-11-23-bot-deletion-evidence-recovery.md) retains
-separate feedback stating that server cleanup completed while local verification
-remains unresolved; it is not normal completion. Known deletion records expose
-read-only status and hosting-machine CLI instructions, not browser recovery
-confirmation or account-wide history discovery. The original
+and inaccessible states retain their existing feedback and actions. The original
 [browser deletion decision](../architecture/2026-11-05-bot-browser-deletion.md)
 owns the retained safety barriers and cleanup rationale.
 

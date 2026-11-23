@@ -42,7 +42,7 @@ const render = (bot: Bot): string => {
   return lines.join("\n") + "\n";
 };
 export const runBotCommand = async (args: readonly string[], context: CliContext, dependencies: BotCommandDependencies = defaults): Promise<void> => {
-  if (args[0] === "deletion") return (await import("./deletion-commands.js")).runBotDeletionCommand(args.slice(1), context, dependencies);
+  if (args[0] === "recover") return (await import("./recover.js")).runBotRecoveryCommand(args, context, dependencies);
   const command = parseCommand(botDefinition, args, ["daynight", "bot"], "daynight bot --help");
   if (command.kind !== "run") { context.stdout(renderCommandHelp(command.command, command.path)); return; }
   const action = command.command.name;

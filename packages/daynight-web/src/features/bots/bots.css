@@ -106,9 +106,7 @@
 .bot-deletion-status dd { margin: 0; }
 .bot-deletion-status .button { margin: 4px 6px 0 0; }
 .bot-selected-deletion { display: block; }
-.bot-recovery-details { margin: 12px 0; }
-.bot-recovery-details dd { overflow-wrap: anywhere; white-space: pre-wrap; }
-.bot-deletion-status:has(.bot-recovery-details) dl { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.bot-deletion-instructions code { overflow-wrap: anywhere; white-space: pre-wrap; }
 .bot-deletions .bot-deletion-status dl { display: block; }
 .bot-deletions .bot-deletion-status dt { margin-top: 8px; font-weight: 600; }
 .bot-deletions .bot-deletion-status dd { margin-top: 2px; }
@@ -123,5 +121,3 @@
 }
 
 .bot-attention-count { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--indigo); color: #fff; font-size: var(--text-xs); font-weight: 650; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
-
-.bot-recovery-instructions code { overflow-wrap: anywhere; white-space: pre-wrap; }

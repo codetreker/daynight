@@ -6,11 +6,11 @@ import { openLocalBotStores } from "../../../src/commands/worker/bots/local-stor
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
-import { inspectLocalBotDeletion, recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
+import { recoverLocalBotDeletion } from "../../../src/commands/worker/bots/deletion-local.js";
 import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import type { BotDefinition, BotDeleted } from "../../../src/commands/worker/bots/types.js";
-import type { BotDeletionRecovery } from "../../../src/commands/bot/deletion-api.js";
 import * as botProcess from "../../../src/commands/worker/bots/process.js";
+import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const cleanups: (() => void)[] = [];
@@ -28,7 +28,7 @@ const fixture = (evidence: "retained" | "missing" = "retained") => {
   cleanups.push(() => stores.close());
   const definition: BotDefinition = { id: id(3), workerId: id(2), ownerUserId: id(1), version: "1", creationOrder: "1", name: "Assistant", requestedOverrides: {}, resolvedConfiguration: { workerId: id(2), cwd: homeDirectory, provider: "codex", model: null, args: [] }, roleConfiguration: null, sessionId: null, testExecutionId: null, startupResult: { state: "pending", code: null }, deletion: null, createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z" };
   stores.store.observe(owner, definition, 1);
-  let binding: BotDeletionRecovery["originalBinding"] = { sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(6), controllerInstanceId: id(7) };
+  let binding = { sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(6), controllerInstanceId: id(7) };
   if (evidence === "retained") {
     const intent = stores.store.prepare(owner, id(3), { homeDirectory, recoveryLimit: 0 });
     stores.store.observe(owner, { ...definition, version: "2", sessionId: id(4), testExecutionId: intent.executionId }, 2);
@@ -37,38 +37,64 @@ const fixture = (evidence: "retained" | "missing" = "retained") => {
   }
   const bot: BotDeleted = { id: id(3), workerId: id(2), version: "4", deletion: { deletionId: id(8), requestedVersion: "3", workerCleanup: { state: "failed", code: "execution_evidence_missing" }, serverCleanup: { state: "pending", code: null } } };
   stores.store.observe(owner, bot, 3);
-  const recovery: BotDeletionRecovery = { schemaVersion: 1, botId: id(3), workerId: id(2), hostingWorkerId: id(2), version: "4", deletionId: id(8), requestedVersion: "3", requiresStopProof: true, recoveryRequired: true, originalBinding: binding, workerCleanup: { state: "failed", code: "execution_evidence_missing" }, decision: null, serverCleanup: { state: "pending", code: null } };
   stores.close();
   const input = { homeDirectory, packageDirectory: path.resolve(import.meta.dirname, "../../../"), workingDirectory: homeDirectory,
-    serverUrl: owner.serverOrigin, ownerUserId: owner.ownerUserId, serverToken: "fixture-token", botId: id(3), recovery, signal: new AbortController().signal };
-  return { paths, stores, owner, bot, recovery, input };
+    serverUrl: owner.serverOrigin, ownerUserId: owner.ownerUserId, serverToken: "fixture-token", botId: id(3), bot, signal: new AbortController().signal };
+  return { paths, stores, owner, bot, binding, input };
 };
 
-test("readonly inspection identifies retained evidence without claiming the original writer stopped", async () => {
-  const f = fixture(), file = resolveBotPaths(f.paths.stateDirectory, id(3)).databaseFile;
-  const before = readFileSync(file);
-  expect(await inspectLocalBotDeletion(f.input)).toMatchObject({ originalWorkerMatched: true, hostingWorkerMatched: true,
-    storage: "available", evidence: "retained", canRecover: true, localProcessState: "unverified",
-    checks: { bindingMatched: true, launchIntentPresent: true, journalPresent: false, ticketPresent: false } });
-  expect(readFileSync(file)).toEqual(before);
-  expect(existsSync(f.paths.lockFile)).toBe(false);
-});
-
-test("missing records and a forged binding cannot become local stop evidence", async () => {
+test("missing records cannot become local stop evidence or create replacement storage", async () => {
   const missing = fixture("missing");
-  expect(await inspectLocalBotDeletion(missing.input)).toMatchObject({ evidence: "missing", canRecover: false, localProcessState: "unverified" });
+  const file = resolveBotPaths(missing.paths.stateDirectory, id(3)).databaseFile, before = readFileSync(file);
+  const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
   await expect(recoverLocalBotDeletion(missing.input)).rejects.toMatchObject({ code: "evidence_missing" });
-  const retained = fixture();
-  expect(await inspectLocalBotDeletion({ ...retained.input, recovery: { ...retained.recovery, originalBinding: { ...retained.recovery.originalBinding!, controllerId: id(99) } } })).toMatchObject({ storage: "unreadable", canRecover: false });
+  expect(fetch).not.toHaveBeenCalled(); expect(readFileSync(file)).toEqual(before); expect(existsSync(missing.paths.lockFile)).toBe(false);
 });
 
-test("inspection distinguishes original record ownership from current hosting machine", async () => {
+test("a different machine needs its original confirmed hosting receipt before process control", async () => {
   const f = fixture();
   writeFileSync(f.paths.configFile, `workerId: ${id(20)}\n`);
-  const recovery = { ...f.recovery, hostingWorkerId: id(20) };
-  expect(await inspectLocalBotDeletion({ ...f.input, recovery })).toMatchObject({ workerId: id(2), hostingWorkerId: id(20),
-    originalWorkerMatched: false, hostingWorkerMatched: true, storage: "available", evidence: "retained" });
-  expect(await inspectLocalBotDeletion(f.input)).toMatchObject({ hostingWorkerMatched: false, canRecover: false });
+  const create = vi.spyOn(botProcess, "createBotProcess");
+  const fetch = vi.fn(async () => new Response(JSON.stringify(f.bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } })); vi.stubGlobal("fetch", fetch);
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "wrong_worker" });
+  expect(create).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce(); expect(existsSync(f.paths.lockFile)).toBe(false);
+});
+
+test.each(["pending", "stale"])("retained %s hosting authority prevents local process control", async status => {
+  const f = fixture(), local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
+  try {
+    const record = local.store.get(f.owner, id(3))!;
+    const recovery = openBotRecoveryStore({ owner: f.owner, stateDirectory: f.paths.stateDirectory, assertLocked: local.assertLocked });
+    const identity = recovery.ensureIdentity(record);
+    recovery.prepare(record, { kind: "register", workerId: id(2), body: { botRecoveryVersion: 1, serviceOrigin: f.owner.serverOrigin,
+      recoveryIdentity: identity.recoveryIdentity, operationId: id(90), botVersion: "2", sessionId: f.binding.sessionId,
+      testExecutionId: f.binding.testExecutionId, nativeSessionId: null } });
+    if (status === "stale") {
+      recovery.recordResult(record, id(90), { current: false, receipt: { botRecoveryVersion: 1, operationId: id(90), kind: "register", workerId: id(2),
+        hostingGeneration: "1", botVersion: "3", ...f.binding, nativeSessionId: null, grantExpiresAt: null, controllerTokenHash: null } });
+      recovery.finishOperation(record, id(90));
+    }
+  } finally { local.close(); }
+  const create = vi.spyOn(botProcess, "createBotProcess");
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(f.bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } })));
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "wrong_worker" });
+  expect(create).not.toHaveBeenCalled(); expect(existsSync(f.paths.lockFile)).toBe(false);
+});
+
+test.each(["pending", "completed", "private_cleanup_failed"])("recovery rejects an unrelated server state %s before acquiring a lock", async state => {
+  const f = fixture(), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+  const bot = { ...f.bot, deletion: { ...f.bot.deletion, workerCleanup: { state: state === "private_cleanup_failed" ? "failed" : state, code: state === "private_cleanup_failed" ? state : null } } };
+  await expect(recoverLocalBotDeletion({ ...f.input, bot })).rejects.toMatchObject({ code: "deletion_changed" });
+  expect(fetch).not.toHaveBeenCalled(); expect(existsSync(f.paths.lockFile)).toBe(false);
+});
+
+test.each(["identity", "state"])("recovery checks fresh server %s after acquiring the Worker lock", async changed => {
+  const f = fixture(), create = vi.spyOn(botProcess, "createBotProcess");
+  const bot = { ...f.bot, version: "5", deletion: { ...f.bot.deletion,
+    ...(changed === "identity" ? { deletionId: id(99) } : { workerCleanup: { state: "pending", code: null } }) } };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bot), { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } })));
+  await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "deletion_changed" });
+  expect(create).not.toHaveBeenCalled(); expect(existsSync(f.paths.lockFile)).toBe(false);
 });
 
 test("recovery refuses a live Worker lock without touching the server or original owner", async () => {
@@ -88,15 +114,15 @@ test("explicit local recovery reuses the real never-started proof protocol and r
       const receipt = JSON.parse(init.body as string); receipts.push(receipt);
       current = { ...current, version: "5", deletion: { ...current.deletion, workerCleanup: receipt.result, serverCleanup: { state: "completed", code: null } } };
       body = current;
-    } else body = url.endsWith("/deletion-recovery") ? f.recovery : current;
+    } else { expect(url).toBe(`${f.owner.serverOrigin}/api/v1/me/bots/${id(3)}`); body = current; }
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
   }));
   await expect(recoverLocalBotDeletion(f.input)).resolves.toEqual({ receiptConfirmed: true });
   expect(receipts).toEqual([expect.objectContaining({ deletionId: id(8), result: { state: "completed", code: null },
-    stop: expect.objectContaining({ ...f.recovery.originalBinding, stopProof: expect.objectContaining({ kind: "never_started" }) }) })]);
+    stop: expect.objectContaining({ ...f.binding, stopProof: expect.objectContaining({ kind: "never_started" }) }) })]);
   expect(existsSync(f.paths.lockFile)).toBe(false);
   const local = openLocalBotStores({ owner: f.owner, stateDirectory: f.paths.stateDirectory, legacyDatabaseFile: f.paths.databaseFile });
-  try { expect(local.store.get(f.owner, id(3))).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, stop: expect.objectContaining(f.recovery.originalBinding!) } }); }
+  try { expect(local.store.get(f.owner, id(3))).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, stop: expect.objectContaining(f.binding) } }); }
   finally { local.close(); }
 });
 
@@ -113,13 +139,13 @@ test("a missing execution row permits only journal stop compensation and never c
   const requests: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
     requests.push(init.method!);
-    return new Response(JSON.stringify(url.endsWith("/deletion-recovery") ? f.recovery : f.bot),
+    expect(url).toBe(`${f.owner.serverOrigin}/api/v1/me/bots/${id(3)}`);
+    return new Response(JSON.stringify(f.bot),
       { headers: { "Content-Type": "application/json", "Daynight-User-ID": id(1) } });
   }));
-  expect(await inspectLocalBotDeletion(f.input)).toMatchObject({ canRecover: true, checks: { executionRecordPresent: false, journalPresent: true, ticketPresent: true } });
   await expect(recoverLocalBotDeletion(f.input)).rejects.toMatchObject({ code: "evidence_missing", generationStopped: true, receiptConfirmed: false });
   expect(stop).toHaveBeenCalledWith({ recoverMissingExecution: true }); expect(close).toHaveBeenCalledOnce();
-  expect(requests).toEqual(["GET", "GET"]); expect(existsSync(f.paths.lockFile)).toBe(false);
+  expect(requests).toEqual(["GET"]); expect(existsSync(f.paths.lockFile)).toBe(false);
   const saved = new Database(file, { readonly: true });
   try {
     expect(saved.prepare("SELECT count(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });

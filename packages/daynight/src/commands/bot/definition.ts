@@ -1,5 +1,4 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
-import { botDeletionDefinition } from "./deletion-definition.js";
 const help: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
 const json: CommandOption = { names: ["--json"], description: "Print the resource as JSON; operation failures use JSON on stderr" };
 const request: CommandOption = { names: ["--request-id"], description: "Use this stable request UUID (generated before submission when omitted)", value: { name: "uuid", kind: "text" } };
@@ -9,9 +8,11 @@ export const botDefinition: CommandDefinition = {
   options: [help],
   details: "No project or Git repository is required. Bot execution depends on a compatible online Worker.\nRun daynight bot <command> --help for command usage.",
   commands: [
-    botDeletionDefinition,
     { name: "list", description: "List all visible Bot definitions", options: [json, help], details: "Read every page before printing. --json prints one array. Deleted Bots are hidden; query their IDs with show." },
     { name: "show", description: "Read a Bot definition or its minimal deletion responsibility", arguments: target, options: [json, help], details: "--json prints the Bot object. Pending startup is not readiness, and recorded ready does not prove current connectivity." },
+    { name: "recover", description: "Recover deletion using original local execution evidence", arguments: target, options: [
+      { names: ["--deletion-id"], description: "Original deletion UUID", value: { name: "uuid", kind: "text" }, required: true }, json, help,
+    ], details: "Run on the original execution's machine with its original DN_CONFIG_DIR after stopping the Worker. Recovery requires the Worker lock and original execution identity. Stopping a retained generation alone does not prove historical cleanup. Missing evidence retains the deletion as incomplete. Query the original result with daynight bot show <bot-id> --json before another recovery attempt." },
     { name: "create", description: "Create a Bot using server-resolved Worker defaults", options: [
       { names: ["--name"], description: "Bot name (1 to 40 Unicode characters, without control characters)", value: { name: "name", kind: "text" }, required: true },
       { names: ["--worker"], description: "Explicit hosting Worker UUID", value: { name: "worker-id", kind: "text" } },

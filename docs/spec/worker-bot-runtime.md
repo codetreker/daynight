@@ -38,7 +38,7 @@ Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#li
 
 ## 删除与私有资料
 
-只有当前服务、账号和绑定 Worker 的权威删除投影才能启动清理。删除责任固定到原 `deletionId` 和执行身份；清单遗漏、404、网络失败或权限失败都不能当作清理授权。运行时必须接入删除管理器，发现删除投影后推进同一责任；单 Bot 的清理失败不阻塞其它 Bot，可重试的清理失败在下次权威对账后继续处理。`execution_evidence_missing` 则持久进入等待恢复，停止重复提交无效成功回执。删除状态阻止新启动、恢复和续期，但已提交子进程的出生证明及观察仍须保存，不能因删除先到而遗失停止原 writer 所需的证据。
+只有当前服务、账号和绑定 Worker 的权威删除投影才能启动清理。删除责任固定到原 `deletionId` 和执行身份；清单遗漏、404、网络失败或权限失败都不能当作清理授权。运行时必须接入删除管理器，发现删除投影后推进同一责任；单 Bot 的清理失败不阻塞其它 Bot，可重试失败在下次权威对账后继续处理。`failed/execution_evidence_missing` 则持续保留明确失败，自动处理只读核对，不重复停止、私有清理或无效完成回执；该状态跨重启生效。删除状态阻止新启动、恢复和续期，但已提交子进程的出生证明及观察仍须保存，不能因删除先到而遗失停止原 writer 所需的证据。
 
 删除与原执行共用同一串行化入口，等待在途启动结束后停止原 writer。IPC stop 成功回执不能替代 OS 进程树停证；停止未确认时，ticket、journal、pending 内容和操作回执保持完整。停证须匹配原 generation、Controller instance 和 Session；不能借前代停证清理可能仍运行的新代。`never_started` 仅用于确证从未启动执行的收尾，包括未提交和明确 OS 启动拒绝且没有任何进程或 snapshot 证据的首次执行；不能把未知 spawn 或未知恢复 grant 降为未启动。
 
@@ -50,13 +50,9 @@ Linux Bot 的进程证明须满足[稳定出生身份要求](task-sessions.md#li
 
 离线或权限错误保留责任并显示实际失败；停证缺失、执行代际不明和文件清理失败不得报告完成。已保存注册意图却没有确认 sessionId，或恢复目标尚未提交而服务端 grant 是否换代无法确认时，均保留原执行资料，不能把未知注册视为从未绑定，也不能猜测一个可被接受的 stopProof。
 
-执行记录缺失时先读取独立删除恢复资源，核对原删除身份与 `requiresStopProof`。服务器需要停证而本地没有可用原执行证据或已保存停证时，在删除私有资料之前报告 `failed/execution_evidence_missing`，保留原责任；历史 `cleanup.localCompleted=true,stop=null` 同样需要此核对。只剩 intent 而原执行行或提交状态缺失，不能降格为 `never_started`；已提交执行无法确认停止且所需 journal 缺失时也进入证据缺失，其它停止失败仍保留未证明停止的原因。完整记录明确证明未提交或明确 OS 启动拒绝的正常路径仍可使用 `never_started`。历史无依据的 `never_started` 回执经服务端确定拒绝后，重新核对恢复资源的原绑定及承载身份，再转入证据缺失恢复；已知缺失状态不能由显式恢复再次重放同一无依据回执。真正从未绑定 Session 的助手仍允许正常 null stop，不以空本地记录代替服务端绑定事实。旧服务端不支持恢复资源时，已知的证据缺失状态仍跨重启停止自动完成重试，不盲目将非 null 停证的冲突归为证据缺失；其它错误不能推导成未绑定或成功。
+空记录、历史 `localCompleted:true`、仅有 intent 而原执行行缺失，均不能证明原执行从未启动；发现证据不足须在私有清理前报告既有 `execution_evidence_missing`。完整持久记录明确未提交或明确 OS 启动拒绝时，仍可沿正常 `never_started` 路径完成。历史 null 或 `never_started` 完成回执收到服务端确定的 `session_conflict` 后，先核对原删除，再报告证据缺失并停止同一无效回执；网络失败不能当作此拒绝证据。
 
-`bot deletion inspect` 把原机器实际检查与服务端状态分开呈现；`bot deletion recover` 在排除运行 Worker 和其它 Bot 持有者后，按原绑定尝试既有停证及精确私有清理。显式恢复可以继续等待恢复的同一删除，不能建立替代执行或放宽正常停证规则。缺失身份、未确认停止和未知回执仍保留责任。该入口仅补偿 Bot 删除异常，不作为普通 Worker 启停、Task 执行或运行中助手的一般恢复入口。
-
-已进入 `execution_evidence_missing`、执行索引行缺失，但原 intent、ticket 和 journal 仍可核对时，显式 `recover` 应尽力停止 journal 所属的原 generation，并将真实停证保留在原 journal。此时历史私有资源清单仍未知，因此不重建执行行、不生成部分 cleanup 计划、不删除 ticket/journal，也不提交 completed。命令仍以 `reason=evidence_missing` 失败，hint 明确区分“原 generation 已停止”与“删除尚未完成”；重复核对不得改写既有停止时间。自动删除推进及普通 Worker 流程不启用这一补偿。
-
-所有者接受本地未核实后的独立收尾由[助手删除恢复](assistant.md#删除证据缺失恢复)拥有。Worker 的远端清单及本地保留 ID 的逐项读取都须识别该决定，停止普通删除推进；不能仅从清单中隐藏它。服务端清理完成后本地仍保留 failed 事实及最小责任，不能伪造本地完成或补发旧成功回执。读取失败保留最后确认事实，不解除删除屏障。
+用户可先用 `daynight bot show <bot-id> --json` 核对，再在原执行机器、原 `DN_CONFIG_DIR` 和账号下停止 Worker，显式执行 `daynight bot recover <bot-id> --deletion-id <deletion-id> [--json]`。命令取得既有 Worker/Bot 锁，沿本地确认的承载身份、原执行和停止能力尽力补偿；完整停证及全部私有清理成功后才提交既有 completed 回执。执行行丢失但原 intent/ticket/journal 可核对时，可停止原 generation 并将真实停证留在原 journal；历史私有清理材料仍缺，因此保留失败，不重建 execution 或部分 cleanup 计划，不删除 ticket/journal，不提交 completed。重复补偿保留原停止时间，CLI hint 区分“原 generation 已停止”与“删除未完成”。证据彻底丢失时允许继续失败，不保证服务端完成；不新增服务端恢复协议或无证明结清能力，也不改变普通 Worker 流程。
 
 首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。共享 Provider 历史不在清理范围内；新存储合同中的 Bot 专属原生副本属于其私有资料。不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
 

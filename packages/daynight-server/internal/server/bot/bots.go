@@ -60,9 +60,6 @@ func RegisterRoutes(mux httpx.RouteRegistrar, bots definitions, relay deletion, 
 	mux.HandleFunc("GET "+base+"/defaults", admit(h.defaults))
 	mux.HandleFunc(base+"/defaults", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc(base+"/{botId}", httpx.MethodDispatch(admit(h.detail), http.MethodGet, http.MethodHead, http.MethodDelete))
-	mux.HandleFunc("GET "+base+"/{botId}/deletion-recovery", admit(h.deletionRecovery))
-	mux.HandleFunc("POST "+base+"/{botId}/deletion-recovery", admit(h.deletionRecovery))
-	mux.HandleFunc(base+"/{botId}/deletion-recovery", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("GET "+base+"/{botId}/observation", admit(h.observation))
 	mux.HandleFunc(base+"/{botId}/observation", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	const worker = "/api/v1/me/workers/{workerId}/bots"

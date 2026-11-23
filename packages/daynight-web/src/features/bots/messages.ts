@@ -1,16 +1,9 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
-  recoveryRequired: 'Execution records are missing. Recover on the original machine.', recoveryInstructions: 'Show recovery steps',
-  recoveryPrepare: 'On the hosting machine, use its original DN_CONFIG_DIR and the same Daynight server and account. Stop the Worker before recovery. Keep any remaining execution records.',
-  recoveryInspect: 'Inspect the retained evidence:', recoveryRecover: 'If the inspection allows recovery, run:',
-  recoveryMissing: 'If the original evidence is missing, the CLI can accept unverified local cleanup. Review the required acknowledgement and reason:',
-  recoveryWarning: 'This fallback deletes server conversation history and archives while recording the local state as unverified. It cannot confirm that the native Agent stopped and does not remove the working directory or Provider history.',
-  recoveryRetry: 'Inspect the current state first. If server cleanup is still incomplete, retry with the version returned by inspect and the existing decision operation ID:',
-  recoveryReconcile: 'After any write, or if its response is lost, inspect the server state before repeating a command. Refresh this page to see the result.',
-  recoveryReason: 'Reason for settlement', recoveryUnsupported: 'This server does not support deletion recovery yet. Upgrade the server, then check again.',
-  recoverySettled: 'Server deletion completed; local state unverified', recoveryClosedDescription: 'Deletion tracking is closed. Whether the original machine stopped and what remains locally are unverified.',
-  recoveryDecision: 'View settlement record', recoveryUnverified: 'Unverified', recoveryDecidedAt: 'Confirmed at', recoveryActor: 'Confirmed by', recoveryPending: 'Server settlement accepted; cleanup pending',
+  deletionEvidenceMissing: 'Execution records are missing; deletion cannot be confirmed.', deletionRecoverySteps: 'Show original-machine recovery steps',
+  deletionRecoveryPrepare: 'On the machine that ran this assistant, stop its Worker and use the original DN_CONFIG_DIR, Daynight server and account. Keep any remaining execution records, then attempt local recovery:',
+  deletionRecoveryResult: 'Missing evidence can prevent recovery from completing deletion. Stopping the original execution does not prove that all local data was cleaned. Check the server result after recovery; only both cleanup phases completed means deletion completed.',
   legacyRoleNotice: 'Recreate this assistant to enable assistant task collaboration.',
   welcomeTitle: 'Start with a conversation', welcomeDescription: 'Check progress, clarify an idea, or move your work forward.',
   conversationStarters: [
@@ -29,16 +22,9 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
-  recoveryRequired: '缺少执行记录，需要在原机器恢复', recoveryInstructions: '查看恢复步骤',
-  recoveryPrepare: '在托管此助手的机器上，使用原来的 DN_CONFIG_DIR，并连接相同的 Daynight 服务端和账号。恢复前停止 Worker，保留尚存的执行记录。',
-  recoveryInspect: '检查保留的执行证据：', recoveryRecover: '如果检查结果允许恢复，执行：',
-  recoveryMissing: '如果原始证据已经丢失，可通过 CLI 接受本机未核实的清理。先查看所需的确认和原因参数：',
-  recoveryWarning: '此兜底会删除服务端会话历史和归档，保留“本机未核实”记录。它无法确认原生 Agent 已停止，也不会删除工作目录或 Provider 历史。',
-  recoveryRetry: '先核对当前状态。如果服务端清理仍未完成，使用 inspect 返回的最新版本和已有收尾记录的操作 ID 重试：',
-  recoveryReconcile: '执行写操作后，或响应丢失时，先检查服务端状态再决定是否重试。刷新本页面可查看结果。',
-  recoveryReason: '收尾原因', recoveryUnsupported: '此服务端尚不支持删除恢复，请升级服务端后核对。',
-  recoverySettled: '服务端删除完成，本机未核实', recoveryClosedDescription: '删除跟踪已结束。原机器是否停止以及本地遗留仍未核实。',
-  recoveryDecision: '查看收尾记录', recoveryUnverified: '未核实', recoveryDecidedAt: '确认时间', recoveryActor: '确认人', recoveryPending: '服务端收尾已受理，等待清理',
+  deletionEvidenceMissing: '执行记录缺失，无法确认删除完成', deletionRecoverySteps: '查看原机补偿步骤',
+  deletionRecoveryPrepare: '在运行此助手的原机器上停止 Worker，使用原来的 DN_CONFIG_DIR、Daynight 服务端和账号。保留尚存的执行记录，再尝试本机补偿：',
+  deletionRecoveryResult: '证据缺失时，补偿仍可能无法完成删除。原执行停止不代表本机数据已全部清理。补偿后核对服务端结果；只有两阶段清理都完成，才表示删除完成。',
   legacyRoleNotice: '重建后可获得助手任务协作能力',
   welcomeTitle: '从一段对话开始', welcomeDescription: '查进度、理清想法，或一起推进手头的工作。',
   conversationStarters: [
