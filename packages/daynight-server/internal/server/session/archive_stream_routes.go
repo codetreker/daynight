@@ -25,6 +25,15 @@ type archiveStreamOperation interface {
 	RestartArchiveFile(context.Context, string, string, string) (sp.ArchiveFileReceipt, error)
 }
 
+type archiveLimitedStream struct {
+	*io.LimitedReader
+	body *httpx.DeadlineBody
+}
+
+func (s *archiveLimitedStream) BindReadContext(ctx context.Context) func() error {
+	return s.body.BindReadContext(ctx)
+}
+
 func (h *Routes) putArchiveStream(w http.ResponseWriter, r *http.Request, p model.Principal, purpose string) {
 	values, err := httpx.QueryValues(r, "offset", "purpose", "migrationOnly")
 	if err != nil {
@@ -84,7 +93,7 @@ func (h *Routes) putArchiveStream(w http.ResponseWriter, r *http.Request, p mode
 	timedRequest := r.WithContext(ctx)
 	readRequest, finishRead := archiveReadRequest(timedRequest, op)
 	stream := httpx.NewStreamingDeadlineBody(w, readRequest, archiveStreamIdleTimeout, archiveStreamTotalTimeout)
-	limited := &io.LimitedReader{R: stream, N: length - offset}
+	limited := &archiveLimitedStream{LimitedReader: &io.LimitedReader{R: stream, N: length - offset}, body: stream}
 	var out sp.ArchiveFileReceipt
 	if resource {
 		out, err = streamOp.PutArchiveResourceV2(readRequest.Context(), r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), limited, descriptor)
@@ -114,7 +123,17 @@ func (h *Routes) putArchiveStream(w http.ResponseWriter, r *http.Request, p mode
 	cancel()
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
+		// A forced socket deadline can cancel net/http's request context while
+		// the peer is still connected. Returning without a response would make
+		// net/http synthesize a misleading empty 200.
+		if r.Context().Err() != nil {
+			panic(http.ErrAbortHandler)
+		}
 		return
+	}
+	if r.Context().Err() != nil {
+		h.closeArchive(r, op)
+		panic(http.ErrAbortHandler)
 	}
 	w.Header().Set("Daynight-Archive-Upload-Version", "2")
 	if purpose == "history" {

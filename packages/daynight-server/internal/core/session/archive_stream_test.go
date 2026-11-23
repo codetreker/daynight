@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
@@ -17,6 +18,41 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+// streamTestBody wraps finite, in-memory input; the production adapter binds
+// its blocking socket reader directly to the Session I/O context.
+type streamTestBody struct {
+	reader            io.Reader
+	ctx               context.Context
+	bound             context.Context
+	detachedWhileLive bool
+	unbindErr         error
+	onUnbind          func()
+}
+
+func streamTestBodyFrom(reader io.Reader) *streamTestBody { return &streamTestBody{reader: reader} }
+func streamTestBytes(data []byte) *streamTestBody         { return streamTestBodyFrom(bytes.NewReader(data)) }
+func (r *streamTestBody) BindReadContext(ctx context.Context) func() error {
+	previous := r.ctx
+	r.ctx = ctx
+	r.bound = ctx
+	return func() error {
+		if r.onUnbind != nil {
+			r.onUnbind()
+		}
+		r.detachedWhileLive = ctx.Err() == nil
+		r.ctx = previous
+		return r.unbindErr
+	}
+}
+func (r *streamTestBody) Read(p []byte) (int, error) {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	return r.reader.Read(p)
+}
 
 type streamTestDAO struct {
 	*archiveFlowDAO
@@ -211,7 +247,7 @@ func (h *streamTestHandle) Append(ctx context.Context, _ string, _ int64, expect
 	return h.offset, nil
 }
 func (h *streamTestHandle) Open(context.Context, string, int64) (filestorage.Object, error) {
-	return filestorage.Object{Body: io.NopCloser(bytes.NewReader(h.data)), Info: filestorage.FileInfo{Size: int64(len(h.data))}}, nil
+	return filestorage.Object{Body: io.NopCloser(streamTestBytes(h.data)), Info: filestorage.FileInfo{Size: int64(len(h.data))}}, nil
 }
 func (h *streamTestHandle) Publish(_ context.Context, _ string, total int64, _, _ string) (filestorage.FileInfo, error) {
 	if h.publishErr != nil {
@@ -269,7 +305,7 @@ func streamTestFixture(t *testing.T, length int64) (*ArchiveOperation, *streamTe
 func TestArchiveStreamRetainsOnlyCompleteBlocksOnShortRead(t *testing.T) {
 	length := 2*sessionarchive.BlockSize + 100
 	op, d, h := streamTestFixture(t, length)
-	input := bytes.NewReader(bytes.Repeat([]byte("x"), int(sessionarchive.BlockSize+sessionarchive.BlockSize/2)))
+	input := streamTestBytes(bytes.Repeat([]byte("x"), int(sessionarchive.BlockSize+sessionarchive.BlockSize/2)))
 	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, length, d.row.SHA256, input)
 	if !errors.Is(err, io.ErrUnexpectedEOF) || h.offset != sessionarchive.BlockSize || h.appends != 1 || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("short read: offset=%d appends=%d finishes=%d leases=%d err=%v", h.offset, h.appends, d.finishes, d.leases, err)
@@ -277,7 +313,7 @@ func TestArchiveStreamRetainsOnlyCompleteBlocksOnShortRead(t *testing.T) {
 }
 func TestArchiveStreamRejectsDifferentImmutableIdentityBeforeWriting(t *testing.T) {
 	op, d, h := streamTestFixture(t, 10)
-	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 10, archiveDigest([]byte("different")), bytes.NewReader([]byte("0123456789")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 10, archiveDigest([]byte("different")), streamTestBytes([]byte("0123456789")))
 	if err == nil || h.appends != 0 || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("identity mismatch: %v appends=%d finishes=%d", err, h.appends, d.finishes)
 	}
@@ -317,7 +353,7 @@ func TestArchiveStreamCancellationPreservesConfirmedPrefix(t *testing.T) {
 	op, d, h := streamTestFixture(t, length)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	_, err := op.PutArchiveFileV2(ctx, "history", d.row.FileID, 0, length, d.row.SHA256, &cancelAfterFirstBlock{cancel: cancel})
+	_, err := op.PutArchiveFileV2(ctx, "history", d.row.FileID, 0, length, d.row.SHA256, streamTestBodyFrom(&cancelAfterFirstBlock{cancel: cancel}))
 	if !errors.Is(err, context.Canceled) || h.offset != sessionarchive.BlockSize || h.appends != 1 || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("cancel: offset=%d appends=%d finishes=%d leases=%d err=%v", h.offset, h.appends, d.finishes, d.leases, err)
 	}
@@ -337,7 +373,7 @@ func TestArchiveStreamStatusReportsCorruptionWithoutWriting(t *testing.T) {
 func TestArchiveStreamRejectsLateWriterAtOldOffset(t *testing.T) {
 	op, d, h := streamTestFixture(t, sessionarchive.BlockSize)
 	h.offset = sessionarchive.BlockSize
-	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, d.row.ByteLength, d.row.SHA256, bytes.NewReader(make([]byte, sessionarchive.BlockSize)))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, d.row.ByteLength, d.row.SHA256, streamTestBytes(make([]byte, sessionarchive.BlockSize)))
 	if err == nil || h.appends != 0 || h.offset != sessionarchive.BlockSize || d.finishes != 0 {
 		t.Fatalf("stale offset accepted: offset=%d appends=%d err=%v", h.offset, h.appends, err)
 	}
@@ -370,7 +406,7 @@ func TestArchiveStreamValidatesAndPublishesHistoryOnce(t *testing.T) {
 	history := encode(sp.ArchiveHistoryContent{HistoryEpoch: "history", SourceThrough: "0", Entries: []sp.TimelineEntry{}, Resources: []sp.Resource{}})
 	op, d, h := streamTestFixture(t, int64(len(history)))
 	d.row.SHA256 = archiveDigest(history)
-	receipt, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, int64(len(history)), d.row.SHA256, bytes.NewReader(history))
+	receipt, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, int64(len(history)), d.row.SHA256, streamTestBytes(history))
 	if err != nil || receipt.State != "receiving" || receipt.AcceptedOffset != decimal(int64(len(history))) || h.appends != 1 {
 		t.Fatalf("put: %+v appends=%d err=%v", receipt, h.appends, err)
 	}
@@ -402,7 +438,7 @@ func TestArchiveStreamCleanupRetriesOnManifestWithOriginalPermit(t *testing.T) {
 	d.bundle.Resources = json.RawMessage(`[]`)
 	d.exposeTerminal = true
 	h.deleteFailures = 1
-	if _, err = op.execution.files.Put(t.Context(), archiveBucket, d.row.Path+"/content", bytes.NewReader(timeline)); err != nil {
+	if _, err = op.execution.files.Put(t.Context(), archiveBucket, d.row.Path+"/content", streamTestBytes(timeline)); err != nil {
 		t.Fatal(err)
 	}
 	permit, err := op.execution.files.TryAcquireArchive(t.Context(), op.owner, op.id, 1, false)
@@ -457,7 +493,7 @@ func TestArchiveStreamRegistersAfterCreatingStorageAndRejectsDisabledCreation(t 
 			d.bundle.HistoryID = ""
 			id := uuid.NewString()
 			data := []byte("data")
-			receipt, err := op.PutArchiveFileV2(t.Context(), "history", id, 0, 4, archiveDigest(data), bytes.NewReader(data))
+			receipt, err := op.PutArchiveFileV2(t.Context(), "history", id, 0, 4, archiveDigest(data), streamTestBytes(data))
 			if !enabled {
 				if err == nil || h.creates != 0 || d.next != nil {
 					t.Fatalf("disabled registration: err=%v creates=%d", err, h.creates)
@@ -525,7 +561,7 @@ func TestArchiveStreamResourceCannotBypassCorruptSuccessor(t *testing.T) {
 	d.row.TerminalError = encode(sp.ImageError{Code: "staging_corrupt"})
 	d.bundle.HistoryID = uuid.NewString()
 	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
-	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, streamTestBytes([]byte("data")), resource); err == nil {
 		t.Fatal("v2 bypassed original successor")
 	}
 	if _, err := op.PutArchiveResource(t.Context(), uuid.NewString(), 0, 4, hash, hash, []byte("data"), resource); err == nil {
@@ -582,7 +618,7 @@ func TestArchiveStreamResourcePreservesCompletedIdentity(t *testing.T) {
 	d.row.Resource = encode(resource)
 	d.bundle.HistoryID = uuid.NewString()
 	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
-	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, streamTestBytes([]byte("data")), resource); err == nil {
 		t.Fatal("v2 replaced completed identity")
 	}
 	if _, err := op.PutArchiveResource(t.Context(), uuid.NewString(), 0, 4, hash, hash, []byte("data"), resource); err == nil {
@@ -607,7 +643,7 @@ func TestArchiveStreamResourcePreservesInflightV1Identity(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.files[id] = store.ArchiveBundleFile{SessionID: op.id, FileID: id, Purpose: "resource", SHA256: hash, ByteLength: 4, State: "receiving", Path: path, TimelineRevision: d.bundle.Revision, Resource: encode(resource)}
-	if _, err = op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+	if _, err = op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, streamTestBytes([]byte("data")), resource); err == nil {
 		t.Fatal("v2 replaced in-flight v1 identity")
 	}
 	receipt, err := op.PutArchiveResource(t.Context(), id, 0, 4, hash, hash, []byte("data"), resource)
@@ -645,7 +681,7 @@ func TestArchiveStreamCorruptionAndCloseFailureRetainCleanupUnknown(t *testing.T
 			if operation == "status" {
 				_, err = op.execution.ArchiveFileStatus(t.Context(), op.principal, "", "", op.id, d.row.FileID)
 			} else {
-				_, err = op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+				_, err = op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
 			}
 			var fault *model.Fault
 			var observed *ArchiveStagingCorruptError
@@ -686,7 +722,7 @@ func TestArchiveStreamPublishesMigrationResourceAndReplays(t *testing.T) {
 			d.row.Path = path
 			d.bundle.HistoryID = uuid.NewString()
 			d.bundle.Ledger = encode(archiveLedger{HistoryID: d.bundle.HistoryID, Resources: []sp.Resource{resource}})
-			receipt, err := op.PutArchiveResourceV2(t.Context(), d.row.FileID, 0, int64(len(data)), hash, bytes.NewReader(data), resource)
+			receipt, err := op.PutArchiveResourceV2(t.Context(), d.row.FileID, 0, int64(len(data)), hash, streamTestBytes(data), resource)
 			if err != nil || receipt.State != "receiving" || receipt.AcceptedOffset != length {
 				t.Fatalf("put: %+v %v", receipt, err)
 			}
@@ -709,7 +745,7 @@ func TestArchiveStreamPublishesTimelineOnlyWhenLedgerMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.bundle.Ledger = encode(ledger)
-	receipt, err := op.PutArchiveFileV2(t.Context(), "timeline", d.row.FileID, 0, d.row.ByteLength, d.row.SHA256, bytes.NewReader(timeline))
+	receipt, err := op.PutArchiveFileV2(t.Context(), "timeline", d.row.FileID, 0, d.row.ByteLength, d.row.SHA256, streamTestBytes(timeline))
 	if err != nil || receipt.State != "receiving" {
 		t.Fatalf("put: %+v %v", receipt, err)
 	}
@@ -722,7 +758,7 @@ func TestArchiveStreamPublishesTimelineOnlyWhenLedgerMatches(t *testing.T) {
 func TestArchiveStreamRechecksIdentityAfterPhysicalExclusion(t *testing.T) {
 	op, d, h := streamTestFixture(t, 4)
 	d.changeOnRead = 2
-	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
 	if err == nil || h.appends != 0 || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("changed identity accepted: err=%v appends=%d leases=%d", err, h.appends, d.leases)
 	}
@@ -737,7 +773,7 @@ func TestArchiveStreamAdoptsOnlyAnEmptyUnregisteredObject(t *testing.T) {
 			h.createErr = fs.ErrExist
 			h.adoptErr = adoptError
 			d.bundle.HistoryID = ""
-			_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+			_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), streamTestBytes([]byte("data")))
 			if adoptError != nil {
 				if !errors.Is(err, adoptError) || d.next != nil || h.appends != 0 {
 					t.Fatalf("nonempty adoption: err=%v next=%+v", err, d.next)
@@ -758,7 +794,7 @@ func TestArchiveStreamUnknownRegistrationDoesNotWriteBytes(t *testing.T) {
 	d.bundle.HistoryID = ""
 	failure := errors.New("registration outcome unknown")
 	d.insertErr = failure
-	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), streamTestBytes([]byte("data")))
 	if !errors.Is(err, failure) || h.creates != 1 || h.appends != 0 || d.next != nil {
 		t.Fatalf("unknown registration: err=%v creates=%d appends=%d", err, h.creates, h.appends)
 	}
@@ -792,7 +828,7 @@ func TestArchiveStreamBusyPhysicalLockIsRetryableAndDoesNotMutate(t *testing.T) 
 			case "status":
 				_, err = op.execution.ArchiveFileStatus(t.Context(), op.principal, "", "", op.id, d.row.FileID)
 			case "put":
-				_, err = op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+				_, err = op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
 			case "complete":
 				_, err = op.CompleteArchiveFile(t.Context(), "history", d.row.FileID)
 			case "restart":
@@ -822,7 +858,7 @@ func TestArchiveStreamRejectsInvalidFrozenIdentityBeforeIO(t *testing.T) {
 		{"incomplete block boundary", "history", d.row.FileID, d.row.SHA256, 1, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := op.PutArchiveFileV2(t.Context(), test.purpose, test.id, test.offset, test.length, test.digest, bytes.NewReader([]byte("xxxx"))); err == nil {
+			if _, err := op.PutArchiveFileV2(t.Context(), test.purpose, test.id, test.offset, test.length, test.digest, streamTestBytes([]byte("xxxx"))); err == nil {
 				t.Fatal("invalid identity accepted")
 			}
 			if h.appends != 0 || d.leases != 0 || d.finishes != 0 {
@@ -983,7 +1019,7 @@ func TestArchiveStreamRejectsMissingLedgerResource(t *testing.T) {
 	d.row.Resource = encode(resource)
 	d.bundle.HistoryID = uuid.NewString()
 	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{}})
-	if _, err := op.PutArchiveResourceV2(t.Context(), d.row.FileID, 0, 4, hash, bytes.NewReader([]byte("xxxx")), resource); err == nil || h.appends != 0 {
+	if _, err := op.PutArchiveResourceV2(t.Context(), d.row.FileID, 0, 4, hash, streamTestBytes([]byte("xxxx")), resource); err == nil || h.appends != 0 {
 		t.Fatalf("unlisted resource accepted: %v", err)
 	}
 }
@@ -1067,7 +1103,7 @@ func TestArchiveStreamRegistersAfterCompletedHistory(t *testing.T) {
 	d.bundle.HistoryID = oldID
 	d.files[oldID] = store.ArchiveBundleFile{SessionID: op.id, FileID: oldID, Purpose: "history", State: "complete", TimelineRevision: 1}
 	id := uuid.NewString()
-	receipt, err := op.PutArchiveFileV2(t.Context(), "history", id, 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+	receipt, err := op.PutArchiveFileV2(t.Context(), "history", id, 0, 4, archiveDigest([]byte("data")), streamTestBytes([]byte("data")))
 	if err != nil || receipt.State != "receiving" || d.bundle.Revision != 2 || d.bundle.HistoryID != id || d.next == nil || d.next.TimelineRevision != 2 {
 		t.Fatalf("history registration: receipt=%+v bundle=%+v err=%v", receipt, d.bundle, err)
 	}
@@ -1087,12 +1123,12 @@ func TestArchiveStreamRegistersTimelineAndResourceIdentities(t *testing.T) {
 			if purpose == "timeline" {
 				d.bundle.Phase = "sealed"
 				d.bundle.TimelineID = ""
-				receipt, err = op.PutArchiveFileV2(t.Context(), purpose, id, 0, 4, hash, bytes.NewReader(data))
+				receipt, err = op.PutArchiveFileV2(t.Context(), purpose, id, 0, 4, hash, streamTestBytes(data))
 			} else {
 				length, mime := "4", "text/plain"
 				resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
 				d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
-				receipt, err = op.PutArchiveResourceV2(t.Context(), id, 0, 4, hash, bytes.NewReader(data), resource)
+				receipt, err = op.PutArchiveResourceV2(t.Context(), id, 0, 4, hash, streamTestBytes(data), resource)
 			}
 			if err != nil || receipt.State != "receiving" || d.next == nil || d.next.Purpose != purpose || h.appends != 1 {
 				t.Fatalf("registration: receipt=%+v next=%+v err=%v", receipt, d.next, err)
@@ -1114,13 +1150,13 @@ func TestArchiveStreamKeepsRecoverablePrefixAfterAppendFailureOrExcess(t *testin
 		op, d, h := streamTestFixture(t, 4)
 		failure := errors.New("sync failed")
 		h.appendErr = failure
-		if _, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx"))); !errors.Is(err, failure) || d.finishes != 0 || h.offset != 0 {
+		if _, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx"))); !errors.Is(err, failure) || d.finishes != 0 || h.offset != 0 {
 			t.Fatalf("append failure: err=%v offset=%d", err, h.offset)
 		}
 	})
 	t.Run("excess body", func(t *testing.T) {
 		op, d, h := streamTestFixture(t, 4)
-		if _, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxxx"))); err == nil || d.finishes != 0 || h.offset != 4 {
+		if _, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxxx"))); err == nil || d.finishes != 0 || h.offset != 4 {
 			t.Fatalf("excess body: err=%v offset=%d", err, h.offset)
 		}
 	})
@@ -1258,7 +1294,7 @@ func TestArchiveStreamRejectsRegistrationWhilePreviousHistoryHasWriter(t *testin
 	d.bundle.HistoryID = oldID
 	d.files[oldID] = store.ArchiveBundleFile{SessionID: op.id, FileID: oldID, Purpose: "history", State: "complete", TimelineRevision: 1}
 	d.leases = 1
-	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), streamTestBytes([]byte("data")))
 	if err == nil || h.creates != 0 || d.next != nil || d.bundle.Revision != 1 {
 		t.Fatalf("writer race: err=%v bundle=%+v", err, d.bundle)
 	}
@@ -1266,7 +1302,7 @@ func TestArchiveStreamRejectsRegistrationWhilePreviousHistoryHasWriter(t *testin
 func TestArchiveStreamPutReportsMissingObjectWithoutTerminalizing(t *testing.T) {
 	op, d, _ := streamTestFixture(t, 4)
 	op.execution.files.(*streamTestStorage).acquireErr = filestorage.ErrArchiveStagingMissing
-	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
 	var observation *ArchiveStagingCorruptError
 	if !errors.As(err, &observation) || observation.Receipt.FileID != d.row.FileID || d.row.State != "receiving" || d.finishes != 0 {
 		t.Fatalf("missing observation: err=%v row=%+v", err, d.row)
@@ -1318,7 +1354,7 @@ func TestArchiveStreamRequiresStagingCapabilityForRegisteredUpload(t *testing.T)
 	op, d, _ := streamTestFixture(t, 4)
 	files := op.execution.files
 	op.execution.files = struct{ filestorage.Storage }{Storage: files}
-	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, streamTestBytes([]byte("xxxx")))
 	if err == nil || d.row.State != "receiving" || d.finishes != 0 || d.leases != 0 {
 		t.Fatalf("missing backend: err=%v row=%+v leases=%d", err, d.row, d.leases)
 	}
@@ -1358,8 +1394,162 @@ func TestArchiveStreamHistoryCannotBypassCorruptSuccessor(t *testing.T) {
 	h.allowCreate = true
 	d.row.State = "failed"
 	d.row.TerminalError = encode(sp.ImageError{Code: "staging_corrupt"})
-	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), bytes.NewReader([]byte("data")))
+	_, err := op.PutArchiveFileV2(t.Context(), "history", uuid.NewString(), 0, 4, archiveDigest([]byte("data")), streamTestBytes([]byte("data")))
 	if err == nil || h.creates != 0 || d.next != nil || d.bundle.HistoryID != d.row.FileID || d.row.SuccessorFileID != "" {
 		t.Fatalf("history successor bypass: err=%v row=%+v", err, d.row)
+	}
+}
+
+type blockingArchiveStream struct {
+	ctx      context.Context
+	started  chan struct{}
+	release  chan struct{}
+	first    bool
+	detached bool
+}
+
+func (r *blockingArchiveStream) BindReadContext(ctx context.Context) func() error {
+	r.ctx = ctx
+	return func() error { r.detached = true; return nil }
+}
+func (r *blockingArchiveStream) Read(p []byte) (int, error) {
+	if !r.first {
+		r.first = true
+		for i := range p {
+			p[i] = 'x'
+		}
+		return len(p), nil
+	}
+	close(r.started)
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	case <-r.release:
+		return 0, io.ErrClosedPipe
+	}
+}
+func TestArchiveStreamCancelSessionMediaInterruptsBlockedReadAndDrains(t *testing.T) {
+	length := 2 * sessionarchive.BlockSize
+	op, d, h := streamTestFixture(t, length)
+	body := &blockingArchiveStream{started: make(chan struct{}), release: make(chan struct{})}
+	result := make(chan error, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		close(body.release)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("stream did not drain during cleanup")
+		}
+	})
+	go func() {
+		defer close(done)
+		_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, length, d.row.SHA256, body)
+		result <- err
+	}()
+	select {
+	case <-body.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not reach blocked read")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := op.execution.CancelSessionMedia(ctx, op.id); err != nil {
+		t.Fatalf("cancel did not drain protected I/O: %v", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation lost: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("stream did not exit after cancellation")
+	}
+	if h.offset != sessionarchive.BlockSize || h.closed != 1 || d.leases != 0 || d.row.State != "receiving" || d.finishes != 0 || !body.detached {
+		t.Fatalf("I/O not drained: offset=%d closes=%d leases=%d row=%+v detached=%t", h.offset, h.closed, d.leases, d.row, body.detached)
+	}
+}
+func TestArchiveStreamRejectsUninterruptibleReaderBeforeAdmission(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "invalid_input" || d.readCalls != 0 || d.leases != 0 || h.appends != 0 {
+		t.Fatalf("uninterruptible reader accepted: err=%v reads=%d leases=%d", err, d.readCalls, d.leases)
+	}
+}
+
+func TestArchiveStreamRestoresReadContextBeforeIOScopeEnds(t *testing.T) {
+	op, d, _ := streamTestFixture(t, 4)
+	body := streamTestBytes([]byte("xxxx"))
+	receipt, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, body)
+	if err != nil || receipt.State != "receiving" || !body.detachedWhileLive || body.ctx != nil || !errors.Is(body.bound.Err(), context.Canceled) {
+		t.Fatalf("context not restored: receipt=%+v detached=%t bound=%v err=%v", receipt, body.detachedWhileLive, body.bound.Err(), err)
+	}
+	if _, err = body.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("restored reader failed: %v", err)
+	}
+}
+func TestArchiveStreamReportsReadContextCleanupFailure(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	body := streamTestBytes([]byte("xxxx"))
+	failure := errors.New("context release failed")
+	body.unbindErr = failure
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, body)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "cleanup_unknown" || !errors.Is(err, failure) || h.offset != 4 || d.row.State != "receiving" || d.leases != 0 {
+		t.Fatalf("binding cleanup: err=%v offset=%d leases=%d", err, h.offset, d.leases)
+	}
+}
+
+type failedStreamBinding struct{ io.Reader }
+
+func (failedStreamBinding) BindReadContext(context.Context) func() error { return nil }
+func TestArchiveStreamBindingFailureReleasesIOScope(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	body := failedStreamBinding{Reader: bytes.NewReader([]byte("xxxx"))}
+	_, err := op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, body)
+	var failure *model.Fault
+	if !errors.As(err, &failure) || failure.Code != "capability_error" || d.readCalls != 0 || d.leases != 0 || h.appends != 0 {
+		t.Fatalf("binding failure reached admission: err=%v reads=%d leases=%d", err, d.readCalls, d.leases)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err = op.execution.CancelSessionMedia(ctx, op.id); err != nil {
+		t.Fatalf("binding failure left I/O active: %v", err)
+	}
+}
+
+type cancelAtArchiveEOF struct {
+	reader io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelAtArchiveEOF) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if errors.Is(err, io.EOF) {
+		r.cancel()
+	}
+	return n, err
+}
+func TestArchiveStreamHonorsCancellationAtEOF(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body := streamTestBodyFrom(&cancelAtArchiveEOF{reader: bytes.NewReader([]byte("xxxx")), cancel: cancel})
+	_, err := op.PutArchiveFileV2(ctx, "history", d.row.FileID, 0, 4, d.row.SHA256, body)
+	if !errors.Is(err, context.Canceled) || h.offset != 4 || d.row.State != "receiving" || d.leases != 0 {
+		t.Fatalf("EOF cancellation lost: err=%v offset=%d row=%+v", err, h.offset, d.row)
+	}
+}
+
+func TestArchiveStreamHonorsCancellationDuringUnbind(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body := streamTestBytes([]byte("xxxx"))
+	body.onUnbind = cancel
+	_, err := op.PutArchiveFileV2(ctx, "history", d.row.FileID, 0, 4, d.row.SHA256, body)
+	if !errors.Is(err, context.Canceled) || h.offset != 4 || d.row.State != "receiving" || d.leases != 0 {
+		t.Fatalf("unbind cancellation lost: err=%v offset=%d row=%+v", err, h.offset, d.row)
 	}
 }

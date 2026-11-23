@@ -397,8 +397,11 @@ func TestArchiveStreamCancellationReachesOperation(t *testing.T) {
 	r.Header.Set("Daynight-Archive-Upload-Version", "2")
 	r.Header.Set("Daynight-File-Byte-Length", "2")
 	r.Header.Set("Daynight-File-SHA256", strings.Repeat("a", 64))
-	done := make(chan struct{})
-	go func() { f.handler.ServeHTTP(httptest.NewRecorder(), r); close(done) }()
+	done := make(chan any, 1)
+	go func() {
+		defer func() { done <- recover() }()
+		f.handler.ServeHTTP(httptest.NewRecorder(), r)
+	}()
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
@@ -411,7 +414,10 @@ func TestArchiveStreamCancellationReachesOperation(t *testing.T) {
 		t.Fatal("cancelled operation did not exit")
 	}
 	select {
-	case <-done:
+	case outcome := <-done:
+		if outcome != http.ErrAbortHandler {
+			t.Fatalf("canceled handler did not abort: %v", outcome)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler did not finish")
 	}

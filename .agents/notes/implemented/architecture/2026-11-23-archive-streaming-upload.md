@@ -19,7 +19,8 @@ from storage. PostgreSQL retains the immutable identity, business transitions,
 successor and terminal receipt. An explicit completion validates the full
 digest and the purpose-specific archive rules before publishing the protected
 bytes. A confirmed corrupt staging object can be replaced under the same writer
-and closure; old receipts remain available.
+and closure; old receipts remain available. Network reads follow the media I/O
+context so cancellation drains the writer before releasing storage protection.
 
 Version 1 and online history retain their existing contracts. The
 [archive design](../../../../docs/design/session-image-archives.md) owns the

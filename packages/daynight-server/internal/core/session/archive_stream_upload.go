@@ -17,6 +17,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// ArchiveStreamBody binds blocking reads to the admitted Session I/O context.
+// Cancellation must interrupt an in-flight Read. The returned function restores
+// the caller's read context after the last Read and before the I/O scope exits.
+type ArchiveStreamBody interface {
+	io.Reader
+	BindReadContext(context.Context) func() error
+}
+
 func (op *ArchiveOperation) PutArchiveFileV2(ctx context.Context, purpose, fileID string, offset, length int64, digest string, body io.Reader) (sp.ArchiveFileReceipt, error) {
 	return op.putArchiveStream(ctx, purpose, fileID, offset, length, digest, body, nil)
 }
@@ -133,6 +141,10 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 	if body == nil {
 		return out, fault("invalid_input", "Missing archive stream.")
 	}
+	bound, ok := body.(ArchiveStreamBody)
+	if !ok {
+		return out, fault("invalid_input", "Archive stream cannot be canceled.")
+	}
 	ctx, cancel := op.GateContext(ctx)
 	defer cancel()
 	leaseID := uuid.NewString()
@@ -145,6 +157,16 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 		result = errors.Join(result, finish())
 		if acquired {
 			result = errors.Join(result, op.execution.releaseImageLease(context.WithoutCancel(ctx), op.principal, op.project, op.task, op.id, leaseID))
+		}
+	}()
+	unbind := bound.BindReadContext(ctx)
+	if unbind == nil {
+		return out, fault("capability_error", "Archive stream cancellation is unavailable.")
+	}
+	defer func() {
+		result = archiveCleanupFailure(result, unbind())
+		if cause := context.Cause(ctx); cause != nil {
+			result = errors.Join(result, cause)
 		}
 	}()
 	var row store.ArchiveStagingRecord
@@ -374,6 +396,9 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 	}
 	if !errors.Is(readErr, io.EOF) {
 		return out, readErr
+	}
+	if err = context.Cause(ctx); err != nil {
+		return out, err
 	}
 	return stagingReceipt(row, actual), nil
 }
