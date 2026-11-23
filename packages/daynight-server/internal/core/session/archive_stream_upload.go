@@ -68,6 +68,46 @@ func archiveStreamPhase(bundle store.ArchiveBundle, purpose string, resource *sp
 	}
 	return nil
 }
+
+// A migration descriptor is bound to its registered file identity. A corrupt
+// upload may only be replaced through its explicit successor transaction.
+
+func archiveStreamResourceUnregistered(ctx context.Context, dao store.SessionArchiveDAO, sessionID string, resource *sp.Resource, checkLegacy bool) error {
+	if checkLegacy {
+		legacy, err := dao.SessionArchiveFiles(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		for _, row := range legacy {
+			if row.Purpose == "resource" && (row.State == "receiving" || row.State == "complete") && jsonEqual(row.Resource, encode(resource)) {
+				return archiveConflict()
+			}
+		}
+	}
+	d, ok := dao.(store.SessionArchiveStagingDAO)
+	if !ok {
+		return nil
+	}
+	rows, err := d.ArchiveStagingRecords(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Purpose != "resource" || !jsonEqual(row.Resource, encode(resource)) {
+			continue
+		}
+		if row.State == "receiving" || row.State == "complete" {
+			return archiveConflict()
+		}
+		if row.State == "failed" && row.SuccessorFileID == "" {
+			var failure sp.ImageError
+			if json.Unmarshal(row.TerminalError, &failure) == nil && failure.Code == "staging_corrupt" {
+				return archiveConflict()
+			}
+		}
+	}
+	return nil
+}
 func streamIdentityMatches(v store.ArchiveStagingRecord, purpose, fileID string, length int64, digest string, resource *sp.Resource, bundle store.ArchiveBundle) bool {
 	if v.FileID != fileID || v.Purpose != purpose || v.ByteLength != length || v.SHA256 != digest || v.State != "receiving" {
 		return false
@@ -126,6 +166,11 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 		} else if errors.Is(e, model.ErrNotFound) {
 			if !op.execution.archiveV2RegistrationEnabled || offset != 0 {
 				return archiveConflict()
+			}
+			if purpose == "resource" {
+				if e = archiveStreamResourceUnregistered(ctx, dao, op.id, resource, true); e != nil {
+					return e
+				}
 			}
 			if _, e = dao.SessionArchiveFile(ctx, op.id, fileID); e == nil {
 				return archiveConflict()
@@ -190,7 +235,7 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 		}
 		return out, stagingBusy(err)
 	}
-	defer func() { result = errors.Join(result, handle.Close()) }()
+	defer func() { result = archiveCleanupFailure(result, handle.Close()) }()
 	// Recheck the original writer and exact identity after obtaining physical exclusion.
 	err = op.bundleAccess(ctx, func(_ *operationTx, _ *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if e := archiveStreamPhase(bundle, purpose, resource); e != nil {
@@ -220,6 +265,11 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 		if !op.execution.archiveV2RegistrationEnabled {
 			return archiveConflict()
 		}
+		if purpose == "resource" {
+			if e = archiveStreamResourceUnregistered(ctx, dao, op.id, resource, true); e != nil {
+				return e
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -239,6 +289,11 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 			}
 			if !op.execution.archiveV2RegistrationEnabled {
 				return archiveConflict()
+			}
+			if purpose == "resource" {
+				if e := archiveStreamResourceUnregistered(ctx, dao, op.id, resource, true); e != nil {
+					return e
+				}
 			}
 			d, e := archiveStagingDAO(dao)
 			if e != nil {
@@ -313,8 +368,8 @@ func (op *ArchiveOperation) putArchiveStream(ctx context.Context, purpose, fileI
 		}
 	}
 	var extra [1]byte
-	n, readErr := body.Read(extra[:])
-	if n != 0 || readErr == nil {
+	n, readErr := io.ReadFull(body, extra[:])
+	if n != 0 {
 		return out, fault("invalid_input", "Archive stream exceeds declared length.")
 	}
 	if !errors.Is(readErr, io.EOF) {

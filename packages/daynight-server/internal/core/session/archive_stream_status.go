@@ -105,7 +105,7 @@ func (s *Execution) ArchiveFileStatus(ctx context.Context, p model.Principal, pr
 		}
 		return out, stagingBusy(err)
 	}
-	defer func() { result = errors.Join(result, handle.Close()) }()
+	defer func() { result = archiveCleanupFailure(result, handle.Close()) }()
 	previous := row
 	if err = read(); err != nil {
 		return out, err

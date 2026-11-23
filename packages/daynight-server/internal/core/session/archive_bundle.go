@@ -526,6 +526,11 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		}
 		file, e = dao.SessionArchiveFile(ctx, op.id, fileID)
 		if errors.Is(e, model.ErrNotFound) {
+			if purpose == "resource" {
+				if e = archiveStreamResourceUnregistered(ctx, dao, op.id, resource, false); e != nil {
+					return e
+				}
+			}
 			if offset != 0 {
 				return archiveConflict()
 			}

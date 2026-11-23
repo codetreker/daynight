@@ -39,8 +39,10 @@ func (op *ArchiveOperation) RestartArchiveFile(ctx context.Context, purpose, fil
 	var handle filestorage.ArchiveStaging
 	terminal := false
 	defer func() {
+		var closeErr error
 		if handle != nil {
-			result = errors.Join(result, handle.Close())
+			closeErr = handle.Close()
+			result = archiveCleanupFailure(result, closeErr)
 		}
 		finishErr := finish()
 		result = errors.Join(result, finishErr)
@@ -49,7 +51,7 @@ func (op *ArchiveOperation) RestartArchiveFile(ctx context.Context, purpose, fil
 			releaseErr = op.execution.releaseImageLease(context.WithoutCancel(ctx), op.principal, op.project, op.task, op.id, leaseID)
 			result = errors.Join(result, releaseErr)
 		}
-		if terminal && finishErr == nil && releaseErr == nil {
+		if terminal && closeErr == nil && finishErr == nil && releaseErr == nil {
 			cleanup, done := filestorage.GateCleanupContext(archiveCtx)
 			if e := op.cleanupArchiveStreamTerminal(cleanup); e != nil {
 				slog.ErrorContext(ctx, "Archive staging cleanup failed", "session_id", op.id, "file_id", fileID, "error", e)

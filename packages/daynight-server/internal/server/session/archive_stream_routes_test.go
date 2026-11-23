@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,14 @@ func TestArchiveStreamStatusAndCapability(t *testing.T) {
 	w := f.Request(http.MethodGet, base+"/prepare/history/"+id+"/status", "", map[string]int{"ArchiveFileStatus": 1})
 	if w.Code != http.StatusConflict || w.Header().Get("Daynight-Archive-Upload-Version") != "2" || !strings.Contains(w.Body.String(), `"code":"staging_corrupt"`) || !strings.Contains(w.Body.String(), `"syncId":"`+id+`"`) {
 		t.Fatalf("status=%d header=%v body=%s", w.Code, w.Header(), w.Body.String())
+	}
+	f.backend.Funcs.ArchiveFileStatus = func(_ context.Context, _ model.Principal, _, _, _, file string) (sp.ArchiveFileReceipt, error) {
+		observation := &sessioncore.ArchiveStagingCorruptError{Receipt: sp.ArchiveFileReceipt{FileID: file, UploadVersion: 2, ByteLength: "6", SHA256: strings.Repeat("a", 64)}}
+		return sp.ArchiveFileReceipt{}, &model.Fault{Code: "cleanup_unknown", Message: "Archive cleanup failed.", Cause: errors.Join(observation, errors.New("close failed"))}
+	}
+	w = f.Request(http.MethodGet, base+"/prepare/history/"+id+"/status", "", map[string]int{"ArchiveFileStatus": 1})
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"cleanup_unknown"`) || strings.Contains(w.Body.String(), `"code":"staging_corrupt"`) || strings.Contains(w.Body.String(), `"syncId"`) {
+		t.Fatalf("cleanup failure status=%d body=%s", w.Code, w.Body.String())
 	}
 	f.application.(*routeApplication).Routes.SetArchiveUploadV2Enabled(true)
 	f.backend.Funcs.ArchivePreparation = func(context.Context, model.Principal, string, string, string) (sp.ArchivePrepareReceipt, error) {

@@ -91,7 +91,9 @@ type streamTestHandle struct {
 	observeErr     error
 	appends        int
 	closed         int
+	closeErr       error
 	deleteFailures int
+	deletes        int
 	data           []byte
 	publications   int
 	allowCreate    bool
@@ -140,6 +142,7 @@ func (h *streamTestHandle) Publish(_ context.Context, _ string, total int64, _, 
 	return filestorage.FileInfo{Size: total}, nil
 }
 func (h *streamTestHandle) Delete(ctx context.Context, _ string) error {
+	h.deletes++
 	if err := filestorage.VerifyGates(ctx); err != nil {
 		return err
 	}
@@ -149,7 +152,7 @@ func (h *streamTestHandle) Delete(ctx context.Context, _ string) error {
 	}
 	return nil
 }
-func (h *streamTestHandle) Close() error { h.closed++; return nil }
+func (h *streamTestHandle) Close() error { h.closed++; return h.closeErr }
 
 func streamTestFixture(t *testing.T, length int64) (*ArchiveOperation, *streamTestDAO, *streamTestHandle) {
 	t.Helper()
@@ -412,5 +415,163 @@ func TestArchiveStreamRejectsInvalidBusinessContentBeforePublication(t *testing.
 	_, err := op.CompleteArchiveFile(t.Context(), "history", d.row.FileID)
 	if err == nil || d.row.State != "failed" || h.publications != 0 || d.finishes != 1 {
 		t.Fatalf("invalid content: state=%s publications=%d finishes=%d err=%v", d.row.State, h.publications, d.finishes, err)
+	}
+}
+
+func TestArchiveStreamResourceCannotBypassCorruptSuccessor(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	op.execution.SetArchiveV2RegistrationEnabled(true)
+	d.allowInsert = true
+	h.allowCreate = true
+	d.exposeTerminal = true
+	length, hash, mime := "4", archiveDigest([]byte("data")), "text/plain"
+	resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+	d.row.Purpose = "resource"
+	d.row.State = "failed"
+	d.row.SHA256 = hash
+	d.row.Resource = encode(resource)
+	d.row.TerminalError = encode(sp.ImageError{Code: "staging_corrupt"})
+	d.bundle.HistoryID = uuid.NewString()
+	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
+	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+		t.Fatal("v2 bypassed original successor")
+	}
+	if _, err := op.PutArchiveResource(t.Context(), uuid.NewString(), 0, 4, hash, hash, []byte("data"), resource); err == nil {
+		t.Fatal("v1 bypassed original successor")
+	}
+	if h.creates != 0 || d.next != nil || d.leases != 0 {
+		t.Fatalf("unexpected registration: creates=%d next=%+v leases=%d", h.creates, d.next, d.leases)
+	}
+}
+
+func TestArchiveStreamResourceAllowsRetryAfterBusinessFailure(t *testing.T) {
+	op, d, _ := streamTestFixture(t, 4)
+	d.exposeTerminal = true
+	length, hash, mime := "4", archiveDigest([]byte("data")), "text/plain"
+	resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+	d.row.Purpose = "resource"
+	d.row.State = "failed"
+	d.row.Resource = encode(resource)
+	d.row.TerminalError = encode(sp.ImageError{Code: "quota_exceeded"})
+	d.row.TimelineRevision = 1
+	d.bundle.Revision = 2
+	if err := archiveStreamResourceUnregistered(t.Context(), d, op.id, &resource, false); err != nil {
+		t.Fatalf("business failure blocked later revision: %v", err)
+	}
+	d.bundle.HistoryID = uuid.NewString()
+	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
+	receipt, err := op.PutArchiveResource(t.Context(), uuid.NewString(), 0, 4, hash, hash, []byte("data"), resource)
+	if err != nil || receipt.State != "complete" {
+		t.Fatalf("v1 retry after business failure: %+v %v", receipt, err)
+	}
+	d.row.State = "receiving"
+	if err := archiveStreamResourceUnregistered(t.Context(), d, op.id, &resource, false); err == nil {
+		t.Fatal("concurrent receiving identity accepted")
+	}
+	d.row.State = "failed"
+	d.row.TerminalError = encode(sp.ImageError{Code: "staging_corrupt"})
+	d.row.SuccessorFileID = uuid.NewString()
+	if err := archiveStreamResourceUnregistered(t.Context(), d, op.id, &resource, false); err != nil {
+		t.Fatalf("settled corrupt predecessor blocked later retry: %v", err)
+	}
+}
+
+func TestArchiveStreamResourcePreservesCompletedIdentity(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	op.execution.SetArchiveV2RegistrationEnabled(true)
+	d.allowInsert = true
+	h.allowCreate = true
+	d.exposeTerminal = true
+	length, hash, mime := "4", archiveDigest([]byte("data")), "text/plain"
+	resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+	d.row.Purpose = "resource"
+	d.row.State = "complete"
+	d.row.SHA256 = hash
+	d.row.Resource = encode(resource)
+	d.bundle.HistoryID = uuid.NewString()
+	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
+	if _, err := op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+		t.Fatal("v2 replaced completed identity")
+	}
+	if _, err := op.PutArchiveResource(t.Context(), uuid.NewString(), 0, 4, hash, hash, []byte("data"), resource); err == nil {
+		t.Fatal("v1 replaced completed identity")
+	}
+	if h.creates != 0 || d.next != nil {
+		t.Fatalf("unexpected registration: creates=%d next=%+v", h.creates, d.next)
+	}
+}
+func TestArchiveStreamResourcePreservesInflightV1Identity(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	op.execution.SetArchiveV2RegistrationEnabled(true)
+	d.allowInsert = true
+	h.allowCreate = true
+	length, hash, mime := "4", archiveDigest([]byte("data")), "text/plain"
+	resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+	d.bundle.HistoryID = uuid.NewString()
+	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
+	id := uuid.NewString()
+	path, err := BlobAddress("", op.owner, op.id, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.files[id] = store.ArchiveBundleFile{SessionID: op.id, FileID: id, Purpose: "resource", SHA256: hash, ByteLength: 4, State: "receiving", Path: path, TimelineRevision: d.bundle.Revision, Resource: encode(resource)}
+	if _, err = op.PutArchiveResourceV2(t.Context(), uuid.NewString(), 0, 4, hash, bytes.NewReader([]byte("data")), resource); err == nil {
+		t.Fatal("v2 replaced in-flight v1 identity")
+	}
+	receipt, err := op.PutArchiveResource(t.Context(), id, 0, 4, hash, hash, []byte("data"), resource)
+	if err != nil || receipt.State != "complete" {
+		t.Fatalf("original v1 resume: %+v %v", receipt, err)
+	}
+}
+
+func TestArchiveStreamPreservesLegacyResourceRegistration(t *testing.T) {
+	op, d, _ := streamTestFixture(t, 6)
+	length, hash, mime := "6", archiveDigest([]byte("abcdef")), "text/plain"
+	resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+	d.bundle.HistoryID = uuid.NewString()
+	d.bundle.Ledger = encode(archiveLedger{Resources: []sp.Resource{resource}})
+	oldID := uuid.NewString()
+	path, err := BlobAddress("", op.owner, op.id, oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.files[oldID] = store.ArchiveBundleFile{SessionID: op.id, FileID: oldID, Purpose: "resource", SHA256: hash, ByteLength: 6, State: "receiving", Path: path, TimelineRevision: d.bundle.Revision, Resource: encode(resource)}
+	newID := uuid.NewString()
+	receipt, err := op.PutArchiveResource(t.Context(), newID, 0, 6, hash, archiveDigest([]byte("abc")), []byte("abc"), resource)
+	if err != nil || receipt.State != "receiving" || receipt.AcceptedOffset != "3" || d.files[oldID].State != "receiving" {
+		t.Fatalf("legacy registration changed: %+v err=%v", receipt, err)
+	}
+}
+
+func TestArchiveStreamCorruptionAndCloseFailureRetainCleanupUnknown(t *testing.T) {
+	for _, operation := range []string{"status", "put"} {
+		t.Run(operation, func(t *testing.T) {
+			op, d, h := streamTestFixture(t, 4)
+			h.corrupt = true
+			h.closeErr = errors.New("staging close failed")
+			var err error
+			if operation == "status" {
+				_, err = op.execution.ArchiveFileStatus(t.Context(), op.principal, "", "", op.id, d.row.FileID)
+			} else {
+				_, err = op.PutArchiveFileV2(t.Context(), "history", d.row.FileID, 0, 4, d.row.SHA256, bytes.NewReader([]byte("xxxx")))
+			}
+			var fault *model.Fault
+			var observed *ArchiveStagingCorruptError
+			if !errors.As(err, &fault) || fault.Code != "cleanup_unknown" || !errors.Is(err, h.closeErr) || !errors.As(err, &observed) || d.finishes != 0 {
+				t.Fatalf("cleanup failure lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestArchiveStreamCompleteDoesNotCleanAfterUncertainClose(t *testing.T) {
+	op, d, h := streamTestFixture(t, 4)
+	h.corrupt = true
+	h.closeErr = errors.New("staging close failed")
+	d.exposeTerminal = true
+	_, err := op.CompleteArchiveFile(t.Context(), "history", d.row.FileID)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "cleanup_unknown" || !errors.Is(err, h.closeErr) || d.row.State != "failed" || d.row.StagingReleased || h.deletes != 0 {
+		t.Fatalf("close failure cleanup: err=%v row=%+v deletes=%d", err, d.row, h.deletes)
 	}
 }

@@ -279,8 +279,9 @@ func (h *Routes) archiveBundleFileStatus(w http.ResponseWriter, r *http.Request,
 	}
 	out, err := h.service.ArchiveFileStatus(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("fileId"))
 	if err != nil {
-		var corrupt *sessioncore.ArchiveStagingCorruptError
-		if errors.As(err, &corrupt) {
+		// A wrapped observation may also carry an unconfirmed cleanup failure.
+		// Only an unwrapped observation proves that its storage handle exited.
+		if corrupt, ok := err.(*sessioncore.ArchiveStagingCorruptError); ok {
 			h.archiveCorrupt(w, r, corrupt.Receipt)
 			return
 		}
