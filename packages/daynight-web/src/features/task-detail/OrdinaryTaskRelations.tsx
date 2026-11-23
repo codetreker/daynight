@@ -11,7 +11,7 @@ import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { TagPicker } from '../task-tags/TagPicker';
 import { tagMessages } from '../task-tags/messages';
 import { FormDialog } from './TaskOrganization';
-import type { TaskReadFence } from '../task-cache/project-cache';
+import type { TaskCacheScope, TaskReadFence } from '../task-cache/project-cache';
 import { pollingInterval } from '../../app/polling';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import './ordinary-task-relations.css';
@@ -39,9 +39,10 @@ export const OrdinaryTaskRelations = ({ projectId, detail, history, active, onRe
   }, [scope]);
   const owner = useMemo(() => ({}), [scope, projectId, detail.id, history]);
   const [view, setView] = useState<View>({ owner, page: null, parent: null, error: null, pending: false, fence: null, current: null });
-  const scopeState = useSyncExternalStore(subscribeScope, () => `${scope.isInvalidated}/${scope.hasIdentityMismatch}/${scope.isProjectSuspended(projectId)}/${scope.getHistoryGeneration(projectId)}/${view.fence === null || scope.isTaskReadCurrent(view.fence, true)}`);
+  const scopeState = useSyncExternalStore(subscribeScope, () => `${scope.isInvalidated}/${scope.hasIdentityMismatch}/${scope.isProjectSuspended(projectId)}/${scope.getHistoryGeneration(projectId)}/${view.fence === null || scope.isTaskReadCurrent(view.fence, true)}/${view.fence === null || scope.isTaskHistoryPossiblyCurrent(view.fence)}`);
   const revoked = scope.isInvalidated || scope.hasIdentityMismatch || scope.isProjectSuspended(projectId) || access.status === 'unavailable' || view.fence !== null && !scope.isTaskReadCurrent(view.fence, true);
-  useLayoutEffect(() => { if (revoked) { stores.get(scope)?.delete(`${projectId}/${detail.id}/${history}`); setCreating(false); } }, [scope, projectId, detail.id, history, revoked, scopeState]);
+  const definitive = scope.isInvalidated || scope.hasIdentityMismatch || view.fence !== null && !scope.isTaskHistoryPossiblyCurrent(view.fence);
+  useLayoutEffect(() => { if (definitive) { retireEntry(scope, `${projectId}/${detail.id}/${history}`); setCreating(false); } }, [scope, projectId, detail.id, history, definitive, scopeState]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [previous, setPrevious] = useState<readonly (string | null)[]>([]);
   const [attempt, setAttempt] = useState(0);
@@ -120,11 +121,29 @@ export const OrdinaryTaskRelations = ({ projectId, detail, history, active, onRe
 };
 
 type CreateState = { readonly title: string; readonly description: string; readonly assignedTo: string | null; readonly tags: readonly TaskTag[]; readonly submitted: CreateTaskInput | null; readonly phase: 'idle' | 'pending' | 'unknown' | 'confirmed'; readonly receipt: TaskDetail | null; readonly status: 'proposed' | 'todo'; readonly error: unknown };
-type Entry = { state: CreateState; readonly listeners: Set<() => void> };
+type Entry = { state: CreateState; readonly listeners: Set<() => void>; fence: TaskReadFence | null; unsubscribe: () => void };
 const stores = new WeakMap<object, Map<string, Entry>>();
-const entryFor = (scope: object, key: string, userId: string): Entry => {
+const retireEntry = (scope: TaskCacheScope, key: string, expected?: Entry) => {
+  const entries = stores.get(scope); const entry = entries?.get(key);
+  if (entry === undefined || expected !== undefined && entry !== expected) return;
+  entries!.delete(key); entry.unsubscribe();
+};
+const entryFor = (scope: TaskCacheScope, key: string, projectId: string, userId: string, fence: TaskReadFence | null): Entry => {
   let entries = stores.get(scope); if (entries === undefined) { entries = new Map(); stores.set(scope, entries); }
-  let entry = entries.get(key); if (entry === undefined) { entry = { state: { title: '', description: '', assignedTo: userId, tags: [], submitted: null, phase: 'idle', receipt: null, status: 'proposed', error: null }, listeners: new Set() }; entries.set(key, entry); }
+  let entry = entries.get(key);
+  if (entry?.fence != null && !scope.isTaskHistoryPossiblyCurrent(entry.fence)) { retireEntry(scope, key, entry); entry = undefined; }
+  if (entry === undefined) {
+    entry = { state: { title: '', description: '', assignedTo: userId, tags: [], submitted: null, phase: 'idle', receipt: null, status: 'proposed', error: null }, listeners: new Set(), fence, unsubscribe: () => {} };
+    const owned = entry;
+    const stop = scope.subscribe(event => {
+      if (event.projectId !== projectId) return;
+      if (scope.isInvalidated || scope.hasIdentityMismatch || event.accessRevoked && denied(event.error) && !event.directAccessUncertain && !event.scopeSuspended || owned.fence !== null && !scope.isTaskHistoryPossiblyCurrent(owned.fence)) retireEntry(scope, key, owned);
+    });
+    const abort = () => retireEntry(scope, key, owned);
+    scope.signal.addEventListener('abort', abort);
+    owned.unsubscribe = () => { stop(); scope.signal.removeEventListener('abort', abort); };
+    entries.set(key, owned);
+  }
   return entry;
 };
 const publish = (entry: Entry, state: CreateState) => { entry.state = state; for (const listener of entry.listeners) listener(); };
@@ -132,7 +151,8 @@ const publish = (entry: Entry, state: CreateState) => { entry.state = state; for
 export const OrdinarySubtaskCreate = ({ projectId, parent, fence, history, active, onClose, onCreated, onRefresh }: { readonly projectId: string; readonly parent: TaskDetail; readonly fence: TaskReadFence | null; readonly history: number; readonly active: boolean; readonly onClose: () => void; readonly onCreated: (task: TaskDetail) => void; readonly onRefresh: () => void }) => {
   const { locale, messages } = useI18n(); const zh = locale === 'zh-CN';
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
-  const entry = entryFor(scope, `${projectId}/${parent.id}/${history}`, scope.userId);
+  const key = `${projectId}/${parent.id}/${history}`;
+  const entry = entryFor(scope, key, projectId, scope.userId, fence);
   const state = useSyncExternalStore(listener => { entry.listeners.add(listener); return () => { entry.listeners.delete(listener); }; }, () => entry.state);
   const [creatingTag, setCreatingTag] = useState(false);
   const mounted = useRef(true); useEffect(() => () => { mounted.current = false; }, []);
@@ -142,6 +162,13 @@ export const OrdinarySubtaskCreate = ({ projectId, parent, fence, history, activ
     event.preventDefault();
     if (entry.state.phase !== 'idle' || creatingTag || !entry.state.title.trim() || !access.ready || !active || authRequestsPaused() || parent.status === 'done' || parent.status === 'cancelled') return;
     if (fence === null) return;
+    entry.fence = fence;
+    const retained = () => {
+      const entries = stores.get(scope);
+      if (entries?.get(key) !== entry) return false;
+      if (!scope.isTaskHistoryPossiblyCurrent(fence)) { retireEntry(scope, key, entry); return false; }
+      return true;
+    };
     const generation = scope.getHistoryGeneration(projectId), revision = scope.getProjectRevision(projectId);
     const input: CreateTaskInput = { title: entry.state.title, description: entry.state.description, parentTaskId: parent.id, status: entry.state.status, assignedTo: entry.state.assignedTo, tagIds: entry.state.tags.map(tag => tag.id) };
     update({ phase: 'pending', error: null, submitted: input, receipt: null }); let submitted = false, confirmed = false; let result: TaskDetail | null = null;
@@ -154,17 +181,17 @@ export const OrdinarySubtaskCreate = ({ projectId, parent, fence, history, activ
       submitted = true;
       result = await createTask(projectId, input, scope.signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, onWriteConfirmed: () => { confirmed = true; } });
     } catch (error) {
-      if (!mounted.current || scope.isInvalidated || scope.hasIdentityMismatch || scope.isProjectSuspended(projectId) || isAbortError(error) && scope.signal.aborted) return;
+      if (!retained()) return;
       const unknown = submitted && (confirmed || !(error instanceof ApiError) || error.kind !== 'server' || error.status === null || error.status >= 500 || error.code === 'write_outcome_unknown');
       update({ phase: unknown ? 'unknown' : 'idle', error, ...(unknown ? {} : { submitted: null }) }); if (unknown && mounted.current) onRefresh();
       return;
     }
     // The verified creation receipt survives later history or local storage failures.
-    if (!mounted.current || scope.isInvalidated || scope.hasIdentityMismatch || scope.isProjectSuspended(projectId)) return;
+    if (!retained()) return;
     update({ phase: 'confirmed', receipt: result, error: null });
     let admitted = false;
     try { admitted = await scope.verifyTaskRead(fence, scope.signal) && scope.isTaskHistoryConfirmedCurrent(fence); } catch { /* The receipt remains confirmed. */ }
-    if (mounted.current && admitted && result !== null) {
+    if (mounted.current && retained() && admitted && result !== null) {
       publish(entry, { title: '', description: '', assignedTo: scope.userId, tags: [], submitted: null, phase: 'idle', receipt: null, status: 'proposed', error: null });
       onCreated(result);
     }
@@ -179,5 +206,5 @@ export const OrdinarySubtaskCreate = ({ projectId, parent, fence, history, activ
     {state.phase === 'confirmed' && state.receipt !== null && <p role="status">{zh ? '子任务已创建：' : 'Subtask created: '}{state.receipt.title} ({state.receipt.id})</p>}
     {state.phase === 'unknown' && <div role="alert"><p>{zh ? '创建结果尚未确认。检查子任务列表不会证明原请求的结果，也不会重新提交。' : 'The creation outcome is unknown. Checking the subtask list cannot prove the original outcome and will not resend the request.'}</p><button className="button" type="button" onClick={onRefresh}>{zh ? '刷新子任务列表' : 'Refresh subtasks'}</button><button className="button" type="button" onClick={() => update({ phase: 'idle', receipt: null, status: 'proposed', title: '', description: '', assignedTo: scope.userId, tags: [], submitted: null, error: null })}>{zh ? '开始新建另一个子任务' : 'Create another subtask'}</button></div>}
     {state.error !== null && state.phase !== 'unknown' && <p role="alert">{state.error instanceof ApiError ? state.error.serverMessage ?? state.error.message : (zh ? '创建失败。' : 'Creation failed.')}</p>}
-  </div><footer className="dialog-footer"><button className="button" type="button" disabled={state.phase === 'pending'} onClick={close}>{zh ? '取消' : 'Cancel'}</button><button className="button primary" type="submit" disabled={state.phase !== 'idle' || creatingTag || !state.title.trim() || !access.ready || !active || parent.status === 'done' || parent.status === 'cancelled'}>{zh ? '创建' : 'Create'}</button></footer></form></FormDialog>;
+  </div><footer className="dialog-footer"><button className="button" type="button" disabled={state.phase === 'pending'} onClick={close}>{state.phase === 'confirmed' ? (zh ? '关闭' : 'Close') : (zh ? '取消' : 'Cancel')}</button><button className="button primary" type="submit" disabled={state.phase !== 'idle' || creatingTag || !state.title.trim() || !access.ready || !active || parent.status === 'done' || parent.status === 'cancelled'}>{zh ? '创建' : 'Create'}</button></footer></form></FormDialog>;
 };

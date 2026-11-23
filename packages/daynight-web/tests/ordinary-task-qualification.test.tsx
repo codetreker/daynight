@@ -136,3 +136,43 @@ it('withdraws private content after access revocation while a creation receipt i
     expect(writes).toBe(1);
   } finally { view.unmount(); root.remove(); scope.dispose(); vi.unstubAllGlobals(); }
 });
+
+it.each(['uncertain', 'retired'] as const)('handles a pending create when project history becomes %s', async mode => {
+  const { scope } = await prepare();
+  const pending = Promise.withResolvers<Response>();
+  let writes = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const parsed = new URL(url, location.origin);
+    if (parsed.pathname.endsWith('/access')) return resourceResponse(directAccessFixture(projectId), TEST_VIEWER_ID);
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks/${parentId}`) return resourceResponse(parent, TEST_VIEWER_ID);
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks` && init?.method === 'POST') { writes++; return pending.promise; }
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks`) return resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID);
+    if (parsed.pathname.endsWith('/task-assignees')) return resourceResponse({ items: [], unresolvedUserIds: [] }, TEST_VIEWER_ID);
+    throw new Error(`Unexpected ${init?.method ?? 'GET'} ${url}`);
+  }));
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId} initialRead><OrdinaryTaskRelations projectId={projectId} detail={parent} history={scope.getHistoryGeneration(projectId)} active onRefreshGraph={() => {}} /></ProjectAccessBoundary>, { locale: 'en', taskCache: { scope }, container: root });
+  try {
+    await screen.findByText('No subtasks');
+    fireEvent.click(screen.getByRole('button', { name: 'New subtask' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Unconfirmed repair' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(writes).toBe(1));
+    act(() => { if (mode === 'uncertain') scope.fenceGoalHistory(projectId, taskSyncEpoch(projectId)); else scope.retireGoalHistory(projectId, taskSyncEpoch(projectId)); });
+    expect(screen.queryByRole('textbox', { name: 'Title' })).toBeNull();
+    await act(async () => { pending.reject(new TypeError('connection lost')); await pending.promise.catch(() => {}); });
+    if (mode === 'uncertain') {
+      const confirming = await scope.beginTaskRead(projectId, parentId, 0, 0, scope.signal);
+      await act(async () => { expect(await scope.observeHistory(confirming, taskSyncEpoch(projectId), scope.signal)).toBe('current'); });
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(await screen.findByText(/creation outcome is unknown/i)).toBeVisible();
+      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Unconfirmed repair');
+      expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    } else {
+      expect(screen.queryByText(/creation outcome is unknown/i)).toBeNull();
+      expect(screen.queryByText('Unconfirmed repair')).toBeNull();
+    }
+    expect(writes).toBe(1);
+  } finally { view.unmount(); root.remove(); scope.dispose(); vi.unstubAllGlobals(); }
+});
