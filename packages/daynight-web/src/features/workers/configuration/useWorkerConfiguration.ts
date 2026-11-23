@@ -192,13 +192,15 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         // A legacy boolean view cannot prove which enum target a submitted write stored.
         if (submitted.platformTaskModeSupported && incoming.platformTaskModeSupported !== true) return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         const observedBaseline = workerConfigurationBaseline(resource);
-        // A legacy true projection could be a concurrent strict target rather
-        // than the submitted preference. Only an observed strict baseline can
-        // establish that an unchanged legacy projection preserved that target.
-        if (!submitted.platformTaskModeSupported && observedBaseline?.known.platformTaskMode === 'only' && submitted.source.baseline.known.platformTaskMode !== 'only') {
+        // A legacy true projection loses the distinction between prefer and
+        // only. When the baseline cannot establish which it held, neither
+        // success nor a different target is provable from the new strict view.
+        const strictMismatch = !submitted.platformTaskModeSupported && observedBaseline?.known.platformTaskMode === 'only' && submitted.source.baseline.known.platformTaskMode !== 'only';
+        const projectedMatches = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { archiveSessions: submitted.archiveSessionsSupported, platformTaskMode: submitted.platformTaskModeSupported, semanticTagFilter: true });
+        if (strictMismatch && projectedMatches && submitted.source.baseline.known.platformTaskMode === undefined && submitted.source.baseline.known.preferPlatformSpecificTasks && submitted.value.preferPlatformSpecificTasks) {
           return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         }
-        const matchesSubmitted = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { archiveSessions: submitted.archiveSessionsSupported, platformTaskMode: submitted.platformTaskModeSupported, semanticTagFilter: true });
+        const matchesSubmitted = !strictMismatch && projectedMatches;
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: observedBaseline, refreshing: false, error: null, errorSource: null, notice: matchesSubmitted ? 'reconciled' : 'notSaved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };

@@ -400,8 +400,49 @@ describe('Worker configuration form', () => {
       if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
     });
     mount(); await flush(); fireEvent.change(screen.getByRole('combobox', { name: 'Task claim rule' }), { target: { value: 'prefer' } }); save(); await flush();
-    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('prefer'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.queryByText('The cloud confirms the submitted configuration.')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('prefer');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    await advance(); await advance();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('prefer');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' })); await flush();
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+    expect(screen.queryByText('The cloud configuration changed in another page.')).toBeNull();
+  });
+  it('recognizes other conflicting fields even when a legacy true baseline could mean strict', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = false;
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { modern = true; return configurationError(500, 'internal_error'); }
+      const value = modern ? { ...base, maxConcurrent: 4, platformTaskMode: 'only' } : { ...base, preferPlatformSpecificTasks: true };
+      const response = configurationResponse({ desired: { revision: modern ? '2' : '1', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (modern) response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    await advance(); expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' })); await flush(); expect(input()).toHaveValue('4');
+    expect(screen.getByRole('combobox', { name: 'Task claim rule' })).toHaveValue('only');
+  });
+  it('retains uncertainty when a legacy true baseline leaves a strict target indistinguishable', async () => {
+    const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let phase: 'legacy' | 'ambiguous' | 'confirmed' = 'legacy';
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') { phase = 'ambiguous'; return configurationError(500, 'internal_error'); }
+      const value = phase === 'legacy' ? { ...base, preferPlatformSpecificTasks: true } : { ...base, maxConcurrent: 3, platformTaskMode: phase === 'ambiguous' ? 'only' : 'prefer' };
+      const response = configurationResponse({ desired: { revision: phase === 'legacy' ? '1' : phase === 'ambiguous' ? '2' : '3', updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
+      if (phase !== 'legacy') response.headers.set('Daynight-Worker-Platform-Task-Mode', '1'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    await advance(); await advance();
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    phase = 'confirmed'; fireEvent.click(screen.getByRole('button', { name: 'Check save result' })); await flush();
+    expect(screen.getByText('The cloud confirms the submitted configuration.')).toBeInTheDocument(); expect(input()).toHaveValue('3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
   });
   it('keeps strict application unconfirmed when an external revision arrives through a legacy view', async () => {
     const { preferPlatformSpecificTasks: _legacy, ...base } = configurationValue(); let modern = true;
