@@ -103,6 +103,9 @@ type ProjectWriteDAO interface {
 
 type TaskWriteDAO interface {
 	Task(context.Context, string) (model.Task, error)
+	// TaskForDeletion locks the target, visible subtree and explicitly detached
+	// dependency sources in UUID order before returning the target.
+	TaskForDeletion(context.Context, string, bool) (model.Task, error)
 	// ParentTask reads under the Project write lock without acquiring a parent row lock.
 	ParentTask(context.Context, string) (model.Task, error)
 	GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error)
@@ -115,6 +118,8 @@ type TaskWriteDAO interface {
 	ObservedAt(context.Context) (time.Time, error)
 	DependentIDs(context.Context, string) ([]string, error)
 	DeleteTask(context.Context, string, bool) (model.TaskTombstone, error)
+	// TaskVisibilityHeader reads visibility under the Project lock without a Task row lock.
+	TaskVisibilityHeader(context.Context, string) (model.TaskHeader, error)
 	TaskHeader(context.Context, string) (model.TaskHeader, error)
 	TaskSteps(context.Context, string) ([]model.TaskStep, error)
 	InsertTaskStep(context.Context, string, model.TaskStep) error

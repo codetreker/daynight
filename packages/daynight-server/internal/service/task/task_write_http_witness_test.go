@@ -417,3 +417,11 @@ func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmission
 func (s *writeWitnessScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	panic("unexpected Project Goal dependency capability")
 }
+
+func (d *writeWitnessTaskDAO) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return d.Task(ctx, id)
+}
+
+func (d *writeWitnessTaskDAO) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
+}

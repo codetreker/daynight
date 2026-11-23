@@ -349,6 +349,10 @@ func (c *listOperationCapability) TaskSyncTasks(context.Context, string, *time.T
 	return nil, c.fail("TaskSyncTasks")
 }
 
+func (c *listOperationCapability) TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error) {
+	return nil, c.fail("TaskSyncGoalDependsOn")
+}
+
 func (c *listOperationCapability) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
 	return nil, c.fail("TaskSyncActiveTasks")
 }

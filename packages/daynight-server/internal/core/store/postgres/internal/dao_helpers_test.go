@@ -122,6 +122,37 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 		t.Fatalf("missing header=%v", err)
 	}
 }
+func TestTaskHelpersUseInheritedDeletionWithPhysicalPrecedence(t *testing.T) {
+	tx := helperTransaction(t)
+	ctx := t.Context()
+	project, task := helperTask(t, tx)
+	parent := uuid.NewString()
+	helperExec(t, tx, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$2,'task','Parent','todo')`, parent, project)
+	inherited := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	own := inherited.Add(time.Hour)
+	helperExec(t, tx, `UPDATE tasks SET parent_id=$2,ancestor_deleted_at=$3 WHERE id=$1`, task, parent, inherited)
+	for _, physical := range []bool{false, true} {
+		expected := inherited
+		if physical {
+			helperExec(t, tx, `UPDATE tasks SET deleted_at=$2 WHERE id=$1`, task, own)
+			expected = own
+		}
+		for _, lock := range []string{"", " FOR SHARE", " FOR UPDATE"} {
+			if _, err := pg.ReadTaskWithLock(ctx, tx, project, task, lock); !errors.Is(err, model.ErrTaskDeleted) {
+				t.Fatalf("hidden task physical=%v lock=%q: %v", physical, lock, err)
+			}
+			header, err := pg.ReadTaskHeader(ctx, tx, project, task, lock)
+			if err != nil || header.DeletedAt == nil || !header.DeletedAt.Equal(expected) {
+				t.Fatalf("hidden header physical=%v lock=%q: %+v %v", physical, lock, header, err)
+			}
+			presence, err := pg.TaskPresence(ctx, tx, project, task, lock)
+			if err != nil || !presence.Found || presence.DeletedAt == nil || !presence.DeletedAt.Equal(expected) {
+				t.Fatalf("hidden presence physical=%v lock=%q: %+v %v", physical, lock, presence, err)
+			}
+		}
+	}
+}
+
 func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 	tx := helperTransaction(t)
 	ctx := t.Context()

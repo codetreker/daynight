@@ -63,7 +63,7 @@ live Provider acceptance.
 
 ## Webhooks
 
-Task, Step and Thread writes capture eligible notification responsibilities in
+Task and Thread writes capture eligible notification responsibilities in
 their source transactions. The application exposes authenticated management,
 history and redelivery routes and starts the sender and retention workers after
 composition. `DAYNIGHT_WEBHOOK_ENABLED` defaults to `0`: existing subscriptions
@@ -618,7 +618,7 @@ expiry. Current authentication writers require this column. Drain older writers
 before switching the main site and previews to their shared database-clock
 renewal contract; routine responses retain the original credentials and Cookies.
 An initialized database follows the complete ordered ledger, while an empty
-namespace receives the equivalent current snapshot and checksums atomically.
+namespace receives the equivalent current-ledger snapshot and checksums atomically.
 The [authentication design](../../docs/design/daynight-auth.md#数据与并发) owns
 session validity, concurrent renewal and recovery requirements.
 
@@ -2401,9 +2401,8 @@ an isolated PostgreSQL instance and its cleanup. Store tests do not reproduce
 complete service flows. API integration and product E2E retain their normal-flow
 scope under the [test-writing rules](../../docs/writing_tests.md).
 
-Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
-fit, 171 exceed the collection limit, and both Add and Update refuse before any
-write. Graph and Sync tests separate physical dataset/query proof from service
+Steps application services, domain candidates and their dedicated codec tests
+are removed. Graph and Sync tests separate physical dataset/query proof from service
 coordination without stored-size admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
 records this correction of existing tests and the earlier fixture decisions.
 
@@ -2570,7 +2569,8 @@ check supplements the live identity and Session lifecycle witnesses for the
 shared Authentication instance. MCP retirement checks use real HTTP sessions
 against production registration to verify discovery and unknown-tool errors;
 REST retirement checks verify old methods, preflight and SPA isolation without
-Steps calls. Internal Steps Service, Core and Store retain their own proofs. DAO/scope
+Steps calls. The remaining Steps Store implementation retains its SQL and
+transaction proofs. DAO/scope
 fixtures supply fixed domain records, query results, proposed writes, call counts
 and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
@@ -3957,9 +3957,11 @@ Project authorization and refusal rules.
 
 The [resource requirements](../../docs/spec/daynight-task-steps.md) and
 [design](../../docs/design/daynight-task-steps.md) own this retirement and the
-remaining internal boundary. Shared Steps Application, Service, Core, codec and
-Store code, saved credential scopes and migration 030 remain; removing the HTTP
-consumer does not delete persisted rows or change credentials. MCP, CLI and Web
+remaining storage boundary. Legacy and scoped Steps application services, domain
+candidates, dedicated codec and input-policy entries are removed. PostgreSQL
+interface signatures, their models, DAO code and migration 030 remain. The shared
+Thread codec, TaskHeader, TouchTask and errors keep their ordinary consumers.
+Application removal does not delete persisted rows or change credentials. MCP, CLI and Web
 also expose no Steps entry point. The
 [retirement decision](../../.agents/notes/implemented/simplification/2026-11-23-retire-rest-task-steps.md)
 records the protocol and cleanup boundaries.
@@ -3970,20 +3972,21 @@ status codes and unchanged parent versions to the actual build. Ordinary Task,
 Thread and attachment success and denial cases retain their own fixtures; Task
 soft-deletion proofs do not depend on Steps setup.
 
-Remaining internal Steps tests still own their Service coordination, Core
-admission and physical PostgreSQL readback and rollback. From this module:
+Application assembly tests retain ordinary Task, Thread, identity, observation
+and Capturer binding proofs without Steps services. Remaining Steps Store tests
+own physical PostgreSQL readback and rollback. From this module:
 
 ```bash
 source scripts/env.sh
-env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/core/task/steps ./internal/service/task -run 'Test(TaskSteps|WriteReceiverRootTextSequence)' -count=1 -timeout=5m
+env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/service/application ./internal/service/task ./internal/core/task ./internal/core/task/codec ./internal/core/inputpolicy -count=1 -timeout=5m
 
 go test ./internal/core/store/postgres/... -run 'TestTaskSteps|TestTaskStepStore' -count=1 -timeout=5m
 ```
 
 Store commands require an isolated `DAYNIGHT_TEST_DATABASE_URL`; controlled
-Service completion does not establish physical persistence. Removed REST
-handler and maximum-resource stress suites have no supported HTTP behavior to
-exercise. Run-specific source, build, status, version and environment evidence
+Service completion does not establish physical persistence. Steps Service, Core
+and codec matrices leave with their implementation; retired REST handler and
+maximum-resource stress suites have no supported HTTP behavior to exercise. Run-specific source, build, status, version and environment evidence
 belongs with the corresponding PR and task acceptance materials.
 
 ## Task Thread API

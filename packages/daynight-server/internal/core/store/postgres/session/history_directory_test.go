@@ -266,7 +266,7 @@ func TestHistoryDirectoryComponentsFollowVisibleGraphChanges(t *testing.T) {
 	}
 	mustQueryExec(t, db, `UPDATE tasks SET type='goal' WHERE id IN ($1,$2)`, queryID(40), queryID(50))
 	mustQueryExec(t, db, `UPDATE tasks SET deleted_at=now() WHERE id IN ($1,$2)`, queryID(50), queryID(52))
-	mustQueryExec(t, db, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, queryID(50), queryID(51))
+	mustQueryExec(t, db, `UPDATE tasks SET parent_id=$1,ancestor_deleted_at=(SELECT deleted_at FROM tasks WHERE id=$1) WHERE id=$2`, queryID(50), queryID(51))
 	mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external,dependency_type) VALUES
  ($1,$2,$3,false,'task'),($1,$3,$4,false,'task'),($1,$5,$6,false,'task'),
  ($1,$3,$5,true,'task'),($1,$2,$6,false,'goal'),

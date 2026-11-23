@@ -296,6 +296,7 @@ type taskHTTPReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncGoalDependsOnFn    func(context.Context, string, []string) (map[string][]string, error)
 	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
@@ -398,6 +399,11 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncGoalDependsOn(ctx context.Context, project string, ids []string) (map[string][]string, error) {
+	mock.need("TaskSyncGoalDependsOn", mock.TaskSyncGoalDependsOnFn != nil)
+	return mock.TaskSyncGoalDependsOnFn(ctx, project, ids)
 }
 
 func (mock *taskHTTPReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
@@ -1207,4 +1213,12 @@ func (m taskHTTPClaimAdmission) CheckWorkerExecution(_ context.Context, user, wo
 
 func (m taskHTTPClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
 	return nil, m.CheckWorkerExecution(ctx, user, worker)
+}
+
+func (mock *taskHTTPWriterMock) TaskForDeletion(ctx context.Context, id string, _ bool) (model.Task, error) {
+	return mock.Task(ctx, id)
+}
+
+func (d *taskHTTPWriterMock) TaskVisibilityHeader(ctx context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeader(ctx, id)
 }

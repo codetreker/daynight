@@ -90,6 +90,21 @@ it("preserves legacy policy when a new runtime opens an existing journal", () =>
   f.read(db => expect(db.prepare("SELECT kind FROM timeline_entries").all()).toEqual([{ kind: "tool_call" }]));
 });
 
+it("persists the welcome decision and rejects a different mode or policy after reopening", () => {
+  const f = fixture();
+  expect(f.store.getOnlineMode()).toBeNull();
+  expect(() => f.store.bindOnlineMode("relay", "legacy")).toThrow("history policy differs");
+  expect(f.store.getOnlineMode()).toBeNull();
+  f.store.bindOnlineMode("relay", "task_body");
+  f.store.close();
+  const reopened = f.open();
+  expect(reopened.getOnlineMode()).toBe("relay");
+  reopened.bindOnlineMode("relay", "task_body");
+  expect(() => reopened.bindOnlineMode("legacy", "task_body")).toThrow("online mode differs");
+  expect(() => reopened.bindOnlineMode("relay", null)).toThrow("bound history content policy");
+  expect(reopened.getOnlineMode()).toBe("relay");
+});
+
 it("does not infer Task body policy from the shared Test and Bot execution identity", () => {
   const f = fixture(); f.store.close();
   const { claimId: _claim, projectId: _project, taskId: _task, workerId: _worker, worktreeId: _worktree, userId, ...common } = f.ticket;
@@ -142,6 +157,7 @@ it("retires tool content and exclusive files only after the stopped receipt and 
   } finally { lease.close(); }
   retireStoppedOnlineContent(f.file, f.ticket.sessionId, db);
   expect(db.prepare("SELECT COUNT(*) AS count FROM online_entries").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT entry_id FROM timeline_source_revisions ORDER BY entry_id").all()).toEqual([{ entry_id: body.entryId }]);
   expect(db.prepare("SELECT COUNT(*) AS count FROM image_runtime_state WHERE key LIKE 'markdown:projection:%'").get()).toEqual({ count: 0 });
   expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='markdown:context:execution-root'").get()).toBeDefined();
   const files = openResourceFiles(f.file, f.ticket.sessionId);

@@ -20,7 +20,8 @@ Step's bounded preview and position.
 
 The [MCP Steps retirement](../simplification/2026-11-23-retire-mcp-task-steps.md)
 removes those tools, their dedicated manual and protocol implementation. The
-shared Steps service remains internal after the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md). This record preserves the
+shared Steps service is removed by the [application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
+after the [REST retirement](../simplification/2026-11-23-retire-rest-task-steps.md). This record preserves the
 original pagination and memory decisions. Current MCP behavior is owned by the
 retirement decision.
 

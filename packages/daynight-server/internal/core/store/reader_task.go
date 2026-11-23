@@ -52,6 +52,10 @@ type TaskReader interface {
 	TaskGraphTasks(context.Context, string, string, TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	// TaskSyncGoalDependsOn returns sorted same-project Goal prerequisites for
+	// selected live Goals in this snapshot. Each selected live Goal has an entry,
+	// including a nonnil empty slice when it has no eligible prerequisites.
+	TaskSyncGoalDependsOn(context.Context, string, []string) (map[string][]string, error)
 	TaskSyncActiveTasks(context.Context, string) ([]TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }

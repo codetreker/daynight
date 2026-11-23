@@ -377,6 +377,9 @@ var workerPlatformTaskModeSQL string
 //go:embed schema/migrations/122_archive_single_staging.sql
 var archiveSingleStagingSQL string
 
+//go:embed schema/migrations/123_task_ancestor_visibility.sql
+var taskAncestorVisibilitySQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -505,6 +508,7 @@ var schemaMigrations = []migration{
 	{version: 120, sql: browserSessionManagementSQL},
 	{version: 121, sql: workerPlatformTaskModeSQL},
 	{version: 122, sql: archiveSingleStagingSQL},
+	{version: 123, sql: taskAncestorVisibilitySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

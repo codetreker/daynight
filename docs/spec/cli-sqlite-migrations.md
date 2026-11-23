@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 18，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 增加 Markdown 投影修复分类，17→18 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 17，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 增加 worker_lifecycle_bindings；17 增加按精确 ticket_hash 保存完整停止快照的 stopped_generations |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 18，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表；15 增加持久历史策略和在线详情表，旧 execution 保持 legacy 语义；16 增加 worker_lifecycle_bindings；17 增加按精确 ticket_hash 保存完整停止快照的 stopped_generations；18 保存在线模式，旧 execution 保持 legacy 语义 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -34,11 +34,13 @@ Controller v6、v8 和 v10 仅从 SQL 行或已提交索引指定的来源执行
 
 Controller v16 创建 `worker_lifecycle_bindings`，保存 generation、原 ticket_hash 及生命周期绑定；v17 只创建空的 `stopped_generations`，不得合成历史停止回执。原 ticket 的完整 stopped 快照须由实际停止结算与当前快照在同一事务保存；后继 writer 覆盖单例前必须验证并保存原停止证据。升级后单例仍保留的有效原快照可由业务入口保存，已覆盖且没有完整回执的历史明确失败，不能通过迁移、PID 消失或 Windows Job 名称不存在来补造证明。
 
+v18 为已有 execution 记录 legacy 在线模式，不改写其他执行事实，新增修订与 source 序号关联和原生图片槽位但不猜测旧证明。新 execution 在实际协商后固定在线模式，恢复不得切换。
+
 旧 Herdr lifecycle 数据由用户处理；Worker 不打开、迁移或重置该数据库。
 
 ## 查询与并发
 
-当前格式的查询在同一个只读快照中检查版本并读取数据，不为迁移取得实例锁或额外写权限。普通 Bot 推进和关停的退出启动对账、已有 Windows 停证读取、独立 Test Session 恢复库存，以及 Web 独立原生取消、编排恢复、普通 shutdown 重启资格、健康预算耗尽或 retry 的资格观察及关停和输入操作回执查询须接受实际 schema 与原票据、快照和进程证明验证通过的 Controller v16/v17，不为观察写库，不能因仍存活的 v16 writer 无法迁移而阻止已验证原边界的独立停止；正常关停保留原优雅停止窗口；健康执行即使恢复预算为 0 或已耗尽，关停后仍可普通重启，不产生人为暂停或消耗恢复预算。恢复库存不得为无关的存活 v16 执行触发迁移或阻塞合格目标；目标的原停证、授权和 native lease 校验保持不变。后续停止结算仍持原 permit 完成必要升级，可写入口保持当前格式要求。不支持的非空来源、身份冲突及缺失完整停止证明继续失败，Job 名称消失不能替代边界证明。摘要保护的 Bot 迁移副本必须保持受保护文件和 manifest 摘要不变；CLI 升级后历史和恢复读取继续接受实际 schema 与原票据验证通过的 Controller v16/v17 副本，时间线执行相同只读格式校验，不通过原地迁移副本取得读取资格。运行中的 writer 可以继续提交；查询仍读取自己的已提交快照。SQLite 自身打开既有 WAL/SHM 所需的权限不因该约束改变。
+当前格式的查询在同一个只读快照中检查版本并读取数据，不为迁移取得实例锁或额外写权限。普通 Bot 推进和关停的退出启动对账、已有 Windows 停证读取、独立 Test Session 恢复库存，以及 Web 独立原生取消、编排恢复、普通 shutdown 重启资格、健康预算耗尽或 retry 的资格观察及关停和输入操作回执查询须接受实际 schema 与原票据、快照和进程证明验证通过的 Controller v16/v17/v18，不为观察写库，不能因仍存活的 v16/v17 writer 无法迁移而阻止已验证原边界的独立停止；正常关停保留原优雅停止窗口；健康执行即使恢复预算为 0 或已耗尽，关停后仍可普通重启，不产生人为暂停或消耗恢复预算。恢复库存不得为无关的存活 v16/v17 执行触发迁移或阻塞合格目标；目标的原停证、授权和 native lease 校验保持不变。后续停止结算仍持原 permit 完成必要升级，可写入口保持当前格式要求。不支持的非空来源、身份冲突及缺失完整停止证明继续失败，Job 名称消失不能替代边界证明。摘要保护的 Bot 迁移副本必须保持受保护文件和 manifest 摘要不变；CLI 升级后历史和恢复读取继续接受实际 schema 与原票据验证通过的 Controller v16/v17/v18 副本，时间线执行相同只读格式校验，不通过原地迁移副本取得读取资格。运行中的 writer 可以继续提交；查询仍读取自己的已提交快照。SQLite 自身打开既有 WAL/SHM 所需的权限不因该约束改变。
 
 需要重置或升级的查询先结束并关闭读取连接，经领域准入完成迁移，再重开只读快照、检查当前格式并执行原查询。数据库在检查后消失时不得被重新创建；最终快照遇到较新版本、未知非零结构或再次回到旧格式时明确失败，不无限重开。
 

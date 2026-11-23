@@ -32,11 +32,16 @@ func (tx *recordingWriterTx) QueryRow(_ context.Context, _ string, args ...any) 
 	return failingRow{tx.cause}
 }
 
+func (tx *recordingWriterTx) Query(_ context.Context, _ string, args ...any) (pgx.Rows, error) {
+	tx.arguments = append(tx.arguments, args)
+	return nil, tx.cause
+}
+
 func TestDeleteTaskRetainsProjectScopeAndError(t *testing.T) {
 	cause := errors.New("delete failed")
 	tx := &recordingWriterTx{cause: cause}
 	_, err := NewWriter(tx, "project").DeleteTask(context.Background(), "task", true)
-	if !errors.Is(err, cause) || len(tx.arguments) != 2 {
+	if !errors.Is(err, cause) || len(tx.arguments) != 1 {
 		t.Fatalf("delete returned %v after %d statements", err, len(tx.arguments))
 	}
 	for _, args := range tx.arguments {
