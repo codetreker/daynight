@@ -41,8 +41,12 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
 ALTER TABLE sessions DROP COLUMN last_used_at;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119)`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120)`); err != nil {
 				t.Fatal(err)
+			}
+			var latestVersion int
+			if err := observer.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&latestVersion); err != nil || latestVersion != 114 {
+				t.Fatalf("historical migration boundary: latest=%d error=%v", latestVersion, err)
 			}
 			projectID, taskID := uuid.NewString(), uuid.NewString()
 			worker := &model.WorkerClaim{ClaimID: uuid.NewString(), State: model.WorkerActive, UserID: uuid.NewString(), WorkerID: uuid.NewString(),

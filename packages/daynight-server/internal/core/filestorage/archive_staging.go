@@ -18,6 +18,10 @@ var ErrArchiveStagingOffset = errors.New("archive staging offset mismatch")
 // publication read the same bytes. An open body must close before the handle.
 type ArchiveStaging interface {
 	Create(context.Context, string) error
+	// AdoptEmpty accepts an already-created empty staging object only after the
+	// caller has established that adoption is permitted for this file identity.
+	// It does not create, truncate or replace the object.
+	AdoptEmpty(context.Context, string) error
 	Observe(context.Context, string, int64) (int64, error)
 	Append(context.Context, string, int64, int64, []byte) (int64, error)
 	Open(context.Context, string, int64) (Object, error)

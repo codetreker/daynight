@@ -619,3 +619,143 @@ func TestArchiveExistingNamespaceRequiresDurabilityBarriers(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestArchiveAdoptsEmptyAfterUncertainCreate(t *testing.T) {
+	root := archivePersistentRoot(t)
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.EnableArchiveStaging(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	n, err := sessionarchive.NewNamespace(sessionarchive.Users, uuid.NewString(), uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := s.AcquireArchiveStaging(t.Context(), n, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.Close()
+	stageDir := filepath.Join(root, sessionarchive.Bucket, n.Directory(), ".staging")
+	if err = os.Mkdir(stageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stageInfo, err := os.Stat(stageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("injected staging directory sync failure")
+	var dirBarriers int
+	s.fileSync = func(f *os.File) error {
+		info, e := f.Stat()
+		if e != nil {
+			return e
+		}
+		if os.SameFile(info, stageInfo) {
+			dirBarriers++
+			if dirBarriers == 1 {
+				return failure
+			}
+		}
+		return f.Sync()
+	}
+	id := uuid.NewString()
+	if err = guard.Create(t.Context(), id); !errors.Is(err, failure) {
+		t.Fatalf("expected uncertain create: %v", err)
+	}
+	if err = guard.Create(t.Context(), id); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("repeat create overwrote existing object: %v", err)
+	}
+	if err = guard.AdoptEmpty(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if dirBarriers < 2 {
+		t.Fatal("adoption omitted parent directory barrier")
+	}
+	if err = guard.AdoptEmpty(t.Context(), uuid.NewString()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("adoption created absent object: %v", err)
+	}
+	if _, err = guard.Append(t.Context(), id, 4, 0, []byte("safe")); err != nil {
+		t.Fatal(err)
+	}
+	if err = guard.AdoptEmpty(t.Context(), id); !errors.Is(err, filestorage.ErrArchiveStagingOffset) {
+		t.Fatalf("adoption accepted nonempty object: %v", err)
+	}
+	path, err := filestorage.ArchiveStagingPath(n, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, sessionarchive.Bucket, path))
+	if err != nil || string(got) != "safe" {
+		t.Fatalf("adoption modified content: %q %v", got, err)
+	}
+}
+
+func TestArchiveAdoptEmptySyncFailureCanRetry(t *testing.T) {
+	for _, target := range []string{"file", "directory"} {
+		t.Run(target, func(t *testing.T) {
+			root := archivePersistentRoot(t)
+			s, err := New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err = s.EnableArchiveStaging(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			n, err := sessionarchive.NewNamespace(sessionarchive.Users, uuid.NewString(), uuid.NewString())
+			if err != nil {
+				t.Fatal(err)
+			}
+			guard, err := s.AcquireArchiveStaging(t.Context(), n, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer guard.Close()
+			id := uuid.NewString()
+			if err = guard.Create(t.Context(), id); err != nil {
+				t.Fatal(err)
+			}
+			stage := filepath.Join(root, sessionarchive.Bucket, n.Directory(), ".staging")
+			selected := stage
+			if target == "file" {
+				selected = filepath.Join(stage, id)
+			}
+			selectedInfo, err := os.Stat(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("injected adoption sync failure")
+			var attempts int
+			s.fileSync = func(f *os.File) error {
+				info, e := f.Stat()
+				if e != nil {
+					return e
+				}
+				if os.SameFile(info, selectedInfo) {
+					attempts++
+					if attempts == 1 {
+						return failure
+					}
+				}
+				return f.Sync()
+			}
+			if err = guard.AdoptEmpty(t.Context(), id); !errors.Is(err, failure) {
+				t.Fatalf("uncompleted %s barrier was accepted: %v", target, err)
+			}
+			if err = guard.AdoptEmpty(t.Context(), id); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			if attempts < 2 {
+				t.Fatalf("%s barrier was not repeated", target)
+			}
+			info, err := os.Stat(filepath.Join(stage, id))
+			if err != nil || info.Size() != 0 {
+				t.Fatalf("adoption modified empty object: %v", err)
+			}
+		})
+	}
+}

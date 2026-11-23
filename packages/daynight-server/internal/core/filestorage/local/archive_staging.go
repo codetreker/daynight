@@ -197,6 +197,68 @@ func (s *ArchiveStaging) Create(ctx context.Context, fileID string) (result erro
 	return errors.Join(s.storage.syncArchiveDirectory(dir), filestorage.GateError(ctx))
 }
 
+// AdoptEmpty supplies the missing durability barriers after a conditional
+// create's outcome was uncertain. Business registration and terminal-state
+// checks remain the caller's responsibility under the same Session lock.
+func (s *ArchiveStaging) AdoptEmpty(ctx context.Context, fileID string) (result error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ready(ctx); err != nil {
+		return err
+	}
+	if s.frozen {
+		return filestorage.ErrGateBusy
+	}
+	name, err := s.filename(fileID)
+	if err != nil {
+		return err
+	}
+	if err = verifyMutation(ctx); err != nil {
+		return err
+	}
+	f, err := s.openFile(ctx, fileID, os.O_RDWR)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, f.Close()) }()
+	dir, _, err := openArchiveDirectory(s.root, ".staging")
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, dir.Close()) }()
+	if err = s.storage.checkArchiveMount(dir); err != nil {
+		return err
+	}
+	entry, err := dir.Lstat(strings.TrimPrefix(name, ".staging/"))
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !entry.Mode().IsRegular() || !os.SameFile(entry, info) {
+		return filestorage.ErrPathConflict
+	}
+	if info.Size() != 0 {
+		return filestorage.ErrArchiveStagingOffset
+	}
+	if err = s.storage.fileSync(f); err != nil {
+		return err
+	}
+	if err = verifyArchiveStagingFile(f); err != nil {
+		return err
+	}
+	info, err = f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() != 0 {
+		return filestorage.ErrArchiveStagingOffset
+	}
+	return errors.Join(s.storage.syncArchiveDirectory(s.root), s.storage.syncArchiveDirectory(dir), filestorage.GateError(ctx))
+}
+
 func recoveredOffset(size, total int64) (int64, error) {
 	if total < 0 || size < 0 || size > total {
 		return 0, filestorage.ErrArchiveStagingCorrupt
