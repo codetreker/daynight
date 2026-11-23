@@ -101,7 +101,7 @@ func TestWorkerTaskTagFilterMigratedCapacityAndLegacyPut(t *testing.T) {
 	if len(compact) != workercore.MaxConfigurationJSONBytes+int(workerprotocol.EmptyTaskTagFilterMemberBytes) {
 		t.Fatalf("migrated size=%d", len(compact))
 	}
-	old, err := workercore.ParseWorkerConfigurationProtocol(raw, workerprotocol.Capabilities{ToolPaths: true})
+	old, err := workercore.ParseWorkerConfigurationProtocol(raw, workerprotocol.Capabilities{ToolPaths: true, PlatformTaskMode: true})
 	if err != nil {
 		t.Fatal(err)
 	}
