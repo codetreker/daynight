@@ -222,7 +222,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browser
 	}
 	return result, nil
 }
-func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string) (core.LoginCompletion, error) {
+func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string, userAgent string) (core.LoginCompletion, error) {
 	if err := s.ops.validateCallback(query, binding); err != nil {
 		return core.LoginCompletion{}, err
 	}
@@ -273,6 +273,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	}
 	now := s.now().UTC()
 	session, value := s.ops.newSession(now)
+	session.Browser, session.OS = core.ClassifyBrowserUserAgent(userAgent)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	var admissionError error
 	err = s.strict(ctx, func(scope store.IdentityScope) error {

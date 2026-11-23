@@ -211,6 +211,9 @@ func (s *Identity) NewSession(now time.Time) (model.Session, string) {
 	return model.Session{ID: uuid.NewString(), TokenHash: secret.Hash(value), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}, value
 }
 func (s *Identity) CreateSession(ctx context.Context, dao store.IdentityDAO, session model.Session) error {
+	if err := validateSessionProjection(session); err != nil {
+		return err
+	}
 	return dao.InsertSession(ctx, session)
 }
 func ValidateCredential(kind model.CredentialKind, value string) error {

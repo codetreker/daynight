@@ -118,3 +118,12 @@ func TestMyTasksCallbackPathReserved(t *testing.T) {
 		t.Fatalf("distinct callback got %q, %v", got, err)
 	}
 }
+
+func TestBrowserSessionsCallbackPathsReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/api/v1/me/browser-sessions", "/api/v1/me/browser-sessions/10000000-0000-4000-8000-000000000001", "/api/v1/me/browser-sessions/10000000-0000-4000-8000-000000000001/revoke"} {
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			t.Fatalf("callback overlaps browser session path %s", path)
+		}
+	}
+}

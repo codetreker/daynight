@@ -19,3 +19,18 @@ type BrowserSessionDAO interface {
 type BrowserSessionClock interface {
 	SessionTime(context.Context) (time.Time, error)
 }
+
+// BrowserSessionManagementDAO reads account-scoped non-secret projections and
+// locks the caller and target by ascending ID for a revocation transaction.
+type BrowserSessionManagementDAO interface {
+	BrowserSessionClock
+	ReadBrowserSession(context.Context, string, string, time.Time) (model.Session, error)
+	ListBrowserSessions(context.Context, string, string, time.Time, *BrowserSessionPosition, int) ([]model.Session, error)
+	LockBrowserSessionID(context.Context, string, string) (model.Session, error)
+	DeleteBrowserSessionID(context.Context, string, string) error
+}
+
+type BrowserSessionPosition struct {
+	CreatedAt time.Time
+	ID        string
+}

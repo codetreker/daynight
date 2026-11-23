@@ -40,8 +40,9 @@ func TestWorkerActiveClaimMigrationProcessRecovery(t *testing.T) {
 			if _, err := observer.Exec(ctx, `DROP INDEX task_properties_worker_active_claim_idx;
 ALTER TABLE task_sessions DROP COLUMN online_mode;
 ALTER TABLE session_archive_files DROP COLUMN upload_version, DROP COLUMN IF EXISTS prefix_proof, DROP COLUMN successor_file_id, DROP COLUMN terminal_error;
-ALTER TABLE sessions DROP COLUMN last_used_at;
-DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120)`); err != nil {
+DROP INDEX sessions_user_created_id;
+ALTER TABLE sessions DROP COLUMN last_used_at, DROP COLUMN browser, DROP COLUMN os;
+DELETE FROM schema_migrations WHERE version IN (115, 116, 117, 118, 119, 120, 121)`); err != nil {
 				t.Fatal(err)
 			}
 			var latestVersion int
@@ -132,6 +133,24 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || activityApplied != wantCommitted {
 				t.Fatalf("activity migration after worker validation: applied=%t want=%t error=%v", activityApplied, wantCommitted, err)
 			}
+			var stepRetirementApplied bool
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || stepRetirementApplied != wantCommitted {
+				t.Fatalf("step retirement migration after worker validation: applied=%t want=%t error=%v", stepRetirementApplied, wantCommitted, err)
+			}
+			const managementFacts = `SELECT (EXISTS(SELECT FROM schema_migrations WHERE version=120))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='browser'))::int + (EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='os'))::int + (EXISTS(SELECT FROM pg_index WHERE indexrelid=to_regclass('sessions_user_created_id') AND indisvalid AND indisready))::int`
+			var managementFactsCount int
+			wantFacts := 0
+			if wantCommitted {
+				wantFacts = 4
+			}
+			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != wantFacts {
+				t.Fatalf("session management migration after worker validation: facts=%d want=%d error=%v", managementFactsCount, wantFacts, err)
+			}
+			const stagingFacts = `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=121) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='upload_version') AND NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='session_archive_files' AND column_name='prefix_proof')`
+			var stagingApplied bool
+			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || stagingApplied != wantCommitted {
+				t.Fatalf("single staging migration after worker validation: applied=%t want=%t error=%v", stagingApplied, wantCommitted, err)
+			}
 			if strings.Contains(failed.logs.String(), validRaw) || strings.Contains(failed.logs.String(), values["DAYNIGHT_DATABASE_URL"]) {
 				t.Fatal("startup failure exposed a claim payload or database configuration")
 			}
@@ -159,6 +178,15 @@ EXISTS(SELECT FROM tasks t JOIN task_properties p ON p.task_id=t.id WHERE t.id=$
 			}
 			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=118) AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions' AND column_name='last_used_at')`).Scan(&activityApplied); err != nil || !activityApplied {
 				t.Fatalf("activity migration recovery: applied=%t error=%v", activityApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=119)`).Scan(&stepRetirementApplied); err != nil || !stepRetirementApplied {
+				t.Fatalf("step retirement migration recovery: applied=%t error=%v", stepRetirementApplied, err)
+			}
+			if err := fresh.QueryRow(ctx, managementFacts).Scan(&managementFactsCount); err != nil || managementFactsCount != 4 {
+				t.Fatalf("session management migration recovery: facts=%d error=%v", managementFactsCount, err)
+			}
+			if err := fresh.QueryRow(ctx, stagingFacts).Scan(&stagingApplied); err != nil || !stagingApplied {
+				t.Fatalf("single staging migration recovery: applied=%t error=%v", stagingApplied, err)
 			}
 		})
 	}

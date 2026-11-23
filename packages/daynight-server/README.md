@@ -618,7 +618,7 @@ expiry. Current authentication writers require this column. Drain older writers
 before switching the main site and previews to their shared database-clock
 renewal contract; routine responses retain the original credentials and Cookies.
 An initialized database follows the complete ordered ledger, while an empty
-namespace receives the equivalent version-118 snapshot and checksums atomically.
+namespace receives the equivalent current snapshot and checksums atomically.
 The [authentication design](../../docs/design/daynight-auth.md#数据与并发) owns
 session validity, concurrent renewal and recovery requirements.
 

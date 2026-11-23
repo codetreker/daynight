@@ -45,7 +45,7 @@ func TestArchiveUploadVersionMigrationAndInventory(t *testing.T) {
 func TestArchiveSingleStagingMigrationRejectsOldV2AndPreservesV1(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 120 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 121 })
 	if index < 1 {
 		t.Fatal("single staging migration missing")
 	}
