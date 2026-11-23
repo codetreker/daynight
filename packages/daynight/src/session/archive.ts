@@ -119,7 +119,8 @@ export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManif
 export const parseSessionArchiveTimeline = (value: unknown): SessionArchiveTimeline => {
   const data = exact(value, ["entries"]);
   if (!Array.isArray(data.entries) || data.entries.length > 100000) return invalid();
-  let encoded = 0; for (const piece of jsonPieces(data)) { encoded += Buffer.byteLength(piece); if (encoded > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) return invalid(); }
+  const encoder = new TextEncoder();
+  let encoded = 0; for (const piece of jsonPieces(data)) { encoded += encoder.encode(piece).byteLength; if (encoded > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) return invalid(); }
   const entries = data.entries.map(parseTimelineEntry), ids = new Set<string>(); let previous = 0n;
   for (const entry of entries) { if (ids.has(entry.entryId) || BigInt(entry.entrySeq) <= previous) return invalid(); ids.add(entry.entryId); previous = BigInt(entry.entrySeq); }
   return { entries };
