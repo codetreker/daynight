@@ -20,7 +20,7 @@ describe('Goal acceptance graph inspection', () => {
     data.set('terminal', { ...data.get('done')!, id: 'terminal', title: 'Terminal downstream', titlePreview: 'Terminal downstream', dependsOn: ['root'] });
     const local = (id: string) => ({ goalId: id, projectId: 'project', projectName: 'Project', title: `Stale ${id}`, status: 'todo' as const, kind: 'internal' as const });
     const external = (id: string) => ({ ...local(id), projectId: 'other', projectName: 'Other Project', title: id, status: 'done' as const, kind: 'external' as const });
-    const source: GoalRelationSource = { goalId: 'root', projectId: 'project', title: 'root', phase: 'ready', hiddenCount: 0, error: null,
+    const source: GoalRelationSource = { mode: 'root', goalId: 'root', projectId: 'project', title: 'root', phase: 'ready', hiddenCount: 0, error: null,
       contribution: { sourceId: 'root', sourceProjectId: 'project', prerequisites: [{ target: local('done') }, { target: external('External prerequisite') }],
         successors: [local('next'), external('External terminal downstream')] } };
     const snapshot: GoalRelationSnapshot = { sources: new Map([['root', source]]), deniedIds: new Set() }, onOpenGoal = vi.fn();
@@ -48,10 +48,53 @@ describe('Goal acceptance graph inspection', () => {
     expect(inspector).not.toHaveTextContent('Updated local prerequisite');
     expect(inspector).toHaveTextContent('External prerequisite');
   });
+  it('filters disconnected sources immediately against new committed summaries before session reconciliation', async () => {
+    const data = fixture(), inspect = vi.fn();
+    const related = (id: string) => ({ goalId: id, projectId: 'other', projectName: 'Other Project', title: id, status: 'todo' as const, kind: 'external' as const });
+    const root: GoalRelationSource = { mode: 'root', goalId: 'isolated', projectId: 'project', title: 'isolated', phase: 'ready', hiddenCount: 0, error: null,
+      contribution: { sourceId: 'isolated', sourceProjectId: 'project', prerequisites: [{ target: related('external') }], successors: [] } };
+    const branch: GoalRelationSource = { ...root, mode: 'expanded', goalId: 'external', projectId: 'other', title: 'external',
+      contribution: { sourceId: 'external', sourceProjectId: 'other', prerequisites: [{ target: related('second-hop') }], successors: [] } };
+    const snapshot: GoalRelationSnapshot = { sources: new Map([['isolated', root], ['external', branch]]), deniedIds: new Set() };
+    const props = { projectId: 'project', onOpenGoal: vi.fn(), onInspectRelations: inspect, onRetryRelations: vi.fn() };
+    const view = render(<GoalAcceptanceGraph {...props} summaries={data} relationSnapshot={snapshot} />);
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(6));
+    fireEvent.click(body(view.container, 'external'));
+    const committed = new Map(data); committed.set('isolated', { ...committed.get('isolated')!, status: 'done' });
+    view.rerender(<GoalAcceptanceGraph {...props} summaries={committed} relationSnapshot={snapshot} />);
+    expect(view.container.querySelector('.react-flow__node[data-id="external"]')).toBeNull();
+    expect(view.container.querySelector('.react-flow__node[data-id="second-hop"]')).toBeNull();
+    expect(view.container.querySelectorAll('.goal-relation-source')).toHaveLength(0);
+    expect(view.container.querySelector('.goal-acceptance-inspection h3')).toBeNull();
+  });
+  it('keeps uncovered inspection off the canvas and preserves selection and viewport when explicitly expanded', async () => {
+    const data = fixture(), inspect = vi.fn(), expand = vi.fn();
+    const related = (id: string) => ({ goalId: id, projectId: 'other', projectName: 'Other Project', title: id, status: 'todo' as const, kind: 'internal' as const });
+    const root: GoalRelationSource = { mode: 'root', goalId: 'root', projectId: 'project', title: 'root', phase: 'ready', hiddenCount: 0, error: null,
+      contribution: { sourceId: 'root', sourceProjectId: 'project', prerequisites: [{ target: related('external') }], successors: [] } };
+    const external: GoalRelationSource = { ...root, mode: 'inspection', goalId: 'external', projectId: 'other', title: 'external',
+      contribution: { sourceId: 'external', sourceProjectId: 'other', prerequisites: [{ target: related('second-hop') }], successors: [] } };
+    const snapshot: GoalRelationSnapshot = { sources: new Map([['root', root], ['external', external]]), deniedIds: new Set() };
+    const props = { projectId: 'project', summaries: data, onOpenGoal: vi.fn(), onInspectRelations: inspect, onExpandRelations: expand };
+    const view = render(<GoalAcceptanceGraph {...props} relationSnapshot={snapshot} />);
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(5));
+    fireEvent.click(body(view.container, 'external'));
+    expect(inspect).toHaveBeenCalledWith('external');
+    expect(view.container.querySelector('.goal-acceptance-inspection')).toHaveTextContent('second-hop');
+    expect(view.container.querySelector('.react-flow__node[data-id="second-hop"]')).toBeNull();
+    const viewport = view.container.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform;
+    fireEvent.click(screen.getByRole('button', { name: 'Expand relationships: external' }));
+    expect(expand).toHaveBeenCalledWith('external');
+    view.rerender(<GoalAcceptanceGraph {...props} relationSnapshot={{ ...snapshot, sources: new Map([['root', root], ['external', { ...external, mode: 'expanded' }]]) }} />);
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(6));
+    expect(body(view.container, 'external')).toHaveAttribute('aria-pressed', 'true');
+    expect(view.container.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).toBe(viewport);
+    expect(screen.getByRole('button', { name: 'Expand relationships: external' })).toHaveAttribute('aria-pressed', 'true');
+  });
   it('removes denied peers from both raw inspection directions without losing the readable graph', async () => {
     const data = fixture();
     const deniedPeer = { goalId: 'next', projectId: 'project', projectName: 'Project', title: 'next', status: 'todo' as const, kind: 'internal' as const };
-    const source: GoalRelationSource = { goalId: 'root', projectId: 'project', title: 'root', phase: 'ready', hiddenCount: 0, error: null,
+    const source: GoalRelationSource = { mode: 'root', goalId: 'root', projectId: 'project', title: 'root', phase: 'ready', hiddenCount: 0, error: null,
       contribution: { sourceId: 'root', sourceProjectId: 'project', prerequisites: [{ target: deniedPeer }], successors: [deniedPeer] } };
     const readable: GoalRelationSnapshot = { sources: new Map([['root', source]]), deniedIds: new Set() };
     const props = { projectId: 'project', summaries: data, onOpenGoal: vi.fn(), onRetryRelations: vi.fn() };

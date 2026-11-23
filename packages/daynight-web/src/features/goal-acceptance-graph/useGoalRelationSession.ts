@@ -14,5 +14,5 @@ export const useGoalRelationSession = (projectId: string, summaries: ReadonlyMap
     return () => { window.removeEventListener('focus', reenter); document.removeEventListener('visibilitychange', reenter); };
   }, [session]);
   const snapshot = useSyncExternalStore(session.subscribe, session.snapshot);
-  return { snapshot, retry: session.retry };
+  return { snapshot, retry: session.retry, inspect: session.inspect, expand: session.expand };
 };

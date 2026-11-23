@@ -37,12 +37,23 @@ filter; an initially unsupported read contributes nothing. Actual access or
 history loss and trusted resource denial withdraw prior content immediately.
 Source phases distinguish pending coverage, partial results,
 failures, unsupported reads, withdrawal and conflicting observations. There is
-no graph polling loop; root/version changes, qualified reentry and explicit
-retry drive reads, and closing cancels queued and in-flight work.
+no graph polling loop; root/version changes, uncovered inspection, external
+expansion, qualified reentry and explicit retry drive reads, and closing cancels
+queued and in-flight work. Inspection and expansion share each source's admitted
+results and in-flight request. Inspection contributions describe direct
+relationships; explicit expansion promotes the source's contribution into the
+canvas without repeating an already covered read. Source modes distinguish roots,
+inspection and expansion. Reachability starts from synchronized roots and visible
+prerequisites and follows root/expanded contributions; disconnected inspection
+and expansion sources are removed and their reads cancelled. Earlier discovery
+or an inverse stale contribution cannot keep a branch admitted.
 
 External cards retain the API's actual Project, Goal, title and status without
-invented Task versions or child progress. Only synchronization supplies internal
-edges. Inspection uses complete synchronized Goal relations and metadata rather
+invented Task versions or child progress. Graph scope is relative to its owning
+Project, so an expanded source retains real edges within a foreign Project even
+when the API classifies its target as internal to that source. Only
+synchronization supplies edges whose endpoints belong to the graph's Project.
+Inspection uses complete synchronized Goal relations and metadata rather
 than just the visible canvas. Raw relationship data supplements external and
 inspection-only context without replacing local relations, titles or lifecycle
 states already observed through synchronization. Hidden prerequisites remain
@@ -117,12 +128,21 @@ Staging repeated reads preserves their cards and reading state until the complet
 new contribution is known, while initial reads can still show useful partial
 context immediately.
 
+**Filter external branches by the API's source-relative kind.** An
+external source and target can share their own Project while both lie outside
+the graph's Project. Filtering the API's internal category would drop a real
+branch; graph ownership determines presentation while actual endpoints
+determine deduplication.
+
 ## Consequences
 
 Readers see the local graph immediately and readable direct cross-project
 context as it arrives, without changing ordinary Task graphs or synchronization
-traffic. Relationship reads add bounded per-source network work and hold only
-online-session data. Independent pages do not form a global snapshot, so changed
+traffic. Explicit external expansion adds readable branches while ordinary
+inspection preserves the canvas scope. Source reuse avoids repeated reads when
+inspection and expansion target the same Goal. Relationship reads add bounded
+per-source network work and hold only online-session data. Independent pages do
+not form a global snapshot, so changed
 revision pages and graph cycles remain explicit recoverable failures. Local and
 partial information cannot establish global acceptance. Shared geometry and
 reading mechanics preserve useful interaction state without treating retained

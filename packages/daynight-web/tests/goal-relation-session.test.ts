@@ -5,6 +5,8 @@ import { ApiError } from '../src/api/client';
 import type { TaskSummary } from '../src/api/types';
 import { createTaskCacheScope, type CacheEvent } from '../src/features/task-cache/project-cache';
 import { GoalRelationSession } from '../src/features/goal-acceptance-graph/relation-session';
+import { projectGoalAcceptance } from '../src/features/goal-acceptance-graph/model';
+import { combineGoalRelations } from '../src/features/goal-acceptance-graph/relation-projection';
 import { detailFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 
@@ -29,6 +31,8 @@ const prepare = async (read: ConstructorParameters<typeof GoalRelationSession>[2
   return { session, scope, event: (value: CacheEvent) => event(value) };
 };
 const settled = (session: GoalRelationSession, goalId = id(1), phase = 'ready') => waitFor(() => expect(session.snapshot().sources.get(goalId)?.phase).toBe(phase));
+const canvas = (session: GoalRelationSession, input: Map<string, TaskSummary>) => combineGoalRelations(projectId, projectGoalAcceptance(input),
+  [...session.snapshot().sources.values()].flatMap(source => source.mode === 'inspection' || source.contribution === null ? [] : [source.contribution]), session.snapshot().deniedIds);
 
 describe('Goal graph relationship session', () => {
   it('withdraws a matched hidden prerequisite immediately through held and failed paging, rejecting older responses and admitting a fresh positive read', async () => {
@@ -114,6 +118,49 @@ describe('Goal graph relationship session', () => {
     rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
   });
 
+  it.each(['inspection', 'expanded'] as const)('cancels a hidden %s source and permits a new source after fresh positive re-admission', async mode => {
+    let hidden = false, hold = true, reply!: (value: GoalDependenciesRead) => void, branchSignal!: AbortSignal;
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal): Promise<GoalDependenciesRead> => {
+      if (goalId === id(1)) return Promise.resolve(page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : related(10) }] }));
+      if (hold) return new Promise(resolve => { reply = resolve; branchSignal = signal; });
+      return Promise.resolve(page(goalId, { prerequisites: [{ target: related(11) }] }));
+    });
+    const { session } = await prepare(read), input = roots();
+    session.setRoots(input); await settled(session);
+    if (mode === 'inspection') session.inspect(id(10)); else session.expand(id(10));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    hidden = true; session.retry(id(1)); await settled(session);
+    expect(branchSignal.aborted).toBe(true);
+    expect(session.snapshot().sources.has(id(10))).toBe(false);
+    expect(canvas(session, input).goals.has(id(10))).toBe(false);
+    reply(page(id(10), { prerequisites: [{ target: related(11) }] })); await Promise.resolve();
+    expect(session.snapshot().sources.has(id(10))).toBe(false);
+    hidden = false; hold = false; session.retry(id(1)); await settled(session);
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(false);
+    session.expand(id(10)); await settled(session, id(10));
+    expect(session.snapshot().sources.get(id(10))?.projectId).toBe(externalProject);
+    expect(canvas(session, input).goals.has(id(11))).toBe(true);
+  });
+
+  it('prunes and cancels disconnected inspection descendants immediately when an expanded ancestor becomes hidden', async () => {
+    let hidden = false, childReply!: (value: GoalDependenciesRead) => void, childSignal!: AbortSignal;
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal): Promise<GoalDependenciesRead> => {
+      if (goalId === id(1)) return Promise.resolve(page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : related(10) }] }));
+      if (goalId === id(10)) return Promise.resolve(page(goalId, { prerequisites: [{ target: related(11) }] }));
+      return new Promise(resolve => { childReply = resolve; childSignal = signal; });
+    });
+    const { session } = await prepare(read), input = roots();
+    session.setRoots(input); await settled(session); session.expand(id(10)); await settled(session, id(10));
+    session.inspect(id(11)); await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    hidden = true; session.retry(id(1)); await settled(session);
+    expect(childSignal.aborted).toBe(true);
+    expect(session.snapshot().sources.has(id(10))).toBe(false);
+    expect(session.snapshot().sources.has(id(11))).toBe(false);
+    expect(canvas(session, input).externalIds.size).toBe(0);
+    childReply(page(id(11), { prerequisites: [{ target: related(12) }] })); await Promise.resolve();
+    expect(session.snapshot().sources.has(id(11))).toBe(false);
+  });
+
   it('retains prior downstream pages through held and failed replacement, removing absent Goals only on complete replacement', async () => {
     let round = 0, rejectPage!: (error: unknown) => void;
     const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
@@ -133,6 +180,31 @@ describe('Goal graph relationship session', () => {
     expect(session.snapshot().sources.get(id(1))!.contribution?.successors.map(goal => goal.goalId)).toEqual([id(20)]);
   });
 
+  it('retains expanded descendants and their inspected source through replacement failure, pruning only after the complete replacement', async () => {
+    let round = 0, rejectPage!: (error: unknown) => void;
+    const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
+      if (goalId === id(1)) return page(goalId, { prerequisites: [{ target: related(10) }] });
+      if (goalId !== id(10)) return page(goalId);
+      if (cursor === null) return page(goalId, { successors: [related(20)], nextCursor: 'next' });
+      if (round === 1) return new Promise((_resolve, reject) => { rejectPage = reject; });
+      return page(goalId, { successors: round === 0 ? [related(21)] : [] });
+    });
+    const { session } = await prepare(read), input = roots();
+    session.setRoots(input); await settled(session);
+    session.expand(id(10)); await settled(session, id(10));
+    session.inspect(id(21)); await settled(session, id(21));
+    round = 1; session.retry(id(10)); await settled(session, id(10), 'partial');
+    expect(canvas(session, input).goals.has(id(21))).toBe(true);
+    expect(session.snapshot().sources.has(id(21))).toBe(true);
+    rejectPage(new ApiError('network')); await settled(session, id(10), 'failed');
+    expect(canvas(session, input).goals.has(id(21))).toBe(true);
+    expect(session.snapshot().sources.has(id(21))).toBe(true);
+    round = 2; session.retry(id(10)); await settled(session, id(10));
+    expect(canvas(session, input).goals.has(id(21))).toBe(false);
+    expect(session.snapshot().sources.has(id(21))).toBe(false);
+    expect(session.snapshot().sources.get(id(10))?.mode).toBe('expanded');
+  });
+
   it('retains a legal prior read when capability becomes unavailable while trusted withdrawal still removes it immediately', async () => {
     let supported = true;
     const read = vi.fn(async (_project: string, goalId: string): Promise<GoalDependenciesRead> => supported ? page(goalId, { successors: [related(20)] }) : { kind: 'unavailable' });
@@ -142,6 +214,60 @@ describe('Goal graph relationship session', () => {
     expect(session.snapshot().sources.get(id(1))!.contribution?.successors[0]?.goalId).toBe(id(20));
     event({ projectId: externalProject, accessRevoked: true });
     expect(session.snapshot().sources.get(id(1))!.contribution?.successors).toEqual([]);
+  });
+  it('inspects uncovered Goals without expanding and reuses completed reads for repeated expansion', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(goalId === id(1) ? 10 : 11) }] }));
+    const { session } = await prepare(read), input = roots();
+    session.setRoots(input); await settled(session);
+    session.inspect(id(10)); await settled(session, id(10));
+    expect(read.mock.calls[1]).toEqual([externalProject, id(10), null, expect.any(AbortSignal), expect.any(Object)]);
+    expect(session.snapshot().sources.get(id(10))?.mode).toBe('inspection');
+    expect(canvas(session, input).goals.has(id(11))).toBe(false);
+    session.expand(id(10)); session.expand(id(10)); session.inspect(id(10));
+    expect(canvas(session, input).goals.has(id(11))).toBe(true);
+    expect(session.snapshot().sources.get(id(10))?.mode).toBe('expanded');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('upgrades an inflight inspection without a duplicate read and cancels disconnected branches', async () => {
+    let resolve!: (value: GoalDependenciesRead) => void, branchSignal!: AbortSignal;
+    const read = vi.fn((_project: string, goalId: string, _cursor: string | null, signal: AbortSignal) => goalId === id(1)
+      ? Promise.resolve(page(goalId, { prerequisites: [{ target: related(10) }] }))
+      : new Promise<GoalDependenciesRead>(done => { resolve = done; branchSignal = signal; }));
+    const { session } = await prepare(read), input = roots();
+    session.setRoots(input); await settled(session); session.inspect(id(10));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    session.expand(id(10)); expect(read).toHaveBeenCalledTimes(2);
+    session.setRoots(new Map());
+    expect(branchSignal.aborted).toBe(true);
+    expect(session.snapshot().sources.size).toBe(0);
+    resolve(page(id(10), { prerequisites: [{ target: related(11) }] })); await Promise.resolve();
+    expect(session.snapshot().sources.size).toBe(0);
+  });
+
+  it('retains shared expanded sources until every exposing root withdraws and prevents reverse-edge self-ownership', async () => {
+    const removed = new Set<string>();
+    const read = vi.fn(async (_project: string, goalId: string) => goalId === id(10)
+      ? page(goalId, { prerequisites: [{ target: related(11) }], successors: [{ ...related(1), projectId, projectName: 'Local' }] })
+      : page(goalId, { prerequisites: goalId === id(11) || removed.has(goalId) ? [] : [{ target: related(10) }] }));
+    const { session } = await prepare(read), input = roots(2);
+    session.setRoots(input); await settled(session, id(2)); session.expand(id(10)); await settled(session, id(10));
+    session.inspect(id(11)); await settled(session, id(11));
+    removed.add(id(1)); session.retry(id(1)); await settled(session);
+    expect(session.snapshot().sources.get(id(10))?.mode).toBe('expanded');
+    removed.add(id(2)); session.retry(id(2)); await settled(session, id(2));
+    expect(session.snapshot().sources.has(id(10))).toBe(false);
+    expect(session.snapshot().sources.has(id(11))).toBe(false);
+    expect(canvas(session, input).externalIds.size).toBe(0);
+  });
+
+  it('does not authorize inspecting or expanding from retained unqualified presentation', async () => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(10) }] }));
+    const { session } = await prepare(read);
+    session.setRoots(roots()); await settled(session); session.setRoots(null);
+    session.inspect(id(10)); session.expand(id(10));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(session.snapshot().sources.has(id(10))).toBe(false);
   });
   it('bounds source concurrency at four and cancels every owned request on close', async () => {
     const pending: { goalId: string; signal: AbortSignal; resolve: (page: GoalDependenciesRead) => void }[] = [];
