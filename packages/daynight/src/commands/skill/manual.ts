@@ -1,7 +1,6 @@
 export const manualTopicFiles = [
   "references/setup-and-projects.md",
   "references/tasks.md",
-  "references/steps.md",
   "references/materials.md",
   "references/write-safety.md",
   "references/session-reads.md",

@@ -36,6 +36,6 @@ service while the other interfaces are retired separately.
 ## Consequences
 
 Web users cannot read or change Steps, including through old tab links. Existing
-REST, MCP and CLI functionality is independent of this Web change. Legacy
+REST and MCP Steps functionality remains available; the [CLI retirement](2026-11-23-retire-cli-task-steps.md) separately removes its Steps commands. Legacy
 navigation continues to open the Task or attachment through the normal access
 checks, and other Task behavior remains independently usable.

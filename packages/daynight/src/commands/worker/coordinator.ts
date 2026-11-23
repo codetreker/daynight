@@ -12,6 +12,7 @@ import type { WorkerSessionApi } from "./backends/session-api.js";
 import { requireImplementedWorkerBackend } from "./backend.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
@@ -42,6 +43,7 @@ import type { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" | "task_paused" | "claim_invalid" | "native_input" };
 export type WorkerCoordinatorOptions = {
+  cleanupCommandLifecycle?: (identity: ClaimIdentity) => OwnedCommandLifecycleSink;
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   webBackend: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "requestExecutionStop" | "observeStartupReport" | "advanceResult" | "confirmUpgrade" | "setMonitoringObserver" | "probeArchive">>;
   webStore: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
@@ -263,6 +265,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return schedules;
   };
   const ending = new Map<string, CleanupTarget>(cleanupSchedules().map(record => [key(record), record]));
+  const retiredClaims = new Set<string>();
+  const ownedClaims = new Set<string>();
   let capacityWarning = "";
   const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
   const snapshotWarnings = new Map<string, Set<string>>();
@@ -274,6 +278,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let ticking = false;
   let tickJoined: Promise<void> = Promise.resolve();
   let shutdownWork: Promise<boolean> | undefined;
+  const shutdownTerminalJobs = new Map<string, Promise<void>>();
   let cycleCoverage: "unknown" | "complete" | "partial" = "unknown";
   let reconciliationPhase: "reconciliation" | "inventory" | "project-preparation" | "resource-observation" | "claim-search" | "claim-request" = "reconciliation";
   let projectSearchFailure = false;
@@ -617,9 +622,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     updatePromptDemand();
     return { tasks: result, covered, unavailable };
   };
-  const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean, webClaim?: WorkerClaim): void => {
+  const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean, webClaim?: WorkerClaim, shutdownCleanup = false): void => {
     const identityKey = key(identity);
-    if (shuttingDown || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
+    if (shuttingDown && !shutdownCleanup || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
     if (!terminal) { nameFailureThisJob.delete(identityKey); monitoringPhases.set(identityKey, "observation"); monitoringOperations.set(identityKey, "observation"); }
     const controller = new AbortController();
     let operationId: string | undefined;
@@ -636,7 +641,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       monitoringJobs.set(identityKey, operationId);
     });
     controllers.set(identityKey, { controller, terminal, ...(webClaim === undefined ? {} : { webClaim }) });
-    const signal = AbortSignal.any([normalSignal, controller.signal]);
+    const signal = shutdownCleanup ? AbortSignal.timeout(CLEANUP_OPERATION_MS) : AbortSignal.any([normalSignal, controller.signal]);
     const job = serialize(identity, () => {
       if (!terminal && !canAdvanceProject(identity.projectId)) return Promise.resolve();
       if (operationId !== undefined && (terminal || !pausedClaims.has(identityKey))) observe(m => {
@@ -644,7 +649,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const failure = terminal ? monitoringFailures.get(`true/${identityKey}/observation`) : undefined;
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
-      return action(signal).then(() => {
+      const execute = () => action(signal);
+      const work = terminal && options.cleanupCommandLifecycle !== undefined ? withOwnedCommandLifecycle(options.cleanupCommandLifecycle(identity), execute) : execute();
+      return work.then(() => {
         if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).catch((error: unknown) => {
@@ -790,7 +797,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         return;
       }
       while (true) {
-        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(control && expectedUserId !== undefined ? { ownerUserId: expectedUserId } : {}), ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: retiredClaims.has(key(owner)), scope: scope!, ...(control && expectedUserId !== undefined ? { ownerUserId: expectedUserId } : {}), ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
         signal?.throwIfAborted();
         if (result.complete) {
           if (deleteWorktree) { if (result.task.status !== "done") options.webStore.completeTask(owner, now()); if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner); }
@@ -802,6 +809,21 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     throw new Error("The original Web execution identity is missing.");
   };
 
+  const completeCleanup = async (owner: CleanupTarget, signal: AbortSignal, control = false): Promise<void> => {
+    const identityKey = key(owner);
+    const completedBinding = await runCleanup(owner, true, signal, undefined, control);
+    signal.throwIfAborted();
+    const actual = ending.get(identityKey);
+    if (actual && hasWorktreeIdentity(actual) && !executionStoppedOrEmpty(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
+    deleteCleanupSchedule(owner);
+    if (hasWorktreeIdentity(owner) && completedBinding !== undefined) settledMetadata.set(identityKey, { worktreeId: owner.worktreeId, cwd: completedBinding.worktreePath, sequence: ++settlementSequence });
+    selectedWorktrees.release(actual ?? owner);
+    ending.delete(identityKey);
+    cleanupRetries.delete(identityKey);
+    retiredClaims.delete(identityKey);
+    const activity = monitoringActivities.get(`true/${identityKey}`);
+    if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`true/${identityKey}`); }
+  };
   const launchCleanups = (): void => {
     for (const [identityKey, owner] of ending) {
       if (jobs.has(identityKey)) continue;
@@ -817,19 +839,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       // Old Web archive retries are maintenance, not a worktree-removal gate.
       // New cleanup failures retain their own in-process and persisted backoff.
       if (now() < Math.max(currentRetry?.nextAttemptAt ?? 0, legacyWebArchive ? 0 : retained?.nextAttemptAt ?? 0)) continue;
-      startJob(owner, async (signal) => {
-        const completedBinding = await runCleanup(owner, true, signal);
-        signal.throwIfAborted();
-        const actual = ending.get(identityKey);
-        if (actual && hasWorktreeIdentity(actual) && !executionStoppedOrEmpty(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
-        deleteCleanupSchedule(owner);
-        if (hasWorktreeIdentity(owner) && completedBinding !== undefined) settledMetadata.set(key(owner), { worktreeId: owner.worktreeId, cwd: completedBinding.worktreePath, sequence: ++settlementSequence });
-        selectedWorktrees.release(ending.get(identityKey) ?? owner);
-        ending.delete(identityKey);
-        cleanupRetries.delete(identityKey);
-        const activity = monitoringActivities.get(`true/${identityKey}`);
-        if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`true/${identityKey}`); }
-      }, true);
+      startJob(owner, signal => completeCleanup(owner, signal), true);
     }
   };
   const finishShutdown = async (record: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, signal: AbortSignal) => {
@@ -1338,6 +1348,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       preparationJobs.set(projectId, job);
     }
     // Ownership loss is authoritative even when the following resource observations fail.
+    for (const owner of [...options.store.listUnfinishedTasks(), ...unfinishedWeb(), ...ending.values(), ...options.store.listCleanupSchedules()]) {
+      if (!coveredProjects.has(owner.projectId)) continue;
+      if (inventory.has(key(owner))) { retiredClaims.delete(key(owner)); ownedClaims.add(key(owner)); }
+      else { retiredClaims.add(key(owner)); ownedClaims.delete(key(owner)); }
+    }
     for (const local of options.store.listUnfinishedTasks()) {
       if (unavailable.has(local.projectId)) {
         const running = controllers.get(key(local));
@@ -1432,7 +1447,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }));
     for (const [identityKey, owner] of resources.owners) {
       if (recheckFailedProjects.has(owner.projectId)) continue;
-      if (!resources.quarantined.has(identityKey) && coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !await recheckSettled(owner, snapshotBefore)) ending.set(identityKey, owner);
+      if (!resources.quarantined.has(identityKey) && coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !await recheckSettled(owner, snapshotBefore)) { retiredClaims.add(identityKey); ending.set(identityKey, owner); }
     }
     retainFailedRechecks();
     cycleCoverage = allMappingsObserved() && unavailable.size === 0 && resources.unavailableProjects.size === 0 && resources.quarantined.size === 0
@@ -1806,7 +1821,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (web.cleanup?.discardRecording && options.archiveMaintenance?.discardOne !== undefined) await options.archiveMaintenance.discardOne(web, settled, normalSignal, originalUserId);
       }
     },
-    shutdown: (settings: { deadline?: number } = {}): Promise<boolean> => {
+    shutdown: (settings: { deadline?: number; currentTasks?: ReadonlyMap<string, Task | Promise<Task>>; pendingClaims?: readonly ClaimIdentity[]; unresolvedTasks?: ReadonlySet<string> } = {}): Promise<boolean> => {
       if (shutdownWork !== undefined) return shutdownWork;
       const deadline = settings.deadline ?? Date.now() + 20_000;
       const bounded = async (work: Promise<unknown>, until = deadline): Promise<boolean> => {
@@ -1830,11 +1845,45 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const joined = await bounded(joins,
           Math.min(deadline, Date.now() + Math.max(0, (deadline - Date.now()) / 2)));
         let complete = joined;
-        if (options.store.listClaimToolReservations().length > 0) {
-          complete = false;
-          options.emit({ kind: "shutdown-error", message: "Original claim request outcomes remain unconfirmed; frozen selections and claim responsibility are retained." });
-        }
-        const unregistered = Promise.all(options.store.listUnfinishedTasks().filter(task => task.agentControlMode === "web" && webOwner(task) === undefined).map(async task => {
+        const candidates = [...options.store.listUnfinishedTasks(), ...unfinishedWeb(), ...ending.values(), ...(settings.pendingClaims ?? [])];
+        const currentTasks = new Map<string, Promise<Task>>();
+        const ownershipSignal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+        let identityCheck: Promise<void> | undefined;
+        const observeOwnership = async (owner: CleanupTarget): Promise<boolean> => {
+          if (settings.unresolvedTasks?.has(taskKey(owner))) { retiredClaims.delete(key(owner)); complete = false; return false; }
+          if ((retiredClaims.has(key(owner)) || ownedClaims.has(key(owner))) && !settings.currentTasks?.has(taskKey(owner))) return true;
+          try {
+            const identity = taskKey(owner);
+            let observed = currentTasks.get(identity);
+            if (observed === undefined) {
+              observed = (async () => {
+                const reconciled = settings.currentTasks?.get(identity);
+                if (reconciled !== undefined) return reconciled;
+                identityCheck ??= options.remote.currentUserId(ownershipSignal).then(userId => {
+                  if (options.userId !== undefined && userId !== options.userId) throw new Error("The original Worker account changed before ownership observation.");
+                });
+                await identityCheck;
+                return options.remote.readTask(owner.projectId, owner.taskId, ownershipSignal);
+              })();
+              currentTasks.set(identity, observed);
+            }
+            const task = await observed, claim = readWorkerClaim(task.properties);
+            ownershipSignal.throwIfAborted();
+            if (task.projectId !== owner.projectId || task.id !== owner.taskId) throw new Error("The current Task observation has a conflicting identity.");
+            if (task.status === "in_progress" && claim?.state === "active" && claim.workerId === options.workerId && claim.claimId === owner.claimId) { retiredClaims.delete(key(owner)); ownedClaims.add(key(owner)); return true; }
+            retiredClaims.add(key(owner));
+            ownedClaims.delete(key(owner));
+            ending.set(key(owner), webOwner(owner) ?? owner);
+          } catch (error) {
+            options.emit({ kind: "warning", identity: owner, message: "Current Task ownership could not be observed; the original stop responsibility is retained.", error });
+            if (settings.currentTasks?.has(taskKey(owner))) { retiredClaims.delete(key(owner)); complete = false; return false; }
+          }
+          return true;
+        };
+        const unregistered = Promise.all([...new Map(candidates.filter(owner => webOwner(owner) === undefined).map(owner => [key(owner), owner])).values()].map(async owner => {
+          if (!await observeOwnership(owner)) return;
+          const task = options.store.getTask(owner);
+          if (task === null || task.status === "done" || task.agentControlMode !== "web") return;
           if (options.webStore.getTask(task) != null) {
             complete = false;
             options.emit({ kind: "shutdown-error", task, message: "The original Web execution identity conflicts with this worker." });
@@ -1854,6 +1903,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         for (const record of unfinishedWeb()) owners.set(key(record), record);
         const stopOwners = Promise.all([...owners.values()].map(async (owner) => {
           try {
+            if (!await observeOwnership(owner)) return;
+            const terminalJob = shutdownTerminalJobs.get(key(owner));
+            if (terminalJob !== undefined) {
+              await terminalJob;
+              if (ending.has(key(owner))) throw new Error("The original terminal cleanup remains pending.");
+              return;
+            }
+            const originalJob = jobs.get(key(owner));
+            if (controllers.get(key(owner))?.terminal === true && originalJob !== undefined) {
+              await originalJob;
+              if (Date.now() >= deadline) { complete = false; return; }
+              const joinedCleanup = shutdownTerminalJobs.get(key(owner));
+              if (joinedCleanup !== undefined) {
+                await joinedCleanup;
+                if (ending.has(key(owner))) throw new Error("The original terminal cleanup remains pending.");
+                return;
+              }
+              if (!ending.has(key(owner))) return;
+            }
             if (tails.has(taskKey(owner))) {
               // A cancelled producer can retain the Task writer. Stop only its
               // proven native boundary; cleanup mutations must wait for that writer.
@@ -1861,6 +1929,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
               const record = options.webStore.getTask(owner);
               if (record === null || record.worktreeId !== owner.worktreeId || options.webBackend.requestExecutionStop === undefined) throw new Error("The retained Task writer has no independent native stop boundary.");
               await options.webBackend.requestExecutionStop(record, deadline);
+              return;
+            }
+            if (retiredClaims.has(key(owner)) && webOwner(owner) !== undefined) {
+              startJob(owner, signal => completeCleanup(owner, signal, true), true, undefined, true);
+              const cleanup = jobs.get(key(owner));
+              if (cleanup === undefined) throw new Error("The original terminal cleanup owner is unavailable.");
+              shutdownTerminalJobs.set(key(owner), cleanup);
+              try { await cleanup; }
+              finally { shutdownTerminalJobs.delete(key(owner)); }
+              if (ending.has(key(owner))) throw new Error("The original terminal cleanup remains pending.");
               return;
             }
             await serialize(owner, async () => {
@@ -1878,6 +1956,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           catch (error) { complete = false; options.emit({ kind: "shutdown-error", ...(options.store.getTask(owner) === null ? {} : { task: options.store.getTask(owner)! }), message: error instanceof WorkerCleanupError && error.stage === "backend-close" ? "The original Agent is stopped, but backend resource closure is unconfirmed." : "Could not confirm the original task resources stopped and closed.", error }); }
         }));
         const stopped = await bounded(Promise.all([unregistered, stopOwners]));
+        if (options.store.listClaimToolReservations().length > 0) {
+          complete = false;
+          options.emit({ kind: "shutdown-error", message: "Original claim request outcomes remain unconfirmed; frozen selections and claim responsibility are retained." });
+        }
         if (!joined || !stopped) options.emit({ kind: "shutdown-error", message: "Task resources did not close within the stop deadline; original claims and resource responsibility are retained." });
         return complete && stopped;
       })();

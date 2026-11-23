@@ -6,6 +6,7 @@ import type { Project } from '../src/api/types';
 import { AssistantTaskSubscriptions, inboxClientKey } from '../src/features/bots/AssistantTaskSubscriptions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { webhookCatalog } from './helpers/webhooks';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
 
 const directories = vi.hoisted(() => ({ projects: [] as unknown[] }));
@@ -28,7 +29,7 @@ const summary = (value: ReturnType<typeof endpoint>) => ({ id: value.id, owner: 
 const sha256 = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
 const alphaCreated = (): Subscription => ({ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' });
 
-function server(initial: ReturnType<typeof endpoint>[] = []) {
+function server(initial: ReturnType<typeof endpoint>[] = [], includeSteps = true) {
   const state = { personal: [...initial] }, writes: { method: string; path: string; body: Record<string, unknown> }[] = [];
   const fetch = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
     const path = String(url), method = options?.method ?? 'GET';
@@ -46,6 +47,7 @@ function server(initial: ReturnType<typeof endpoint>[] = []) {
       const operation = { operationId: body.operationId, kind: create ? 'endpoint.create' : 'endpoint.patch', issuedAt: body.issuedAt, requestSha256: await sha256(text), actorUserId: BOT_USER, owner: personal, endpointId, effect: 'applied', configVersionAfter: after.configVersion, destinationRevisionAfter: create ? '1' : '2', deliveryId: null, generationAfter: null, keyId: null, overlapUntil: null, recordedAt: BOT_TIME, expiresAt: '2026-12-04T12:00:00Z' };
       return botResponse({ operation, endpoint: after }, BOT_USER, create ? 201 : 200);
     }
+    if (path === '/api/v1/webhook-event-types') return botResponse(webhookCatalog(includeSteps));
     if (path.startsWith('/api/v1/me/webhooks?')) {
       const key = new URLSearchParams(path.slice(path.indexOf('?'))).get('clientKey');
       return botResponse({ items: state.personal.filter(item => key === null || item.clientKey === key).map(summary), nextCursor: null });
@@ -372,4 +374,20 @@ it('truncates the generated endpoint name on code point boundaries', async () =>
   expect(name).toBe(`Assistant inbox · ${'a'.repeat(81)}\u{1F680}`);
   expect([...name]).toHaveLength(100);
   expect(name.isWellFormed()).toBe(true);
+});
+
+it.each([false, true])('offers the catalog events and saves an existing inbox subscription (Steps=%s)', async includeSteps => {
+  const linked = { ...alphaCreated(), eventTypes: includeSteps ? ['task.created', 'task.step_updated'] : ['task.created'] };
+  const s = server([endpoint(personalId, inboxUrl, [linked])], includeSteps); mount();
+  await screen.findByRole('button', { name: 'Save subscription' });
+  expect(eventsOf('Alpha').queryByRole('checkbox', { name: 'Task step changed' }) !== null).toBe(includeSteps);
+  expect(eventsOf('Alpha').getAllByRole('checkbox').map(input => input.parentElement?.textContent)).toEqual([
+    'Task created', 'Task status changed', 'Task paused', 'Task deleted', ...(includeSteps ? ['Task step changed'] : []), 'Discussion message',
+  ]);
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body.subscriptions).toEqual([{ id: subscriptionId, projectId: alpha, eventTypes: [...linked.eventTypes, 'task.paused'] }]);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save subscription' })).toBeEnabled());
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
 });

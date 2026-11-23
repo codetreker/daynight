@@ -38,7 +38,8 @@ const clientKey = (value: unknown): string | null => value === null ? null : isW
 const withClientKey = (data: Record<string, unknown>, names: readonly string[]): readonly string[] => Object.hasOwn(data, "clientKey") ? [...names, "clientKey"] : names;
 const positive = (value: unknown): number => { const n = count(value); return n > 0 ? n : malformed(); };
 const httpStatus = (value: unknown): number => { const n = count(value); return n >= 100 && n <= 599 ? n : malformed(); };
-export const parseWebhookEventType = (value: unknown) => oneOf(value, ["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"] as const);
+export const webhookEventTypes = ["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"] as const;
+export const parseWebhookEventType = (value: unknown) => oneOf(value, webhookEventTypes);
 export const parseWebhookOwner = (value: unknown, expected?: WebhookOwner): WebhookOwner => {
   const o = fields(value, ["kind", "id"]);
   const result = { kind: oneOf(o.kind, ["personal", "team"] as const), id: id(o.id) };
@@ -72,7 +73,8 @@ export const parseWebhookCatalog = (value: unknown) => {
     if (wireType !== `cc.daynight.${key}.v1` || e.schemaVersion !== 1 || e.resourceKind !== "project") return malformed();
     return { key, wireType, schemaVersion: 1, resourceKind: "project" as const };
   });
-  if (items.length !== 6 || new Set(items.map((item) => item.key)).size !== 6) return malformed();
+  const keys = new Set(items.map(item => item.key));
+  if (keys.size !== items.length || webhookEventTypes.some(key => key !== "task.step_updated" && !keys.has(key))) return malformed();
   const s = fields(d.service, ["configurationExpansionAvailable", "dispatchEnabled"]);
   const l = fields(d.limits, ["policyVersion", "requestBytes", "payloadBytes", "maxAutomaticAttempts", "automaticWindowSeconds", "maxManualOperations", "payloadRetentionSeconds", "operationMaxAgeSeconds", "operationFutureSkewSeconds"]);
   return { items, service: { configurationExpansionAvailable: boolean(s.configurationExpansionAvailable), dispatchEnabled: boolean(s.dispatchEnabled) }, limits: { policyVersion: webhookVersion(l.policyVersion), requestBytes: positive(l.requestBytes), payloadBytes: positive(l.payloadBytes), maxAutomaticAttempts: count(l.maxAutomaticAttempts), automaticWindowSeconds: positive(l.automaticWindowSeconds), maxManualOperations: count(l.maxManualOperations), payloadRetentionSeconds: positive(l.payloadRetentionSeconds), operationMaxAgeSeconds: positive(l.operationMaxAgeSeconds), operationFutureSkewSeconds: count(l.operationFutureSkewSeconds) } };

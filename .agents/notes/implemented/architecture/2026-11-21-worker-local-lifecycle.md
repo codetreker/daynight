@@ -25,6 +25,16 @@ cannot be replaced by the default root during Windows stop verification; legacy
 resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
+Active coordinator terminal jobs reserve exact-claim cleanup commands through
+`reserveCleanupCommand` before native dispatch. The reservation records a
+`cleanup_command` resource, retains the original service, account, Worker,
+management instance and scope generation, and validates their current binding.
+It uses current localEpoch and intentVersion while allowing business admission to
+remain closed, including a local veto. Stale instance or scope identity is refused;
+cleanup cannot substitute a new owner. The original command journal generation
+continues to own prepared, bound and stopped evidence. Ordinary business commands
+remain subject to the closed admission gate.
+
 Task Web and Bot tickets can exist before launch submission. A later Worker
 lifecycle or a durable never-dispatched reservation may require a fresh local
 launch identity. Current admission authorizes it only when the durable execution
@@ -54,8 +64,13 @@ still runs. Native inventory reconciliation independently joins each original
 owned command or Bot CLI probe, including original initialization, its in-flight
 close and terminal save;
 it does not wait for a whole producer whose Git jobs may require that same
-reconciliation to finish. A lifecycle admission refusal before a reservation
-write retires the attempted
+reconciliation to finish. Inventory then joins shared Task stopping, reconciles
+late terminal commands and synchronizes stopped receipts with matching original
+generation and process proof into the lifecycle ledger. Management Task cleanup
+and stopJournal retries synchronize those receipts through their existing command
+path as well; they do not gain the active-runtime cleanup sink. Errors aggregate
+without skipping independent resource checks. A lifecycle admission refusal before
+a reservation write retires the attempted
 owned command as never started and removes its in-memory admission marker.
 Persistence failures with an uncertain outcome retain the original responsibility
 and marker for reconciliation; they cannot use the never-started path. Individual
@@ -88,7 +103,23 @@ management under the original free instance lock, without taking over a live loc
 or launching a business scope. The original identity must already exist.
 Explicit management owners can stop original local resources without a saved
 service token. Their network methods refuse before dispatch; missing credentials
-cannot settle a cloud request or authorize recovery.
+cannot settle a cloud request or authorize recovery. Task candidates include
+original pending claim reservations. Each Task joins its own claim-request
+reconciliation before classifying ownership or stopping and reuses its successful
+current Task read. Independent Tasks do not await one another's requests. Failed
+reconciliation retains that Task. After original native stopping, management-only
+terminal file cleanup checks that the retained repository directory exists,
+validates its repository and worktree format, and prepares the fresh Git manager
+before inspecting or removing its worktree. Existing disk format alone does not
+establish preparation. A missing directory does not trigger a clone; format
+preparation does not query Session registration or start business execution. A
+failed preparation retains that Task's cleanup responsibility while independent
+stopping continues and cannot establish activation readiness. Matching
+Controller lifecycle checks follow the Task stop attempt and skip unresolved Task
+records.
+The [retired Web claim decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
+owns terminal removal after confirmed ownership loss; normal lifecycle stopping
+continues to preserve current or unknown execution.
 
 Explicit resume freezes the local epoch when accepted, before entering the
 management queue. It validates that epoch after initialization, original-operation

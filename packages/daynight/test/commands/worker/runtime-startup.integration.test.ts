@@ -6,7 +6,7 @@ import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
-import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,7 +36,11 @@ import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retai
 import { prepareBotEnvironment } from "../../../src/commands/worker/bots/environment.js";
 import * as agentCliAliases from "../../../src/cli/agent-cli-aliases.js";
 import * as lifecycleClients from "../../../src/api/worker-lifecycle-client.js";
+import * as controllerLifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as controllerProcessProof from "../../../src/commands/controller/process-proof.js";
+import * as lifecycleControllerTickets from "../../../src/commands/worker/lifecycle-controller-ticket.js";
 import { LifecycleAdmissionError, openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
+import * as lifecycleStores from "../../../src/commands/worker/lifecycle-store.js";
 import type { LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
@@ -200,6 +204,186 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("prepares a fresh management Git manager before removing a retained retired Web worktree", async () => {
+    const f = await fixture(true, false);
+    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
+    await mkdir(f.repository.path);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
+    const owner = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(74) };
+    const project = f.store!.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
+    const operation = createOperation();
+    try { await migrateLegacyWorktrees({ repositoryPath: project.localPath, commonDirectory: binding.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } }); }
+    finally { operation.dispose(); }
+    run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+    const record = web.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+    web.bindWorktree(record, binding, Date.now()); web.close();
+    const successorPath = path.join(project.localPath, ".worktrees", "daynight", uuid(75));
+    run(["worktree", "add", "--force", successorPath, binding.branch]);
+    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
+    const file = path.join(f.paths.workerDirectory, "lifecycle.sqlite");
+    const saved = openLifecycleStore({ file, identity, allowCreate: true });
+    saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" }); saved.close();
+    mocks.git.mockImplementation(settings => createWorkerGitManager(settings));
+    mocks.coordinator.mockImplementation(createWorkerCoordinator);
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
+    const time = "2026-11-21T00:00:00Z";
+    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
+      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+    const unexpected = vi.fn(async () => { throw new Error("Unexpected management business request."); });
+    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
+      read: async () => cloud,
+      register: async request => {
+        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+      },
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
+    });
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(unexpected);
+    const messages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
+    try {
+      await vi.waitFor(() => expect(f.store!.getTask(owner)?.status, messages.join("; ")).toBe("done"), { timeout: 15000 });
+      expect(f.store!.getCleanupSchedule(owner)).toBeNull();
+      expect(run(["worktree", "list", "--porcelain"])).not.toContain(owner.worktreeId);
+      expect(run(["worktree", "list", "--porcelain"])).toContain(uuid(75));
+      await expect(readFile(path.join(binding.worktreePath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+      const check = openLifecycleStore({ file, identity, allowCreate: false });
+      try { await vi.waitFor(() => expect(check.listResources().filter(row => row.identity.kind === "retained_task").map(row => row.stage)).toEqual(["stopped"])); }
+      finally { check.close(); }
+      expect(mocks.git).toHaveBeenCalledWith(expect.objectContaining({ temporaryDirectory: f.paths.temporaryDirectory, prepareFormat: expect.any(Function) }));
+      expect(remote.readTask).toHaveBeenCalledOnce();
+      expect(remote.configuration).not.toHaveBeenCalled();
+      expect(unexpected).not.toHaveBeenCalled();
+    } finally {
+      cancellation.abort();
+      try { await running.catch(error => { if (error?.name !== "AbortError") throw error; }); }
+      finally { client.mockRestore(); network.mockRestore(); }
+    }
+  }, 25000);
+
+  it.each(["initial", "retry"] as const)("joins a retained claim before reading pending inventory and settles Task and Controller receipts on %s cleanup", async attempt => {
+    const f = await fixture(true, false);
+    if (process.platform !== "win32") await chmod(f.paths.workerDirectory, 0o700);
+    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
+    const taskIdentity = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71) };
+    f.store!.registerProject({ projectId: taskIdentity.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const saved = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: true });
+    const state = saved.bindInstance({ instanceId: uuid(72), instanceEpoch: "1", intentVersion: "1", desired: "disabled" });
+    const binding = { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!, intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+    saved.importResource({ binding, resourceId: uuid(73), operationId: taskIdentity.claimId, ownerKind: "task",
+      identity: { kind: "task_claim", ...taskIdentity, worktreeId: uuid(74), candidateVersion: "1", frozenConfiguration: { agent: "codex", model: "cloud-model", args: [] } } });
+    const journalFile = path.join(f.homeDirectory, "original-journal.sqlite");
+    const proof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+    saved.importResource({ binding, resourceId: uuid(75), operationId: uuid(76), ownerKind: "controller", stage: "running", processProof: proof,
+      identity: { ...taskIdentity, executionId: uuid(77), controllerInstanceId: uuid(78), launchId: uuid(76), journalFile } });
+    let cleanupResourceId: string | undefined;
+    if (attempt === "retry") {
+      const { openExecutionResourceJournal } = await import("../../../src/commands/worker/execution-resource-journal.js");
+      const commands = await openExecutionResourceJournal({ directory: path.join(f.paths.workerDirectory, "execution-resources"), identity });
+      const operation = createOperation();
+      try {
+        await withOwnedCommandLifecycle(async event => {
+          if (event.stage === "prepared") {
+            cleanupResourceId = event.resourceId;
+            saved.reserveCleanupCommand({ binding, task: taskIdentity, resourceId: event.resourceId });
+          }
+          await commands.sink(binding.scopeGeneration)(event);
+          if (event.stage === "bound") saved.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) });
+          // The durable command journal survives a lost lifecycle stop save.
+        }, () => runOwnedCommand({ file: process.execPath, args: ["-e", "process.exit(0)"], environment: process.env }, operation));
+      } finally { operation.dispose(); }
+    }
+    saved.close();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), shutdownEntered = Promise.withResolvers<void>(), receiptReady = Promise.withResolvers<void>();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    Object.assign(remote, { readTask: vi.fn(async () => {
+      entered.resolve(); await release.promise;
+      return { id: taskIdentity.taskId, projectId: taskIdentity.projectId, version: 2n, status: "in_progress", properties: {
+        worker: { claimId: taskIdentity.claimId, worktreeId: uuid(74), workerId, userId: uuid(6), state: "active", phase: "preparing", agent: "codex", agentControlMode: "web",
+          platform: "windows", machine: { id: uuid(5), name: "fixture" }, nativeSessionId: null, claimedAt: "2026-11-21T00:00:00Z" } } };
+    }) });
+    remote.report.mockResolvedValue({ observedAt: "2026-11-21T00:00:00Z", lastReportedAt: "2026-11-21T00:00:00Z" });
+    let stoppedReceipt = false;
+    const openStore = lifecycleStores.openLifecycleStore;
+    const lifecycleFactory = vi.spyOn(lifecycleStores, "openLifecycleStore").mockImplementation(options => {
+      const store = openStore(options), save = store.recordResource;
+      store.recordResource = input => {
+        if (input.resourceId === cleanupResourceId && input.stage === "stopped" && !stoppedReceipt) throw new Error("Lifecycle command stop save is temporarily unavailable.");
+        return save(input);
+      };
+      return store;
+    });
+    const snapshot = { executionId: uuid(77), controllerInstanceId: uuid(78), controllerProcess: proof, nativeProcesses: [], nativeSessionId: null } as unknown as controllerLifecycle.ControllerSnapshot;
+    const readJournal = vi.spyOn(controllerLifecycle, "readControllerSnapshot").mockImplementation(() => {
+      if (!stoppedReceipt) return null;
+      receiptReady.resolve(); return snapshot;
+    });
+    const readTicket = vi.spyOn(lifecycleControllerTickets, "readLifecycleControllerTicket").mockResolvedValue({} as never);
+    const readWindows = vi.spyOn(controllerLifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(snapshot);
+    const readProcesses = vi.spyOn(controllerProcessProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    const shutdown = vi.fn(async (settings: Parameters<ReturnType<typeof import("../../../src/commands/worker/coordinator.js").createWorkerCoordinator>["shutdown"]>[0]) => {
+      shutdownEntered.resolve();
+      if (shutdown.mock.calls.length === 1) {
+        expect(f.store!.getTask(taskIdentity)).toBeNull();
+        expect(settings!.pendingClaims).toContainEqual(taskIdentity);
+      }
+      await settings!.currentTasks!.get(`${taskIdentity.projectId}/${taskIdentity.taskId}`);
+      expect(f.store!.getTask(taskIdentity)?.status).toBe("pending");
+      if (attempt === "retry" && shutdown.mock.calls.length === 1) return false;
+      stoppedReceipt = true;
+      return true;
+    });
+    mocks.coordinator.mockReturnValue({ ...coordinator(async () => {}), shutdown, executionSnapshot: () => ({ recovery: [] }) });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, shutdown: async () => {}, close: async () => {}, snapshot: () => ({ resources: [], recovery: [] }) });
+    const time = "2026-11-21T00:00:00Z";
+    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "disabled", admission: "closed", operationId: null,
+      instance: { instanceId: uuid(72), instanceEpoch: "1" }, capability: "supported", observation: null, observedAt: time };
+    const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle write."); });
+    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue({
+      read: async () => cloud,
+      register: async request => {
+        cloud = { ...cloud, instance: { instanceId: request.instanceId, instanceEpoch: "2" } };
+        return { protocolVersion: 1, workerId, operationId: request.operationId, instanceId: request.instanceId, instanceEpoch: "2", intentVersion: "1", desired: "disabled", admission: "closed", reconnectAllowed: false, observedAt: time };
+      },
+      report: async request => ({ protocolVersion: 1, accepted: true, instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, reportSequence: request.reportSequence, receivedAt: time }),
+      intent: unexpected, activate: unexpected, operation: unexpected, resolve: unexpected,
+    });
+    const messages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => messages.push(message.trim()) });
+    try {
+      try { await withinExecutionDeadline(Promise.race([Promise.all([entered.promise, shutdownEntered.promise]), running.then(() => { throw new Error("Management stopped before claim observation."); })]), Date.now() + 5000); }
+      catch (cause) { throw new Error(`Management claim barrier failed: ${messages.join("; ")}`, { cause }); }
+      expect(readJournal).not.toHaveBeenCalled();
+      expect(f.store!.getTask(taskIdentity)).toBeNull();
+      release.resolve();
+      try { await withinExecutionDeadline(receiptReady.promise, Date.now() + 5000); }
+      catch (cause) { throw new Error(`Controller receipt barrier failed: ${messages.join("; ")}; shutdown calls=${shutdown.mock.calls.length}; readTask calls=${remote.readTask.mock.calls.length}`, { cause }); }
+      const check = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
+      try {
+        expect(check.readResource(uuid(73))?.stage).toBe("confirmed");
+        await vi.waitFor(() => expect(check.readResource(uuid(75))?.stage).toBe("stopped"));
+        expect(check.listResources().filter(resource => resource.identity.kind === "retained_task").map(resource => resource.stage)).toEqual(["stopped"]);
+        if (cleanupResourceId !== undefined) expect(check.readResource(cleanupResourceId)?.stage).toBe("stopped");
+      } finally { check.close(); }
+      expect(remote.readTask).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve(); cancellation.abort(); await running.catch(error => { if (error?.name !== "AbortError") throw error; });
+      client.mockRestore(); readJournal.mockRestore(); readTicket.mockRestore(); readWindows.mockRestore(); readProcesses.mockRestore(); lifecycleFactory.mockRestore();
+    }
+  }, 20_000);
+
   it("releases a Bot probe rejected by local disable during environment preparation", async () => {
     const f = await fixture(false, false);
     // Lifecycle initialization reconciles retained Task owners before opening a
@@ -1012,6 +1196,70 @@ describe("worker cloud-first startup", () => {
       expect(mocks.reviewer.mock.calls[2]![0].signal).toBe(thirdOptions.signal);
       expect((await controls[2]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
     } finally { cancellation.abort(); await running; }
+  });
+
+  it("keeps Git open for the original terminal Task writer after a scope stop deadline", async () => {
+    const f = await fixture(true);
+    const project = f.store!.registerProject({ projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path });
+    const owner = { projectId: project.projectId, taskId: uuid(70), claimId: uuid(71) };
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let gitClosed = false;
+    const resolveBinding = vi.fn(async () => {
+      if (gitClosed) throw new Error("Worker Git manager is closing.");
+      return null;
+    });
+    const dispose = vi.fn(async () => { gitClosed = true; });
+    mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose, resolveWorktreeBinding: resolveBinding, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
+    let terminalWriter: Promise<void> | undefined;
+    const terminalCleanup = vi.fn(async () => {
+      entered.resolve(); await release.promise;
+      await resolveBinding();
+      f.store!.completeTask(owner);
+    });
+    const shutdown = vi.fn(async (settings: { deadline?: number } = {}) => {
+      terminalWriter ??= terminalCleanup();
+      try { await withinExecutionDeadline(terminalWriter, settings.deadline ?? Date.now() + 20_000); return true; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Worker execution owner stop deadline elapsed; responsibility is retained.") return false;
+        throw error;
+      }
+    });
+    mocks.coordinator.mockReturnValue({ ...coordinator(async () => {}), shutdown });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const stopping = control!.stop({ deadline: Date.now() + 100 });
+      await entered.promise;
+      expect(dispose).not.toHaveBeenCalled();
+      const results = await stopping;
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "tasks", stop: "unknown" }));
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "repository", stop: "unknown" }));
+      await vi.waitFor(() => expect(shutdown.mock.settledResults).toContainEqual({ type: "fulfilled", value: false }));
+      expect(dispose).not.toHaveBeenCalled();
+      expect(f.store!.getTask(owner)?.status).toBe("pending");
+      const retry = control!.reconcile({ deadline: Date.now() + 3000 });
+      expect(dispose).not.toHaveBeenCalled();
+      release.resolve();
+      const retried = await retry;
+      expect(retried.filter(result => result.resourceId !== "native-inventory").every(result => result.stop === "confirmed")).toBe(true);
+      // The inventory owner first joins its original failed Task observation.
+      // A new observation accounts for cleanup commands from the successful retry.
+      const final = control!.snapshot().stopped ? retried : await control!.reconcile({ deadline: Date.now() + 3000 });
+      expect(final.every(result => result.stop === "confirmed")).toBe(true);
+      expect(terminalCleanup).toHaveBeenCalledOnce();
+      expect(resolveBinding).toHaveBeenCalledOnce();
+      expect(f.store!.getTask(owner)?.status).toBe("done");
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(control!.snapshot().stopped).toBe(true);
+    } finally {
+      release.resolve();
+      try {
+        if (control !== undefined && !control.snapshot().stopped) await control.reconcile({ deadline: Date.now() + 3000 });
+        if (control !== undefined && !control.snapshot().stopped) await control.reconcile({ deadline: Date.now() + 3000 });
+      } finally { cancellation.abort(); await running; }
+    }
   });
 
   it("retains the management lock and blocks rebuilding until a timed-out reviewer joins", async () => {
@@ -2093,6 +2341,71 @@ it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdow
 
 
 describe("real runtime resource isolation", () => {
+  it("removes a retired worktree with newly reserved cleanup commands after closing business admission", async () => {
+    const f = await fixture(true);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+    const { createWorktreeManifestStore } = await import("../../../src/commands/worker/worktrees/manifest.js");
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
+      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation, sources: { listSchedules: () => [], listWebTasks: () => [] } });
+    } });
+    await mkdir(f.repository.path);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, encoding: "utf8", timeout: 10000 });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
+    const owner = { projectId: uuid(1), taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(74) };
+    const project = f.store!.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path });
+    const operation = createOperation();
+    const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
+    try { await git.prepareRepository(project, operation); }
+    finally { operation.dispose(); }
+    run(["worktree", "add", "-b", binding.branch, binding.worktreePath]);
+    createWorktreeManifestStore(binding.commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const savedWeb = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+    const record = savedWeb.register({ ...owner, project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 } }, Date.now());
+    savedWeb.bindWorktree(record, binding, Date.now()); savedWeb.close();
+    const successorPath = path.join(f.repository.path, ".worktrees", "daynight", uuid(75));
+    run(["worktree", "add", "--force", successorPath, `daynight/${owner.taskId}`]);
+    await writeFile(path.join(successorPath, "survives.txt"), "successor remains\n");
+    mocks.git.mockReturnValue(git);
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.readTask = vi.fn(async () => ({ id: owner.taskId, projectId: owner.projectId, version: 2n, status: "done", properties: {} }));
+    let taskCoordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+    let businessSink: OwnedCommandLifecycleSink | undefined;
+    mocks.coordinator.mockImplementation((settings: WorkerCoordinatorOptions) => {
+      businessSink = currentOwnedCommandLifecycle();
+      taskCoordinator = createWorkerCoordinator(settings); taskCoordinator.tick = vi.fn(async () => {}); return taskCoordinator;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(taskCoordinator).toBeDefined());
+      const directory = path.join(f.paths.workerDirectory, "execution-resources");
+      const before = (await readdir(directory)).filter(name => name.endsWith(".json")).length;
+      const results = await control!.stop({ deadline: Date.now() + 20_000 });
+      expect(results.every(result => result.stop === "confirmed"), JSON.stringify(mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).map(([event]) => ({ message: event.message, error: String(event.error) })))).toBe(true);
+      expect(f.store!.getTask(owner)?.status).toBe("done");
+      expect(f.store!.getCleanupSchedule(owner)).toBeNull();
+      expect(run(["worktree", "list", "--porcelain"])).not.toContain(owner.worktreeId);
+      expect(run(["worktree", "list", "--porcelain"])).toContain(uuid(75));
+      await expect(readFile(path.join(binding.worktreePath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(successorPath, "survives.txt"), "utf8")).toBe("successor remains\n");
+      const saved = await Promise.all((await readdir(directory)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+      expect(saved.length).toBeGreaterThan(before);
+      expect(saved.every(record => record.event.stage === "stopped")).toBe(true);
+      expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      const refused = createOperation();
+      try {
+        expect(businessSink).toBeDefined();
+        const marker = path.join(f.homeDirectory, "refused-business.txt");
+        await expect(withOwnedCommandLifecycle(businessSink!, () => runOwnedCommand({ file: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected');`], environment: process.env }, refused))).rejects.toThrow();
+        await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      } finally { refused.dispose(); }
+    } finally { cancellation.abort(); await running; await git.dispose(); }
+  }, 35_000);
+
   it.skipIf(process.platform === "win32")("closes the original Git boundary when Worker cancellation precedes its launcher birth message", async () => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");

@@ -10,7 +10,6 @@ requires [write safety](write-safety.md).
 | Project | Work associated with a Git repository. |
 | Task | One Project's ordinary work item (`type=task`) with status, metadata, dependencies, properties and materials. |
 | Goal | A typed objective resource (`type=goal`, `parentId=null`) owning shared outcomes and overall progress; its ordinary direct child Tasks track contributing work. |
-| Step | Ordered Task-owned record. |
 | Thread | Persistent Task discussion. |
 | Session | Execution and its observed activity. |
 | Attachment | Separate file. |
@@ -20,8 +19,7 @@ requires [write safety](write-safety.md).
 specifications, architecture, breakdowns, conclusions and progress, regardless of
 which Session or child Task produces them.
 
-Project/Task IDs are complete UUIDs. Step IDs are exactly eight hex characters:
-case-insensitive input, lowercase output, significant leading zeros. Replace
+Project/Task IDs are complete UUIDs. Replace
 command placeholders with actual IDs/values.
 
 ## Setup

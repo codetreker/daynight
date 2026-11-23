@@ -217,14 +217,6 @@ daynight task list --status in_progress --group-by chain [--assigned-to <uuid|me
 daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
-daynight task step
-daynight task step list <task-id> [--json] [--project <project-id>]
-daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
-daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
-daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
-daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
-daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
-daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task tag add <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
 daynight task tag remove <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
@@ -263,7 +255,7 @@ dn --skill
 `--skill` prints the complete standalone English CLI usage manual from the
 current package. The build generates it from the same topic sources installed
 with `using-daynight`, in a fixed order with topic and section links converted
-to internal anchors. It covers connection and Projects, Tasks, Steps, materials,
+to internal anchors. It covers connection and Projects, Tasks, materials,
 write safety, Session reads and messages, Webhooks and Worker operations. Exact
 arguments remain in each subcommand's help.
 The materials topic defines Goal-owned shared specifications, architecture,
@@ -1583,197 +1575,17 @@ allowance. Creation/update expose ordinary metadata; property-specific PR
 options are not accepted. The native HTTP create/PATCH operations still support
 atomic fields/dependencies/properties mutations.
 
-## Task Steps
+## Task Steps retirement
 
-```bash
-daynight task step list <task-id>
-daynight task step list <task-id> --json --project <project-id>
-daynight task step show <task-id> <step-id> --json --project <project-id>
-```
+The CLI has no `task step` command, dedicated Steps API client, completion entries
+or Steps manual topic. Retired commands fail as unknown Task operations before
+configuration, Git or network access. Ordinary Task, attachment, Thread and
+Session operations keep their existing behavior. Historical Inbox events remain
+readable through the common event decoder.
 
-Steps are an independent ordered resource owned by a Task. The
-[resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show`, `add`, `update`,
-`set-status`, `move` and `delete`; the parent Task's
-ordinary show/list/graph does not contain the full Steps collection. Step status
-is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
-
-Project and Task arguments are complete UUIDs. A Step argument is exactly eight
-hex characters, normalized to lowercase on input with leading zeros preserved;
-full UUIDs, prefixes and display numbers are invalid. For reads, explicit `--project`
-works outside Git and sends the selected Steps GET directly, without hidden
-project or parent reads. Without it, normal repository project discovery runs.
-Group and operation help complete before configuration, Git or network work.
-
-List reads the complete collection once, retains saved order and prints the
-Task, exact parent Version and Steps count, followed by one-based display numbers,
-full short IDs, statuses and untruncated titles. Empty output reports zero Steps.
-Show prints the complete target title, description, status and created/updated
-timestamps with its Task/project scope and parent version. Both use visible
-terminal-control and bidi-control escapes and preserve all text. `--json` emits one complete
-StepsResource or StepResource with raw strings, every required field and exact
-int64 JSON numbers, followed by LF; it does not use a Task-list projection or
-output a bare Steps array.
-
-Typed reads validate complete fields, requested scope, canonical response IDs,
-collection uniqueness, four-state values, original text and UTC microsecond
-timestamp strings. They preserve array order and time spelling without sorting,
-rounding or filling missing values. Malformed or mismatched resources, duplicate
-IDs and read failures remain errors rather than empty collections. Reads retain
-the shared request/operation deadlines, cancellation and response-byte budgets.
-The client Steps body safety cap is 64 MiB, inclusive, and is combined with the
-configured response budget by taking the smaller bound. Server reads use pure
-field projection and ordinary encoding without repeating write-candidate
-capacity checks. Stricter configured limits still
-win, total-operation bytes remain charged, and shared defaults do not change;
-no partial resource reaches stdout before full validation and rendering. An
-output failure can still leave partial stdout and is reported as a failure.
-Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
-A 401 includes `daynight login` guidance without automatic login or retry.
-Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add/update/set-status/move/delete commands. CLI module tests own read
-and write behavior; installed-package checks verify the launchers and resources.
-
-### Add a Step
-
-```bash
-daynight task step add <task-id> --title "Coding round 2" --description "Review findings" --project <project-id>
-daynight task step add <task-id> --title "Review round 2" --id 00abcdef --status todo --after <step-id> --if-version <observed-version> --json --project <project-id>
-```
-
-Add requires a raw nonblank title. Description may be empty; omitted description
-and status mean empty text and todo. Before/after are mutually exclusive Task-local
-anchors; omitting both appends. Input IDs normalize without losing leading zeros.
-The service admits at most 1024 UTF-8 bytes for the title and 65536 for the
-description; the complete encoded collection must also fit its 64 MiB limit.
-Without an explicit ID, the command selects the first eight-hex segment of one
-UUIDv4 before submission. A separate full UUID identifies the POST through
-X-Request-ID. Neither identity is regenerated after a conflict or unknown result.
-
-An explicit project/version sends one POST without discovery or resource pre-reads.
-Without --if-version, the command reads complete Steps once and posts that parent
-version once; failed pre-read prevents POST. All calls use the same operation,
-credentials and budgets. JSON request encoding retains the 1 MiB body bound,
-including escaping, without truncating submitted text.
-
-Confirmation requires 201, principal and canonical Location plus a complete valid
-resource, exact version +1, the requested target fields, equal new timestamps
-and correct append/anchor placement. A default pre-read also permits checking
-that prior items remain unchanged. Explicit versions do not add a hidden GET.
-Readable success is `Step added. ID: <id>` plus the complete confirmed collection;
---json emits only that full resource and LF.
-
-A decoded 4xx remains a known refusal, including capacity encodedBytes and
-maxEncodedBytes. A dispatched write without a trusted full receipt stays unknown,
-exits 1 and prints no success resource. At most one full GET with originalUUID.r1
-may observe current version and target found/absent inside the same still-live
-operation. Presence or absence never attributes the historical Add. Cancellation,
-operation deadline or total-byte exhaustion creates no detached recovery; no
-observation uses old pre-read data as a fallback. Diagnostics retain original
-Project/Task/Step IDs and request UUID, report observed server IDs separately,
-and provide ordinary explicit-project list/show guidance. Echo equality is not a
-confirmation condition. There is no replay, replacement ID or public request-ID
-flag. Once a full receipt is confirmed, later cleanup/render/output failure keeps
-that confirmed fact and identity, with nonzero exit; output failure may leave
-partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
-owns these outcome rules and the server guide maps installed Add verification.
-
-### Update content or status
-
-```bash
-daynight task step update <task-id> <step-id> --title "Review round 2" --description "Findings and [result](result.md)" --project <project-id>
-daynight task step update <task-id> <step-id> --description="" --if-version <observed-version> --json --project <project-id>
-daynight task step set-status <task-id> <step-id> skipped --if-version <observed-version> --json --project <project-id>
-```
-
-Update requires --title or --description and saves both atomically when supplied.
-Omitted fields keep their values; an empty description explicitly clears it. Titles
-require a non-Unicode-White_Space character, including a valid standalone U+FEFF;
-standalone U+0085 is invalid. All text is preserved without trimming. Status uses
-the separate set-status command and accepts any of the four states directly,
-including the current state, independently from Task status or other Steps.
-The service applies Add's text limits to the complete target, including omitted
-fields, and reports a field limit violation as a confirmed `invalid_input` refusal.
-
-An explicit project/version sends exactly one PATCH for content or one PUT to
-/status. Without --if-version, the command reads complete Steps once before that
-single write; failed pre-read prevents submission. Versions retain exact int64
-digits, and requests share Add's 1 MiB JSON bound and operation budgets.
-
-A complete valid 200 receipt must match scope, target ID and explicitly submitted
-fields, with parent version unchanged or increased by one. When a pre-read exists,
-confirmation also checks omitted fields, collection order, all non-target fields
-and target creation time. Equal values require unchanged version and timestamps;
-actual changes require version +1 and a changed target update time. An explicit
-version adds no hidden GET and cannot prove old values that were never read.
-Readable success prefixes the confirmed collection with `Step updated. ID: <id>`
-or `Step status set. ID: <id>`; --json prints only the complete resource and LF.
-
-These operations share Add's refusal, capacity-details, unknown-result and
-confirmed-local-failure handling. Stale versions are never replayed, and a later
-current-facts read cannot confirm the historical mutation. The
-[update contract](../../docs/spec/daynight-task-steps.md#cli-更新与状态确认)
-owns the complete confirmation rules.
-
-### Move a Step
-
-```bash
-daynight task step move <task-id> <step-id> --first --project <project-id>
-daynight task step move <task-id> <step-id> --after <anchor-id> --if-version <observed-version> --json --project <project-id>
-```
-
-Exactly one of `--before`, `--after`, `--first` or `--last` is required. Target
-and anchor IDs are complete Task-local eight-hex values, normalized to lowercase
-with leading zeros preserved. A relative anchor must be another Step in the same
-Task. Invalid combinations and self-reference fail before configuration or network
-access. Movement preserves every Step's identity, content, status and timestamps.
-Moving to the current position is a no-op; it still checks the submitted version.
-
-Explicit project/version sends one PUT to the target's position resource. Without
-`--if-version`, one complete Steps GET supplies the version before one PUT; failed
-pre-read prevents submission. Confirmation requires a complete valid resource,
-matching requested position and either the submitted version or version +1.
-With an actual pre-read, confirmation also checks every record and its times,
-all surviving relative order, and exactly no-op versus +1. Explicit versions
-retain the one-write budget and cannot compare an unobserved earlier collection.
-
-Readable success prints `Step moved. ID: <id>` and the service-confirmed order;
-`--json` emits only the complete resource and LF. Known refusals preserve service
-codes, request IDs and capacity details. Unknown Move results retain the original
-Project/Task/Step identity and request UUID, use at most one same-live-operation
-`.r1` GET to report current facts, and remain unknown with exit 1 and empty
-success stdout. No PUT is replayed. Cancellation or exhausted operation budgets
-prevent detached recovery; confirmed local output/cleanup failures retain the
-confirmed result and nonzero exit, as with Add.
-
-### Delete a Step
-
-```bash
-daynight task step delete <task-id> <step-id> --project <project-id>
-daynight task step delete <task-id> 00ABCDEF --if-version <observed-version> --json --project <project-id>
-```
-
-Delete removes the specified Task-local record and description in any Step
-status. Referenced attachments, PRs, Sessions and other materials remain; there
-is no history or restore command. IDs normalize case while preserving leading
-zeros. Explicit project/version sends one JSON DELETE whose body contains only
-version. Without --if-version, one complete Steps GET supplies the version;
-a failed pre-read prevents DELETE.
-
-A complete valid 200 receipt must confirm scope, principal, version +1 and target
-absence. With a real pre-read, all remaining records must retain their fields,
-times and relative order. Explicit versions do not add a hidden baseline read.
-Readable output is `Step deleted. ID: <id>` plus the full confirmed remaining
-collection; --json prints only the complete resource and LF. Deleting the last
-record returns steps: []. Repeated deletion, a deleted parent, version conflict
-and version exhaustion remain visible errors.
-
-Delete shares Add's request identity, refusal, unknown, cancellation and confirmed
-local-failure handling. Its one eligible read reports current found/absent facts;
-absence does not prove that the unknown request deleted the original record,
-and a current same-ID record need not be that original record. No DELETE is
-replayed. The [deletion contract](../../docs/spec/daynight-task-steps.md#cli-删除与结果确认)
-owns these guarantees.
+`daynight update` refreshes existing User and current-worktree Project skill
+copies through the regular update mechanism. Use `daynight skill install` for
+first installation or copies in other projects, then follow its reload guidance.
 
 ## Task deletion
 
@@ -2947,15 +2759,40 @@ conflicting ownership can make capacity unknown. An online heartbeat or zero rem
 tasks does not establish that local capacity is available.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
-terminal cleanup, and joins them before directly stopping agents and closing
-their workspaces. Process exit sends no cleanup prompt, does not wait for a
-cleanup turn or retry backoff, and does not repeat archive upload or worktree
-removal. It preserves claims, worktrees, native session IDs, unfinished
-active/pending rows and existing terminal cleanup schedules, including ended
-claims. The next run restores each saved responsibility and original deadline, then
-verifies remaining resources. External temporary resources may remain after direct interruption. Historical
-Herdr claims and resources remain the user's responsibility and are not
-recovered, stopped or cleaned by the coordinator.
+terminal cleanup, and joins their original Task writers. It sends no cleanup
+prompt and waits for no agent cleanup turn or retry backoff. A claim confirmed
+absent from current ownership, with usable Web execution state, enters the same
+immediate terminal cleanup used by polling: stop the original processes, remove
+its worktree and settle its local responsibility. Claims still owned by this
+Worker, unknown ownership and insufficient Web state retain their existing
+stop and preservation rules. Before the first poll and in management-only mode,
+bounded current Task reads classify original claims after the same remote client
+verifies the Worker account. Candidates include original pending claim
+reservations; each Task awaits its own reconciliation before classifying ownership
+or stopping, without making independent Tasks await that request. Matching
+Controller lifecycle checks follow the Task stop attempt and retain unresolved
+Task records. After original native stopping, management-only terminal file cleanup
+checks that the retained repository directory exists, validates its repository and
+worktree format, and prepares the current Git manager before inspecting or removing
+the original worktree. A missing directory does not trigger a clone; format
+preparation does not query Session registration or start business execution. An
+existing on-disk format does not prepare a fresh manager. Preparation failures
+retain that Task's visible, retryable responsibility while independent stopping
+continues; they do not establish recovery readiness. A
+timed-out native stop keeps its original owner rather than dispatching another
+stop. The repository owner waits for that shared Task stop before closing its
+Git manager. Unconfirmed Task stopping retains the manager for the original
+terminal writer; later reconciliation closes it only after complete Task closure.
+Active terminal jobs can admit exact-claim cleanup commands through a separate
+durable reservation path while business admission stays closed. They retain the
+original Worker, management instance, scope and command journal proof; stale
+instance or scope bindings are refused. Native inventory also reconciles commands created during
+Task stopping and synchronizes their proven stop receipts into the lifecycle
+ledger. Management-only commands retain their existing command path.
+Unfinished responsibility and its original deadline survive for the next
+reconciliation. External temporary resources may remain after direct interruption.
+Historical Herdr claims and resources remain the user’s responsibility and are
+not recovered, stopped or cleaned by the coordinator.
 
 The diagnostic file sink uses fresh
 `worker-YYYY-MM-DD-<32hex run id>-<segment>.jsonl` files for each run and recovery;
@@ -3163,13 +3000,19 @@ pause. It is separate from `task.properties.blocked`, which controls automatic
 input as described above.
 
 Normal Web terminal cleanup keeps its original cleanup operation identity and
-deadline. Every attempt reads its operation receipt from the original Controller
-journal, checks original process instances against the OS, reconciles the IPC
-endpoint and remaining Git resources, and uses the resulting current observations
-to determine completion. A recorded done status never suppresses these checks.
-Native stop and backend closure precede safe worktree removal; archive success is
-maintained separately. Worker shutdown stops
-owned processes while preserving unfinished claims, worktrees and native history.
+deadline. For usable Web execution state, successful current-ownership
+observation that the original claim has ended selects immediate stopping, both
+during polling and exit. Current or historical Session registration and a
+successor Session do not authorize or gate this decision. Every attempt reads
+its operation receipt from the original Controller journal, checks original
+process instances against the OS, reconciles the IPC endpoint and remaining Git
+resources, and uses current observations to determine completion. The serialized terminal job retains its existing
+failure and retry policy; a settled Promise is insufficient unless the original
+cleanup target has also been cleared. A recorded done status never suppresses
+these checks. Native stop and backend closure precede
+safe worktree removal; archive success is maintained separately. Shutdown
+preserves claims, worktrees and native history for still-owned or unknown
+execution; insufficient local Web state keeps its existing failure handling.
 The [session design](../../docs/design/task-session-protocol.md) owns stopping,
 recovery and relay details. Web terminal cleanup retains its original deadline
 and retry policy in the independent schedule, without resource-completion flags.

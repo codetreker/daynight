@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -121,6 +122,9 @@ func VerifyStorageBackup(ctx context.Context, files backupStorageReader, invento
 			return err
 		}
 	}
+	if err = verifyArchiveV2Files(ctx, files, inventory, namespace); err != nil {
+		return err
+	}
 	if inventory.Migration != nil {
 		if err = verifyBackupMigration(ctx, files, inventory); err != nil {
 			return err
@@ -162,6 +166,16 @@ func VerifyStorageBackup(ctx context.Context, files backupStorageReader, invento
 		}
 		if manifest.RecordID != inventory.SessionID {
 			return archiveConflict()
+		}
+		if bundle := inventory.ArchiveBundle; bundle != nil && len(inventory.ArchiveFilesV2) > 0 && (bundle.Phase == "committed" || bundle.Phase == "verified") {
+			var ledger archiveLedger
+			if manifest.Timeline.FileID != bundle.TimelineID || !jsonEqual(bundle.Resources, encode(manifest.Resources)) || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.ContentPolicy != manifest.ContentPolicy {
+				return archiveConflict()
+			}
+			file := inventory.ArchiveTimeline
+			if file == nil || (file.UploadVersion != 1 && file.UploadVersion != 2) || file.FileID != bundle.TimelineID || file.State != "complete" || file.Path != namespace.Directory()+"/files/"+file.FileID || file.SHA256 != manifest.Timeline.SHA256 || decimal(file.ByteLength) != manifest.Timeline.ByteLength || file.AcceptedOffset != file.ByteLength || file.TimelineRevision != bundle.Revision {
+				return archiveConflict()
+			}
 		}
 		timeline, err := readStorageObject(ctx, files, store.StorageObject{Bucket: archiveBucket, Path: namespace.Directory() + "/files/" + manifest.Timeline.FileID + "/content", SHA256: manifest.Timeline.SHA256, ByteLength: number(manifest.Timeline.ByteLength)})
 		if err != nil {

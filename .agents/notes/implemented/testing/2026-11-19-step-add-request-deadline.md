@@ -12,13 +12,18 @@ reported one fetch rather than two; it did not identify where the GET expired.
 
 ## Decision
 
-The request-timeout case controls the timer queue and the `node:perf_hooks`
-monotonic clock. It waits until the POST transport is pending before advancing
+The original request-timeout case controlled the timer queue and the
+`node:perf_hooks` monotonic clock. It waited until the POST transport was pending
+before advancing
 the client's request deadline, leaving the total operation budget live and the
 clock fixed for the observation. The actual request timeout and recovery code
-run with their original budgets. The test checks the timeout kind, POST then GET,
-the recovery request identity, unknown outcome and observed absence, and restores
-the operation and clocks. The response-cap case retains real time.
+ran with their original budgets. The test checked the timeout kind, POST then GET,
+the recovery request identity, unknown outcome and observed absence, and restored
+the operation and clocks. The response-cap case retained real time.
+
+The [CLI retirement](../simplification/2026-11-23-retire-cli-task-steps.md)
+removes the Steps client and its dedicated deadline cases. The timer and monotonic
+clock technique remains relevant to bounded recovery tests for surviving APIs.
 
 ## Alternatives
 
@@ -31,7 +36,6 @@ related [cursor deadline decision](2026-11-10-api-cursor-deadline.md).
 
 ## Consequences
 
-The test exercises timeout recovery without depending on wall-clock scheduling;
-it does not measure native timer accuracy. The separate loopback cases in
-`task-steps-client.test.ts` retain real timeout coverage, and native CI still
-checks the complete test on supported platforms.
+The test exercised timeout recovery without depending on wall-clock scheduling;
+it did not measure native timer accuracy. Separate loopback cases in the former
+Steps client suite provided real timeout coverage while that client was supported.
