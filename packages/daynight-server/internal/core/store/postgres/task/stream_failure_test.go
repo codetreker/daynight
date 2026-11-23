@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -80,8 +79,6 @@ func TestDAOStreamingFailuresDiscardIncompleteResults(t *testing.T) {
 	goal := uuid.NewString()
 	_, err = f.tx.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title) VALUES($1,$2,'goal','goal')`, goal, f.project)
 	mustOK(t, err)
-	stamp := time.Now().UTC()
-	mustOK(t, w.InsertTaskStep(ctx, a.ID, model.TaskStep{ID: "00000001", Title: "step", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}))
 	_, e := task.NewThreadDAO(f.tx).InsertMessage(ctx, model.ThreadMessage{TaskID: a.ID, Author: model.ThreadAuthor{UserID: f.user}, Body: "message"})
 	mustOK(t, e)
 	tests := map[string]func(pgx.Tx) error{
@@ -124,13 +121,6 @@ func TestDAOStreamingFailuresDiscardIncompleteResults(t *testing.T) {
 			v, e := task.NewReader(tx).ResolveTaskAssignees(ctx, f.project, []string{f.user})
 			if e != nil && v != nil {
 				t.Fatal("partial resolved assignees escaped")
-			}
-			return e
-		},
-		"step page": func(tx pgx.Tx) error {
-			v, e := task.NewReader(tx).TaskStepPage(ctx, a.ID, -1, 10, false)
-			if e != nil && v != nil {
-				t.Fatal("partial steps escaped")
 			}
 			return e
 		},

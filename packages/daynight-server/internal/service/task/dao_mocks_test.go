@@ -255,10 +255,6 @@ type taskReaderMock struct {
 	TaskPriorityListFn         func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
 	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
 	TaskHeaderFn               func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn                 func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn                func(context.Context, string) ([]model.TaskStep, error)
-	TaskStepPageFn             func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
-	TaskStepSummaryFn          func(context.Context, string, string) (store.TaskStepProjection, error)
 	ThreadMessageFn            func(context.Context, string, string) (model.ThreadMessage, error)
 	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
 	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
@@ -309,26 +305,6 @@ func (mock *taskReaderMock) TaskPresence(p0 context.Context, p1 string, p2 strin
 func (mock *taskReaderMock) TaskHeader(p0 context.Context, p1 string, p2 string) (model.TaskHeader, error) {
 	mock.need("TaskHeader", mock.TaskHeaderFn != nil)
 	return mock.TaskHeaderFn(p0, p1, p2)
-}
-
-func (mock *taskReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", mock.TaskStepFn != nil)
-	return mock.TaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	mock.need("TaskStepPage", mock.TaskStepPageFn != nil)
-	return mock.TaskStepPageFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskReaderMock) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	mock.need("TaskStepSummary", mock.TaskStepSummaryFn != nil)
-	return mock.TaskStepSummaryFn(p0, p1, p2)
 }
 
 func (mock *taskReaderMock) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
@@ -403,12 +379,7 @@ type taskWriterMock struct {
 	DependentIDsFn       func(context.Context, string) ([]string, error)
 	DeleteTaskFn         func(context.Context, string, bool) (model.TaskTombstone, error)
 	TaskHeaderFn         func(context.Context, string) (model.TaskHeader, error)
-	TaskStepsFn          func(context.Context, string) ([]model.TaskStep, error)
-	InsertTaskStepFn     func(context.Context, string, model.TaskStep) error
 	TouchTaskFn          func(context.Context, string, time.Time) error
-	UpdateTaskStepFn     func(context.Context, string, model.TaskStep) error
-	MoveTaskStepFn       func(context.Context, string, string, int64, int64) error
-	DeleteTaskStepFn     func(context.Context, string, string, int64, int64) error
 }
 
 func (mock *taskWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
@@ -476,34 +447,9 @@ func (mock *taskWriterMock) TaskHeader(p0 context.Context, p1 string) (model.Tas
 	return mock.TaskHeaderFn(p0, p1)
 }
 
-func (mock *taskWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", mock.TaskStepsFn != nil)
-	return mock.TaskStepsFn(p0, p1)
-}
-
-func (mock *taskWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
-	return mock.InsertTaskStepFn(p0, p1, p2)
-}
-
 func (mock *taskWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
 	mock.need("TouchTask", mock.TouchTaskFn != nil)
 	return mock.TouchTaskFn(p0, p1, p2)
-}
-
-func (mock *taskWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
-	return mock.UpdateTaskStepFn(p0, p1, p2)
-}
-
-func (mock *taskWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
-	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
-}
-
-func (mock *taskWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
-	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 var _ store.TaskWriteDAO = (*taskWriterMock)(nil)

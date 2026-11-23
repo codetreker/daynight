@@ -628,22 +628,6 @@ func (s *unexpectedTaskReader) TaskHeader(context.Context, string, string) (mode
 	s.reject("TaskHeader")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskStep(context.Context, string, string) (model.TaskStep, error) {
-	s.reject("TaskStep")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
-	s.reject("TaskSteps")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
-	s.reject("TaskStepPage")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
-	s.reject("TaskStepSummary")
-	panic("unreachable")
-}
 func (s *unexpectedTaskReader) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
 	s.reject("ThreadMessage")
 	panic("unreachable")

@@ -195,17 +195,12 @@ releasing its permit. Restoration targets only the three tables written by this
 matrix, which has no sequence, trigger or schema mutation to restore. The
 production inventory scan retains its own read-only repeatable-read transaction.
 
-[Step rollback and suppressed-row proofs](../../../../packages/daynight-server/internal/core/store/postgres/task_steps_rollback_witnesses_test.go),
-[Step deletion faults](../../../../packages/daynight-server/internal/core/store/postgres/task_steps_delete_test.go)
-and [Bot preference faults](../../../../packages/daynight-server/internal/core/store/postgres/bot_scope_test.go)
-retain one initialized store per matrix. Every case still executes the real
-production scope and verifies its error, transaction completion and persisted
-state. Injected triggers, functions and constraints are removed and their absence
-is read back. Attempt sequences still require the second real row write;
-`nextval` survives rollback, so those sequences are explicitly removed before
-another case uses the fixture. Invalid migration-history cases restore the
-complete original ledger, including checksums and `applied_at`, and compare it
-before the next fault. A failed case stops subsequent fixture reuse.
+The [Bot preference fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/bot_scope_test.go)
+retains one initialized store per matrix. Each case executes the production scope
+and verifies its error, transaction completion and persisted state. Injected
+triggers, functions and constraints are removed and their absence is read back.
+A failed case stops subsequent fixture reuse. The [Steps storage retirement](../simplification/2026-11-23-retire-task-steps-storage.md)
+removes the dedicated Steps matrices while preserving ordinary transaction proofs.
 
 The [Team Invitation fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/team_invitations_test.go)
 uses independent Teams, actors and tokens in one Store. Transactional table

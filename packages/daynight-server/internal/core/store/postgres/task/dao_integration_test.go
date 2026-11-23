@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -97,7 +96,7 @@ func TestTaskDAOStore(t *testing.T) {
 	suite := newTaskStoreSuite(t)
 	suite.run(t, "WriterPersistenceDependenciesAndDeletion", testWriterPersistenceDependenciesAndDeletion)
 	suite.run(t, "ReaderListsGraphsSyncAndAssignees", testReaderListsGraphsSyncAndAssignees)
-	suite.run(t, "StepDAOWritesReadbackAndMissingErrors", testStepDAOWritesReadbackAndMissingErrors)
+	suite.run(t, "TaskHeaderAndTouchReadbackAndMissingErrors", testTaskHeaderAndTouchReadbackAndMissingErrors)
 	suite.run(t, "WorkerInventoryFilteringAndThreadSource", testWorkerInventoryFilteringAndThreadSource)
 	suite.run(t, "StoredWorkerRoundTrip", testStoredWorkerRoundTrip)
 }
@@ -304,89 +303,30 @@ func testReaderListsGraphsSyncAndAssignees(t *testing.T, database *postgres.Stor
 	}
 }
 
-func testStepDAOWritesReadbackAndMissingErrors(t *testing.T, database *postgres.Store) {
+func testTaskHeaderAndTouchReadbackAndMissingErrors(t *testing.T, database *postgres.Store) {
 	f := newFixtureWithStore(t, database)
 	ctx := t.Context()
 	w := task.NewWriter(f.tx, f.project)
 	r := task.NewReader(f.tx)
-	a := mustTask(t, w, store.TaskWrite{Title: "steps"})
-	stamp := time.Now().UTC().Truncate(time.Microsecond)
-	steps := []model.TaskStep{{ID: "00000001", Position: 0, Title: "one", Description: "body", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}, {ID: "00000002", Position: 1, Title: strings.Repeat("界", 200), Description: "long body", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}, {ID: "00000003", Position: 1, Title: "inserted", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}}
-	for _, s := range steps {
-		mustOK(t, w.InsertTaskStep(ctx, a.ID, s))
-	}
-	hdr, e := w.TaskHeader(ctx, a.ID)
-	mustOK(t, e)
-	mustOK(t, w.TouchTask(ctx, a.ID, stamp.Add(time.Second)))
-	rh, e := r.TaskHeader(ctx, f.project, a.ID)
-	mustOK(t, e)
+	a := mustTask(t, w, store.TaskWrite{Title: "touch"})
+	stamp := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
+	hdr, err := w.TaskHeader(ctx, a.ID)
+	mustOK(t, err)
+	mustOK(t, w.TouchTask(ctx, a.ID, stamp))
+	rh, err := r.TaskHeader(ctx, f.project, a.ID)
+	mustOK(t, err)
 	if rh.Version != hdr.Version+1 {
 		t.Fatal("touch did not advance revision")
 	}
-	got, e := w.TaskSteps(ctx, a.ID)
-	mustOK(t, e)
-	if len(got) != 3 || got[1].ID != steps[2].ID || got[2].Position != 2 || got[2].UpdatedAt != stamp {
-		t.Fatalf("insert order: %+v", got)
-	}
-	mustOK(t, w.MoveTaskStep(ctx, a.ID, steps[0].ID, 0, 2))
-	mustOK(t, w.MoveTaskStep(ctx, a.ID, steps[0].ID, 2, 0))
-	steps[0].Title = "changed"
-	steps[0].Status = model.TaskStepDone
-	mustOK(t, w.UpdateTaskStep(ctx, a.ID, steps[0]))
-	one, e := r.TaskStep(ctx, a.ID, steps[0].ID)
-	mustOK(t, e)
-	if one.Title != "changed" || one.Status != model.TaskStepDone {
-		t.Fatalf("updated step: %+v", one)
-	}
-	summary, e := r.TaskStepSummary(ctx, a.ID, steps[1].ID)
-	mustOK(t, e)
-	if !summary.TitleTruncated || summary.Step.Description != "" {
-		t.Fatalf("summary: %+v", summary)
-	}
-	for _, summary := range []bool{false, true} {
-		page, e := r.TaskStepPage(ctx, a.ID, 0, 1, summary)
-		mustOK(t, e)
-		if len(page) != 1 || page[0].Step.ID != steps[2].ID {
-			t.Fatalf("step page: %+v", page)
-		}
-	}
-	mustOK(t, w.DeleteTaskStep(ctx, a.ID, steps[2].ID, 1, 1))
-	got, e = r.TaskSteps(ctx, a.ID)
-	mustOK(t, e)
-	if len(got) != 2 || got[1].ID != steps[1].ID || got[1].Position != 1 {
-		t.Fatalf("compaction: %+v", got)
-	}
-	if _, e = r.TaskStep(ctx, a.ID, "ffffffff"); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing step: %v", e)
-	}
-	if _, e = r.TaskStepSummary(ctx, a.ID, "ffffffff"); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing summary: %v", e)
-	}
-	for _, bounds := range []struct {
-		after int64
-		limit int
-	}{{-2, 1}, {0, 0}, {0, 102}} {
-		if _, e = r.TaskStepPage(ctx, a.ID, bounds.after, bounds.limit, false); e == nil {
-			t.Fatal("invalid bounds accepted")
-		}
-	}
-	if e = w.UpdateTaskStep(ctx, a.ID, model.TaskStep{ID: "ffffffff"}); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing update: %v", e)
-	}
-	if e = w.TouchTask(ctx, uuid.NewString(), stamp); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing touch: %v", e)
-	}
-	if e = w.MoveTaskStep(ctx, uuid.NewString(), "ffffffff", 0, 1); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing move: %v", e)
-	}
-	if e = w.DeleteTaskStep(ctx, a.ID, "ffffffff", 0, 0); !errors.Is(e, model.ErrNotFound) {
-		t.Fatalf("missing delete: %v", e)
+	if err = w.TouchTask(ctx, uuid.NewString(), stamp); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing touch: %v", err)
 	}
 	mustOK(t, f.tx.Commit(ctx))
-	var count int
-	mustOK(t, f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_steps WHERE task_id=$1`, a.ID).Scan(&count))
-	if count != 2 {
-		t.Fatalf("committed step count: %d", count)
+	var version int64
+	var updated time.Time
+	mustOK(t, f.db.Pool.QueryRow(ctx, `SELECT version,updated_at FROM tasks WHERE id=$1`, a.ID).Scan(&version, &updated))
+	if version != rh.Version || !updated.Equal(stamp) {
+		t.Fatalf("committed touch version=%d updated=%v", version, updated)
 	}
 }
 

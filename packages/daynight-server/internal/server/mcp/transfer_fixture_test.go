@@ -462,22 +462,6 @@ func (d *mcpAttachmentTaskReader) TaskHeader(p0 context.Context, p1 string, p2 s
 	unexpectedHTTPCall(d.t, "TaskReader.TaskHeader")
 	panic("unreachable")
 }
-func (d *mcpAttachmentTaskReader) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskStep")
-	panic("unreachable")
-}
-func (d *mcpAttachmentTaskReader) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskSteps")
-	panic("unreachable")
-}
-func (d *mcpAttachmentTaskReader) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskStepPage")
-	panic("unreachable")
-}
-func (d *mcpAttachmentTaskReader) TaskStepSummary(p0 context.Context, p1 string, p2 string) (store.TaskStepProjection, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskStepSummary")
-	panic("unreachable")
-}
 func (d *mcpAttachmentTaskReader) ThreadMessage(p0 context.Context, p1 string, p2 string) (model.ThreadMessage, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.ThreadMessage")
 	panic("unreachable")
