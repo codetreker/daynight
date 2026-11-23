@@ -38,6 +38,13 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 	}
 	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
 	defer cancel()
+	access, err := s.Access(ctx, p, id)
+	if err != nil {
+		return core.TransferReceipt{}, err
+	}
+	if err = ownerAdmin(access); err != nil {
+		return core.TransferReceipt{}, err
+	}
 	var result core.TransferReceipt
 	c, err := s.lifecycle.WriteGitHubProjectTransfer(ctx, id, func(scope store.GitHubProjectTransferScope) error {
 		var err error

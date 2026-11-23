@@ -554,6 +554,12 @@ func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(sto
 	}
 	return s.WriteProjectCall(ctx, id, fn)
 }
+func (s *httpTestStore) WriteProjectTransfer(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if s.WriteProjectCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectTransfer")
+	}
+	return s.WriteProjectCall(ctx, id, fn)
+}
 func (s *httpTestStore) WriteProjectCreation(ctx context.Context, id string, fn func(store.ProjectCreationDAO) error) (store.Completion, error) {
 	if s.WriteProjectCreationCall == nil {
 		unexpectedHTTPCall(s.t, "WriteProjectCreation")

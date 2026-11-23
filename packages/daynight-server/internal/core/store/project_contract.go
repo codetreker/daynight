@@ -18,6 +18,13 @@ type ProjectWriter interface {
 	WriteProject(context.Context, string, func(ProjectWriteScope) error) (Completion, error)
 }
 
+// ProjectTransferWriter locks the complete set of affected Goal Projects before
+// its callback. The caller must preflight source authorization and recheck it in
+// the transaction.
+type ProjectTransferWriter interface {
+	WriteProjectTransfer(context.Context, string, func(ProjectWriteScope) error) (Completion, error)
+}
+
 // ProjectDirectMemberWriter holds the Project, current ownership and Team roots
 // until the callback has completed, including the case of absent membership.
 type ProjectDirectMemberWriter interface {

@@ -530,7 +530,11 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	}
 	preparePreview := func(actor model.Principal, accessErr error) {
 		t.Helper()
-		access := projectHTTPCount(t, 1)
+		reads := 1
+		if accessErr == nil {
+			reads = 2
+		}
+		access := projectHTTPCount(t, reads)
 		dao := mcpOrgProjectReader{ProjectAccessCall: func(ctx context.Context, got model.Principal, projectID string) (model.ProjectAccess, error) {
 			access()
 			projectHTTPCheck(t, got, actor)
@@ -550,7 +554,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 				return nil, nil
 			}
 		}
-		mcpOrgRead(t, tx, 1, dao, nil)
+		mcpOrgRead(t, tx, reads, dao, nil)
 	}
 	preparePreview(actors[1], model.ErrNotFound)
 	response, failed = call(1, "project_transfer", map[string]any{"projectId": id, "toTeam": target.ID, "confirm": true})

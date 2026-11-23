@@ -288,10 +288,10 @@ func TestProjectTransferProtocolUsesAtomicGoalCleanup(t *testing.T) {
 			}
 			actor := model.Principal{Kind: model.PATCredential, UserID: testUserID, CredentialID: testTeamID}
 			f.entry.auth = transferAuthenticator{"alice": actor}
-			previewReads := mcpOrgCount(t, 1)
+			previewReads := mcpOrgCount(t, 2)
 			teamReads := mcpOrgCount(t, 1)
 			roleReads := mcpOrgCount(t, 1)
-			mcpOrgRead(t, tx, 1, mcpOrgProjectReader{
+			mcpOrgRead(t, tx, 2, mcpOrgProjectReader{
 				ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
 					previewReads()
 					projectHTTPCheck(t, p, actor)
@@ -338,7 +338,7 @@ func TestProjectTransferProtocolUsesAtomicGoalCleanup(t *testing.T) {
 			if !tc.wantError {
 				eligibility = mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: project.ID})
 			}
-			mcpOrgWriteProject(t, tx, project.ID, writer, eligibility, transferConfirmationDependencies{lock: mcpOrgCount(t, 1), inspect: mcpOrgCount(t, tc.wantProbe), remove: mcpOrgCount(t, tc.wantRemove), hasEdges: tc.hasEdges})
+			mcpOrgWriteProject(t, tx, project.ID, writer, eligibility, transferConfirmationDependencies{lock: mcpOrgCount(t, 0), inspect: mcpOrgCount(t, tc.wantProbe), remove: mcpOrgCount(t, tc.wantRemove), hasEdges: tc.hasEdges})
 			if err := RegisterProjectTools(f.entry, projectservice.NewProjects(tx), nil, "https://daynight.test"); err != nil {
 				t.Fatal(err)
 			}

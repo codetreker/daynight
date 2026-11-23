@@ -44,11 +44,8 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 				var err error
 				switch kind {
 				case "transfer":
-					completion, err = db.WriteProject(t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
+					completion, err = db.WriteProjectTransfer(t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
 						dao := scope.ProjectGoalDependencyDAO()
-						if err := dao.LockTeam(t.Context()); err != nil {
-							return err
-						}
 						if err := remove(dao); err != nil {
 							return err
 						}
@@ -370,6 +367,9 @@ func projectGoalUnknown(c store.Completion, err error) (store.Completion, error)
 }
 func (s projectGoalLostCommit) WriteProject(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
 	return projectGoalUnknown(s.Store.WriteProject(ctx, id, op))
+}
+func (s projectGoalLostCommit) WriteProjectTransfer(ctx context.Context, id string, op func(store.ProjectWriteScope) error) (store.Completion, error) {
+	return projectGoalUnknown(s.Store.WriteProjectTransfer(ctx, id, op))
 }
 func (s projectGoalLostCommit) WriteProjectDeletion(ctx context.Context, id string, op func(store.ProjectDeletionScope) error) (store.Completion, error) {
 	return projectGoalUnknown(s.Store.WriteProjectDeletion(ctx, id, op))
