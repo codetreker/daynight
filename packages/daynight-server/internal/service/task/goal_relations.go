@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
@@ -126,7 +127,22 @@ func (s *Tasks) EditGoalDependencies(ctx context.Context, principal model.Princi
 		}
 		result = taskcore.GoalDependencyReceipt{GoalID: goalID, Revision: facts.Source.Revision, Changed: changed}
 		if changed {
+			writer := scope.TaskDAO()
+			header, err := writer.TaskHeader(ctx, goalID)
+			if err != nil {
+				return err
+			}
+			if header.Version == math.MaxInt64 {
+				return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			}
+			observed, err := writer.ObservedAt(ctx)
+			if err != nil {
+				return err
+			}
 			if err := dao.Save(ctx, goalID, facts.Source.Revision, edges); err != nil {
+				return err
+			}
+			if err := writer.TouchTask(ctx, goalID, observed); err != nil {
 				return err
 			}
 			result.Revision++

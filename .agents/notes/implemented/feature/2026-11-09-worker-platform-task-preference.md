@@ -14,8 +14,11 @@ unrestricted tasks in one Project.
 
 ## Decision
 
-The existing two-state clients expose a cloud-managed `preferPlatformSpecificTasks` boolean, initially
-false. It is editable in My Workers and hot-applied to subsequent acquisition.
+The original two-state clients expose a cloud-managed
+`preferPlatformSpecificTasks` boolean, initially false. The setting is editable
+in My Workers and hot-applied to subsequent acquisition. The
+[client mode decision](2026-11-23-worker-platform-task-mode-client.md) adds a
+strict mode while preserving these rotations.
 The control names the viewed Worker’s platform using the shared display names;
 when its platform is unavailable, the control retains a generic label.
 Local YAML supplies the initial import only; later cloud values retain authority.
@@ -27,7 +30,7 @@ would place business priority before this preference and extend the independent
 rotation groups. It is not implemented; the ordering described here remains the
 current behavior.
 
-An enabled coordinator scans eligible Projects for exact-platform candidates
+A coordinator in prefer mode scans eligible Projects for exact-platform candidates
 before considering unrestricted candidates. Platform-specific and ordinary
 acquisition retain independent Project rotation positions. Ordinary acquisition
 covers unrestricted candidates when enabled and the original mixed compatible
@@ -36,7 +39,8 @@ the ordinary position; each category preserves chronological task ordering. The
 list-only `platformSpecific`
 filter combines with `compatiblePlatform` before pagination; each category has
 its own filter-bound cursor. The chronological position key remains unchanged.
-Disabled Workers retain their original mixed candidate stream. The
+Workers in all mode retain their original mixed candidate stream; only mode uses
+the platform-specific stream alone. The
 [Worker requirements](../../../../docs/spec/daynight-worker.md) own the observable
 ordering and the [configuration protocol](../../../../docs/spec/daynight-worker-configuration.md)
 owns the target and application values.
@@ -90,4 +94,7 @@ Finding no dedicated candidate requires scanning that category across eligible
 Projects before unrestricted acquisition. The additional list condition is
 independent of search and single-request ready selectors. The new required cloud
 field and local cache version require compatible service and Worker binaries;
-older strict clients cannot consume the expanded target without an appropriate projection. The [platform mode protocol](2026-11-23-worker-platform-task-mode-protocol.md) now stores an enum on the server and negotiates the original boolean view for two-state clients, retaining the scheduling decisions described here.
+older strict clients cannot consume the expanded target without an appropriate
+projection. The [platform mode protocol](2026-11-23-worker-platform-task-mode-protocol.md)
+stores an enum on the server and negotiates the original boolean view for
+two-state clients, retaining the scheduling decisions described here.

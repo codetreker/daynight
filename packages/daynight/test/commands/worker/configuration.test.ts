@@ -226,7 +226,7 @@ describe("Worker cloud configuration application", () => {
       JSON.parse = originalParse;
       JSON.stringify = originalStringify;
     }
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(12);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(13);
   });
 
   it("migrates a structurally valid historical native value larger than the current item limit", async () => {
@@ -244,7 +244,7 @@ describe("Worker cloud configuration application", () => {
     const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
     expect(actual.args).toHaveLength(2050);
     expect(actual.args[2049]).toBe("x".repeat(4096));
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(12);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(13);
   });
 
   it("invalidates only native proofs that depend on a changed tool selection", async () => {
@@ -368,7 +368,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated).toMatchObject({ schemaVersion: 12, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
+    expect(migrated).toMatchObject({ schemaVersion: 13, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual(cache.desired);
     expect(migrated.currentItems.every(entry => !("nativeMode" in entry))).toBe(true);
     await reopened.receive(receivedDesired({ ...original, revision: "2" })); await reopened.settle();
@@ -444,7 +444,7 @@ describe("Worker cloud configuration application", () => {
       expect(invalid).not.toHaveBeenCalled();
       expect(reopened.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
       const saved = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
-      expect(saved).toMatchObject({ schemaVersion: 12, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
+      expect(saved).toMatchObject({ schemaVersion: 13, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
       await reopened.stop();
       const againApply = vi.fn(async () => {});
       const again = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: againApply });
@@ -493,16 +493,63 @@ describe("Worker cloud configuration application", () => {
     expect((JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson).toBe(before);
   });
 
+  it("migrates schema 12 without inventing a modern application fact", async () => {
+    const first = await fixture(), old = desired("1", "original", false);
+    await first.manager.receive(receivedDesired({ ...old, value: { ...old.value, preferPlatformSpecificTasks: true } }));
+    await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 12;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(receivedDesired({ ...old, value: { ...old.value, preferPlatformSpecificTasks: true } }));
+    await reopened.settle();
+    expect(reopened.current().effective.platformTaskMode).toBe("prefer");
+    const { preferPlatformSpecificTasks: _old, ...base } = old.value;
+    await reopened.receive(receivedDesired({ ...old, value: { ...base, platformTaskMode: "only" } }));
+    await reopened.settle();
+    expect(reopened.current().effective.platformTaskMode).toBe("only");
+    const checkpoint = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
+    expect(checkpoint.schemaVersion).toBe(13);
+    const applied = checkpoint.currentItems.find(entry => entry.value.key.kind === "platformTaskMode");
+    expect(applied).toMatchObject({ value: { state: "applied", appliedValue: "only" }, actualSource: { kind: "observed" } });
+    expect(reopened.report().observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "platformTaskMode" }, appliedValue: "only", state: "applied" }));
+  });
+
+  it.each([11, 12])("keeps an opaque future mode from schema %i unapplied", async version => {
+    const first = await fixture(), original = desired("1", "original", false);
+    const old = { ...original, value: { ...original.value, preferPlatformSpecificTasks: true } };
+    await first.manager.receive(receivedDesired(old)); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = version;
+    const raw = JSON.parse(saved.authority.desiredJson);
+    raw.value.platformTaskMode = "only";
+    saved.authority.desiredJson = JSON.stringify(raw);
+    saved.remoteObservation = { observationRevision: "1", json: JSON.stringify({ baseRevision: "0", desiredRevision: "1", reportedAt: "2026-11-04T00:00:00Z", items: [{ key: { kind: "platformTaskMode" }, targetRevision: "1", appliedValue: { future: true }, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }] }) };
+    await writeFile(first.file, JSON.stringify(saved));
+    const migrated = await readConfigurationCache(first.file, identity, new AbortController().signal);
+    expect(migrated.cache.authority.pendingApplication).toBe(true);
+    expect(migrated.cache.currentItems.some(entry => entry.value.key.kind === "platformTaskMode")).toBe(false);
+    expect(migrated.cache.authority.desiredJson).toBe(saved.authority.desiredJson);
+    expect(migrated.cache.remoteObservation?.json).toBe(saved.remoteObservation.json);
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const { preferPlatformSpecificTasks: _old, ...base } = old.value;
+    await reopened.receive(receivedDesired({ ...old, value: { ...base, platformTaskMode: "only" } }));
+    await reopened.settle();
+    expect(reopened.current().effective.platformTaskMode).toBe("only");
+  });
+
   it("hot-applies platform preference in both directions and reports false as an applied value", async () => {
     const { manager } = await fixture();
-    expect(manager.current().effective.preferPlatformSpecificTasks).toBeNull();
+    expect(manager.current().effective.platformTaskMode).toBeNull();
     const first = desired("1", "original", false);
     await manager.receive(receivedDesired({ ...first, value: { ...first.value, preferPlatformSpecificTasks: true } }));
     await manager.settle();
-    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(true);
+    expect(manager.current().effective.platformTaskMode).toBe("prefer");
     await manager.receive(receivedDesired(desired("2", "original", false)));
     await manager.settle();
-    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(manager.current().effective.platformTaskMode).toBe("all");
     expect(item(manager.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "applied", appliedValue: false, targetRevision: "2" });
     expect(parseWorkerCloudReport(manager.report(), { controlMode: false, toolPaths: true }).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
   });
@@ -526,16 +573,16 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated.schemaVersion).toBe(12);
+    expect(migrated.schemaVersion).toBe(13);
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.authority.observationRevision).toBe(saved.observationRevision);
     const expectedItems = saved.items.map((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "native" ? { ...entry, value: { ...entry.value, appliedValue: null, state: "pending" } } : entry);
     expect(migrated.currentItems.filter(entry => entry.value.key.kind !== "preferPlatformSpecificTasks").map(entry => ({ value: entry.value, attempts: entry.backoffStep, failureId: entry.failureId, started: entry.started }))).toEqual(expectedItems);
     expect(item(reopened.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "pending", appliedValue: null });
-    expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
+    expect(reopened.current().effective.platformTaskMode).toBeNull();
     await reopened.receive(receivedDesired({ ...target, revision: "2" })); await reopened.settle();
-    expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(reopened.current().effective.platformTaskMode).toBe("all");
     expect(parseWorkerCloudReport(reopened.report(), { controlMode: false, toolPaths: true }).observation?.items).toHaveLength(1025);
     expect((await readConfigurationCache(first.file, identity, new AbortController().signal)).cache.retainedItems).toContainEqual(expect.objectContaining({ failureId: 1, started: true, value: expect.objectContaining({ key: { kind: "projectRemoval", projectId: "00000000-0000-4000-8000-000000000000" }, state: "error", lastFailure: failure }) }));
   });
@@ -694,7 +741,7 @@ describe("Worker cloud configuration application", () => {
     const { manager, file, wait } = await fixture({ applyNative: async () => { throw new Error("secret native arguments must not be reported"); } });
     await manager.receive(receivedDesired(desired()));
     await wait(snapshot => item(snapshot, "native")?.state === "error" && snapshot.effective.maxConcurrent === 2 && snapshot.effective.pollIntervalMs === 1200 && snapshot.effective.recoveryLimit === 4);
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null, projects: [{ projectId, ready: false }] });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, platformTaskMode: "all", native: null, projects: [{ projectId, ready: false }] });
     expect(item(manager.current(), "projectPreparation")).toMatchObject({ state: "pending", appliedValue: null });
     expect(JSON.stringify(manager.report())).not.toContain("secret native arguments");
     expect(JSON.parse(JSON.parse(await readFile(file, "utf8")).authority.desiredJson).revision).toBe("1");
@@ -1326,7 +1373,7 @@ describe("Worker cloud configuration application", () => {
     const { manager } = await fixture({ applyNative: async () => { throw new TypeError("invalid"); } });
     await manager.receive(receivedDesired(desired("1", "invalid", false)));
     await manager.settle();
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, platformTaskMode: "all", native: null });
     expect(item(manager.current(), "native")?.state).toBe("error");
     expect(Date.parse(item(manager.current(), "native")!.nextAttemptAt!)).toBeGreaterThan(Date.now());
   });

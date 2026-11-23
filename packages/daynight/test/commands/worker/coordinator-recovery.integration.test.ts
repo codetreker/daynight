@@ -40,7 +40,7 @@ const fixture = async () => {
   const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => [{ owner, binding }]), listWorktreeManifests: vi.fn(async () => [{ owner, binding }]), resolveWorktreeBinding: vi.fn(async () => binding), removeWorktree: vi.fn(async () => ({ kind: "absent", effectErrors: [] })), retireWorktreeManifest: vi.fn(async () => {}) } as unknown as WorkerGitManager;
   const advance = vi.fn(async (input: WebTask) => webStore.updateWebExecution(input, { activity: "working" }, 6));
   const cleanup = vi.fn(async (input: WebTask, _request: CleanupRequest) => ({ complete: true, task: input }));
-  const coordinator = createWorkerCoordinator({ store, git, remote, webStore, webBackend: { advance, cleanup, observeExecutionStop: async target => ({ kind: "unknown", target, observedAt: 1000, error: new Error("Stop unconfirmed") }) }, serverOrigin: origin, workerId, userId, platform: "linux", machine: worker.machine, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false, emit: () => {}, now: () => 1000, verifyWebServer: async () => {} });
+  const coordinator = createWorkerCoordinator({ store, git, remote, webStore, webBackend: { advance, cleanup, observeExecutionStop: async target => ({ kind: "unknown", target, observedAt: 1000, error: new Error("Stop unconfirmed") }) }, serverOrigin: origin, workerId, userId, platform: "linux", machine: worker.machine, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 2, platformTaskMode: "all" as const, emit: () => {}, now: () => 1000, verifyWebServer: async () => {} });
   return { owner, store, webStore, execution, remote, advance, cleanup, coordinator };
 };
 

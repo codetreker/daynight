@@ -19,7 +19,7 @@ const uuid = (value: unknown): string => {
 };
 const keyOf = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
 const requiredKeys = (desired: WorkerCloudDesired): WorkerCloudItemKey[] => [
-  ...["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"].map(kind => ({ kind }) as WorkerCloudItemKey),
+  ...["maxConcurrent", "pollIntervalMs", "recoveryLimit", desired.value.platformTaskMode === undefined ? "preferPlatformSpecificTasks" : "platformTaskMode", "native"].map(kind => ({ kind }) as WorkerCloudItemKey),
   ...(desired.value.taskTagFilter === undefined ? [] : [{ kind: "taskTagFilter" } as const]),
   ...(desired.value.archiveSessions === undefined ? [] : [{ kind: "archiveSessions" } as const]),
   ...(desired.value.enableSudoCleanup === undefined ? [] : [{ kind: "enableSudoCleanup" } as const]),
@@ -76,17 +76,19 @@ export const decodeCurrentConfigurationCache = (source: Record<string, unknown>,
   // Windows process cleanup target. Reading an 11 as if it were a 12 would
   // adopt a field the writing binary could not have applied, so 11 keeps the
   // field opaque and refuses a result that claims otherwise.
-  if (data.schemaVersion !== 11 && data.schemaVersion !== 12 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
+  if (data.schemaVersion !== 11 && data.schemaVersion !== 12 && data.schemaVersion !== 13 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
   const preWindowsProcessCleanup = data.schemaVersion === 11;
+  const prePlatformTaskMode = data.schemaVersion !== 13;
   const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision", "pendingApplication"]);
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string" || typeof authority.pendingApplication !== "boolean") throw new TypeError("Worker configuration cache has an invalid authority.");
   const desiredJson = authority.desiredJson as string | null;
-  const received = desiredJson === null ? null : receiveWorkerDesired(desiredJson, { controlMode: false, toolPaths: true, archiveSessions: desiredCapabilitySources(desiredJson).has("archiveSessions") }, true, true, !preWindowsProcessCleanup);
+  const received = desiredJson === null ? null : receiveWorkerDesired(desiredJson, { controlMode: false, toolPaths: true, archiveSessions: desiredCapabilitySources(desiredJson).has("archiveSessions") }, true, true, !preWindowsProcessCleanup, !prePlatformTaskMode);
   const desired = received?.known ?? null, applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
   const observationRevision = parseWorkerCloudRevision(authority.observationRevision, true), nextFailureId = counter(data.nextFailureId, 1);
   if (!authority.pendingApplication && (applicableConfigurationDesired(desired) === null || applicationRevision === null)) throw new TypeError("Worker configuration cache has an invalid applied target.");
   if (!Array.isArray(data.currentItems) || !Array.isArray(data.retainedItems)) throw new TypeError("Worker configuration cache items must be arrays.");
   const currentItems = data.currentItems.map(tracked), retainedItems = data.retainedItems.map(tracked), keys = new Map<string, TrackedConfigurationItem>();
+  if (prePlatformTaskMode && [...currentItems, ...retainedItems].some(item => item.value.key.kind === "platformTaskMode")) throw new TypeError("Worker configuration cache has a future application result.");
   if (preWindowsProcessCleanup && [...currentItems, ...retainedItems].some(item => item.value.key.kind === "enableWindowsProcessCleanup")) throw new TypeError("Worker configuration cache has a future application result.");
   const selected = new Set(desired?.value.projects.map(project => project.projectId));
   for (const item of currentItems) {
@@ -122,7 +124,7 @@ export const decodeCurrentConfigurationCache = (source: Record<string, unknown>,
     }
     hiddenCapabilitySources = parsed;
   }
-  return { schemaVersion: 12, identity: { ...identity }, authority: { generation: uuid(authority.generation), desiredJson, applicationRevision, observationRevision, pendingApplication: authority.pendingApplication },
+  return { schemaVersion: 13, identity: { ...identity }, authority: { generation: uuid(authority.generation), desiredJson, applicationRevision, observationRevision, pendingApplication: authority.pendingApplication },
     remoteObservation, nextFailureId, projectionCursor: data.projectionCursor === null ? null : uuid(data.projectionCursor), currentItems, retainedItems,
     ...(hiddenCapabilitySources === undefined ? {} : { hiddenCapabilitySources }) };
 };

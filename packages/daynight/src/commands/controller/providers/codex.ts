@@ -133,14 +133,19 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     let cursor: string | null = null;
     const cursors = new Set<string>();
     do {
-      const page = record(await rpc.request("thread/items/list", { threadId: nativeId, ...(turnId ? { turnId } : {}), cursor, limit: 1, sortDirection: "asc" }));
+      // Project while the response frame still owns its media. Promise wrappers
+      // may otherwise release the frame before the read continuation runs.
+      const next = await rpc.request("thread/items/list", { threadId: nativeId, ...(turnId ? { turnId } : {}), cursor, limit: 1, sortDirection: "asc" }, undefined, value => {
+        const page = record(value);
+        if (!closed && !closing) for (const raw of Array.isArray(page.data) ? page.data : []) {
+          const entry = record(raw), item = record(entry.item ?? raw);
+          if (turnId && entry.turnId && entry.turnId !== turnId) continue;
+          if (!usersOnly || item.type === "userMessage") projectItem(item, item.type === "userMessage" || turnComplete || typeof entry.completedAtMs === "number", string(entry.turnId) || turnId || "");
+        }
+        return string(page.nextCursor) || null;
+      });
       if (closed || closing) return false;
-      for (const raw of Array.isArray(page.data) ? page.data : []) {
-        const entry = record(raw), item = record(entry.item ?? raw);
-        if (turnId && entry.turnId && entry.turnId !== turnId) continue;
-        if (!usersOnly || item.type === "userMessage") projectItem(item, item.type === "userMessage" || turnComplete || typeof entry.completedAtMs === "number", string(entry.turnId) || turnId || "");
-      }
-      cursor = string(page.nextCursor) || null;
+      cursor = typeof next === "string" ? next : null;
       if (cursor && cursors.has(cursor)) throw new Error("Native item history cursor repeated.");
       if (cursor) cursors.add(cursor);
       // Publication and source association are durable before this checkpoint.
@@ -222,13 +227,13 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "error") { errors.notification(p, nativeId, currentTurnId); if (awaitingInitialSettings) initialSettingsAbort.abort(new Error("Native Codex rejected initial settings asynchronously.")); }
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { invalidateImages(); authority?.invalidate(); if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
-  const nativeRequest: CodexRpc["request"] = (method, params, onLateResponse) => {
+  const nativeRequest: CodexRpc["request"] = (method, params, onLateResponse, consume) => {
     const request = () => {
       if (recovery && transportFailed) throw new NativeRpcError(-32602, "Codex Bot recovery is unavailable; native dispatch is closed.");
       const dispatch = imageDispatch;
       if (["turn/start", "turn/steer"].includes(method) && dispatch && dispatch.operationId === record(params).clientUserMessageId) dispatch.verify();
       if (["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) assertProviderNativeDispatch(options.assertNativeDispatch);
-      return transport.request(method, params, onLateResponse);
+      return transport.request(method, params, onLateResponse, consume);
     };
     if (recovery && ["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       return (async () => {
@@ -241,11 +246,11 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         return request();
       })();
     }
-    // Read responses carry leases valid through the direct RPC continuation.
+    // History consumers retain media synchronously while the response frame owns it.
     return request();
   };
   const rpc = {
-    request: (method: string, params: unknown, onLateResponse?: Parameters<CodexRpc["request"]>[2]) => authority ? authority.request(method, params, onLateResponse) : nativeRequest(method, params, onLateResponse),
+    request: (method: string, params: unknown, onLateResponse?: Parameters<CodexRpc["request"]>[2], consume?: Parameters<CodexRpc["request"]>[3]) => authority ? authority.request(method, params, onLateResponse, consume) : nativeRequest(method, params, onLateResponse, consume),
     notify: transport.notify.bind(transport), respond: transport.respond.bind(transport), reject: transport.reject.bind(transport), dispose: transport.dispose.bind(transport),
     stopped: transport.stopped,
   };

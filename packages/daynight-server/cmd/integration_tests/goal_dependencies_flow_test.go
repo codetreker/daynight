@@ -36,7 +36,7 @@ func serverAPIGoalDependenciesNormalFlow(t *testing.T, f *fixture) {
 		t.Fatalf("reverse relationship: %+v", reverse)
 	}
 	legacy := requestJSON[api.Task](t, f, http.MethodGet, taskPath(downstream), nil, http.StatusOK)
-	if legacy.ID != downstream.ID || legacy.Version != downstream.Version || legacy.Ready || len(legacy.DependsOn) != 0 || len(legacy.ExternalDependsOn) != 0 || len(legacy.BlockedBy) != 0 {
+	if legacy.ID != downstream.ID || legacy.Version != downstream.Version+1 || legacy.Ready || len(legacy.DependsOn) != 0 || len(legacy.ExternalDependsOn) != 0 || len(legacy.BlockedBy) != 0 {
 		t.Fatalf("legacy Goal projection: %+v", legacy)
 	}
 	sync := requestJSON[api.TaskSync](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK)
@@ -49,10 +49,18 @@ func serverAPIGoalDependenciesNormalFlow(t *testing.T, f *fixture) {
 	if unchanged.Changed || unchanged.Revision != added.Revision || unchanged.GoalID != downstream.ID {
 		t.Fatalf("retained relationship receipt: %+v", unchanged)
 	}
+	unchangedTask := requestJSON[api.Task](t, f, http.MethodGet, taskPath(downstream), nil, http.StatusOK)
+	if unchangedTask.Version != legacy.Version || unchangedTask.UpdatedAt != legacy.UpdatedAt {
+		t.Fatalf("no-op changed Goal: %+v", unchangedTask)
+	}
 	cleared := requestJSON[protocol.Receipt](t, f, http.MethodPatch, path, map[string]any{"ifRevision": unchanged.Revision, "mode": "replace", "prerequisites": []any{}}, http.StatusOK)
 	final := requestJSON[protocol.Relationships](t, f, http.MethodGet, path, nil, http.StatusOK)
 	if !cleared.Changed || cleared.Revision != "3" || final.Revision == nil || *final.Revision != cleared.Revision || len(final.Prerequisites) != 0 || final.CompletionBlocked {
 		t.Fatalf("cleared relationship: receipt=%+v read=%+v", cleared, final)
+	}
+	clearedTask := requestJSON[api.Task](t, f, http.MethodGet, taskPath(downstream), nil, http.StatusOK)
+	if clearedTask.Version != legacy.Version+1 {
+		t.Fatalf("clear did not advance Goal: %+v", clearedTask)
 	}
 	serverAPIMCPGoalDependenciesNormalFlow(t, f, project, upstream, downstream, cleared.Revision)
 }

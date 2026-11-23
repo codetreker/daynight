@@ -30,13 +30,15 @@ agent-permission List fixtures retain their current scope. The
 [Task write preparation decision](2026-11-10-task-write-preparation-tests.md)
 also replaces the DAO boundary for selected preparation-failure witnesses.
 The [Step read coordination decision](2026-11-10-step-read-coordination-tests.md)
-likewise isolates the Project read operation while retaining the Step service's
+likewise isolated the Project read operation while retaining the Step service's
 own snapshot, parent gate, DAO calls and encoding. The [Step content write
-decision](2026-11-10-step-content-write-coordination-tests.md) isolates Project
+decision](2026-11-10-step-content-write-coordination-tests.md) isolated Project
 write authorization and Add/Change admission while retaining the service's locked
 parent gate, DAO coordination, encoding and completion handling. The
 [Step order write decision](2026-11-10-step-order-write-coordination-tests.md)
-extends that separation to Move and Delete.
+extended that separation to Move and Delete. The [application retirement](../simplification/2026-11-23-retire-task-steps-application.md)
+removes the Step service, Core candidates, codec and their dedicated tests; ordinary
+Task, Thread and physical Store proofs retain their own owners.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original
@@ -56,8 +58,9 @@ transaction and shared-snapshot witnesses. The
 and the separate normal-flow scope of API integration and product E2E tests.
 
 The [Step limits decision](2026-11-10-step-limits-test-ownership.md) assigns the
-real 170/171 collection encoding and admission rules to Core, while Service
-tests retain complete input forwarding and real encoding-failure coordination.
+original real 170/171 collection encoding and admission rules to Core, while
+Service tests retained complete input forwarding and real encoding-failure
+coordination. These Step-specific proofs leave with their implementation.
 The
 [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
 removes Graph/Sync stored-size admission and their count-only matrices. Real

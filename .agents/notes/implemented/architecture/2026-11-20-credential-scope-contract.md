@@ -38,6 +38,9 @@ legacy approval method rejects approval in scoped assembly so an old page cannot
 bypass explicit selection; its existing request can be read after refresh.
 Production constructors and routes enforce the explicit policy.
 
+The [Steps scope retirement decision](../simplification/2026-11-23-retire-step-credential-choices.md)
+removes retired choices from production catalogs while retaining their historical IDs.
+
 The production Web authorization pages use one catalog-driven selector, displaying
 actual IDs and server defaults for each credential type. They submit explicit
 nonempty selections against the inspected revision. A catalog conflict preserves

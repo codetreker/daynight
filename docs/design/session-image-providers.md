@@ -33,6 +33,8 @@
 
 索引 writer 的独占 lease 与实际进程证明持久保存。恢复只有在原 writer 已停止或已被其他进程替代时才释放 lease；存活、无法确认或缺少证明时拒绝新 writer。释放时核对原 lease 身份，不按索引占用预留字节。
 
+Codex 分页历史在响应帧仍持有媒体时同步投影并取得所需 lease，再释放帧；异步权限包装不能延长帧所有权。投影失败拒绝原读取，不终止无关 RPC，也不重新读取变化的媒体。
+
 Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL。公共 `resolveImageCaptureSource` 在原出现已 ACK、本地原 request 已持久且实际完整历史已确认后，沿原来源权限读取；组件缺失时保留同位置的 `component_unsupported`。读取不等待服务 register 或 reserved。已保存的图片直接复用服务 resource，重开不重新访问原来源。待到达来源保留 pending，最终 payload 到达后更新同一位置；完成布局由 normalizer 完整提供，不能用纯文字 delta 覆盖图片槽。
 
 ## 三者共同的发送屏障

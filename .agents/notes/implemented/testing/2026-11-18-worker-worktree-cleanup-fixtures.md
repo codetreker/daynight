@@ -28,7 +28,9 @@ that state, and Git must create the normal metadata it later reads or removes.
 
 **Replace full preparation everywhere.** The actual fetch deadline, new-claim
 and recovery cases exercise that workflow. Their original setup and assertions
-remain in place, as do the native sudo scenarios.
+remain in place. The native sudo cases initially kept full preparation. The
+[native sudo fixture decision](2026-11-23-native-sudo-worktree-setup.md) extends the
+registered-checkout fixture to the existing-state permission and pointer cases.
 
 ## Consequences
 

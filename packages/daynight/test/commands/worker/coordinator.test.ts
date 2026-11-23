@@ -149,7 +149,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
   const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
   const retiredNativeCleanup = createRetiredClaimNativeCleanup({ homeDirectory: root, identity: { serverOrigin: origin, workerId, userId: uuid(2) }, jobLeases: createControllerJobLeases() });
-  const options = { store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const options = { store, webStore, webBackend, retiredNativeCleanup, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, platformTaskMode: "all" as const, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   return { root, store, project, candidates, grants, grant, worktrees, manifests, git, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind };
 };
 
@@ -1180,7 +1180,7 @@ describe("cloud project removal", () => {
       verifyWebServer, verifyWebUnregistered, webBackend: { observeExecutionStop: unknownStop, advance, cleanup } });
     try {
       await runner.tick(); await barrierEntered;
-      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false });
+      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" as const });
       const stopping = runner.stopProject(f.project.projectId);
       void stopping.catch(() => {});
       expect(currentSignal?.aborted).toBe(true);
@@ -1250,7 +1250,7 @@ describe("cloud project removal", () => {
     const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
     const runner = createWorkerCoordinator({ ...f.options, webStore, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), cleanup } });
     try {
-      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false });
+      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, platformTaskMode: "all" as const });
       await expect(runner.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
       expect(cleanup).not.toHaveBeenCalled();
       expect(f.store.getTask(row)).toEqual(expectedLocal);
@@ -1295,7 +1295,7 @@ describe("Web acquisition configuration changes", () => {
     const f = await fixture(); f.candidates.splice(1);
     const webStore = openWebExecutionStore(createMemoryDatabase());
     const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: "claim-model", args: ["--effort", "low"], recoveryLimit: 2 };
-    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, platformTaskMode: "all" as const };
     let release!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });
     vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await waiting; return f.grant(candidate, descriptor); });
@@ -1333,7 +1333,7 @@ describe("Web acquisition configuration changes", () => {
     const f = await fixture(); f.candidates.splice(1);
     const webStore = openWebExecutionStore(createMemoryDatabase());
     const native: ExecutionConfiguration = { ...configuration, agentControlMode: "web", args: [] };
-    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, platformTaskMode: "all" as const };
     let release!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });
     const verify = vi.fn(async () => { if (verify.mock.calls.length === 1) await waiting; });
@@ -1923,6 +1923,96 @@ it("does not create a Web execution from an active index when Git inventory is i
     expect(advance).not.toHaveBeenCalled();
     expect(f.remote.claim).not.toHaveBeenCalled();
   } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+describe("worker platform task mode", () => {
+  it.each([
+    { mode: "all" as const, expected: 100, tiers: [undefined] },
+    { mode: "prefer" as const, expected: 102, tiers: [true] },
+    { mode: "only" as const, expected: 102, tiers: [true] },
+  ])("selects $mode across projects while excluding another platform", async ({ mode, expected, tiers }) => {
+    const f = await fixture();
+    const second = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "second") };
+    f.store.registerProject(second);
+    f.candidates.splice(0, f.candidates.length,
+      task(f.project.projectId, uuid(100)),
+      { ...task(f.project.projectId, uuid(101)), requiredPlatform: "windows" },
+      { ...task(second.projectId, uuid(102)), requiredPlatform: "linux" });
+    const runner = createWorkerCoordinator({ ...f.options, maxConcurrent: 3, platformTaskMode: mode,
+      repositories: [{ project: f.project, configuration }, { project: second, configuration }] });
+    await runner.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(expected)]);
+    expect([...new Set(vi.mocked(f.remote.candidates).mock.calls.map(call => call[3]))]).toEqual(tiers);
+  });
+
+  it("falls back only after searching both projects and keeps independent rotation for the two tiers", async () => {
+    const f = await fixture();
+    const second = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "second") };
+    f.store.registerProject(second);
+    f.candidates.splice(0, f.candidates.length,
+      task(f.project.projectId, uuid(100)), task(second.projectId, uuid(101)),
+      { ...task(second.projectId, uuid(102)), requiredPlatform: "linux" });
+    const runner = createWorkerCoordinator({ ...f.options, maxConcurrent: 5, platformTaskMode: "prefer",
+      repositories: [{ project: f.project, configuration }, { project: second, configuration }] });
+    await runner.tick(); await runner.tick(); await runner.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(102), uuid(100), uuid(101)]);
+  });
+
+  it("waits when strict candidates are exhausted and resumes when a matching task arrives", async () => {
+    const f = await fixture();
+    f.candidates.splice(0, f.candidates.length, task(f.project.projectId, uuid(100)),
+      { ...task(f.project.projectId, uuid(101)), requiredPlatform: "windows" });
+    const runner = createWorkerCoordinator({ ...f.options, platformTaskMode: "only" });
+    await runner.tick(); await runner.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(vi.mocked(f.remote.candidates).mock.calls.every(call => call[3] === true)).toBe(true);
+    f.candidates.push({ ...task(f.project.projectId, uuid(102)), requiredPlatform: "linux" });
+    await runner.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(102)]);
+  });
+
+  it("does not report an exhausted strict search after a query fails", async () => {
+    const f = await fixture();
+    const monitor = createMonitoringObserver();
+    const failure = new Error("Candidate page unavailable.");
+    vi.mocked(f.remote.candidates).mockImplementationOnce(async function* () { throw failure; });
+    const runner = createWorkerCoordinator({ ...f.options, platformTaskMode: "only", monitoring: monitor });
+    await expect(runner.tick()).rejects.toBe(failure);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(monitor.capture().admission.reasons.some(reason => reason.code === "no-ready-tasks")).toBe(false);
+  });
+
+  it("discards an old candidate when the mode changes before claim dispatch", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const wait = Promise.withResolvers<void>();
+    const verify = vi.fn(async () => { if (verify.mock.calls.length === 1) await wait.promise; });
+    const runner = createWorkerCoordinator({ ...f.options, verifyWebServer: verify });
+    const ticking = runner.tick();
+    try {
+      await eventually(() => expect(verify).toHaveBeenCalledOnce());
+      runner.updateConfiguration({ ...f.options, platformTaskMode: "only" });
+      wait.resolve(); await ticking;
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      await runner.tick();
+      expect(f.remote.claim).not.toHaveBeenCalled();
+    } finally { wait.resolve(); await ticking; }
+  });
+
+  it("preserves a dispatched claim after switching to strict mode", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const wait = Promise.withResolvers<void>();
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await wait.promise; return f.grant(candidate, descriptor); });
+    const runner = createWorkerCoordinator(f.options);
+    const ticking = runner.tick();
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      runner.updateConfiguration({ ...f.options, platformTaskMode: "only" });
+      wait.resolve(); await ticking;
+      expect(f.store.listTasks()).toEqual([expect.objectContaining({ taskId: f.candidates[0]!.id })]);
+      await runner.tick();
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+    } finally { wait.resolve(); await ticking; }
+  });
 });
 
 describe("worker task tag filter admission", () => {

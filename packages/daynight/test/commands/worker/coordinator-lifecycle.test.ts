@@ -22,7 +22,7 @@ const fixture = () => {
   const options: WorkerCoordinatorOptions = {
     store, webStore, signal: root.signal, serverOrigin: "https://daynight.example", workerId: id(1), userId: id(2),
     platform: "windows", machine: { id: id(3), name: "fixture" }, repositories: [], globalConfiguration: null,
-    maxConcurrent: 1, preferPlatformSpecificTasks: false,
+    maxConcurrent: 1, platformTaskMode: "all" as const,
     git: new Proxy({}, { get: () => unexpected }) as WorkerCoordinatorOptions["git"],
     remote: remote as unknown as WorkerCoordinatorOptions["remote"],
     webBackend: { advance: unexpected, cleanup: unexpected, observeExecutionStop: unexpected }, emit: vi.fn(),
@@ -114,7 +114,7 @@ test("shutdown requests the original native stop while a cancelled Task writer r
     phase: "executing", herdr: null, nativeSessionId: null, claimedAt: new Date().toISOString(),
   } } } as unknown as Task;
   Object.assign(f.options.remote, { readTask: vi.fn(async () => task) });
-  f.coordinator.updateConfiguration({ repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
+  f.coordinator.updateConfiguration({ repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, platformTaskMode: "all" as const });
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { entered = resolve; });

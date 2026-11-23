@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -41,10 +42,29 @@ func (s relationSnapshot) GoalRelationDAO() store.GoalRelationReader { return s.
 
 type relationWriteScope struct {
 	store.ProjectWriteScope
-	dao store.GoalRelationEditor
+	dao    store.GoalRelationEditor
+	writer store.TaskWriteDAO
 }
 
 func (s relationWriteScope) GoalRelationDAO() store.GoalRelationEditor { return s.dao }
+func (s relationWriteScope) TaskDAO() store.TaskWriteDAO               { return s.writer }
+
+type relationTaskWriter struct {
+	store.TaskWriteDAO
+	TaskHeaderFn func(context.Context, string) (model.TaskHeader, error)
+	ObservedAtFn func(context.Context) (time.Time, error)
+	TouchTaskFn  func(context.Context, string, time.Time) error
+}
+
+func (d relationTaskWriter) TaskHeader(c context.Context, id string) (model.TaskHeader, error) {
+	return d.TaskHeaderFn(c, id)
+}
+func (d relationTaskWriter) ObservedAt(c context.Context) (time.Time, error) {
+	return d.ObservedAtFn(c)
+}
+func (d relationTaskWriter) TouchTask(c context.Context, id string, at time.Time) error {
+	return d.TouchTaskFn(c, id, at)
+}
 
 type relationReader struct {
 	store.GoalRelationReader
@@ -195,7 +215,7 @@ func (d relationEditor) Save(c context.Context, g string, r int64, e []store.Goa
 }
 
 func TestGoalRelationsEditTransactionAndFailures(t *testing.T) {
-	for _, stage := range []string{"success", "noop", "lock", "admission", "edges", "save", "unknown", "completion"} {
+	for _, stage := range []string{"success", "noop", "lock", "admission", "edges", "header", "exhausted", "clock", "save", "touch", "unknown", "completion"} {
 		t.Run(stage, func(t *testing.T) {
 			sentinel := errors.New("transaction failed")
 			calls := []string{}
@@ -240,13 +260,50 @@ func TestGoalRelationsEditTransactionAndFailures(t *testing.T) {
 				}
 				return nil
 			}}
+			observed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			writer := &relationTaskWriter{
+				TaskHeaderFn: func(ctx context.Context, id string) (model.TaskHeader, error) {
+					calls = append(calls, "header")
+					if ctx != bounded || id != relationTestGoal {
+						t.Fatal("wrong header arguments")
+					}
+					if stage == "header" {
+						return model.TaskHeader{}, sentinel
+					}
+					version := int64(4)
+					if stage == "exhausted" {
+						version = math.MaxInt64
+					}
+					return model.TaskHeader{Version: version}, nil
+				},
+				ObservedAtFn: func(ctx context.Context) (time.Time, error) {
+					calls = append(calls, "clock")
+					if ctx != bounded {
+						t.Fatal("wrong clock context")
+					}
+					if stage == "clock" {
+						return time.Time{}, sentinel
+					}
+					return observed, nil
+				},
+				TouchTaskFn: func(ctx context.Context, id string, at time.Time) error {
+					calls = append(calls, "touch")
+					if ctx != bounded || id != relationTestGoal || !at.Equal(observed) {
+						t.Fatal("wrong touch arguments")
+					}
+					if stage == "touch" {
+						return sentinel
+					}
+					return nil
+				},
+			}
 			svc := NewTasks(relationServiceStore{write: func(ctx context.Context, p string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 				bounded = ctx
 				deadline, ok := ctx.Deadline()
 				if !ok || time.Until(deadline) > goalLifecycleTimeout || p != relationTestProject {
 					t.Fatal("write identity/budget missing")
 				}
-				err := run(relationWriteScope{dao: dao})
+				err := run(relationWriteScope{dao: dao, writer: writer})
 				if err != nil {
 					return store.Completion{Outcome: store.TransactionNotCommitted}, err
 				}
@@ -275,7 +332,7 @@ func TestGoalRelationsEditTransactionAndFailures(t *testing.T) {
 			if err == nil || result != (taskcore.GoalDependencyReceipt{}) {
 				t.Fatalf("unconfirmed receipt %+v %v", result, err)
 			}
-			if stage != "completion" && !errors.Is(err, sentinel) {
+			if stage != "completion" && stage != "exhausted" && !errors.Is(err, sentinel) {
 				t.Fatalf("lost cause %v", err)
 			}
 			if stage == "unknown" {
@@ -284,7 +341,7 @@ func TestGoalRelationsEditTransactionAndFailures(t *testing.T) {
 					t.Fatalf("unknown not identified: %v", err)
 				}
 			}
-			wantCalls := map[string]int{"lock": 1, "admission": 2, "edges": 3, "save": 4, "unknown": 4, "completion": 4}[stage]
+			wantCalls := map[string]int{"lock": 1, "admission": 2, "edges": 3, "header": 4, "exhausted": 4, "clock": 5, "save": 6, "touch": 7, "unknown": 7, "completion": 7}[stage]
 			if len(calls) != wantCalls {
 				t.Fatalf("unexpected calls %v", calls)
 			}

@@ -45,7 +45,7 @@ import type { ProjectRepositoryPreview, ProjectRepositoryReceipt } from "./types
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly workerPlatformTaskMode?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
 export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
@@ -282,6 +282,7 @@ export const createApiClient = (options: {
   readonly workerControlMode?: { supported: boolean };
   readonly workerToolPaths?: WorkerToolPathsCapability;
   readonly workerArchiveSessions?: WorkerToolPathsCapability;
+  readonly workerPlatformTaskMode?: WorkerToolPathsCapability;
   readonly onToolPathsBudget?: (result: NonNullable<ToolPathsReportBudget>) => void | Promise<void>;
   readonly botId?: string;
 }): ApiClient => {
@@ -295,6 +296,16 @@ export const createApiClient = (options: {
   const workerControlMode = options.workerControlMode ?? { supported: false };
   const workerToolPaths = options.workerToolPaths ?? { supported: false };
   const workerArchiveSessions = options.workerArchiveSessions ?? { supported: false };
+  const workerPlatformTaskMode = options.workerPlatformTaskMode ?? { supported: false };
+  if (workerPlatformTaskMode.serverOrigin !== origin.origin || expectedUserId !== undefined && workerPlatformTaskMode.userId !== expectedUserId) workerPlatformTaskMode.supported = false;
+  let platformModePrincipal = expectedUserId;
+  const platformModeSupported = () => workerPlatformTaskMode.supported && workerPlatformTaskMode.serverOrigin === origin.origin && platformModePrincipal !== undefined && workerPlatformTaskMode.userId === platformModePrincipal;
+  const confirmPlatformMode = (header: string | null, principal: string | undefined) => {
+    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker platform task mode capability.");
+    if (principal === undefined) { workerPlatformTaskMode.supported = false; return; }
+    platformModePrincipal = principal;
+    Object.assign(workerPlatformTaskMode, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
+  };
   if (workerArchiveSessions.serverOrigin !== origin.origin || expectedUserId !== undefined && workerArchiveSessions.userId !== expectedUserId) workerArchiveSessions.supported = false;
   let archivePrincipal = expectedUserId;
   const archiveSupported = () => workerArchiveSessions.supported && workerArchiveSessions.serverOrigin === origin.origin && archivePrincipal !== undefined && workerArchiveSessions.userId === archivePrincipal;
@@ -339,7 +350,7 @@ export const createApiClient = (options: {
   const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
 
-  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly historyDirectoryHeader: string | null; readonly taskReturnHeader: string | null; readonly taskProjectionHeader: string | null };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly platformTaskModeHeader: string | null; readonly historyDirectoryHeader: string | null; readonly taskReturnHeader: string | null; readonly taskProjectionHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
     | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
@@ -441,7 +452,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), ...(context.workerPlatformTaskMode === true ? { "Daynight-Worker-Platform-Task-Mode": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -520,7 +531,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), taskReturnHeader: response.headers.get("Daynight-Return"), taskProjectionHeader: response.headers.get("Daynight-Projection"), ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), platformTaskModeHeader: response.headers.get("Daynight-Worker-Platform-Task-Mode"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), taskReturnHeader: response.headers.get("Daynight-Return"), taskProjectionHeader: response.headers.get("Daynight-Projection"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       if (invitationIdentityMismatch) jsonObjectSources(source);
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
@@ -536,6 +547,7 @@ export const createApiClient = (options: {
         }
         if (context.operation === "worker.configuration" && status === 404 && principalId !== undefined) confirmToolPaths(responseContext.toolPathsHeader, principalId);
         if (context.workerArchiveSessions === true && status === 404 && principalId !== undefined) confirmArchive(responseContext.archiveSessionsHeader, principalId);
+        if (context.workerPlatformTaskMode === true && status === 404 && principalId !== undefined) confirmPlatformMode(responseContext.platformTaskModeHeader, principalId);
         if (context.workerControlMode === true && status === 404 && principalId !== undefined) workerControlMode.supported = responseContext.controlModeHeader === "1";
         const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(status === 403 && serverError.code === "forbidden" && response.headers.get("Daynight-Scope-Status") === "insufficient_scope" ? { scopeStatus: "insufficient_scope" as const } : {}), ...(responseRequestId === undefined ? {} : { responseRequestId }) });
@@ -1189,14 +1201,16 @@ export const createApiClient = (options: {
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerToolPaths: true, workerArchiveSessions: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
+      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerToolPaths: true, workerArchiveSessions: true, workerPlatformTaskMode: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
         parse: (value, response) => {
           if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
           if (response.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server.");
           if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1") throw new ProtocolError("Invalid Worker archive sessions capability.");
-          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: false, toolPaths: true, archiveSessions: response.archiveSessionsHeader === "1" });
+          if (response.platformTaskModeHeader !== null && response.platformTaskModeHeader !== "1") throw new ProtocolError("Invalid Worker platform task mode capability.");
+          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: false, toolPaths: true, archiveSessions: response.archiveSessionsHeader === "1", platformTaskMode: response.platformTaskModeHeader === "1" });
+          confirmPlatformMode(response.platformTaskModeHeader, response.principalId);
           confirmArchive(response.archiveSessionsHeader, response.principalId);
           confirmToolPaths(response.toolPathsHeader, response.principalId);
           return resource;
@@ -1205,12 +1219,15 @@ export const createApiClient = (options: {
     },
     reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
       const worker = resourceId(workerId), supported = false, toolsSupported = true;
-      const archive = archiveSupported();
+      const archive = archiveSupported(), platformTaskMode = platformModeSupported();
       if (!archive && configuration.bootstrap?.archiveSessions === false) throw new ProtocolError("The server does not support disabling Worker session archives.");
-      const capabilities = { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archive };
+      // Do not acknowledge ledger records that would be omitted from this wire projection.
+      // A fresh authority read resolves a changed or unconfirmed service capability.
+      if (configuration.observation?.items.some(item => item.key.kind === (platformTaskMode ? "preferPlatformSpecificTasks" : "platformTaskMode"))) throw new ProtocolError("Worker platform task mode capability changed; refresh configuration before reporting.");
+      const capabilities = { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archive, platformTaskMode };
       const parsed = parseWorkerCloudReport(projectWorkerCloudReport(configuration, capabilities), capabilities);
       const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, workerToolPaths: true, ...(archive ? { workerArchiveSessions: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, workerToolPaths: true, ...(archive ? { workerArchiveSessions: true as const } : {}), ...(platformTaskMode ? { workerPlatformTaskMode: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
         decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
@@ -1219,7 +1236,8 @@ export const createApiClient = (options: {
           const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
           if (response.toolPathsHeader !== "2") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
           if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1" || archive && response.archiveSessionsHeader !== "1") { workerArchiveSessions.supported = false; throw new ProtocolError("The server did not confirm the requested Worker archive sessions capability."); }
-          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: false, toolPaths: true, archiveSessions: archive && response.archiveSessionsHeader === "1" });
+          if (response.platformTaskModeHeader !== null && response.platformTaskModeHeader !== "1" || platformTaskMode && response.platformTaskModeHeader !== "1") { workerPlatformTaskMode.supported = false; throw new ProtocolError("The server did not confirm the requested Worker platform task mode capability."); }
+          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: false, toolPaths: true, archiveSessions: archive && response.archiveSessionsHeader === "1", platformTaskMode });
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;
