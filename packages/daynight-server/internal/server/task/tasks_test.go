@@ -344,6 +344,9 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			want["reachable:"+id] = 1
 		}
 	}
+	if current != nil && result != nil && current.Status != result.Status && result.Status.IsTerminal() {
+		want["children"] = 1
+	}
 	if result != nil {
 		want["mutation"] = 1
 		if current != nil {
@@ -373,6 +376,14 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, id, current.ID)
 			return copyTaskHTTPTask(*current), nil
+		}
+	}
+	if want["children"] != 0 {
+		writer.UnfinishedChildIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			plan.Called("children")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, id, current.ID)
+			return []string{}, nil
 		}
 	}
 	if validateDependencies {
