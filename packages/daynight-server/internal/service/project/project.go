@@ -224,7 +224,7 @@ func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, i
 			return err
 		}
 		if result.Changed {
-			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, false); err != nil {
 				return err
 			}
 		}

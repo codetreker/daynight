@@ -27,6 +27,7 @@ type appLifecycleTest struct {
 	goalFound                   bool
 	goalProbeErr, goalRemoveErr error
 	goalCalls                   []string
+	goalDeleting                []bool
 	sameTeam                    bool
 }
 
@@ -276,7 +277,8 @@ func (d appLifecycleGoalDependencies) HasProjectEdges(context.Context) (bool, er
 	d.f.goalCalls = append(d.f.goalCalls, "probe")
 	return d.f.goalFound, d.f.goalProbeErr
 }
-func (d appLifecycleGoalDependencies) RemoveProjectEdges(context.Context) error {
+func (d appLifecycleGoalDependencies) RemoveProjectEdges(_ context.Context, deletingProject bool) error {
+	d.f.goalDeleting = append(d.f.goalDeleting, deletingProject)
 	d.f.goalCalls = append(d.f.goalCalls, "remove")
 	return d.f.goalRemoveErr
 }

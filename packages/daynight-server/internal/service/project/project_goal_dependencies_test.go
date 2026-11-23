@@ -138,6 +138,11 @@ func TestProjectLifecycleCoordinatesGoalRemoval(t *testing.T) {
 					if !reflect.DeepEqual(append([]string{}, f.goalCalls...), wantCalls) {
 						t.Fatalf("goal calls %v want %v", f.goalCalls, wantCalls)
 					}
+					for _, deleting := range f.goalDeleting {
+						if deleting != (operation == "delete") {
+							t.Fatalf("wrong deletion intent %v for %s", deleting, operation)
+						}
+					}
 					if (scenario == "unconfirmed" || scenario == "failure" || scenario == "active claim") && len(f.retirementCalls) != 0 {
 						t.Fatalf("refusal caused App effects %v", f.retirementCalls)
 					}

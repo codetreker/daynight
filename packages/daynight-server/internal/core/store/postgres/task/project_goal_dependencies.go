@@ -36,7 +36,7 @@ func (d *goalDependencyWriter) HasProjectEdges(ctx context.Context) (bool, error
 	return found, nil
 }
 
-func (d *goalDependencyWriter) RemoveProjectEdges(ctx context.Context) error {
+func (d *goalDependencyWriter) RemoveProjectEdges(ctx context.Context, deletingProject bool) error {
 	rows, err := d.tx.Query(ctx, projectGoalEdgeCandidates+`, removed AS (
  DELETE FROM task_dependencies d USING edges e
  WHERE d.project_id=e.project_id AND d.task_id=e.task_id AND d.depends_on_task_id=e.depends_on_task_id AND d.dependency_type='goal'
@@ -71,6 +71,53 @@ func (d *goalDependencyWriter) RemoveProjectEdges(ctx context.Context) error {
  ON CONFLICT(goal_id) DO UPDATE SET revision=goal_dependency_revisions.revision+1`, goals)
 	if err != nil {
 		return pg.QueryError("advance project goal dependency revisions", err)
+	}
+	return d.touchLiveDownstreams(ctx, goals, deletingProject)
+}
+
+// Project locks are held before the Team graph lock and remain held here. A
+// deleted source Project's Goals will not be visible when this transaction
+// commits, while a transferred source Project remains visible.
+func (d *goalDependencyWriter) touchLiveDownstreams(ctx context.Context, goals []string, deletingProject bool) error {
+	rows, err := d.tx.Query(ctx, `SELECT t.id::text, t.version FROM tasks t JOIN projects p ON p.id=t.project_id
+ WHERE t.id=ANY($1::uuid[]) AND t.type='goal' AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+ AND (NOT $2::boolean OR t.project_id<>$3::uuid) ORDER BY t.id`, goals, deletingProject, d.projectID)
+	if err != nil {
+		return pg.QueryError("read live downstream Goals", err)
+	}
+	var live []string
+	for rows.Next() {
+		var id string
+		var version int64
+		if err = rows.Scan(&id, &version); err != nil {
+			break
+		}
+		if version == math.MaxInt64 {
+			rows.Close()
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+		}
+		live = append(live, id)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		return pg.QueryError("read live downstream Goals", err)
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	observed, err := NewWriter(d.tx, d.projectID).ObservedAt(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := d.tx.Exec(ctx, `UPDATE tasks SET version=version+1,updated_at=$2 WHERE id=ANY($1::uuid[])`, live, observed)
+	if err != nil {
+		return pg.QueryError("touch downstream Goals", err)
+	}
+	if result.RowsAffected() != int64(len(live)) {
+		return pg.QueryError("touch downstream Goals", model.ErrNotFound)
 	}
 	return nil
 }

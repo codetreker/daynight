@@ -255,7 +255,7 @@ func (d transferConfirmationDependencies) HasProjectEdges(context.Context) (bool
 	d.inspect()
 	return d.hasEdges, nil
 }
-func (d transferConfirmationDependencies) RemoveProjectEdges(context.Context) error {
+func (d transferConfirmationDependencies) RemoveProjectEdges(context.Context, bool) error {
 	d.remove()
 	return nil
 }

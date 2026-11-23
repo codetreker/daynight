@@ -53,7 +53,7 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 			return err
 		}
 		if result.Changed {
-			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval, false); err != nil {
 				return err
 			}
 			dao := scope.GitHubDAO()
