@@ -33,7 +33,10 @@ observation promises are not permanent resource facts. The
 [retired Web claim decision](../bug-fix/2026-11-23-worker-retired-web-cleanup.md)
 selects terminal resource removal only after current ownership confirms the
 original claim has ended; still-owned or unknown execution retains its stopping
-and preservation rules.
+and preservation rules. The repository owner waits for the shared Task stop
+before closing the Git manager. An unconfirmed Task stop retains the manager
+for its original terminal writer; subsequent reconciliation closes it only after
+complete Task closure.
 Management reconciliation joins command producers and their event writes before
 re-observing retained native boundaries, output writers and durable closure.
 A settled producer's historical cleanup error cannot skip this reconciliation.

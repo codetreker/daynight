@@ -38,7 +38,12 @@ have been cleared.
 
 Shutdown first cancels and joins original producers. A native stop that outlives
 the shutdown waiter retains its original owner; another waiter joins that work
-instead of issuing concurrent stopping. Current or unknown ownership retains
+instead of issuing concurrent stopping. The repository owner waits for the shared
+Task stop before disposing its Git manager, since terminal cleanup still needs
+that manager to verify and remove its original worktree. Unconfirmed Task
+closure keeps the repository owner unknown and the manager open. Later
+reconciliation joins the original stop and disposes Git only after complete Task
+closure. Current or unknown ownership retains
 preserve-site stopping. Insufficient local Web state retains the existing
 provenance failures and responsibility; current ownership alone does not prove
 that a process stopped or provide a missing native boundary.

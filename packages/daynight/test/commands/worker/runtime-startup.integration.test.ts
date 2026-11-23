@@ -1101,6 +1101,59 @@ describe("worker cloud-first startup", () => {
     } finally { cancellation.abort(); await running; }
   });
 
+  it("keeps Git open for the original terminal Task writer after a scope stop deadline", async () => {
+    const f = await fixture(true);
+    const project = f.store!.registerProject({ projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path });
+    const owner = { projectId: project.projectId, taskId: uuid(70), claimId: uuid(71) };
+    f.store!.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let gitClosed = false;
+    const resolveBinding = vi.fn(async () => {
+      if (gitClosed) throw new Error("Worker Git manager is closing.");
+      return null;
+    });
+    const dispose = vi.fn(async () => { gitClosed = true; });
+    mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose, resolveWorktreeBinding: resolveBinding, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
+    let terminalWriter: Promise<void> | undefined;
+    const terminalCleanup = vi.fn(async () => {
+      entered.resolve(); await release.promise;
+      await resolveBinding();
+      f.store!.completeTask(owner);
+    });
+    const shutdown = vi.fn(async (settings: { deadline?: number } = {}) => {
+      terminalWriter ??= terminalCleanup();
+      try { await withinExecutionDeadline(terminalWriter, settings.deadline ?? Date.now() + 20_000); return true; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Worker execution owner stop deadline elapsed; responsibility is retained.") return false;
+        throw error;
+      }
+    });
+    mocks.coordinator.mockReturnValue({ ...coordinator(async () => {}), shutdown });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const stopping = control!.stop({ deadline: Date.now() + 100 });
+      await entered.promise;
+      expect(dispose).not.toHaveBeenCalled();
+      const results = await stopping;
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "tasks", stop: "unknown" }));
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "repository", stop: "unknown" }));
+      await vi.waitFor(() => expect(shutdown.mock.settledResults).toContainEqual({ type: "fulfilled", value: false }));
+      expect(dispose).not.toHaveBeenCalled();
+      expect(f.store!.getTask(owner)?.status).toBe("pending");
+      const retry = control!.reconcile({ deadline: Date.now() + 3000 });
+      expect(dispose).not.toHaveBeenCalled();
+      release.resolve();
+      expect((await retry).every(result => result.stop === "confirmed")).toBe(true);
+      expect(terminalCleanup).toHaveBeenCalledOnce();
+      expect(resolveBinding).toHaveBeenCalledOnce();
+      expect(f.store!.getTask(owner)?.status).toBe("done");
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(control!.snapshot().stopped).toBe(true);
+    } finally { release.resolve(); cancellation.abort(); await running; }
+  });
+
   it("retains the management lock and blocks rebuilding until a timed-out reviewer joins", async () => {
     const f = await fixture();
     const held = Promise.withResolvers<void>(), aborted = Promise.withResolvers<void>();

@@ -2961,7 +2961,10 @@ or stopping, without making independent Tasks await that request. Matching
 Controller lifecycle checks follow the Task stop attempt and retain unresolved
 Task records. A
 timed-out native stop keeps its original owner rather than dispatching another
-stop. Unfinished responsibility and its original deadline survive for the next
+stop. The repository owner waits for that shared Task stop before closing its
+Git manager. Unconfirmed Task stopping retains the manager for the original
+terminal writer; later reconciliation closes it only after complete Task closure.
+Unfinished responsibility and its original deadline survive for the next
 reconciliation. External temporary resources may remain after direct interruption.
 Historical Herdr claims and resources remain the user’s responsibility and are
 not recovered, stopped or cleaned by the coordinator.

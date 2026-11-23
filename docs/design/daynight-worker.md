@@ -38,11 +38,11 @@ flowchart TB
 | bot | Bot runtime、assistant 四循环、application 及未结束的 withClaim 回调、能力采集与 Controller；未提交启动前的探测和 aliases 清理仍有责任，全部 writer/jobs 和清理 join 后才关闭私有存储及锁 |
 | assistant | Reviewer 宿主及其 Git、GitHub 和 Copilot 执行；宿主与原生库存都闭合后才能重建 |
 | probe | native selection、工具选择及 materializer；保留失败清理责任并核对原边界 |
-| repository | Git 准备、扫描、worktree 操作和短命命令的实际进程及输出流；取消后 join 原操作 |
+| repository | Git 准备、扫描、worktree 操作和短命命令的实际进程及输出流；取消后 join 原操作，Task 停止未确认时保留 Git manager，确认后才关闭 |
 | controller | 原 Controller/provider 边界及 Job lease；Task 停证、配置 writer 和归档 writer 未闭合时不释放 lease 或关闭 Web 库 |
 | archive | 授权维护和已有归档责任；join 最终写入后保留上传失败，不把历史上传错误当成活动 writer |
 
-作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
+作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。repository owner 先等待同一个 Task 停止结果，再 join 报告并关闭 Git manager；Task 有界停止未确认时 repository 同样保持 unknown，原终态 writer 仍可核对和删除自己的 Git 资源。后续 reconcile 继续等待原停止，只有确认 Task 完整闭合后才关闭 Git manager。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
 
 工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。
 

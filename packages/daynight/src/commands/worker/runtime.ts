@@ -908,7 +908,13 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     stop: stopReviewer });
   registerOwner({ resourceId: "probes", ownerKind: "probe",
     stop: stopProbes });
-  registerOwner({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
+  registerOwner({ resourceId: "repository", ownerKind: "repository", stop: async ({ deadline }) => {
+    // A Task stop deadline only bounds observation. Its original terminal writer
+    // can still remove a worktree, so unconfirmed closure must retain Git too.
+    await stopTasks(deadline);
+    await drainReport();
+    await stopRepository();
+  } });
   registerOwner({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
     // The journal joins each admitted command and its original writes. Broader
     // producer lifetimes retain their own owners and cannot block this recovery.
