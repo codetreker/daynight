@@ -362,11 +362,12 @@ jobs:
         env:
           DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight_store_root?sslmode=disable
         run: bash scripts/check.sh --coverage
-      - name: Validate Azure ordinary object storage
+      - name: Validate Azure storage and startup
         env:
           DAYNIGHT_TEST_AZURITE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/daynight;'
         run: |
-          go test -count=1 -timeout=5m -run '^TestAzurite$' ./internal/core/filestorage/azure
+          go test -count=1 -timeout=5m -run '^TestAzurite(ArchiveStaging)?$' ./internal/core/filestorage/azure
+          GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
           go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
       - name: Upload Go coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}

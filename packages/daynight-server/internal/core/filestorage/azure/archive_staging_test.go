@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/appendblob"
@@ -224,16 +225,50 @@ func TestAzuriteArchiveStaging(t *testing.T) {
 }
 
 type archiveHTTP struct {
-	mu        sync.Mutex
-	data      []byte
-	exists    bool
-	failLease bool
+	mu             sync.Mutex
+	data           []byte
+	exists         bool
+	failLease      bool
+	headType       string
+	noETag         bool
+	getETag        string
+	headStatus     int
+	getStatus      int
+	appendStatus   int
+	appendOffset   string
+	conflictAppend bool
+	deleteStatus   int
+	releaseStatus  int
+	renewStatus    int
+	renewEvents    chan struct{}
+	appendCalls    int
+	deleteLease    string
+	lastMatch      string
+}
+
+func (a *archiveHTTP) change(f func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f()
 }
 
 func (a *archiveHTTP) serve(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if r.URL.Query().Get("comp") == "lease" {
+		if r.Header.Get("x-ms-lease-action") == "renew" {
+			if a.renewEvents != nil {
+				a.renewEvents <- struct{}{}
+			}
+			if a.renewStatus != 0 {
+				w.WriteHeader(a.renewStatus)
+				return
+			}
+		}
+		if r.Header.Get("x-ms-lease-action") == "release" && a.releaseStatus != 0 {
+			w.WriteHeader(a.releaseStatus)
+			return
+		}
 		if a.failLease {
 			w.Header().Set("x-ms-error-code", "LeaseAlreadyPresent")
 			w.WriteHeader(409)
@@ -253,14 +288,31 @@ func (a *archiveHTTP) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("comp") == "appendblock" {
+		a.appendCalls++
+		if a.conflictAppend {
+			a.data = append(a.data, []byte("abc")...)
+			w.Header().Set("x-ms-error-code", "AppendPositionConditionNotMet")
+			w.WriteHeader(412)
+			return
+		}
 		if r.Header.Get("x-ms-blob-condition-appendpos") != strconv.Itoa(len(a.data)) {
 			w.Header().Set("x-ms-error-code", "AppendPositionConditionNotMet")
 			w.WriteHeader(412)
 			return
 		}
-		w.Header().Set("x-ms-blob-append-offset", strconv.Itoa(len(a.data)))
+		offset := strconv.Itoa(len(a.data))
+		if a.appendOffset != "" {
+			offset = a.appendOffset
+		}
+		if offset != "omit" {
+			w.Header().Set("x-ms-blob-append-offset", offset)
+		}
 		b, _ := io.ReadAll(r.Body)
 		a.data = append(a.data, b...)
+		if a.appendStatus != 0 {
+			w.WriteHeader(a.appendStatus)
+			return
+		}
 		w.WriteHeader(201)
 		return
 	}
@@ -280,19 +332,45 @@ func (a *archiveHTTP) serve(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.WriteHeader(201)
 	case "HEAD", "GET":
+		if r.Method == "HEAD" && a.headStatus != 0 {
+			w.WriteHeader(a.headStatus)
+			return
+		}
+		if r.Method == "GET" && a.getStatus != 0 {
+			w.WriteHeader(a.getStatus)
+			return
+		}
 		if !a.exists {
 			w.Header().Set("x-ms-error-code", "BlobNotFound")
 			w.WriteHeader(404)
 			return
 		}
-		w.Header().Set("ETag", `"1"`)
-		w.Header().Set("x-ms-blob-type", "AppendBlob")
+		etag := `"1"`
+		if r.Method == "GET" && a.getETag != "" {
+			etag = a.getETag
+		}
+		if !a.noETag {
+			w.Header().Set("ETag", etag)
+		}
+		blobType := "AppendBlob"
+		if a.headType != "" {
+			blobType = a.headType
+		}
+		w.Header().Set("x-ms-blob-type", blobType)
+		if r.Method == "GET" {
+			a.lastMatch = r.Header.Get("If-Match")
+		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(a.data)))
 		w.WriteHeader(200)
 		if r.Method == "GET" {
 			w.Write(a.data)
 		}
 	case "DELETE":
+		a.deleteLease = r.Header.Get("x-ms-lease-id")
+		if a.deleteStatus != 0 {
+			w.WriteHeader(a.deleteStatus)
+			return
+		}
 		a.exists = false
 		w.WriteHeader(202)
 	default:
@@ -384,11 +462,11 @@ func TestArchiveControlledHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.failLease = true
+	a.change(func() { a.failLease = true })
 	if _, err = h.Observe(ctx, objID, 3); !errors.Is(err, filestorage.ErrGateBusy) {
 		t.Fatalf("lease conflict: %v", err)
 	}
-	a.failLease = false
+	a.change(func() { a.failLease = false })
 	if _, err = h.Observe(ctx, objID, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -400,5 +478,275 @@ func TestArchiveControlledHTTP(t *testing.T) {
 	}
 	if err = h.Close(); !errors.Is(err, filestorage.ErrGateLost) {
 		t.Fatalf("lost lease close: %v", err)
+	}
+}
+
+func archiveControl(t *testing.T, a *archiveHTTP) (*Storage, *archiveStaging, sessionarchive.Namespace) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(a.serve))
+	t.Cleanup(server.Close)
+	c, err := container.NewClientWithNoCredential(server.URL+"/container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := local.NewStandaloneGates(uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(c, g, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := sessionarchive.NewNamespace(sessionarchive.Projects, owner, task)
+	h, err := s.AcquireArchiveStaging(t.Context(), n, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := h.Close(); err != nil && !errors.Is(err, filestorage.ErrGateLost) {
+			t.Error(err)
+		}
+	})
+	return s, h.(*archiveStaging), n
+}
+
+func TestArchiveMissingAndCleanup(t *testing.T) {
+	a := &archiveHTTP{}
+	s, h, n := archiveControl(t, a)
+	ctx := t.Context()
+	if s.ArchiveStagingChunkSize() != 1024*1024 {
+		t.Fatal("Azure chunk policy")
+	}
+	if _, err := h.Observe(ctx, objID, 3); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("missing observation: %v", err)
+	}
+	if err := h.AdoptEmpty(ctx, objID); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("missing adoption: %v", err)
+	}
+	if _, err := h.Open(ctx, objID, 3); !errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("missing open: %v", err)
+	}
+	if err := h.Delete(ctx, objID); err != nil {
+		t.Fatalf("idempotent missing delete: %v", err)
+	}
+	if _, err := s.OpenArchiveStaging(ctx, n, "bad"); !errors.Is(err, filestorage.ErrInvalidAddress) {
+		t.Fatalf("reader identity: %v", err)
+	}
+	if _, err := s.OpenArchiveStaging(ctx, n, objID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup missing: %v", err)
+	}
+	if err := h.Create(ctx, objID); err != nil {
+		t.Fatal(err)
+	}
+	a.change(func() { a.deleteStatus = 403 })
+	if err := h.Delete(ctx, objID); err == nil {
+		t.Fatal("failed delete accepted")
+	}
+	var deleteLease string
+	a.change(func() { deleteLease = a.deleteLease })
+	if deleteLease == "" {
+		t.Fatal("delete omitted lease")
+	}
+	if _, err := h.Observe(ctx, objID, 3); err != nil {
+		t.Fatalf("delete failure lost object: %v", err)
+	}
+	a.change(func() { a.deleteStatus = 0 })
+	if err := h.Delete(ctx, objID); err != nil {
+		t.Fatalf("delete retry: %v", err)
+	}
+	var exists bool
+	a.change(func() { exists = a.exists })
+	if exists {
+		t.Fatal("delete did not remove object")
+	}
+	if err := s.DeleteSessionArchives(ctx, n); !errors.Is(err, filestorage.ErrGateBusy) {
+		t.Fatalf("cleanup ignored live handle: %v", err)
+	}
+	if _, err := resourceArchiveNamespace(sessionresource.Namespace{}); !errors.Is(err, filestorage.ErrInvalidAddress) {
+		t.Fatal(err)
+	}
+}
+
+func TestArchiveFailedRemoteAppend(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		configure       func(*archiveHTTP)
+		wantOffsetError bool
+	}{
+		{"conflict observed", func(a *archiveHTTP) { a.conflictAppend = true }, true},
+		{"lost result", func(a *archiveHTTP) { a.appendStatus = 500 }, false},
+		{"missing offset", func(a *archiveHTTP) { a.appendOffset = "omit" }, false},
+		{"wrong offset", func(a *archiveHTTP) { a.appendOffset = "8" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &archiveHTTP{exists: true}
+			_, h, _ := archiveControl(t, a)
+			ctx := t.Context()
+			a.change(func() { tc.configure(a) })
+			offset, err := h.Append(ctx, objID, 3, 0, []byte("abc"))
+			if err == nil || tc.wantOffsetError && !errors.Is(err, filestorage.ErrArchiveStagingOffset) {
+				t.Fatalf("append: %d %v", offset, err)
+			}
+			if tc.wantOffsetError && offset != 3 {
+				t.Fatalf("conflict offset: %d", offset)
+			}
+			var calls int
+			a.change(func() { calls = a.appendCalls })
+			if calls != 1 {
+				t.Fatalf("replayed write: %d", calls)
+			}
+			if got, e := h.Observe(ctx, objID, 3); e != nil || got != 3 {
+				t.Fatalf("observe original object: %d %v", got, e)
+			}
+		})
+	}
+}
+
+func TestArchiveViewAndPublicationFailures(t *testing.T) {
+	a := &archiveHTTP{exists: true, data: []byte("abc")}
+	_, h, n := archiveControl(t, a)
+	ctx := t.Context()
+	if _, err := h.Publish(ctx, "bad", 3, sessionarchive.Bucket, "bad"); filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("bad identity: %v", err)
+	}
+	if _, err := h.Publish(ctx, objID, 3, sessionarchive.Bucket, "bad"); filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("bad target: %v", err)
+	}
+	a.change(func() { a.headStatus = 403 })
+	if _, err := h.Observe(ctx, objID, 3); err == nil || errors.Is(err, filestorage.ErrArchiveStagingMissing) {
+		t.Fatalf("access failure: %v", err)
+	}
+	a.change(func() { a.headStatus = 0; a.noETag = true })
+	if _, err := h.Observe(ctx, objID, 3); !errors.Is(err, filestorage.ErrArchiveStagingCorrupt) {
+		t.Fatalf("missing properties: %v", err)
+	}
+	a.change(func() { a.noETag = false; a.headType = "BlockBlob" })
+	if _, err := h.Observe(ctx, objID, 3); !errors.Is(err, filestorage.ErrArchiveStagingCorrupt) {
+		t.Fatalf("wrong blob type: %v", err)
+	}
+	a.change(func() { a.headType = ""; a.getStatus = 403 })
+	if _, err := h.Open(ctx, objID, 3); err == nil {
+		t.Fatal("download failure accepted")
+	}
+	a.change(func() { a.getStatus = 0; a.getETag = `"2"` })
+	if _, err := h.Open(ctx, objID, 3); !errors.Is(err, filestorage.ErrArchiveStagingCorrupt) {
+		t.Fatalf("different view: %v", err)
+	}
+	var lastMatch string
+	a.change(func() { lastMatch = a.lastMatch })
+	if lastMatch != `"1"` {
+		t.Fatalf("missing conditional read: %q", lastMatch)
+	}
+	a.change(func() { a.getETag = "" })
+	target := n.Directory() + "/files/" + objID + "/content"
+	if _, err := h.Publish(ctx, objID, 4, sessionarchive.Bucket, target); filestorage.PublicationOutcome(err) != filestorage.NotPublished || !errors.Is(err, filestorage.ErrArchiveStagingOffset) {
+		t.Fatalf("partial publication: %v", err)
+	}
+	a.change(func() { a.data = []byte("different") })
+	if _, err := h.Open(ctx, objID, 10); !errors.Is(err, filestorage.ErrArchiveStagingCorrupt) {
+		t.Fatalf("changed frozen view: %v", err)
+	}
+}
+
+func TestArchiveExpiredLeaseStopsReader(t *testing.T) {
+	a := &archiveHTTP{exists: true, data: []byte("abc")}
+	_, h, _ := archiveControl(t, a)
+	ctx := t.Context()
+	o, err := h.Open(ctx, objID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, _ := h.name(objID)
+	l := h.leases[name]
+	l.mu.Lock()
+	l.until = time.Now().Add(-time.Second)
+	l.mu.Unlock()
+	if _, err = o.Body.Read(make([]byte, 1)); !errors.Is(err, filestorage.ErrGateLost) {
+		t.Fatalf("expired reader: %v", err)
+	}
+	if err = o.Body.Close(); !errors.Is(err, filestorage.ErrGateLost) {
+		t.Fatalf("expired close: %v", err)
+	}
+	bound, cancel := l.bind(ctx)
+	defer cancel()
+	if !errors.Is(context.Cause(bound), filestorage.ErrGateLost) {
+		t.Fatalf("expired binding: %v", context.Cause(bound))
+	}
+	if _, err = h.Publish(ctx, objID, 3, sessionarchive.Bucket, h.namespace.Directory()+"/files/"+objID+"/content"); filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("lost lease published: %v", err)
+	}
+}
+
+// Exercise the SDK lease renewal timer with independent success, refusal and
+// expired leases concurrently. The test waits for requests or cancellation,
+// not an assumed ordering between the three goroutines.
+func TestArchiveLeaseRenewal(t *testing.T) {
+	success := &archiveHTTP{exists: true, renewEvents: make(chan struct{}, 1)}
+	failure := &archiveHTTP{exists: true, renewStatus: 403, renewEvents: make(chan struct{}, 1)}
+	expired := &archiveHTTP{exists: true, renewEvents: make(chan struct{}, 1)}
+	_, good, _ := archiveControl(t, success)
+	_, bad, _ := archiveControl(t, failure)
+	_, stale, _ := archiveControl(t, expired)
+	for _, h := range []*archiveStaging{good, bad, stale} {
+		if _, err := h.Observe(t.Context(), objID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name, _ := good.name(objID)
+	goodLease, badLease, staleLease := good.leases[name], bad.leases[name], stale.leases[name]
+	goodLease.mu.Lock()
+	originalDeadline := goodLease.until
+	goodLease.mu.Unlock()
+	staleLease.mu.Lock()
+	staleLease.until = time.Now().Add(-time.Second)
+	staleLease.mu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 35*time.Second)
+	defer cancel()
+	select {
+	case <-success.renewEvents:
+	case <-ctx.Done():
+		t.Fatal("successful renewal was not requested")
+	}
+	select {
+	case <-failure.renewEvents:
+	case <-ctx.Done():
+		t.Fatal("failed renewal was not requested")
+	}
+	select {
+	case <-badLease.ctx.Done():
+		if !errors.Is(context.Cause(badLease.ctx), filestorage.ErrGateLost) {
+			t.Fatalf("renewal refusal: %v", context.Cause(badLease.ctx))
+		}
+	case <-ctx.Done():
+		t.Fatal("renewal refusal did not cancel lease")
+	}
+	select {
+	case <-staleLease.ctx.Done():
+		if !errors.Is(context.Cause(staleLease.ctx), filestorage.ErrGateLost) {
+			t.Fatalf("expiry: %v", context.Cause(staleLease.ctx))
+		}
+	case <-ctx.Done():
+		t.Fatal("expired lease was not cancelled")
+	}
+	select {
+	case <-expired.renewEvents:
+		t.Fatal("expired lease was renewed")
+	default:
+	}
+	for {
+		goodLease.mu.Lock()
+		extended := goodLease.until.After(originalDeadline)
+		goodLease.mu.Unlock()
+		if extended {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("renewal did not extend deadline")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if _, err := good.Observe(t.Context(), objID, 0); err != nil {
+		t.Fatalf("renewed lease unavailable: %v", err)
 	}
 }

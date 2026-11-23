@@ -1425,7 +1425,7 @@ The independent startup/shutdown check runs the command tests with
 with its dedicated test transport build. Production builds use the real Web
 assets described under [Build and run](#build-and-run).
 
-The Azure ordinary-object contract uses a separate Azurite instance. For local
+The Azure storage and startup contracts use a separate Azurite instance. For local
 verification, start the same pinned image as CI with an isolated account and
 data directory, then use its reported Blob port in the test connection string:
 
@@ -1437,6 +1437,8 @@ docker run --detach --name daynight-azurite-tests \
 azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
 export DAYNIGHT_TEST_AZURITE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=daynight;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:$azurite_port/daynight;"
 DAYNIGHT_TEST_AZURITE_PRESERVE=1 go test -count=1 -timeout=5m -run '^TestAzurite$' ./internal/core/filestorage/azure
+go test -count=1 -timeout=5m -run '^TestAzuriteArchiveStaging$' ./internal/core/filestorage/azure
+GOFLAGS="-overlay=$PWD/.tmp/unit-overlay.json" go test -count=1 -timeout=5m -run '^TestAzureStartupWithAzurite$' ./internal/service
 go test -count=1 -timeout=5m -run '^TestAzure' ./internal/service/mcpdownload ./internal/core/session
 docker restart daynight-azurite-tests
 azurite_port=$(docker port daynight-azurite-tests 10000 | sed 's/.*://')
@@ -1448,8 +1450,8 @@ docker rm --force --volumes daynight-azurite-tests
 The account and key above are disposable test credentials. The first test
 preserves its container for the restart check; the last test removes it. The
 business tests also require `DAYNIGHT_TEST_DATABASE_URL` set to an isolated
-PostgreSQL database. CI runs the object and business tests against its own
-Azurite service.
+PostgreSQL database. The startup test uses the overlay produced by `scripts/check.sh`.
+CI runs the object, archive, startup and business tests against its own Azurite service.
 
 ### Startup and shutdown tests
 

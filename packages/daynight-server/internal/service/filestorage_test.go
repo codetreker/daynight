@@ -67,6 +67,63 @@ func TestAzureStartupUsesSelectedCredentialAndContainer(t *testing.T) {
 	}
 }
 
+func TestAzureStartupConnectionStringAndScratch(t *testing.T) {
+	const connection = "DefaultEndpointsProtocol=http;AccountName=fixture;AccountKey=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=;BlobEndpoint=http://127.0.0.1:10000/fixture;"
+	c := storageconfig.DefaultConfig()
+	c.Backend, c.Root = "azure-blob", t.TempDir()
+	c.Azure.Container, c.Azure.ConnectionString = "archives", connection
+	requests := 0
+	options := &container.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: startupTransport(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Method != http.MethodGet || req.URL.Path != "/fixture/archives" || !strings.HasPrefix(req.Header.Get("Authorization"), "SharedKey fixture:") {
+			t.Errorf("unexpected connection-string container request: %s %s", req.Method, req.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	}), Retry: policy.RetryOptions{MaxRetries: -1}}}
+	files, err := openAzureFileStorage(t.Context(), c, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(c.Root)
+	if err != nil || len(entries) != 0 || requests != 1 {
+		t.Fatalf("scratch probe not cleaned or container not checked: entries=%v requests=%d error=%v", entries, requests, err)
+	}
+
+	occupied := filepath.Join(t.TempDir(), "occupied")
+	if err := os.WriteFile(occupied, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.Root = occupied
+	files, err = openAzureFileStorage(t.Context(), c, nil, options)
+	if files != nil || err == nil || !strings.Contains(err.Error(), "scratch directory: failed") || requests != 2 {
+		t.Fatalf("unusable scratch: files=%v error=%v requests=%d", files, err, requests)
+	}
+}
+
+func TestAzureStartupRejectsInvalidClientConfiguration(t *testing.T) {
+	c := storageconfig.DefaultConfig()
+	c.Backend, c.Root, c.Azure.Container = "azure-blob", t.TempDir(), "archives"
+	c.Azure.ConnectionString = "not-a-connection-string-secret"
+	if files, err := openAzureFileStorage(t.Context(), c, nil, nil); files != nil || err == nil || !strings.Contains(err.Error(), "client construction: failed") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("invalid connection string: files=%v error=%v", files, err)
+	}
+	c.Azure.ConnectionString, c.Azure.Endpoint = "", "%invalid-private-endpoint"
+	if files, err := openAzureFileStorage(t.Context(), c, &startupCredential{}, nil); files != nil || err == nil || !strings.Contains(err.Error(), "container check: failed") || strings.Contains(err.Error(), "private") {
+		t.Fatalf("invalid endpoint: files=%v error=%v", files, err)
+	}
+	for _, key := range []string{"IDENTITY_ENDPOINT", "IDENTITY_HEADER", "IDENTITY_SERVER_THUMBPRINT", "IMDS_ENDPOINT", "MSI_ENDPOINT", "MSI_SECRET", "DEFAULT_IDENTITY_CLIENT_ID"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("MSI_ENDPOINT", "http://127.0.0.1:1")
+	c.Azure.Endpoint, c.Azure.ManagedIdentityClientID = "https://account.blob.core.windows.net", "selected-client"
+	if files, err := openAzureFileStorage(t.Context(), c, nil, nil); files != nil || err == nil || !strings.Contains(err.Error(), "identity construction: failed") {
+		t.Fatalf("unavailable managed identity selection: files=%v error=%v", files, err)
+	}
+}
+
 func TestAzureStartupRedactsFailure(t *testing.T) {
 	for _, tc := range []struct {
 		status   int
